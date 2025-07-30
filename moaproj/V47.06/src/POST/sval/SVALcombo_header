@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:post:SVALcombo_header
+* NOMBRE
+*   OFB:post:SVALcombo_header
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcombo_header
+local loc_cbhdr_dest	like post:adt_despost_dest
+
+// cargo los datos del servicio
+	let post:tipo_produc = siaf:codigo_siaf
+	call CDSserv_gral
+	if (retval < 0) then
+		errmsg common:errmsg_list "IMPOSIBLE LEER PARAMETRIA DE COMBO (Servicio)"
+		let plataf:verify_session = "C"
+		return (-2)
+	endif
+
+// busco el destino asociado al combo
+	CDS SELECT FROM DSC:post:DESPOST_TAB BECOMES DSC:post:DESPOST_CTX \
+		WHERE    	    post:adt_despost_serv == post:tipo_produc 
+    CDS FINDFIRST DSC:post:DESPOST_CTX NOLOCK
+    if (cdsretval != 0) THEN
+    	errmsg common:errmsg_list "IMPOSIBLE LEER PARAMETRIA DE COMBO (Destino)"
+		let plataf:verify_session = "C"
+		return (-2)
+	endif
+	clearfield loc_cbhdr_dest
+    CDS EXTRACT DSC:post:DESPOST_CTX post:adt_despost_dest INTO FLD:loc_cbhdr_dest
+	if (cdsretval != 0) then
+    	errmsg common:errmsg_list "IMPOSIBLE LEER PARAMETRIA DE COMBO (Destino)"
+		let plataf:verify_session = "C"
+		return (-2)
+	endif
+
+	// Alguien sabe por que post:destino.LENGTH < post:adt_despost_dest.LENGTH ?????!!!!!
+	fprint post:destino "%18s" loc_cbhdr_dest
+	fprint post:adt_tarif_dest "%20s" loc_cbhdr_dest
+    post:adt_tarif_desde = 1
+
+        
+// cargo los datos de la tarifa
+    CALL post:CDSbasico(post:tipo_produc,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+    IF (RETVAL < 0)
+        call MISCParamDefect(post:tipo_produc2,post:adt_tarif_dest,post:adt_serv_umstd)
+        let plataf:verify_session = "C"
+        RETURN (-2)
+    END IF
+
+// calculo de importes
+	if (cli_tipo == 1 || (post:ModalidadCC == 1 && estado_presu == 4)) then
+		// corportativo tiene importe cero
+			post:tarifa = 0
+			siaf:importe = 0
+			post:ImporteConIva = 0
+			post:ImporteSinIva = 0
+	else
+		// calcular el importe total (tarifa * cantidad)
+			post:tarifa =  post:adt_tarif_precio * post:cantidad
+			let siaf:importe = post:tarifa
+		
+		// calcular el iva 
+			;call post:CDSadt_ivacod_discri
+			;if (adt_cativa_discri == "S") then
+				post:ImporteConIva = post:tarifa
+				//SC 50170
+				call MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+			    post:sobretasa_prod = post:ImporteIva
+			    siaf:ImporteConIva = post:ImporteConIva
+			    siaf:ImporteSinIva = post:ImporteSinIva
+		    ;else
+		    ;	let post:ImporteConIva = siaf:importe
+		    ; 	let post:ImporteSinIva = siaf:importe
+		    ;	let siaf:ImporteConIva = siaf:importe
+		    ;	let siaf:ImporteSinIva = siaf:importe
+		    ;end if
+		    
+		    //if (cli_tipo == CLIUP) then
+            //cgw:se va a calcular siempre		    	
+		    post:ImpServUP = siaf:ImporteConIva
+		    post:AliServUP = adt_serv_aliciva
+		    //endif
+		    
+		    call post:MISCAcumTotalesSes
+	endif
+    
+// cargo la familia para que se journalice
+	let post:jnl_flia_tran  = siaf:adt_tran_fliatran
+	let post:PreDForFis = post:adt_serv_formfiscal
+	
+// leo datos del combo para la journalizacion
+	let adt_cb_cod = siaf:codigo_siaf
+	call CDSCombos_load
+
+// para la facturacion
+	if (post:estado_presu == 2) then
+		let adt_cbpa_sec = 0
+	endif
+		
+	let post:INDPresuD_Dat = OFB:post:CDScb_hdr_append
+	call MISCGrabaDetalleTrn
+		
+END SUB
+
+/*******/

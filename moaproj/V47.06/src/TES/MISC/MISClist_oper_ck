@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:tes:MISClist_oper_ck
+* NOMBRE
+*   OFB:tes:MISClist_oper_ck
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISClist_oper_ck
+	LOCAL adt_tesoro LIKE op:op_tesoro
+	
+    IF (drv:dt_app != 2) THEN
+    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_node_id > " "  && \
+	       op:op_branch_id == op:op_branch_id && \
+	       op:op_tlr_auth == "X" && op:op_borrado_logico != "S"
+	       
+    ELSEIF (common:permite_cajero_cheq == "S") THEN
+    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_node_id > " "  && \
+	       op:op_branch_id == op:op_branch_id && \
+	      (op:op_tesoro == "S" || (op:op_tlr_auth == "X" && op:op_operator_id != op:op_operator_id)) && \
+	      op:op_borrado_logico != "S"
+	      
+    ELSE
+    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_node_id > " "  && \
+	       op:op_branch_id == op:op_branch_id && \
+	       op:op_tesoro == "S" && op:op_borrado_logico != "S"
+    END IF
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+	/* destrye picklist - libera memoria */
+    call csr:f_sadroppl("operators")
+	/* arma picklist con los operadores identificados y con cajas abiertas */
+    call csr:f_sanewpl("operators",PIC:tes:oper_salida)
+    WHILE (cdsretval == 0)
+	    CALL tes:CDSextract_op
+	    CDS EXTRACT DSC:op:adt_op_context FLD:op:op_tesoro_id INTO FLD:op:adt_tesoro_id
+		IF (drv:dt_app == 2 && op:adt_tesoro == "S") THEN
+		    CDS SELECT from DSC:tes:tesoro_table BECOMES DSC:tes:tesoro_context \
+		    WHERE tes:tes_suc_id == op:op_branch_id && \
+			  tes:tes_fecha == common:system_date && \
+			  tes:tes_tes_id == op:adt_tesoro_id
+		    CDS FINDFIRST DSC:tes:tesoro_context NOLOCK
+		    IF (CDSRETVAL == 0)
+				CLEARFIELD tes:tes_marca_cierre
+			    CDS EXTRACT DSC:tes:tesoro_context FLD:tes:tes_marca_cierre
+			    CDS ENDSELECT DSC:tes:tesoro_context
+				IF (tes:tes_marca_cierre != "X") 
+	                fprint common:csr_string "%-14.14s %5.5s %5.5s %37.37s  S",\
+			                fld:op:adt_login_id, fld:op:adt_branch_id, \
+			                fld:op:adt_operator_id,fld:op:adt_display_tmp
+	                call csr:f_saaddpl("operators",common:csr_string)
+				    CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+				    CONTINUE
+                ENDIF
+		    END IF
+		    CDS ENDSELECT DSC:tes:tesoro_context
+	    ENDIF
+	    //
+	    IF (drv:dt_app == 4 || (common:permite_cajero_cheq == "S" && op:op_operator_id != op:adt_operator_id))
+	        CDS SELECT FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context \
+	        WHERE tes:rend_op_id == op:adt_operator_id && \
+	              tes:rend_suc_id == op:op_branch_id && \
+				  tes:rend_fecha == common:system_date && \
+				  tes:rend_marca_cierre != "X"
+	        CDS FINDFIRST DSC:tes:rend_caj_context NOLOCK
+	        IF (CDSRETVAL == 0) then
+                fprint common:csr_string "%-14.14s %5.5s %5.5s %37.37s   ",\
+		                fld:op:adt_login_id, fld:op:adt_branch_id, \
+		                fld:op:adt_operator_id,fld:op:adt_display_tmp
+                call csr:f_saaddpl("operators",common:csr_string)
+		    END IF
+		    CDS ENDSELECT DSC:tes:rend_caj_context
+	    END IF
+	    CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+	END WHILE    
+    CDS ENDSELECT DSC:op:adt_op_context
+/* muestra picklist y se realiza eleccion */
+    
+    call csr:f_sadopl "operators" common:csr_string
+    if (retval < 0)
+       clearfield tes:login_dest
+       refresh tes:login_dest
+       return (retval)
+     else
+       tes:op_id  = SUBSTR(common:csr_string,21,5)
+       tes:op_suc = SUBSTR(common:csr_string,15,5)
+       adt_tesoro = SUBSTR(common:csr_string,66,1)
+       /*Se agrega marca de borrado logico - Gabriel Falciola*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+	       WHERE op:op_branch_id == tes:op_suc && op:op_operator_id == tes:op_id && \
+	       op:op_borrado_logico != "S"
+       CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+       CALL tes:CDSextract_op     /*hace el extract al profiles*/
+       CDS EXTRACT DSC:op:adt_op_context FLD:op:op_login_id INTO FLD:op:adt_login_id \
+		       FLD:op:op_operator_id INTO FLD:tes:operator_id_dest
+       CDS ENDSELECT DSC:op:adt_op_context
+       //
+	   IF (adt_tesoro == "S") THEN		
+		   op:adt_tesoro = adt_tesoro
+	   ELSE
+		   op:adt_tesoro = "N"
+	   ENDIF
+    end if
+/* destrye picklist - libera memoria */
+    call csr:f_sadroppl("operators")
+END SUB
+
+/*******/

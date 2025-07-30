@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:post:SVALafip
+* NOMBRE
+*   OFB:post:SVALafip
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALafip
+
+    IF (!(siaf:adt_formulario > 0))
+        MsgBox "El Nro Formulario tiene que tener un Valor ",OFB_OK,"ERROR"
+        Return -2
+    END IF
+    
+    ;PS9795 
+    if (post:estado_presu == 1 && post:PresNro > 0 && post:Modo != "R") then
+        post:Modo = "R"
+    end if
+    
+    IF (post:estado_presu == 4 && post:sf1_comprobante.NUMCHARS > 0)
+        //cgw:muestro datos del formulario AFIP
+        POPUP scr:post:SCRNdatos_afip,post:PRESdatos_afip
+    END IF
+
+    if (post:estado_presu != 4) then
+        CALL siaf:SVALnivel_sup
+        IF (RETVAL < 0) THEN
+            RETURN (-2)
+        END IF
+    endif
+    
+  /*Si estoy modificando la Transacción, voy a buscar el registro en la PresuDet para obtener
+    los valores anteriores - Gabriel Falciola*/
+    if (post:estado_presu == 3 || post:estado_presu == 4)
+        call CDSBuscoValAnterior
+    end if
+
+    Call post:MISCGrabaDetalleTrn
+    
+//  If ( post:estado_presu == 1 || post:estado_presu == 4 )
+//      Call post:CDStotal_utility_sf1
+//  Endif
+    
+// FGB (7.6.2003): ya no haria falta
+//  if (post:estado_presu == 2)
+//      ;SMC Resguardo configuracion de teclado Actual
+//        keydef F10    tlr:tlr_fb9_real
+//      UngetKey RT_F10
+//      ; FGB 03.04.03 arreglo detalle
+//      let tlr:INDtran_name = drv:INDcur_list
+//      swapdup tlr:INDtran_name
+//      let tlr:INDtran_name = drv:INDcur_list
+//    else
+//        call tlr:KEYScustom_tlr
+//  endif       
+
+
+    	// PS 10587 - Se actualiza en la PresuAct la variable es_PF que indica que en el presupuesto
+    	// hay al menos una tx de Pago Facil sin viaje
+    	es_PF = "S"
+    	CALL CDSupdPresuAct_PF		
+
+
+
+
+    if (!(testflag(tlr:tran_flags,correction))) then
+        ;SMC Restauro el Boton de Supervision
+        tlr:f08button = "F8 Supervision"
+        let drv:button = TFB7
+        call drv:but_redraw
+        call drv:but_enable
+       /* EC Si no tiene autoridad de Gerente, Tesorero, Contador u Ofic.Neg.,
+        entonces el boton de F8 supervision, esta deshabilitado */
+        if (!testflag(common:menu_flags,AMsup_auth) && \
+           !testflag(common:menu_flags,AMtes_auth) && \
+           !testflag(common:menu_flags,AMcon_auth) && \
+           !testflag(common:menu_flags,AMsup_auth2))
+           let drv:button = TFB7
+           call drv:but_disable
+        end if
+        keydef KEY_OVERRIDE,tlr:tlr_fb7 //cgw:setea funcion,vuelve a ser supervision.
+    end if
+
+    /*Acumulo el importe de la transacción en la PresuPag por medio de pago para obtener los
+    totales de la Sesión - Gabriel Falciola*/
+    call MISCActMedPago
+
+    If ( post:estado_presu == 4 ) 
+        call MISCTotalTransac(siaf:codigo_siaf) 
+        
+    End If  
+    /*Captura la pantalla para calcular el vuelto a entregar al cliente de acuerdo
+    con lo abonado por el mismo - Gabriel Falciola*/
+    call MISCvuelto_sin_ses("")
+    
+    if (post:estado_presu == 1 || post:estado_presu == 4) then
+            // Campos de medios de Pago
+        call csr:cleararray(sf1_moneda_vec)
+        call csr:cleararray(sf1_med_pago_vec)
+        call csr:cleararray(sf1_importe_vec)
+        clearfield sf1_cantidad
+        
+        // Por ahora AFIP solo admite pesos
+        Call post:MISCcargo_arrays(siaf:importe,"E01")
+    end if
+    
+    //Solo para teclas rapidas!!!
+    If ( estado_presu == 1 ) 
+        Call tlr:JNLtran
+        CALL post:MISCclear_campos_jou
+        Ungetkey RT_SEND
+        Call post:MISCcap_teclas_rap(siaf:importe)
+    End If
+
+        ;SMC Restauro Valor de Corte de Multi-Lineas
+        init 66,1 //cgw:se unifica criterio con sepsa
+
+    RETURN (RETVAL)
+
+END SUB
+
+/*******/

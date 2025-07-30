@@ -1,0 +1,107 @@
+/****o* Pendientes de agrupación/OFB:siaf:analiza_tran
+* NOMBRE
+*   OFB:siaf:analiza_tran
+* DESCRIPCION
+*	PROCESO TRAN CAIDAS EN VUELO						    
+*	- Existe TRAN caidas en Vuelo    ===> Envio Reverso Automatico          
+*	- No Existe TRAN caidas en Vuelo ===> Borro Marca Caidas en Vuelo	    
+*	- Si en Reverso Auto -Estado >100=> Grabo DIRECTA CON RECH_REV_AUTO  111
+*                                  => Grabo TRAN en curso como HOST_REJECTED
+*                                  => Grabo REVERSO como HOST_REJECTED    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:analiza_tran
+	
+	LOCAL window_node LIKE common:window_node
+	
+	// Guardo Numero de Operador.
+ 	op:operator_tmp = op:op_operator_id
+
+	// Journalizo Reverso Automatico 
+	// setflag tlr:controla_marca,reverso_auto
+
+	
+	//Respaldo los flags actuales
+    tlr:aux_tran_flags = tlr:tran_flags
+    
+	// Recupero los flags de la transaccion original
+    tlr:tran_flags = tlr:jnl_tran_flags
+    
+	// Setear Marca para que en el Send se envie
+	// Mensaje de Cancelacion.
+
+	setflag tlr:controla_firma,cancelacion
+
+	// Para que no verifique firma en Cancelacion 
+	// de Caidas en Vuelo.
+
+	setflag tlr:controla_marca,cancel
+
+	CALL siaf:MISCjnl_reverso_auto
+
+	resetflag tlr:controla_marca,reverso_auto
+
+	/* Envio Reverso Automatico */
+
+	call  hcomm:COMM_stat_init
+
+	if (!testflag(hcomm:state_flags,on_line) && (siaf:posible_off == "N")) 
+  	   	return -2
+	end if
+
+	window_node = common:window_node
+    common:window_node = op:op_node_id
+	
+	call hcomm:COMM_host_tran
+	
+	common:window_node = window_node
+	
+	call siaf:MISClleno_modalidad
+
+ 	tlr:tran_flags = tlr:aux_tran_flags
+	resetflag tlr:controla_firma,cancelacion
+	resetflag tlr:controla_marca,cancel
+	
+	// Actualizacion segun  Reverso Automatico 
+	CALL siaf:MISCupdate_reverso
+	
+	/* Verifico Estado de Transaccion */
+	CALL siaf:MISCjnl_corregida
+
+	clearfield siaf:cancelacion
+
+	if ( siaf:tran_retval == TRAN_CAIDA_VUELO  )  
+					 // RETVAL  de  TRAN
+					 // cuando en Reverso Aut., se cae la
+					 // linea.
+
+;		fyimsg common:fyimsg_list,2 siaf:FYIrealizar_tran
+
+		clearfield siaf:tran_retval
+
+		// Seteo hcomm:tran_status = HOST_REJECTED, de forma
+		// tal que cuando se cae la linea en una cancelacion
+		// la transaccion en proceso quede como RECHAZADA.
+
+		fyimsg clear
+		
+		hcomm:tran_status = HOST_REJECTED
+
+		return TRAN_CAIDA_VUELO
+        end if
+	op:op_operator_id = op:operator_tmp
+END SUB
+
+/*******/

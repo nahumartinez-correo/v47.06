@@ -1,0 +1,673 @@
+/****o* Uso General/OFB:post:MISCverifReversar
+* NOMBRE
+*   OFB:post:MISCverifReversar
+* DESCRIPCION
+*   Verifica si la transaccion se puede reversar.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:KEYScorrection
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-652
+*   http://jira.sibs.net/jira/browse/AUT-2374
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverifReversar
+	/* Es llamada desde siaf:KEYScorrection, para verificar si */
+	/* realmente se pueden reversar ciertas transacciones      */
+	/* Jul. 98 - Bettina Petrella                              */
+
+	/* En caso de que se quiera reversar una transaccion que pertenece */
+	/* a un presupuesto, sacar un mensaje. (Florencia Krimerman)       */
+	CALL csr:trimfield post:jnl_flia_tran
+	IF (post:PresNro != 0 && siaf:codigo_siaf != 99023 && post:jnl_flia_tran != "BG" \
+		&& ((siaf:jnl_tran_modpresu != "I") || \
+		(siaf:jnl_tran_modpresu == "I" && siaf:codigo_siaf == 99021))) THEN
+		/*Ultimas 3 condiciones agregadas para que permita
+		reversar Recepcion de Piezas - Florencia Marco*/
+		/* Las transacciones con parametria "I" se reversan idependientemente
+		ademas no entran en la anulación*/
+		/*Cheque se realiza para saber si la transaccion debe ser reversada por el
+		Fin de Sesion o por la tra.de anulacion - Gabriel Falciola*/
+		CALL MISCVerifRevNC
+		IF (RETVAL == 1) THEN
+			LET common:csr_string = "Las Transacciones que estan dentro de una Sesion deben ser Reversadas por Fin de Sesion"
+			ERRMSG common:errmsg_list,FLD:common:csr_string
+		END IF
+		RETURN -2
+	END IF
+ 
+	IF (post:PresNro == 0 && siaf:codigo_siaf == 99023) THEN
+		ERRMSG common:errmsg_list,"No se puede reversar un Fin de Sesion que no tiene Nro Presupuesto"
+		RETURN -2
+	END IF
+
+	SELECT (siaf:codigo_siaf)
+		//PJM 22-04-1999
+		//Para NotaCredito solo puede reversarse por fin de sesion aquellas transacciones que
+		//No hallan sacado un Formulario Fiscal
+		CASE "99023"
+			//cgw:NI50295: Control que no se pueda reversar una sesion de Importacion de Lista de Giros.
+			IF (giros:importacion_lg == "S") THEN
+				MSGBOX "No se puede reversar una sesión de Importacion de Lista de Giros",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	          
+			//gpb:NI50479 - Control que no se pueda reversar una sesion de Importacion de Lista de Envios con Pago en Destino.
+			IF (post:importacion_ped == "S") THEN
+				MSGBOX "No se puede reversar una sesión de Importacion de Lista de Envios con Pago en Destino",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+			
+			//gpb:NI50479 - Control que no se pueda reversar una Nota de Credito PED
+			IF (post:DocFisPed == "NCRED") THEN
+				MSGBOX "No se puede reversar una Nota de Credito PED",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	          
+			//NI50295: Control que no se pueda reversar una sesion de Emision de Lista de Giros.
+			IF (post:ConsumoAnticipoMon) THEN
+				MSGBOX "No se puede reversar una sesión de Emisión de Lista de Giros",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	
+			//cgw:NI50361 - Control que no se pueda reversar una sesion de Cobro por Cuenta de Terceros.
+			IF (post:es_CCT == "S") THEN
+				MSGBOX "No se puede reversar una sesión de Cobro por Cuenta de Terceros",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	
+			//gpb:NI50364 - Control que no se pueda reversar una sesion de Caja Unificada.
+			/* IF (post:es_WEB == "X") THEN
+				MSGBOX "No se puede reversar una sesión de Operaciones Web",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF*/
+	          
+			//50316 - Cancelacion de Transferencias Bancarias
+			IF (post:ModalidadTB) THEN
+				MSGBOX "No se puede reversar desde el Journal una Sesión de Aplicación de Transferencias Bancarias",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+			
+			//50316 - Cancelacion de Transferencias Bancarias
+			IF (post:ModalidadCTB) THEN
+				MSGBOX "No se puede reversar una Sesión de Cancelación de Aplicación de Transferencias Bancarias",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	
+			IF (Tipo_Formulario == FACTURA_A || Tipo_Formulario == FACTURA_B || Tipo_Formulario == TICKET) && \
+				(post:importe_sesion > 0) THEN
+				MSGBOX "Debe ser Reversado por la Transaccion de Anulacion",OFB_OK,"ERROR"
+				RETURN -2
+			END IF
+			
+			IF (post:importe_sesion == 0 && rechazoDiferido) THEN
+				MSGBOX "La sesion fue anulada automaticamente al haber sido rechazada",OFB_OK,"ERROR"
+				RETURN -2
+			END IF
+	          
+	    	;Pago o rendición masiva de operativos
+	    	CALL post:CDSBuscaPagRendMasOp
+			/* NAM - AUT 877  
+			retval viene con cero cuando no encuentra datos en la PresuDet
+			(al salir con ESC de la transaccion 6650)
+			permitiendo hacer la reversa y dejando el FLAG(giros:giros_masivos,proc_gir_masivos) en "ON",
+			ocasionando así errores como el de tener que continuar con la transaccion.*/
+			IF (RETVAL < 0) THEN
+				MSGBOX "No se puede reversar una sesión de pago o rendición masiva \nde operativos",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+	          
+			//El Giro Contrareembolso se reversa por anulacion de documentos una ves completo el CREM
+			CALL post:CDSBusco_RevCREM    
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+	          
+			//Verificar si se esta reversando una entrega de piezas que no lo haga si ya fue liquidada
+			CALL post:CDSbusco_RevEntr    
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF          
+			
+			//Verificar si se esta reversando una entrega de piezas con alguna pieza que captura imagen
+			CALL post:CDSbusco_RevImagen    
+			IF (RETVAL < 0) THEN
+				errmsg lst:common:errmsg_list, \
+				"La Sesión no puede reversarse porque existen piezas con captura de imagen."			
+				RETURN (-2)
+			END IF   
+			
+			//Verificar si se esta reversando una entrega de piezas con alguna pieza ECOMM que haya sido entregada por HH
+			CALL post:CDSbusco_RevHH 
+			IF (RETVAL < 0) THEN
+				errmsg lst:common:errmsg_list, \
+				"La sesión no puede reversarse porque contiene piezas que se han entregado con Hand Held."      			
+				RETURN (-2)
+			END IF 
+			
+			//Verificar si se esta reversando una entrega de piezas con alguna pieza PAS que haya sido entregada por HH
+			CALL post:CDSbusco_RevPAS 
+			IF (RETVAL < 0) THEN
+				errmsg lst:common:errmsg_list, \
+				"La sesión no puede reversarse porque contiene piezas que se han entregado con Hand Held."  		
+				RETURN (-2)
+			END IF 
+			
+			//Verificar si se esta reversando una entrega de piezas que ya ha sido informada a T&T. No se puede reversar
+			CALL post:MISCrevEntr_scanOL    
+			IF (RETVAL < 0) THEN
+				MSGBOX "Hay Piezas que ya han sido Informadas. La sesión no se puede reversar.",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+				
+			//Me fijo si hubo una Observacion de Poliza en la sesion, para ver si ya fue Entregada la Pieza
+			CALL post:CDSbusco_obs_sesion
+			IF (RETVAL < 0) THEN
+			RETURN -2
+			END IF
+	          
+			//cgw:AUT-2466 - PS 10523. Controlo si hay saldo en caja
+			CALL post:MISCverifCaja
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+
+			//50437 - Verificar si se esta reversando un registro vap que no haya piezas entregadas
+			CALL post:CDSbusco_RevRegVAP
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF              
+			
+			//50569 - Verificar si se esta reversando un registro RPP que no haya piezas entregadas
+			CALL post:CDSbusco_RevRegRPP
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF   
+			
+			//NI XXXXX - Mercado Libre
+			CALL post:CDSfind_TxPresuDet(6680) //Operaciones Web
+			IF (RETVAL == 0) THEN
+				MSGBOX "No se puede reversar un Presupuesto que contenga Transacción de Operaciones WEB",0x00,"ERROR"
+				RETURN -2
+			END IF   			
+			
+			//Verificar si se esta reversando una sesion que contenga una Transferencia Internacional
+			CALL post:CDSfind_TxPresuDet(70383)
+			IF (RETVAL == 0) THEN
+				MSGBOX "No se puede reversar un Presupuesto que contenga una transacciòn de Envio de Transferencia Internacional",0x00,"ERROR"
+				RETURN -2
+			END IF		
+			
+			//Verificar si se esta reversando una sesion que contenga un Pago de Transferencia Internacional
+			CALL post:CDSfind_TxPresuDet(70384)
+			IF (RETVAL == 0) THEN
+				MSGBOX "No se puede reversar un Presupuesto que contenga una transacciòn de Pago de Transferencia Internacional",0x00,"ERROR"
+				RETURN -2
+			END IF						
+			
+		BREAK
+		CASE "99025"
+			MSGBOX "No se puede reversar la captura de cheque por este medio",OFB_OK,"ERROR"
+			RETURN -2
+		BREAK
+		CASE "99099"
+		CASE "99098"
+		CASE "99097" //cgw:Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+			MSGBOX "No se puede reversar por este medio",OFB_OK,"ERROR"
+			RETURN -2
+		BREAK
+		/*CASE "99036"
+			//Verifica que al reversar una pieza de un contenedor
+			//este contenedor no se haya enviado ya en una saca.
+			//Bettina Petrella - May. 1998 -
+			CALL post:CDSverifContSaca
+			IF (RETVAL == -1) THEN
+				LET common:csr_string = "Se ha corrupto la tabla Journal."
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-1)
+			END IF
+			IF (RETVAL == -2) THEN
+				LET common:csr_string = "La pieza se encuentra en una Saca. - No se puede Reversar."
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-2)
+			END IF
+			IF (RETVAL == -3) THEN
+				RETURN (-2)
+			END IF
+		BREAK*/
+		CASE "99140"
+		//CASE "99046"
+			/*MFM - Si la saca tiene marca de excepción no puede ser reversada.*/
+			IF (jnl_marca_excep == "S") THEN
+				LET common:csr_string = "La saca ha sido marcada como excepción. No puede reversarse."
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-2)
+			END IF
+			/* Verifica que al reversar una pieza de una saca       */
+			/* esta no se haya enviado ya en un Corte de Linea.     */
+			/* Bettina Petrella - May. 1998 -                       */
+			CALL post:CDSverifCteLin 
+			IF (RETVAL == -1) THEN
+				LET common:csr_string = "Se ha corrupto la tabla Journal."
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-1)
+			END IF
+			IF (RETVAL == -2) THEN
+				LET common:csr_string = "La Saca se ha enviado en un Corte de Linea. - No se puede Reversar."
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-2)
+			END IF
+			IF (RETVAL == -3) THEN
+				RETURN (-2)
+			END IF
+		BREAK
+	/*CASE "99070"
+		CASE "99072"
+			//MFM - Verifico que la pieza no haya sido expedida, o sea, puesta
+			//en un contenedor, saca y o corte de linea
+			CALL MISCverif_expedida
+			IF (RETVAL == -2) THEN
+				MSGBOX "La pieza no puede reversarse pues ha sido expedida",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+		BREAK*/
+		CASE 99030
+		CASE 99040
+		CASE 99050
+		CASE 99061
+		CASE 99063
+		CASE 99065
+		CASE 99067
+		CASE 99069
+		CASE 99071
+		CASE 99080
+		CASE 06700 // Compromisos de Pago
+			IF (siaf:codigo_siaf == 99040 && post:jnl_marca_excep == "S") THEN
+				MSGBOX "La saca no puede reversarse porque ha sido marcada como excepción",0x00000040,"ERROR"
+				RETURN -2
+			END IF
+			/*MFM - Verifico que las piezas no hayan sido retiradas
+			por un transporte*/
+			IF (siaf:codigo_siaf == 99067 && retirado_transp == "S") THEN
+				MSGBOX "No se puede Reversar - Las piezas han sido retiradas por un transporte",0x00000040,"ERROR"
+				RETURN -2
+			END IF
+			
+			//Devolucion de Piezas - Verifico que alguna de las piezas de la dev no haya sido informada 
+			IF (siaf:codigo_siaf == 99061)
+				//Verifico si no hay alguna pieza que ya haya sido informada asociada a la cabecera de la devolucion
+				CALL MISCrevDevol_scanOL
+				IF (RETVAL < 0) THEN
+					MSGBOX "Hay Piezas que ya han sido Informadas. La Devoluciòn de Piezas no se puede reversar",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+			END IF
+			
+			
+			adt_stockp_nro_sec = codseq_dev
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0)  THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE "99116"
+			//CASE "99086"
+			/* Verifica que al reversar una pieza transferida   */
+			/* esta no haya sido tomada por el operador destino */
+			/* Bettina Petrella - Jul. 1998 -                   */
+			CALL post:CDSverif99086
+			IF (RETVAL == -2) THEN
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-2)
+			END IF
+		BREAK
+		CASE "99000"
+			//adt_stockp_nro_sec = PresNro
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE "99005"
+			//verifico que la pieza haya sido recibida
+			CALL post:CDSVerif_PiezaRecep
+			IF (RETVAL < 0) THEN
+				//verifico que no haya sido asginada a destino
+				CALL MISCverif_entregada
+				IF (RETVAL != -5) THEN
+					MSGBOX "La pieza ha sido asignada a destino.No podrá reversarse.",0X40,"Error"
+					RETURN -2
+				END IF   
+			END IF
+			/*Agregado por F. Marco*/
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0)  THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE "99010"
+			/* Verifico que cuando se reversa una recepción
+			esta no haya sido entregada - MFM */
+			CALL post:MISCverif_entregada
+			IF (RETVAL == -1) THEN
+				MSGBOX "La pieza fue entregada.No puede reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -2) THEN
+				MSGBOX "La pieza ha sido devuelta o marcada como excepción.No puede reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -3) THEN
+				MSGBOX "La pieza fue reencaminada.No puede reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -4) THEN
+				MSGBOX "La pieza fue observada.No puede reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -5) THEN
+				MSGBOX "La pieza no existe en la tabla de stock.No puede reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -6) THEN
+				MSGBOX "Se ha realizado una Registracion VAP Manual sobre esta pieza.\nNo podra reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			if (RETVAL == -7) THEN
+				MSGBOX "Se ha realizado una Registracion RPP sobre esta pieza.\nNo podra reversarse.",0X40,"Error"
+				RETURN -2
+			END IF
+			//Controlo en la tabla NovTT si escaneo P02 o P80 de Recepcion fue transmitido 
+			CALL MISCverif_scanOL("R") //Recepcion de Piezas
+			IF (RETVAL == 0)
+				//scaneo transmitido, no se puede reversar
+				MSGBOX "La Pieza ya ha sido informada. No se puede reversar",0x00,"ERROR"
+				RETURN (-2)
+			END IF			
+			
+			//Controla que no se pueda reversar una Recepcion si es una pieza PED devuelta y ya se ha generado su Nota de Credito o Factura
+			CALL MISCverif_pedDev
+			IF (RETVAL == 0)
+				MSGBOX "La Pieza PED ya tiene una Nota de Credito o Factura asociada. No se puede reversar",0x00,"ERROR"
+				RETURN (-2)
+			END IF
+			
+			/*Agregado por F. Marco*/
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE "99017"
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+			CALL post:MISCreverso_val_rend
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 99036
+		CASE 99046
+		CASE 99056
+		CASE 99062
+		CASE 99064
+		CASE 99066
+		case 99068
+		CASE 99070
+		CASE 99072
+		CASE 99086
+		CASE 06710 // Detalle de Compromisos de Pago
+			MSGBOX "(L)TRANSACCION NO TIENE REVERSO",0x00000040,"ERROR"
+			RETURN -2
+		BREAK
+		CASE 99011
+		CASE 99013
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0)  THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 99012 ;Detalle de Pieza Observada
+		CASE 99014 ;Detalle de Pieza Reencaminada
+			/*MFM - Verifico que la pieza reencaminada /observada no haya sido devuelta*/
+			CALL post:MISCVerifPzaDevuelta
+			IF (RETVAL == -2) Then
+				MSGBOX "La pieza fue devuelta.No puede reversarse",0X40,"Error"
+				RETURN -2
+			END IF
+			IF (RETVAL == -3) THEN
+				MSGBOX "La pieza fue reencaminada.No puede reversarse",0X40,"Error"
+				RETURN -2
+			END IF
+			If (RETVAL == -4) THEN
+				MSGBOX "La pieza fue marca como excepción.No puede reversarse",0X40,"Error"
+				RETURN -2
+			END IF
+			SETFLAG tlr:tran_flags, supovr_request
+			SETFLAG siaf:siaf_flags, req_tes
+			SETFLAG siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 99009
+			/*MFM - Verifico que exista la novedad en la tabla de excepcion*/
+			CALL post:MISCVerif_Excepcion
+			IF (RETVAL < 0) THEN
+				MSGBOX " LA EXCEPCION HA SIDO ENVIADA. LA TRANSACCION NO PUEDE REVERSARSE",0x00000040,"AVISO"
+				RETURN -2
+			END IF
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 8720   
+		CASE 8750
+		CASE 8590
+			CALL post:MISCverif_RegulCont
+			IF (RETVAL < 0) THEN
+				MSGBOX "(L) La salida fue forzada por contingencia. La transacción no se puede reversar",0x00000040,"Aviso"    
+				RETURN -2
+			END IF 
+		CASE 8970
+		CASE 7610
+		CASE 7640
+		CASE 7530
+		CASE 7560
+			CALL post:MISCverif_cheq_recep
+			IF (RETVAL < 0) THEN
+				MSGBOX "EXISTEN CHEQUES RECEPCIONADOS. LA TRANSACCIÓN NO SE PUEDE REVERSAR",0x00000040,"AVISO"
+				RETURN -2
+			END IF         
+		BREAK
+		CASE 7616
+		CASE 7646
+		CASE 7536
+		CASE 7566
+			MSGBOX "(L) El depósito debe ser reversado por el Inicio del depósito",0x00000040,"Error"
+			RETURN (-2)
+		BREAK
+		CASE 8726
+		CASE 8756
+		CASE 8776
+		CASE 8796
+			MSGBOX "(L) La salida debe ser Reversada por el Inicio de la Salida",0x00000040,"Error"
+			RETURN (-2)
+		BREAK   
+		CASE 8620   //Salida efec. Caja
+		CASE 8630   //Salida efec. Tesoro
+		CASE 8990   //Extraccion de dinero del Fondo
+			/*MLD si estoy haciendo un cierre guiado, no puedo reversar*/
+			IF (tes:cierre_guiado == "S") THEN
+				ERRMSG common:errmsg_list "No se puede reversar pase del Cierre"
+				RETURN (-2)
+			END IF
+			/*Se puso aca porque en la PRES de la transaccion cuando se entra desde el journal 
+			con la opcion mostrar, pierde los campos*/
+			CALL tes:CDSmarca_teso_mov
+			IF (RETVAL < 0) THEN
+				MOVE "(L) MOVIMIENTO YA INGRESADO" TO drv:error_msg
+				CALL OFB:drv:error_msg
+				RETURN (-1)
+			END IF
+		BREAK
+		CASE 8516
+		CASE 8517
+		CASE 8536
+			ERRMSG common:errmsg_list "No se puede reversar"
+			RETURN (-2)
+		BREAK
+		CASE 6850
+			/*sba - Recepcion de Ajuste de Fallo*/
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 6640
+		CASE 6642
+		CASE 6650
+		CASE 6652
+		CASE 6654
+		CASE 6658
+		CASE 6659
+			ERRMSG common:errmsg_list "No se puede reversar"
+			RETURN (-2)
+		CASE 6660
+			//cgw: Recepcion de Ajuste de Fallo CREM (Negativo).
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		/*cgw: La Recepción de Fallos PCT negativos y positivos se dejo de utilizar, pero los códigos de trx´s fueron reutilizados
+		para las trx´s de Fallos PCT negativos y positivos (MG), que si bien se reversan, al estar en una sesión lo hacen
+		desde el fin de sesión. Por tal motivo, este control especifico es comentado.
+		CASE 6890
+		CASE 6690              
+			//cgw: Recepcion de Ajuste de Fallo de Pago por Cuenta de Terceros (6890 = Positivo, 6690 = Negativo).
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		*/
+		CASE 9326
+		CASE 9336
+			//cgw: Salida de Cheque a caja de otra Sucursal
+			MSGBOX "(L) La Salida de Cheques debe ser Reversada por el Inicio de la Salida de Cheques",0x00000040,"Error"
+			RETURN (-2)
+		BREAK
+		CASE 9346
+		CASE 9356
+			//cgw: Entrada de Cheque a caja de otra Sucursal
+			MSGBOX "(L) La Entrada de Cheques debe ser Reversada por el Inicio de la Entrada de Cheques",0x00000040,"Error"
+			RETURN (-2)
+		BREAK
+		CASE 99220 //Cabecera Recepciones UP
+		CASE 99230 //Cabecera Clasificacion UP
+		CASE 99260 //Cabecera Recepciones Piezas Buzon
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE 99060
+			CALL post:MISCverif_cheque_rev
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF         
+		BREAK
+		CASE 99215 //Detalle Recepciones UP
+		CASE 99235 //Detalle Clasificaciones UP
+			//Verifica en el jnl si la pieza fue expedida
+			CALL MISCpieUP_expedida
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF         
+			//verifica contra la stockpUP si la pieza fue expedida o marcada como excepcion
+			//esto es por si se recepciona sin clasificar, luego se la clasifica,
+			// luego se la expide y se la quiere reversar desde la
+			//tx de recepcion
+			IF (post:piezaUP != "") THEN
+				CALL MISCver_estado_stkUP(siaf:codigo_siaf)
+				SELECT (RETVAL)
+				CASE -1
+					MSGBOX "No se encontro la Pieza correspondiente",0x00000040,"Error"
+					RETURN -2
+				CASE -2
+					MSGBOX "Pieza expedida",0x00000040,"Error"
+					RETURN -2
+				CASE -3
+					MSGBOX "Pieza marcada como excepcion",0x00000040,"Error"
+					RETURN -2
+				CASE -4
+					MSGBOX "Pieza clasificada posteriormente",0x00000040,"Error"
+					RETURN -2
+				END SELECT                                                         
+			END IF
+			SETFLAG  tlr:tran_flags, supovr_request
+			SETFLAG  siaf:siaf_flags, req_tes
+			SETFLAG  siaf:siaf_flags, req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+		CASE "6800" //Ingresos Varios en efectivo
+			//cgw:AUT-2466 - PS 10523. Controlo si hay saldo en caja
+			CALL post:MISCverifCaja_IngVs
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		BREAK
+	END SELECT
+
+END SUB
+
+/*******/

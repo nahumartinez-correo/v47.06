@@ -1,0 +1,113 @@
+/****o* Pendientes de agrupación/OFB:post:CDScargaLinSacaEnc
+* NOMBRE
+*   OFB:post:CDScargaLinSacaEnc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaLinSacaEnc
+    /* Carga la linea de impresion de la guia de cont.*/
+    /* May. 1998 - B. Petrella -  */
+    /* Se actualiza Jul.´98, se cbia. la lógica, por la cant. de guías a imprimir */
+
+    /* Req. 462: Que los T&T estén ordenados en la Guía de Cont. */
+    /* y Sacas - Dic. 1998 - B. Petrella */
+
+LOCAL indice LIKE idx
+LOCAL marca LIKE idx
+
+let marca = 0
+let indice = 0
+
+CLEARFIELD LineaImpresion
+
+DO
+	IF (lib:err_retval < 0) THEN
+		LET marca = 1
+		break
+	ENDIF
+	IF (indice >= 7)
+		break
+	END IF
+
+	/* No debe ser una devolucion (por eso SiNoTT debe ser = 0) */
+	/* Debe ser una imposicion con T&T, y no con Nro. de Ctrl   */
+	IF (SiNoTT.numchars == 0 && track_trace.numchars > 0)
+		IF (MarcaBorrado != "*" && \
+		    substr(track_trace,0,2) == PrimerasLetrasTT) then
+
+			/* Para evitar repeticiones de lineas de impresion */
+			/* dependiendo del orden en que se ingresaron las  */
+			/* transacciones originales, se graba en MarcaBorrado */
+			/* el nro de impresion que se esta realizando */
+			call csr:trimfield MarcaBorrado
+			if (MarcaBorrado.numchars != 0)
+				Let c_imp = post:MarcaBorrado
+			else
+				Let c_imp = 0
+			end if
+			if (c_imp < post:cant_impresion)
+				if (indice == 0)
+					fprint LineaImpresion "       %013.13s" \
+							track_trace
+				else
+					fprint LineaImpresion "%s     %013.13s" \
+							LineaImpresion, track_trace
+				end if
+
+				let indice = indice + 1
+				Let j_idx = j_idx + 1
+				Let MarcaBorrado = cant_impresion
+
+				Cds APPEND DSC:DetTmp_ctx \
+				op:op_operator_id post:orden \
+					post:MarcaBorrado
+				Cds UPDATE DSC:DetTmp_ctx LOCK
+			end if
+	    ELSE
+			IF (MarcaBorrado != "*" && \
+			    substr(track_trace,0,2) != PrimerasLetrasTT) then
+				call csr:trimfield MarcaBorrado
+				if (MarcaBorrado.numchars == 0)
+					Let marca = 3
+					break
+				else
+					Let c_imp = post:MarcaBorrado
+					if (c_imp < post:cant_impresion)
+						Let marca = 3
+						break
+					endif
+				end if
+			END IF
+	    END IF
+	End If
+	Clearfield SiNoTT
+
+	CDS FINDNEXT DSC:DetTmp_ctx LOCK
+	let lib:err_retval = CDSRETVAL
+	IF (CDSRETVAL >= 0)
+		CDS EXTRACT DSC:DetTmp_ctx ALL
+	END IF
+
+LOOP
+
+/* marca = 1 => Fin de la tabla */
+/* marca = 0 => Llegó al 7º T&T */
+/* marca = 3 => Cambio de las 2 primeras letras del T&T */
+Return (marca)
+
+END SUB
+
+/*******/

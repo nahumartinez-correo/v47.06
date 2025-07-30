@@ -1,0 +1,250 @@
+/****o* Notas de Credito CM/OFB:post:MISCDcto_OC_NC
+* NOMBRE
+*   OFB:post:MISCDcto_OC_NC
+* DESCRIPCION
+*   Rutina que graba o borra el descuento Orden de Compra de Nota de Credito por incumplimiento
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCProd_Incumplido
+* DOCUMENTACION
+*  http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCDcto_OC_NC(tipo)
+
+
+local aliciva LIKE post:adt_serv_aliciva
+local flia_aux LIKE siaf:adt_tran_fliatran
+local tarifa_aux LIKE post:tarifa
+local tarifa_oc_aux LIKE post:tarifa
+local cant_aux like post:cantidad
+local signo like siaf:afecta_efectivo
+local codigo like siaf:codigo_siaf
+local imp_aux like post:Imp_DctoCliMed_OC
+local imp_dcto_oc like post:Imp_DctoCliMed_OC
+local l_tipo_produc like post:tipo_produc
+local l_desc_fact like post:item_desc_factura
+local l_sin_iva like post:ImporteSinIva
+
+	imp_aux = 0
+	l_desc_fact = post:item_desc_factura
+		
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:PresuDet_ctx \
+	WHERE (post:fecha == FLD:common:system_date && \
+	post:op_operator_id == FLD:op:op_operator_id && \
+	post:PresNro == post:PresNro && \
+	siaf:codigo_siaf == 99512)
+	/*siaf:codigo_siaf != 99099 && \
+	siaf:codigo_siaf != 99023 && \
+	siaf:codigo_siaf != 99510)*/
+	
+	CDS FINDFIRST DSC:PresuDet_ctx NOLOCK
+    lib:err_retval = CDSRETVAL	
+    IF (lib:err_retval != 0) THEN
+    	CDS ENDSELECT DSC:PresuDet_ctx
+    	RETURN -2
+    ENDIF
+    
+    //Borro vectores
+    call csr:cleararray(docfis_importe)
+    call csr:cleararray(docfis_tasa_por)
+    call csr:cleararray(docfis_imp_siva)
+    //SC 50170
+    call csr:cleararray(docfis_imp_siva4)
+    call csr:cleararray(docfis_imp_siva_tx)
+   
+	
+    DO
+    	IF (lib:err_retval == 0) THEN
+    		
+    		clearfield post:cantidad
+    		
+    		//CDS EXTRACT DSC:PresuDet_ctx siaf:adt_tran_fliatran INTO flia_aux 
+    		CDS EXTRACT DSC:PresuDet_ctx post:item_flia INTO flia_aux \
+    		post:item_efvo into siaf:adt_tran_afec_efvo \
+    		post:PreDForFis siaf:moneda \
+    		post:item_desc_factura
+    		
+    		select (flia_aux)
+    			/*case "TES" //especies
+    				CDS EXTRACT DSC:PresuDet_ctx tes:adt_espv_aliciva INTO aliciva \
+    				siaf:importe INTO tarifa_aux
+    				flia_aux = siaf:adt_tran_fliatran 
+    				break
+    			case "CSV" //motivos
+    				CDS EXTRACT DSC:PresuDet_ctx siaf:adt_mot_aliciva INTO aliciva \
+    				siaf:adt_mot_fliatran INTO flia_aux  siaf:importe INTO tarifa_aux
+    				break*/
+    			case "CME" ;productos varios
+    				CDS EXTRACT DSC:PresuDet_ctx post:adt_prodvs_aliciva INTO aliciva \
+    				siaf:importe INTO tarifa_aux \
+    				post:item_importe_oc INTO tarifa_oc_aux \
+    				post:cantidad2 INTO post:cantidad \
+    				post:ImporteSinIva INTO l_sin_iva
+    				
+    				//flia_aux = siaf:adt_tran_fliatran 
+    				break
+    			case "CSP" ;postales
+    			case "CSE"
+    			case "CST" ;telegramas
+
+    				l_tipo_produc = post:tipo_produc
+				clearfield post:imp_bloques
+				clearfield post:item_imp_bloq
+				clearfield cant_bloq
+				clearfield post:imp_bloques_siva
+				
+    				CDS EXTRACT DSC:PresuDet_ctx post:adt_serv_aliciva INTO aliciva \
+    				post:tarifa INTO tarifa_aux post:descuento \
+    				post:cant_opc \
+    				post:item_importe_oc INTO tarifa_oc_aux \
+    				post:cantidad \
+    				post:tipo_produc \
+    				post:imp_bloques \
+    				post:item_imp_bloq \
+    				post:cant_bloq
+				//Sc50170
+				if (flia_aux == "CST")    				
+					CDS EXTRACT DSC:PresuDet_ctx post:ImporteSinIvaOC into l_sin_iva \
+					post:imp_bloques_siva
+				else
+					CDS EXTRACT DSC:PresuDet_ctx post:ImpSinIva_serv into l_sin_iva
+				endif
+    				tarifa_aux = tarifa_aux - post:descuento
+    				codigo = siaf:codigo_siaf
+    	    			signo = siaf:adt_tran_afec_efvo
+    	    			//flia_aux = siaf:adt_tran_fliatran
+    				
+				//extraigo los valores de los opcionales uno a uno
+				cant_aux = 0
+				while (cant_opc > cant_aux)
+					CDS EXTRACT DSC:PresuDet_ctx post:cod_opc[cant_aux] post:cos_opc[cant_aux] post:ali_opc[cant_aux] \
+					post:flia_opc[cant_aux] post:item_opc_imp_oc[cant_aux] post:siniva_opc[cant_aux]
+					//post:bonifCM_opc[cant_aux] 
+					cant_aux = cant_aux + 1
+				end while
+					    					
+    				//PS OPCIONALES
+    				CALL post:MISCOpc_OC_NC(tipo)
+    				
+    				post:tipo_produc = l_tipo_produc
+    				
+    				//Acumulo los importes de los descuentos de los opcionales
+					imp_aux = imp_aux + Imp_DctoCliMed_OC    				
+    				
+    				//BLOQUES ADICIONALES
+    				if (post:imp_bloques > 0) then
+    					CALL post:MISCBloq_OC_NC(tipo,flia_aux,aliciva)
+    					//Acumulo los importes de los descuentos de los bloques
+						imp_aux = imp_aux + Imp_DctoCliMed_OC    	
+    				endif
+    				
+    				//restauro valores
+    				siaf:adt_tran_afec_efvo = signo
+    				siaf:codigo_siaf = codigo
+    				siaf:adt_tran_fliatran = flia_aux
+    				
+    				break
+    			case else
+    				aliciva = 0
+    				tarifa_aux = 0
+    				tarifa_oc_aux = 0
+    				l_sin_iva = 0
+    				clearfield post:cantidad
+    				//flia_aux = siaf:adt_tran_fliatran 
+    				break
+    		end select
+			INIT 22,1
+			Imp_DctoCliMed_OC = (tarifa_aux - (tarifa_oc_aux * post:cantidad)) 
+			INIT 22,0
+			
+			siaf:importe = Imp_DctoCliMed_OC //esta linea es nueva
+			
+			//Acumulo los importes de los descuentos
+			imp_aux = imp_aux + Imp_DctoCliMed_OC 
+
+			select (tipo)
+			case "A"
+				//Para interfaz de Nina: Calculo importe de vectores
+				CALL post:CDSCalcTotVentasOC(aliciva,Imp_DctoCliMed_OC,flia_aux,l_sin_iva)
+		    	CALL post:MISCagregTrnDctoOCNC(flia_aux,aliciva,Imp_DctoCliMed_OC)
+				break
+			case "B"
+				siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+				post:AliTrnCM = aliciva
+				//si no tiene formulario fiscal asociado no desglosar
+				if (PreDForFis.numchars != 0)
+					/*Se calcula el importe con iva y sin que debo sumar para la transacción, ya que
+					se vuelve atrás el descuento por sesión*/
+					//CALL MISCdesglosaIva(Imp_DctoCliMed_OC,aliciva, 1)
+					if (flia_aux == "CST" || flia_aux == "CME") then
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed_OC,aliciva, post:cantidad,0)
+					else
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed_OC,aliciva, 1,0)
+					endif
+				end if
+				
+			    /*Actualizo la PresuPag*/
+		    	CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,Imp_DctoCliMed_OC,0)
+			
+				/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+				if (PreDForFis.numchars == 0)
+					EstadoFormu = SIN_FORM
+				else
+					EstadoFormu = CON_FORM
+				end if
+				//call CDSAcumImpSes(0,0,Imp_DctoCliMed_OC,post:ImporteSinIva,flia_aux,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+				
+				/*Configuro los datos de la transacción de Descuento para que la actualización 
+				de la AuxIva la haga en relación a esta transacción*/
+				siaf:codigo_siaf = 99513
+				siaf:adt_tran_afec_efvo = "+"
+				siaf:adt_tran_fliatran = "PCL"
+				siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+				siaf:ImporteConIva = Imp_DctoCliMed_OC
+				siaf:ImporteSinIva = post:ImporteSinIva
+				call MISCborrarIva
+				break
+			case "R" //se usa en la reversa cuando se regenera el iva
+				/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+				if (flia_aux == "CST" || flia_aux == "CME") then
+					//SC 50170
+					CALL MISCdesglosaIva(Imp_DctoCliMed_OC,aliciva, post:cantidad,0)
+				else
+					//SC 50170
+					CALL MISCdesglosaIva(Imp_DctoCliMed_OC,aliciva, 1,0)
+				endif
+				post:AliTrnCM = aliciva
+				post:ImporteConIva = post:ImporteSinIva + ImporteIva
+				siaf:adt_tran_fliatran = "PCL"
+				siaf:codigo_siaf = 99513
+				siaf:adt_tran_afec_efvo = "+"
+				siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+				call MISCgenerarIva()
+				break
+			end select
+		ELSE
+			CDS ENDSELECT DSC:PresuDet_ctx
+			BREAK
+		END IF
+	   	CDS FINDNEXT DSC:PresuDet_ctx NOLOCK
+    	lib:err_retval = CDSRETVAL	
+    LOOP
+  
+  if (tipo == "A") then
+  	 post:Imp_DctoCliMed_OC = imp_aux
+  endif
+  post:item_desc_factura = l_desc_fact
+  
+END SUB
+
+/*******/

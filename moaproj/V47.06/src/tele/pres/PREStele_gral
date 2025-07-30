@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:tele:PREStele_gral
+* NOMBRE
+*   OFB:tele:PREStele_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telepres.h"
+
+SUB tele:PREStele_gral
+	LOCAL l_opcional_aux like post:adt_opcserv_opci
+    LOCAL x LIKE post:cantidad
+    LOCAL l_importe like post:adt_tarif_precio
+	IF (TESTFLAG(tlr:tran_flags,correction))
+		dupfield tele_cant_palabras
+	END IF
+
+    IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+	    clearfield post:adt_serv_tipo
+	    siaf:codigo_siaf = 13100
+	    CALL tele:PRESgral_tele
+	    IF (RETVAL < 0) THEN
+	        RETURN (-2)
+	    END IF
+		IF (post:estado_presu == 4) THEN
+			Call MISClimpia_opc
+			DISABLECONTROL PBOpcInd_abajo
+			DISABLECONTROL PBOpcInd_arriba
+			Call MISCcarga_opc_vec
+		END IF
+
+    	//Asigno nuevamente el codigo de producto...porque cuando modificaba la transaccion quedaba mal cargado de la PRESgral
+    	post:tipo_produc2 = post:tipo_produc
+   		setvaldone tele:tele_tipo_serv //Si no cambia que no entre a la FVAL
+
+		IF (!TESTFLAG(tlr:tran_flags,correction))
+			IF (post:estado_presu == 1 || post:estado_presu == 2) THEN
+				Call MISCinic_tele
+				CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+				CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	//MDG
+
+			END IF
+			IF (post:estado_presu == 3) THEN
+				//Busco las categorias habilitadas segun la categoria de iva del cliente...
+				call csr:f_sadroppl DSC:CatTeleg
+				CALL CSR:f_sanewpl(DSC:CatTeleg,PIC:PICCategTel)
+				Call CDScatteleg_cli
+				Call tele:CDStipo_serv_load
+				CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+				CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	//MDG
+
+				//COMPLETA EL PICKIST DETALLE MDG
+				IF (post:promo_imp_srv_tot > 0) THEN
+					l_importe = post:adt_tarif_precio * post:cantidad
+					IF (post:promoSrvTipoBon == TIPO_BONIF_VALOR)
+						CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,"----",post:promo_imp_srv_tot,TIPO_SERVICIO, "")
+					ELSE
+						CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,post:promo_srv_bon,post:promo_imp_srv_tot,TIPO_SERVICIO, "")
+					END IF
+				END IF
+				IF (post:promo_imp_blq_tot > 0) THEN
+					IF (post:promoBlqTipoBon == TIPO_BONIF_VALOR)
+						CALL post:MISCdetalleBonifGral(post:promo_desc,post:imp_bloques,"----",post:promo_imp_blq_tot,TIPO_BLOQUE, "")
+					ELSE
+						CALL post:MISCdetalleBonifGral(post:promo_desc,post:imp_bloques,post:promo_blq_bon,post:promo_imp_blq_tot,TIPO_BLOQUE, "")
+					END IF
+				END IF
+				x = 0
+				WHILE (x < 8)
+					IF (post:promo_imp_opc_tot[x] > 0) THEN
+						l_importe = post:cos_opc[x]
+						l_opcional_aux = post:cod_opc[x]
+						IF (post:promoOpcTipoBon[x] == TIPO_BONIF_VALOR)
+							CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,"----",post:promo_imp_opc_tot[x],TIPO_OPCIONAL,l_opcional_aux)
+						ELSE
+							CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,post:promo_opc_bon[x],post:promo_imp_opc_tot[x],TIPO_OPCIONAL,l_opcional_aux)
+						END IF
+					END IF
+					x = x + 1
+				END WHILE
+				CALL post:MISCbackVecPromoOPC
+			END IF
+    	END IF
+		
+		refresh tele_tipo_serv
+	    refresh texto_pantalla
+	    refresh tele_cant_palabras
+	    refresh tele_cantidad
+	    refresh tele_nro_telegrama
+		refresh tarif_rta_paga
+
+		PROTFIELD tele_cantidad
+  	    PROTFIELD tele_nro_telegrama
+	    PROTFIELD tele:importe_tot_serv_tel
+    	PROTFIELD post:tarifa
+    	PROTFIELD tarif_rta_paga //Ver !
+    	PROTFIELD post:costo_opc
+		PROTFIELD post:imp_bloques
+	END IF
+END SUB
+
+/*******/

@@ -1,0 +1,114 @@
+/****o* Reportes/OFB:post:MISCwri_cobro_ct
+* NOMBRE
+*   OFB:post:MISCwri_cobro_ct
+* DESCRIPCION
+*   Esta rutina busca en el journal los datos correspondientes al listado de CREM CLIENTE MAYORISTA CON COBRO POR CTA TERCEROS AL CIERRE DE SUCURSAL
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCRep_CremCobroCT
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCwri_cobro_ct
+LOCAL es_cdd like common:csr_string
+LOCAL l_codigo like siaf:codigo_siaf
+
+//SC 50288
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_date == siaf:fecha_proceso && \
+	tlr:jnl_sequence_corr == "" && \
+	tlr:jnl_status < 100 && \
+	((siaf:codigo_siaf == 18701 && post:adt_stockp_es_grancl == "T") || \
+	 (siaf:codigo_siaf == 99092 && post:adt_CDD_es_grancl == "T"))
+    
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+
+	lib:err_retval = CDSRETVAL
+	if (cdsretval == -801)
+		MSGBOX "NO HAY CLIENTES MAY. CON COBRO POR CT",OFB_OK,"Atencion"
+		cds endselect DSC:tlr:jnl_context
+		call siaf:MISCclose_lis
+		return -8
+	else
+		if ( CDSRETVAL != 0 )
+			call lib:MISCcds_find_err
+       			CDS ENDSELECT DSC:tlr:jnl_context 
+			call siaf:MISCclose_lis
+			return	-2
+		end if
+	end if
+
+    FYIMSG LST:common:fyimsg_list,giros:MSGbucar_trx_giros
+
+    WHILE (lib:err_retval == 0)
+	
+	clearfield post:adt_stockp_rem_nom
+	CDS EXTRACT DSC:tlr:jnl_context \
+	siaf:codigo_siaf into l_codigo
+	//post:adt_stockp_rem_nom \
+	
+       	if (l_codigo == 99092) then
+       		es_cdd = "CDD"
+       		clearfield post:Pieza
+       		clearfield post:CDD_crem_imp
+       		clearfield CDD_ctaOM
+		clearfield CDD_rtte_TipoDoc
+		clearfield CDD_rtte_NumDoc
+				
+       		CDS EXTRACT DSC:tlr:jnl_context \
+		post:Pieza post:CDD_crem_imp \
+		post:CDD_ctaOM \
+		post:CDD_rtte_TipoDoc \
+		post:CDD_rtte_NumDoc
+       		
+       		//recuperar remitente!! (necesito el dato de ctaom (climay_crem) o tipo y nro de documento (clioca)
+       		call post:CDSrecupero_Rtte(CDD_ctaOM,CDD_rtte_TipoDoc,CDD_rtte_NumDoc)
+       		
+        	fprint common:csr_string "%-32.32s %10.10e  %12.12e   %-50.50s   %-3.3s",\
+        	post:Pieza,post:CDD_crem_imp,post:CDD_crem_imp, post:adt_stockp_rem_nom, es_cdd
+        else
+    		es_cdd = ""
+    		clearfield post:Pieza
+		clearfield post:CRimp_a_cobr
+		clearfield siaf:importe
+		
+    		CDS EXTRACT DSC:tlr:jnl_context \
+		post:Pieza post:CRimp_a_cobr siaf:importe 
+		//recuperar datos de ctaom y tipo y nro de doc de la tabla stockp!!!
+		call post:CDSrecupero_Pieza(post:Pieza)
+		//recuperar remitente!! (necesito el dato de ctaom (climay_crem) o tipo y nro de documento (clioca)
+		call post:CDSrecupero_Rtte(adt_stockp_ctaOM,adt_stockp_tipo_doc,adt_stockp_doc)
+		
+         	fprint common:csr_string "%-32.32s %10.10e  %12.12e   %-50.50s   %-3.3s",\
+        	post:Pieza,post:CRimp_a_cobr, siaf:importe, post:adt_stockp_rem_nom, es_cdd
+        endif
+        
+        call tes:MISCwrite_file1(1,fld:common:csr_string)
+        
+	CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+        lib:err_retval = CDSRETVAL
+        
+    END WHILE
+
+    CDS ENDSELECT DSC:tlr:jnl_context
+
+    
+	call siaf:MISCclose_lis
+	if ( retval < 0 )
+		return -2
+	end if
+
+FYIMSG CLEAR
+
+END SUB
+
+/*******/

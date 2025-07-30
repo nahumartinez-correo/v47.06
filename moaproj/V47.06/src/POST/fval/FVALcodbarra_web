@@ -1,0 +1,132 @@
+/****o* Caja Unificada/OFB:post:FVALcodbarra_web
+* NOMBRE
+*   OFB:post:FVALcodbarra_web
+* DESCRIPCION
+*	Desencripta el codigo de barra
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   
+* REFERENCIADO POR
+*   SCR:post:SCRN6680
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALcodbarra_web
+	LOCAL codbarra_web_encrypt LIKE common:csr_string
+	LOCAL codbarra_web_decrypt LIKE common:csr_string
+	LOCAL l_hexa LIKE common:csr_string
+	LOCAL l_dec LIKE common:csr_string
+	LOCAL l_char LIKE common:csr_string
+	LOCAL l_partes LIKE siaf:i
+	LOCAL l_longitud LIKE siaf:i
+	LOCAL l_impweb LIKE common:csr_string
+	LOCAL l_impweb_entero LIKE common:csr_string
+	LOCAL l_impweb_decimal LIKE common:csr_string
+	LOCAL l_cantidad LIKE common:csr_string
+	LOCAL i LIKE siaf:i
+	LOCAL a LIKE siaf:i
+	LOCAL x LIKE siaf:i
+	
+	if (post:web_tmp_codbarra.numchars == 0) then
+		MSGBOX "DEBE INGRESAR EL CODIGO DE BARRA.",OFB_OK,"Error"
+		NEXTFIELD post:web_tmp_codbarra
+		RETURN (-2)
+	END IF
+	
+	
+	CLEARFIELD post:web_tmp_cantidad
+	CLEARFIELD post:web_tmp_impweb
+	REFRESH post:web_tmp_cantidad
+	REFRESH post:web_tmp_impweb
+	
+	a = 0
+	i = 0
+	codbarra_web_encrypt = post:web_tmp_codbarra
+	l_longitud = codbarra_web_encrypt.NUMCHARS
+	l_partes = l_longitud / 2
+	
+	//empiezo el tratamiento del codigo de barras
+	WHILE (i < l_partes)
+		l_hexa = SUBSTR(codbarra_web_encrypt,a,2)
+		//paso de hexadecimal a decimal para obtener el valor ascci
+		CALL common:hex2ascii(l_hexa)
+		l_dec = RETVAL
+		//convierto el valor ascci en caracter
+		FPRINT l_char ,"%c",l_dec
+		FPRINT codbarra_web_decrypt,"%s%s",codbarra_web_decrypt,l_char
+		a = a + 2
+		i = i + 1
+	END WHILE
+	
+	//desencripto el codigo de barra
+	CALL post:MISCencrypt(1,codbarra_web_decrypt)
+	
+	//quito los espacios en blanco
+	CALL post:MISCFtrim(codbarra_web_decrypt)
+	
+	//transformo a mayúscula
+	CALL csr:fld_to_upper(codbarra_web_decrypt)
+
+	//valido la longitud
+	IF (codbarra_web_decrypt.NUMCHARS != 15) THEN
+		MSGBOX "CODIGO DE BARRA INVÁLIDO",OFB_OK,"Error"
+		NEXTFIELD post:web_tmp_codbarra
+		RETURN (-2)
+	END IF
+	
+	//valido que solo vengan caracteres numericos
+  CALL post:MISCvalcodbar_CU(codbarra_web_decrypt)
+  IF (RETVAL < 0) THEN
+		MSGBOX "CARACTERES INVÁLIDOS EN EL CODIGO DE BARRA",OFB_OK,"Error"
+		NEXTFIELD post:web_tmp_codbarra
+		RETURN (-2)		
+  END IF
+	
+	l_impweb_entero = SUBSTR(codbarra_web_decrypt,3,10)
+	l_impweb_decimal = SUBSTR(codbarra_web_decrypt,13,2)
+	l_cantidad = SUBSTR(codbarra_web_decrypt,0,3)
+
+	FPRINT l_impweb, "%s,%s",l_impweb_entero,l_impweb_decimal
+	
+	//50417: si cantidad = 1 ==> la t x tiene estado ROK
+	//		 si cantidad = 0 ==> hubo error y se habilita el boton cancelar
+	IF (l_cantidad == 0) THEN
+		MSGBOX "NO SE REGISTRARON OPERACIONES WEB. PROCEDA A CANCELAR LA SESION",OFB_OK,"Error"
+		ENABLECONTROL drv:PBcb5 //BOTON CANCELAR SESION			
+		DISABLECONTROL drv:PBcb4 //BOTON CONFIRMAR SESION
+		PROTFIELD web_tmp_cod_web
+		PROTFIELD web_tmp_codbarra
+		x = 0
+		WHILE (x < 5)
+			PROTFIELD web_tmp_adic[x]
+			x = x + 1
+		END WHILE
+		RETURN (-2)					
+	ELSE
+		DISABLECONTROL drv:PBcb5 //BOTON CANCELAR SESION
+		ENABLECONTROL drv:PBcb4 //BOTON CONFIRMAR SESION
+		UNPROTFIELD web_tmp_cod_web
+		x = 0
+		WHILE (x < 5)
+			UNPROTFIELD web_tmp_adic[x]
+			x = x + 1
+		END WHILE
+	END IF
+	
+	post:web_tmp_impweb = l_impweb
+	post:web_tmp_cantidad = l_cantidad
+
+	REFRESH post:web_tmp_impweb
+	REFRESH post:web_tmp_cantidad
+	
+	PROTFIELD web_tmp_codbarra
+	
+END SUB
+
+/*******/

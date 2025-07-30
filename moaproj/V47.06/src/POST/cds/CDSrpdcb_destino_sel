@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:post:CDSrpdcb_destino_sel
+* NOMBRE
+*   OFB:post:CDSrpdcb_destino_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSrpdcb_destino_sel
+    LOCAL LineaPick LIKE common:csr_string
+    LOCAL LIndice   LIKE siaf:i
+
+    LIndice = 0
+
+    CALL CSR:trimfield(adt_concb_producto)
+    CALL CSR:trimfield(adt_rpdcb_destino)
+    IF (post:adt_concb_producto.numchars == 0) THEN
+    	CLEARFIELD post:adt_concb_tipo
+    	CALL post:ABMrpdcb_clear
+    	CALL post:ABMrpdcb_refresh
+    	CALL post:ABMopscb_clear
+    	CALL post:ABMopscb_refresh
+    	MSGBOX "PRODUCTO SIN DEFINIR",0x00,"AVISO"
+    	RETURN (-1)
+    END IF
+    
+    ;Destruyo PickList Destino Tarifario que pudiera haber quedado
+    CALL CSR:f_sadroppl DSC:PickDest_concb
+    ;Genero El PickList Destinos Tarifarios
+    CALL CSR:f_sanewpl DSC:PickDest_concb PIC:PickDest_concb 170 190
+    
+    CLEARFIELD LineaPick
+    FPRINT FLD:LineaPick "%-20.20s" "TODOS LOS DESTINOS"
+    ;Agrego en el PickList
+    CALL CSR:f_saaddpl DSC:PickDest_concb FLD:LineaPick
+
+    tmp_tarif_serv = post:adt_concb_producto
+    tmp_tarif_dest = post:adt_rpdcb_destino
+    CDS SELECT SEMIDISTINCT post:adt_tarif_serv adt_tarif_dest \
+        FROM DSC:adt_tarif_table BECOMES DSC:adt_tarif_context \
+        WHERE adt_tarif_serv == FLD:adt_concb_producto
+    CDS FINDFIRST DSC:adt_tarif_context NOLOCK
+    WHILE (CDSRETVAL == 0)
+        CDS EXTRACT DSC:adt_tarif_context adt_tarif_dest
+        CLEARFIELD LineaPick
+        FPRINT FLD:LineaPick "%-20.20s" adt_tarif_dest
+        ;Agrego en el PickList
+        CALL CSR:f_saaddpl DSC:PickDest_concb FLD:LineaPick
+        LIndice = LIndice + 1
+        CDS FINDNEXT DSC:adt_tarif_context NOLOCK
+    END WHILE
+    CDS ENDSELECT DSC:adt_tarif_context
+
+    IF (LIndice == 0) THEN
+    	MSGBOX "NO EXISTEN DESTINOS PARA ESTE PRODUCTO",0x00,"AVISO"
+    	CALL post:ABMrpdcb_clear
+    	CALL post:ABMrpdcb_refresh
+        RETURN (-1)
+	END IF
+
+    CLEARFIELD LineaPick
+    CALL CSR:f_sadopl (DSC:PickDest_concb,LineaPick)
+    IF (RETVAL >= 0) THEN
+    	post:adt_rpdcb_destino = SUBSTR(LineaPick,0,19)
+    	CALL CSR:trimfield(post:adt_rpdcb_destino)
+    ELSE
+        post:adt_concb_producto = tmp_tarif_serv
+        post:adt_rpdcb_destino = tmp_tarif_dest
+        CALL post:CDSrpdcb_dest_load
+        IF (RETVAL < 0) THEN
+        	CALL post:ABMrpdcb_clear
+    	    CALL post:ABMrpdcb_refresh
+            RETURN (-2)
+        ELSE
+        	RETURN (0)
+        END IF
+    END IF
+
+    IF (adt_rpdcb_destino != tmp_tarif_dest) THEN
+    	//selecciono un nuevo destino
+        CLEARFIELD adt_rpdcb_uni_med
+        CLEARFIELD adt_rpdcb_desde
+        CLEARFIELD adt_rpdcb_hasta
+        CLEARFIELD aux_rpdcb_hasta  //se limpia hasta seleccionado en el tarifario
+    END IF
+    
+    IF (adt_rpdcb_destino == "TODOS LOS DESTINOS") THEN
+        adt_concb_colecta = "S"
+    ELSE
+    	IF (adt_concb_tipo == "MO") THEN
+        	adt_concb_colecta = "S" //monetarios siempre colecta
+        ELSE
+           IF (adt_rpdcb_desde != 0 && adt_rpdcb_hasta == aux_rpdcb_hasta) THEN
+               adt_concb_colecta = "N" // tiene un rango tarifario seleccionado
+           ELSE    
+               adt_concb_colecta = "S" // rango tarifario amplio
+           END IF
+    	END IF    
+    END IF
+    CALL post:ABMrpdcb_refresh
+END SUB
+
+/*******/

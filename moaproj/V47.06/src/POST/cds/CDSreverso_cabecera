@@ -1,0 +1,334 @@
+/****o* Pendientes de agrupación/OFB:post:CDSreverso_cabecera
+* NOMBRE
+*   OFB:post:CDSreverso_cabecera
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSreverso_cabecera(tipo)
+
+/* CREADA POR MFM - Septiembre 2000 */
+
+	 SELECT (tipo)
+	 	CASE 1;Recepción de Piezas
+	 		
+	 		;Recibe solo Saca Simple
+	 		if (post:AsignaDestino == "X") then
+	 			/*Buscar si post:caratula_saca fue marcada como excepcion*/
+	 		endif
+     		
+     		;No asigna piezas a destino
+     		if (post:AsignaDestino == "N") then
+	 			CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+		    	WHERE (tlr:jnl_operator == op:op_operator_id && \
+    	 		tlr:jnl_date == common:system_date && \
+    	 		tlr:jnl_sequence_corr == "" && \
+     			post:cod_agrupacion == post:cod_agrupacion && \
+     			siaf:codigo_siaf == 99005)
+     			
+     			CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     			lib:err_retval = CDSRETVAL
+     			IF (CDSRETVAL == -801) THEN
+     		    	CDS ENDSELECT DSC:post:jnl_ctx1
+     		    	RETURN -3
+     			ENDIF
+     			DO
+		     		IF (lib:err_retval != 0) THEN
+     					CDS ENDSELECT DSC:post:jnl_ctx1
+     					RETURN 0
+     				ELSE
+	     				CLEARFIELD stockp_pieza
+	     				CDS EXTRACT DSC:post:jnl_ctx1 post:stockp_pieza
+    	 				//si la pieza existe en la stockp entonces quiere decir que fue clasificada
+    	 				CALL MISCverif_entregada
+	     				IF (RETVAL != -5) THEN
+    	 					CDS ENDSELECT DSC:post:jnl_ctx1
+     						RETURN -2
+     					END IF
+     				END IF
+     				CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+     				lib:err_retval = CDSRETVAL
+     			LOOP
+     		endif
+     		
+     		;Asigna piezas a destino
+     		if (post:AsignaDestino == "S" || post:AsignaDestino == "E" || AsignaDestino == "M") then
+	 			CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+		    	WHERE (tlr:jnl_operator == op:op_operator_id && \
+    	 		tlr:jnl_date == common:system_date && \
+    	 		tlr:jnl_sequence_corr == "" && \
+     			post:cod_agrupacion == post:cod_agrupacion && \
+     			siaf:codigo_siaf == 99010)
+     			
+     			CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     			lib:err_retval = CDSRETVAL
+     			IF (CDSRETVAL == -801) THEN
+     		    	CDS ENDSELECT DSC:post:jnl_ctx1
+     		    	RETURN -3
+     			ENDIF
+     			DO
+		     		IF (lib:err_retval != 0) THEN
+     					CDS ENDSELECT DSC:post:jnl_ctx1
+     					RETURN 0
+     				ELSE
+	     				CLEARFIELD stockp_pieza
+	     				CDS EXTRACT DSC:post:jnl_ctx1 post:stockp_pieza 
+    	 				CALL MISCverif_entregada
+	     				//si la pieza no existe en la stockp o se hizo algo luego de recibida...hay que rechazar la reversa
+	     				IF (RETVAL < 0) THEN
+    	 					CDS ENDSELECT DSC:post:jnl_ctx1
+     						RETURN -2
+     					END IF
+						
+						
+						//Controlo en la tabla NovTT si escaneo P02 o P80 de Recepcion fue transmitido 
+						CALL MISCverif_scanOL("R") //Recepcion de Piezas
+						IF (RETVAL == 0)
+							//scaneo transmitido, no se puede reversar
+							RETURN (-2)
+						END IF
+
+						//Controla que no se pueda reversar una Recepcion si es una pieza PED devuelta y ya se ha generado su Nota de Credito o Factura
+						CALL MISCverif_pedDev
+						IF (RETVAL == 0)
+							//MSGBOX "La Pieza PED ya tiene una Nota de Credito o Factura asociada. No se puede reversar",0x00,"ERROR"
+							RETURN (-2)
+						END IF						
+
+     				
+     				END IF
+     				CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+     				lib:err_retval = CDSRETVAL
+     			LOOP
+     		endif
+     		BREAK
+     		
+     	CASE 2;Transferencia a Otro Contenedor
+     		CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+		    WHERE (tlr:jnl_operator == op:op_operator_id && \
+    	 	tlr:jnl_date == common:system_date && \
+    	 	tlr:jnl_sequence_corr == "" && \
+     		post:codseq_dev == adt_stockp_nro_sec && \
+     		siaf:codigo_siaf != 99080)
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     		lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+     				CDS ENDSELECT DSC:post:jnl_ctx1
+     				RETURN 0
+     			ELSE
+	     			CLEARFIELD post:jnl_branch_ori
+	     			CLEARFIELD post:jnl_operator_ori
+	     			CLEARFIELD post:jnl_date_ori
+	     			CLEARFIELD post:jnl_time_ori
+	     			CLEARFIELD post:jnl_bus_date_ori
+	     			CLEARFIELD post:jnl_sequence_ori
+	     			CLEARFIELD post:NroTranf
+	     			
+	     			CDS EXTRACT DSC:jnl_ctx1 post:jnl_branch_ori post:jnl_operator_ori \
+	     			post:jnl_date_ori post:jnl_time_ori post:jnl_bus_date_ori \
+	     			post:jnl_sequence_ori post:NroTranf 
+	     			
+	     			CALL CDSverif99086
+	     			IF (RETVAL < 0 ) THEN	
+	     				CDS ENDSELECT DSC:post:jnl_ctx1
+	     				RETURN -2
+	     			END IF
+	     			CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+	     			lib:err_retval = CDSRETVAL
+	     		END IF
+	     		
+	     	LOOP
+	     	BREAK
+	     			
+     	CASE 3;Devolución de Piezas Minoristas,Desc. sin/con Lote y Centralizada
+     		CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+		    WHERE (tlr:jnl_operator == op:op_operator_id && \
+    	 	tlr:jnl_date == common:system_date && \
+    	 	tlr:jnl_sequence_corr == "" && \
+     		post:codseq_dev == adt_stockp_nro_sec && \
+     		siaf:codigo_siaf != 99061 && \
+     		siaf:codigo_siaf != 99063 && \
+     		siaf:codigo_siaf != 99065 && \
+     		siaf:codigo_siaf != 99067)
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     		lib:err_retval = CDSRETVAL
+     		DO
+		     	IF (lib:err_retval != 0) THEN
+     				CDS ENDSELECT DSC:post:jnl_ctx1
+     				RETURN 0
+     			ELSE
+	     			CLEARFIELD jnl_guia_cont
+	     			CLEARFIELD jnl_guia_saca
+	     			CLEARFIELD jnl_guia_despacho
+	     			CLEARFIELD retirado_transp
+	     			CLEARFIELD siaf:jnl_codigo_siaf
+	     			CLEARFIELD jnl_op_transf
+	     			CDS EXTRACT DSC:jnl_ctx1 jnl_guia_cont jnl_guia_saca \
+	     			jnl_guia_despacho retirado_transp siaf:jnl_codigo_siaf \
+	     			jnl_op_transf
+	     			IF (siaf:jnl_codigo_siaf != 99068) THEN
+	     				/*MFM - Requerimiento 2462*/
+	     				IF (((post:jnl_guia_cont > 0 && post:jnl_guia_cont != 99999999) || (post:jnl_guia_cont == 99999999 && post:jnl_op_transf != op:op_operator_id)) \
+  						|| (post:jnl_guia_saca > 0) || (post:jnl_guia_despacho > 0)) THEN
+	        				CDS ENDSELECT DSC:post:jnl_ctx1
+    	 					RETURN -2
+     					END IF
+     				ELSE
+     					/*CALL CDSverif99068
+     					IF (RETVAL != 0) THEN
+     						CDS ENDSELECT DSC:post:jnl_ctx1
+    	 					RETURN -2
+    	 				END IF*/
+     				END IF
+     			END IF
+     			CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+     			lib:err_retval = CDSRETVAL
+     		LOOP
+     		BREAK
+     	CASE 4;Piezas Reencaminadas y Piezas Observadas
+     		IF (siaf:codigo_siaf == 99013 || siaf:codigo_siaf == 99014) THEN
+	     		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+				WHERE tlr:jnl_date == common:system_date && \
+				tlr:jnl_operator == op:op_operator_id && \
+				tlr:jnl_sequence_corr == "" && \
+				post:codseq_reenc == codseq_reenc && \
+				siaf:codigo_siaf == "99014"
+			ELSE
+				CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+				WHERE tlr:jnl_date == common:system_date && \
+				tlr:jnl_operator == op:op_operator_id && \
+				tlr:jnl_sequence_corr == "" && \
+				post:codseq_pie_obs == codseq_pie_obs && \
+				siaf:codigo_siaf == "99012"
+			END IF
+			CDS FINDFIRST DSC:journal_ctx1 NOLOCK
+			IF (CDSRETVAL == -801) THEN
+				CDS ENDSELECT DSC:journal_ctx1
+				RETURN -3
+			END IF
+			lib:err_retval = CDSRETVAL
+			
+			DO
+				IF (lib:err_retval == -801) THEN
+					CDS ENDSELECT DSC:journal_ctx1
+					RETURN 0
+				END IF
+				CLEARFIELD post:Pieza
+				CDS EXTRACT DSC:journal_ctx1 Pieza
+				CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:Stockp_ctx \
+				WHERE post:adt_stockp_pieza == Pieza /*&& \
+				post:adt_stockp_Baja == "S"*/
+				CDS FINDFIRST DSC:Stockp_ctx NOLOCK
+				IF (CDSRETVAL == 0) THEN
+					CLEARFIELD adt_stockp_Baja
+					CLEARFIELD adt_stockp_reenc
+					CDS EXTRACT DSC:Stockp_ctx adt_stockp_Baja adt_stockp_reenc
+					/*MFM - Si la pieza fue dada de baja no puedo reversarla*/
+					IF (adt_stockp_Baja == "S") THEN
+						CDS ENDSELECT DSC:Stockp_ctx
+						CDS ENDSELECT DSC:journal_ctx1
+						RETURN -2
+					END IF
+					/*MFM - Si quiero reversar una pieza reencaminada que está observada la dejo
+					reversar porque sé que el reencaminamiento fue posterior a la observación*/
+					/*MFM - Si quiero reversar una pieza observada que está reencaminada
+					no puedo reversarla porque sé que este evento fue posterior*/
+					IF (siaf:codigo_siaf == 99011 || siaf:codigo_siaf == 99012) THEN
+						IF (adt_stockp_reenc == "S") THEN
+							CDS ENDSELECT DSC:Stockp_ctx
+							CDS ENDSELECT DSC:journal_ctx1
+							RETURN -2
+						END IF
+					END IF
+				END IF
+				CDS ENDSELECT DSC:Stockp_ctx
+				CDS FINDNEXT DSC:journal_ctx1 NOLOCK
+				lib:err_retval = CDSRETVAL			
+			LOOP
+			BREAK
+			
+		CASE 5;Piezas UP Recepcionadas
+     		
+	     	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+			WHERE tlr:jnl_date == common:system_date && \
+			tlr:jnl_operator == op:op_operator_id && \
+			tlr:jnl_sequence_corr == "" && \
+			post:codseq_recep == codseq_recep && \
+			(siaf:codigo_siaf == 99215  || siaf:codigo_siaf == 99235)
+			
+			CDS FINDFIRST DSC:journal_ctx1 NOLOCK
+			IF (CDSRETVAL == -801) THEN
+				CDS ENDSELECT DSC:journal_ctx1
+				MSGBOX "Todas las piezas asociadas a esta transacción ya han sido reversadas.",0x00,"AVISO"
+				RETURN -3
+			END IF
+			lib:err_retval = CDSRETVAL
+			
+			DO
+				IF (lib:err_retval == -801) THEN
+					CDS ENDSELECT DSC:journal_ctx1
+					RETURN 0
+				END IF
+				CLEARFIELD post:piezaUP
+				CLEARFIELD post:jnl_guia_cont
+				CLEARFIELD post:jnl_guia_saca
+				CDS EXTRACT DSC:journal_ctx1 piezaUP jnl_guia_cont jnl_guia_saca post:jnl_op_transf
+				if (jnl_guia_cont > 0 && post:jnl_guia_cont != 99999999) || \
+					(post:jnl_guia_cont == 99999999 && post:jnl_op_transf != op:op_operator_id) || \
+					(jnl_guia_saca > 0)
+					MSGBOX "Existe una pieza expedida",0x00,"Error"
+					CDS ENDSELECT DSC:journal_ctx1
+					return -2
+				end if
+				if (jnl_marca_excep == "S") then
+					MSGBOX "Existe una pieza con marca de excepcion",0x00,"Error"
+					CDS ENDSELECT DSC:journal_ctx1
+					return -2
+				end if
+				
+				//verifica contra la stockpUP si la pieza fue expedida o marcada como excepcion
+				//esto es por si se recepciona sin clasificar, luego se la clasifica,
+				// luego se la expide y se la quiere reversar desde la
+				//tx de recepcion
+				IF (post:piezaUP != "")
+					CALL MISCver_estado_stkUP(siaf:codigo_siaf)
+					select (retval)
+						case -1
+							msgbox "No se encontro la Pieza correspondiente",0x00,"Error"
+							return -2
+						case -2
+							msgbox "Pieza expedida",0x00,"Error"
+							return -2
+						case -3
+							msgbox "Pieza marcada como excepcion",0x00,"Error"
+							return -2
+						case -4
+							msgbox "Pieza clasificada posteriormente",0x00,"Error"
+							return -2
+					end select			
+				END IF
+				
+				
+				CDS FINDNEXT DSC:journal_ctx1 NOLOCK
+				lib:err_retval = CDSRETVAL			
+			LOOP
+			BREAK
+			
+     END SELECT
+     	
+END SUB
+
+/*******/

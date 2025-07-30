@@ -1,0 +1,184 @@
+/****o* Pendientes de agrupación/OFB:post:PBcaja
+* NOMBRE
+*   OFB:post:PBcaja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBcaja
+local l_tipo_caja like post:tipo_caja
+local prov like post:adt_pcia_cod
+//local loc_L1 like post:adt_tipocaja_L1
+//local loc_L2 like post:adt_tipocaja_L1
+//local loc_L3 like post:adt_tipocaja_L1
+
+	//Solicitud 50076
+	//esta validacion debe estar primera en la rutina
+	IF (caja_propia)
+        drv:button = drv:last_button
+        CALL drv:but_up_enable	
+		return 0
+	END IF
+
+
+	//Necesario para las restricciones de las especies
+	prov = substr(common:sucursal_activa,0,1)
+    IF (post:estado_presu == 4) THEN
+        /* En modo Confirmación no puede abrir los Combos */
+        drv:button = drv:last_button
+        CALL drv:but_up_enable
+        RETURN (0)
+    END IF
+    l_tipo_caja = post:tipo_caja
+
+    adt_servcaja_serv = adt_serv_serv
+    CALL CDSServCaja_sel
+	IF (RETVAL < 0)
+		//MSGBOX "No existen Tipos de Caja asociadas al Servicio",0x00,"Error"
+        drv:button = drv:last_button
+        CALL drv:but_up_enable
+		RETURN (-2)
+	END IF
+	
+	
+	//Solicitud 50076
+	
+	IF (adt_servcaja_caja == "CAJA PROPIA")
+		IF (estado_presu == 3)
+			MSGBOX "No se puede cambiar a CAJA PROPIA en el transcurso de la transaccion",0x00,"Error"
+	        drv:button = drv:last_button
+	        CALL drv:but_up_enable		
+			unprotfield tipo_caja
+			return -2			
+		END IF
+		MSGBOX "Ha seleccionado CAJA PROPIA. Esta opcion no podra ser modificada. Desea Continuar?",OFB_YESNO,"Advertencia"
+		if (retval == OFB_IDYES)
+			caja_propia = TRUE
+			clearfield rel_vol
+			unprotfield aforo1
+			unprotfield aforo2
+			unprotfield aforo3
+	 		protfield tipo_caja
+			//CALL MISCobt_rel_vol(aforo1,aforo2,aforo3)
+		else
+	        drv:button = drv:last_button
+	        CALL drv:but_up_enable		
+			unprotfield tipo_caja
+			return -2
+		end if
+	ELSE
+		caja_propia = FALSE
+		IF (post:adt_serv_calc_rv == "S")
+			//extraigo las medidas de la caja normalizada
+			clearfield post:adt_tipocaja_L1
+			clearfield post:adt_tipocaja_L2
+			clearfield post:adt_tipocaja_L3
+			post:adt_tipocaja_caja = adt_servcaja_caja
+			CALL CDSadt_tipocaja_load
+			IF (adt_tipocaja_L1.numchars == 0 || adt_tipocaja_L2.numchars == 0 || adt_tipocaja_L3.numchars == 0)
+				MSGBOX "FALTA CARGAR PARAMETRIA DEL TIPO DE CAJA (MEDIDAS) PARA CALCULAR LA RELACION VOLUMETRICA",0x00,"ERROR"
+				drv:button = drv:last_button
+    			CALL drv:but_up_enable
+				return -2
+			END IF	
+			clearfield rel_vol
+			rel_vol_l1 = post:adt_tipocaja_L1
+			rel_vol_l2 = post:adt_tipocaja_L2
+			rel_vol_l3 = post:adt_tipocaja_L3	
+			//Calculo Relacion Volumetrica de la caja normalizada si la tiene
+			CALL MISCobt_rel_vol //(loc_L1,loc_L2,loc_L3)
+			IF (RETVAL < 0)
+        		drv:button = drv:last_button
+        		CALL drv:but_up_enable				
+				return -2
+			END IF			
+		END IF		
+	END IF
+
+	
+	
+	tipo_caja = adt_servcaja_caja
+	refresh tipo_caja
+	drv:button = drv:last_button
+    CALL drv:but_up_enable
+    ;Veo si tiene restricciones
+    ;Si bien se podria haber usado la post:MISCventasRestGen(fliaTran, codigoSiaf)
+    ;se hace lo siguiente para una buena explicacion del mensaje. *** MDG
+	call post:MISCvalidaVentasRest("PRD", tipo_caja, "", "",common:sucursal_activa, post:cli_tipo, "")
+	if (retval < 0)
+		select (retval)
+	 		case -1
+				fprint common:csr_string "Las restricciones cargadas de regiones no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+				break
+			case -2
+				fprint common:csr_string "Las restricciones cargadas de provincias no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+				break
+			case -3
+				fprint common:csr_string "Las restricciones cargadas de sucursales no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+				break
+			case -4
+				fprint common:csr_string "Las restricciones cargadas de clientes no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+				break
+		end select
+		msgbox common:csr_string,OFB_OK,"ERROR"
+		RETURN -2
+	endif
+	if (l_tipo_caja == post:tipo_caja) then
+		return 0
+	end if
+
+	/*Obtengo el producto asociado a este tipo de caja*/
+	Call post:MISCParam_CajaProd
+	if (codesp_prod.numchars != 0 && subcod_prod.numchars != 0) then
+		if (post:cli_tipo == CLIUP) then
+			call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, post:NisUP)
+		else
+			call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, "")
+		endif
+		if (RETVAL < 0) then
+			select (retval)
+	 			case -1
+				fprint common:csr_string_aux "Las restricciones cargadas de regiones no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+				break
+				case -2
+				fprint common:csr_string_aux "Las restricciones cargadas de provincias no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+				break
+				case -3
+				fprint common:csr_string_aux "Las restricciones cargadas de sucursales no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+				break
+				case -4
+				fprint common:csr_string_aux "Las restricciones cargadas de clientes no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+				break
+				case -5
+				fprint common:csr_string_aux "Las restricciones cargadas de up no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+				break
+			end select
+			msgbox common:csr_string_aux,OFB_OK,"ERROR"
+			RETURN -2
+		endif
+	endif
+	IF (!TESTFLAG(uso_int_flag,uso_interno))
+        CALL MISCactualizo_tarifa
+        IF (RETVAL < 0)
+            RETURN (-2)
+        END IF
+        CALL MISCactualizo_opc
+        CALL MISCactualizo_1opc
+    END IF
+	setvaldone post:tipo_caja
+
+END SUB
+
+/*******/

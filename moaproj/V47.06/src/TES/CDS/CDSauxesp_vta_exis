@@ -1,0 +1,73 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSauxesp_vta_exis
+* NOMBRE
+*   OFB:tes:CDSauxesp_vta_exis
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSauxesp_vta_exis
+local ImpUP_anterior like post:ImpServUP
+local retval_aux like lib:err_retval
+
+	CDS SELECT FROM DSC:AuxEspV_tbl BECOMES DSC:AuxEspV_ctx \
+	WHERE adt_evaux_suc == FLD:adt_evaux_suc && \
+	adt_evaux_op == FLD:adt_evaux_op && \
+	adt_evaux_prestran == fld:adt_evaux_prestran
+
+	CDS FINDFIRST DSC:AuxEspV_ctx LOCK
+	retval_aux = CDSRETVAL
+	CDS CLEARBUFFER DSC:AuxEspV_ctx
+
+	/*Cargo los campos para Ventas UP - Gabriel Falciola*/
+	post:ImpServUP = adt_evaux_importe
+	post:AliServUP = adt_espv_aliciva
+	post:PreDForFis = adt_espv_formfiscal	
+	if (post:PreDForFis.numchars == 0)
+		post:EstadoFormu = SIN_FORM
+	else
+		post:EstadoFormu = CON_FORM
+	end if		
+	
+	/*Obtengo el valor anterior de la Especie cuando se está realizando 
+	una modificación - Gabriel Falciola*/
+	if (retval_aux == 0)
+		cds extract DSC:AuxEspV_ctx post:ImpServUP into ImpUP_anterior
+		//PS Clientes Medios - bienes de Cambio
+		if (post:cod_agrupacion.numchars != 0) then
+			cds extract DSC:AuxEspV_ctx post:PreDNroTrnCM
+		endif
+	end if
+
+	call CDSappend_espv
+	
+	/*Acumulo importes para Ventas UP - Gabriel Falciola*/
+	call post:CDSAcumImpUP(ImpUP_anterior,post:ImpServUP,siaf:adt_tran_fliatran,post:AliServUP,siaf:adt_tran_afec_efvo,post:PresNro)
+
+	/*Si estoy reversando en Nota de Credito y es una Venta que va a ser anulada, le pongo
+	una marca para luego borrar el registro correspondiente - Gabriel Falciola*/
+	if (post:NotaCreditoRev == "S")
+		CDS APPEND DSC:AuxEspV_ctx FLD:post:jnl_sequence_dire
+	end if
+
+	IF (retval_aux == -801) THEN
+		CDS INSERT DSC:AuxEspV_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:AuxEspV_ctx LOCK
+	END IF
+	CDS UNLOCK DSC:AuxEspV_ctx
+	CDS ENDSELECT DSC:AuxEspV_ctx
+END SUB
+
+/*******/

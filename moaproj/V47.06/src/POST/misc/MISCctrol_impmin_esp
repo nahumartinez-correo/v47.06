@@ -1,0 +1,78 @@
+/****o* Pendientes de agrupación/OFB:post:MISCctrol_impmin_esp
+* NOMBRE
+*   OFB:post:MISCctrol_impmin_esp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCctrol_impmin_esp
+    LOCAL imp_esp     LIKE siaf:importe
+    LOCAL tot_imp_esp LIKE post:importe_sesion
+    
+    /*cgw: Controla si hay especies que supere el importe min.esp.val.
+		   en ese caso, pide datos del cliente y debe imprimir factura. */
+    
+    IF (post:Modo == "R") THEN //si es tecla rapidas no realiza controles.
+    	RETURN (-2)
+    END IF
+
+    tot_imp_esp = 0
+    CDS SELECT FROM "journal" BECOMES "journalCtx" WHERE \
+        tlr:jnl_branch == common:sucursal_activa && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == common:system_date && \
+		tlr:jnl_sequence_corr == "" && \
+		tlr:jnl_status < 100 && \
+		post:PresNro == fld:post:PresNro && \
+		siaf:codigo_siaf == 8500
+
+		CDS FINDFIRST "journalCtx" NOLOCK
+     DO
+       IF (CDSRETVAL == 0) THEN
+       	   CDS EXTRACT "journalCtx" siaf:importe INTO imp_esp
+       	   tot_imp_esp = tot_imp_esp + imp_esp //acumula total importe especie
+       	   CDS FINDNEXT "journalCtx" NOLOCK
+       ELSE
+		   CDS ENDSELECT "journalCtx"
+		   BREAK
+       END IF
+     LOOP
+
+     CALL giros:CDSdatgralsuc_impesp //busca el importe minimo especie
+
+   	 IF (post:enAnulacion != "S" && \
+		 post:NotaCredito != "S" && post:NotaCreditoRev != "S" && \
+		 post:sistCaido != "S" && post:recienCaido != "S" && \
+		 post:cli_tipo != 1 && tot_imp_esp > post:adt_dgralsuc_impesp) THEN
+         //Fija Factura
+	     SETFLAG req_factura,Requiere_factura
+	     ALTERCONTROLSET TAG:post:CHK8
+	     DISABLECONTROL TAG:post:CHK8 //deshabilita para que no pueda cambiar a ticket
+         CALL post:CDSpresu_reqfactu //Actualiza el flag req_factura en Presu
+         Tipo_Formulario = FACTURA_B
+		 DocFiscal = "FACTURA B"
+         CALL post:MISCtotal_sin_iva
+         IF ((post:IvaCod == "CF ") && \
+   		    ((CloTipDoc == 96 && post:CloCuit == 99999999999) || (CloTipDoc != 96) || \
+   		    (post:CloCuit != 99999999999 && post:CloCalle.numchars == 0))) THEN
+   		     //Pide los datos del cliente
+   		     CALL post:MISCpedir_datos
+   		     RETURN (0)
+         END IF
+     END IF
+     RETURN (-2) //No pidio datos del cliente
+END SUB
+
+/*******/

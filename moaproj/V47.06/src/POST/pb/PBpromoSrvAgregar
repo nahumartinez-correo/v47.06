@@ -1,0 +1,151 @@
+/****o* Pendientes de agrupación/OFB:post:PBpromoSrvAgregar
+* NOMBRE
+*   OFB:post:PBpromoSrvAgregar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBpromoSrvAgregar
+	local l_strAGrabar like common:csr_string
+	local l_strTmp like common:csr_string
+	local bContinuar like siaf:i
+	local b_existeTodosDest like siaf:i
+	local b_existeTodosRangos like siaf:i
+	drv:last_button = drv:button
+    call drv:but_down_disable
+
+	call post:MISCvalidarCargaSrv
+    if (retval == 0)
+		fprint common:csr_string, "%3s - %-10s - %-20s - %12.12e", TIPO_SERVICIO, adt_promo_serv, SELECCION_TODOS_DEST, SELECCION_TODOS_RCOD
+		call post:MISCexisteCargado(dsc:pic_promo_servicios, common:csr_string)
+		b_existeTodosDest = retval
+
+		fprint common:csr_string, "%3s - %-10s - %-20s - %12.12e", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa, SELECCION_TODOS_RCOD
+		call post:MISCexisteCargado(dsc:pic_promo_servicios, common:csr_string)
+    	b_existeTodosRangos = retval
+
+    	select (opc_promo_servicios)
+	    	case ELIGE_TODOS_DEST
+				fprint l_strAGrabar, "%3s - %-10s - %-20s - %12.12e - %1s - %7s", TIPO_SERVICIO, adt_promo_serv, SELECCION_TODOS_DEST, SELECCION_TODOS_RCOD, adt_promo_SrvTipoBon, adt_promo_ServBon
+				break
+	    	case ELIGE_TODOS_RANGOS
+				fprint l_strAGrabar, "%3s - %-10s - %-20s - %12.12e - %1s - %7s", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa, SELECCION_TODOS_RCOD, adt_promo_SrvTipoBon, adt_promo_ServBon
+				break
+	    	case ELIGE_UN_RANGO
+				fprint l_strAGrabar, "%3s - %-10s - %-20s - %12.12e - %1s - %7s", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa, adt_promo_rango, adt_promo_SrvTipoBon, adt_promo_ServBon
+				break
+		end select
+
+		; Me fijo si el item que está cargando ya fue cargado y en ese caso muestro
+		; un mensaje de error.
+		l_strTmp =  substr(l_strAGrabar,0,54)
+		call post:MISCexisteCargado(dsc:pic_promo_servicios, l_strTmp)
+		if (retval)
+			errmsg LST:common:errmsg_list,"ESE VALOR YA FUE INGRESADO!!!"
+		else
+			; Me fijo si está cargando un item particular y ya tiene una carga para
+			; todos los items, en ese caso muestro un mensaje de error.
+			bContinuar = true
+			if ((opc_promo_servicios == ELIGE_TODOS_RANGOS || opc_promo_servicios == ELIGE_UN_RANGO) && b_existeTodosDest)
+				errmsg LST:common:errmsg_list,"YA FUE CARGADA LA BONIFICACION PARA TODOS LOS DESTINOS !!!"
+				bContinuar = false
+			endif
+
+			if (opc_promo_servicios == ELIGE_UN_RANGO && b_existeTodosRangos && bContinuar)
+				errmsg LST:common:errmsg_list,"YA FUE CARGADA LA BONIFICACION DEL SERVICIO SELECCIONADO PARA TODOS SUS RANGOS!!!"
+				bContinuar = false
+			endif
+
+			if (bContinuar)
+		    	select (opc_promo_servicios)
+			    	case ELIGE_TODOS_DEST
+						fprint common:csr_string, "%3s - %-10s", TIPO_SERVICIO, adt_promo_serv
+						call post:MISCexisteCargado(dsc:pic_promo_servicios, common:csr_string)
+						if (retval)
+						    MSGBOX "YA EXISTEN BONIFICACIONES INGRESADAS, DESEA ELIMINARLAS Y AGREGAR LA BONIFICACION ACTUAL PARA TODOS LOS DESTINOS?",OFB_YESNO,"Agregar Bonificacion"
+						    IF (RETVAL == OFB_IDYES) THEN
+								fprint common:csr_string, "%3s - %-10s", TIPO_SERVICIO, adt_promo_serv
+								; borro todas las que cumplen con common:csr_string
+								call csr:PickOp PICKOP_SEARCH dsc:pic_promo_servicios common:csr_string
+								idx = RETVAL
+								while (idx >= 0)
+									CALL CSR:myPickdelete(DSC:pic_promo_servicios ,common:csr_string,idx)
+									adt_promo_cantSrvSel = adt_promo_cantSrvSel - 1
+									fprint common:csr_string, "%3s - %-10s", TIPO_SERVICIO, adt_promo_serv
+									call csr:PickOp PICKOP_SEARCH dsc:pic_promo_servicios common:csr_string idx
+									idx = RETVAL
+								end while
+						    	CALL csr:f_saaddpl dsc:post:pic_promo_servicios l_strAGrabar
+							    adt_promo_cantSrvSel = 1
+							    call post:ABMpromoSrvClear
+							    nextfield adt_promo_serv
+						    END IF
+						else
+					    	CALL csr:f_saaddpl dsc:post:pic_promo_servicios l_strAGrabar
+						    adt_promo_cantSrvSel = adt_promo_cantSrvSel + 1
+						    call post:ABMpromoSrvClear
+						    nextfield adt_promo_serv
+						endif
+						break
+			    	case ELIGE_TODOS_RANGOS
+						fprint common:csr_string, "%3s - %-10s - %-20s", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa
+						call post:MISCexisteCargado(dsc:pic_promo_servicios, common:csr_string)
+						if (retval)
+						    MSGBOX "YA EXISTEN BONIFICACIONES INGRESADAS PARA ESTA SERVICIO, DESEA ELIMINARLAS Y AGREGAR LA BONIFICACION ACTUAL PARA TODAS LOS RANGOS?",OFB_YESNO,"Agregar Bonificacion"
+						    IF (RETVAL == OFB_IDYES) THEN
+								fprint common:csr_string, "%3s - %-10s - %-20s", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa
+								; borro todas las que cumplen con common:csr_string
+								call csr:PickOp PICKOP_SEARCH dsc:pic_promo_servicios common:csr_string
+								idx = RETVAL
+								while (idx >= 0)
+									CALL CSR:myPickdelete(DSC:pic_promo_servicios ,common:csr_string,idx)
+									adt_promo_cantSrvSel = adt_promo_cantSrvSel - 1
+									fprint common:csr_string, "%3s - %-10s - %-20s", TIPO_SERVICIO, adt_promo_serv, adt_promo_destTarifa
+									call csr:PickOp PICKOP_SEARCH dsc:pic_promo_servicios common:csr_string idx
+									idx = RETVAL
+								end while
+
+						    	CALL csr:f_saaddpl dsc:post:pic_promo_servicios l_strAGrabar
+							    adt_promo_cantSrvSel = adt_promo_cantSrvSel + 1
+							    call post:ABMpromoSrvClear
+							    nextfield adt_promo_serv
+						    END IF
+						else
+					    	CALL csr:f_saaddpl dsc:post:pic_promo_servicios l_strAGrabar
+						    adt_promo_cantSrvSel = adt_promo_cantSrvSel + 1
+						    call post:ABMpromoSrvClear
+						    nextfield adt_promo_serv
+						endif
+						break
+			    	case ELIGE_UN_RANGO
+				    	CALL csr:f_saaddpl dsc:post:pic_promo_servicios l_strAGrabar
+					    adt_promo_cantSrvSel = adt_promo_cantSrvSel + 1
+					    call post:ABMpromoSrvClear
+					    nextfield adt_promo_serv
+						break
+				end select
+				call csr:PickOp PICKOP_SORT DSC:post:pic_promo_servicios "0,54"
+			endif
+	    endif
+		;call post:ABMpromoSrvClear
+		call post:ABMpromoSrvRefresh
+		nextfield post:adt_promo_serv
+    endif
+
+    drv:button = drv:last_button
+    call drv:but_up_enable
+END SUB
+
+/*******/

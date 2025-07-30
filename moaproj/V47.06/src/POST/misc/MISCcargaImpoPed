@@ -1,0 +1,152 @@
+/****o* Pago en Destino/OFB:post:MISCcargaImpoPed
+* NOMBRE
+*   OFB:post:MISCcargaImpoPed
+* DESCRIPCION
+*   Realiza la carga de datos en la pantalla del servicio a imponer
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PCOLtranGral
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcargaImpoPed
+	LOCAL l_cod_opc[5] LIKE post:cod_opc1_web
+	LOCAL l_vec_opc2[5] LIKE post:valor_dec 
+	LOCAL l_cantidad LIKE post:cantidad
+
+	//SCRNgral
+	//PROTFIELD post:jnl_servicio_en_bh2
+	PROTFIELD post:tipo_descto
+	DISABLECONTROL drv:PBcb7
+	PROTFIELD post:imp_bloques
+	PROTFIELD post:tarifa
+	PROTFIELD post:descuento
+	PROTFIELD post:costo_opc
+	PROTFIELD siaf:importe_tot_serv			
+	PROTFIELD post:fld_promo_imp
+	DISABLECONTROL drv:PBcb9	
+	//DRAWcod_post
+	PROTFIELD post:cp
+	//DRAWdestino
+	PROTFIELD post:destino
+	DISABLECONTROL drv:PBcb3
+	//DRAWcaja
+	PROTFIELD post:tipo_caja
+	DISABLECONTROL drv:PBcb2
+	//draw_dctoCM
+	PROTFIELD post:Dcto_CliMed
+	PROTFIELD post:DctoCM_bc
+	//DRAWcli_int
+	PROTFIELD post:cli_int_obs
+	DISABLECONTROL op:chk4
+	//DRAWcantidad
+	PROTFIELD post:cantidad
+	//draw_CantPrevia
+	PROTFIELD post:cant_caja_prev
+	PROTFIELD post:cant_cinta_prev
+  //DRAWtrack_trace
+  PROTFIELD post:track_trace
+  //PROTFIELD post:apertura
+  //DISABLECONTROL drv:PBcb5 
+  //DRAWopcional
+  PROTFIELD post:sel_opc
+  DISABLECONTROL drv:PBcb6
+
+	CDS SELECT FROM DSC:post:TABsesion_ped BECOMES DSC:post:CONsesion_ped \
+		WHERE post:estado_ped == "I" && \
+		post:nro_sesion_ped == post:nro_sesion_ped && \
+		post:nro_trx_ped == post:nro_trx_ped
+	
+	CDS FINDFIRST	DSC:post:CONsesion_ped NOLOCK
+	
+	//Datos del servicio
+	CDS EXTRACT DSC:post:CONsesion_ped \
+		FLD:post:adt_serv_serv \
+		FLD:post:serv_desc_vap \
+		FLD:post:adt_serv_tt \
+		FLD:post:track_trace \
+    FLD:post:tipo_caja \
+    FLD:post:destino \
+		FLD:post:caja_propia \
+		FLD:giros:ProvBenef_fld \
+		FLD:giros:SucSel2_fld \
+		FLD:giros:CodSucBenef_fld     
+
+	//Datos del servicio
+	CDS EXTRACT DSC:post:CONsesion_ped \
+		array FLD:post:cod_opc \
+		array FLD:post:vec_opc2
+	
+	IF (post:estado_presu == 2) THEN	
+		//Datos del servicio
+		CDS EXTRACT DSC:post:CONsesion_ped \
+			FLD:post:peso_en_kgs \
+			FLD:post:peso_en_grs \
+			FLD:post:aforo1 \
+			FLD:post:aforo2 \
+			FLD:post:aforo3 \
+			FLD:post:aforo
+	END IF
+							
+	//asigno a variables locales	
+	LET l_cod_opc[0] = FLD:post:cod_opc[0]
+	LET l_cod_opc[1] = 	FLD:post:cod_opc[1]
+	LET l_cod_opc[2]  = FLD:post:cod_opc[2] 
+	LET l_cod_opc[3]  = FLD:post:cod_opc[3] 
+	LET l_cod_opc[4] = FLD:post:cod_opc[4]
+	LET l_vec_opc2[0] = FLD:post:vec_opc2[0] 
+	LET l_vec_opc2[1] = FLD:post:vec_opc2[1] 
+	LET l_vec_opc2[2] = FLD:post:vec_opc2[2] 
+	LET l_vec_opc2[3] = FLD:post:vec_opc2[3] 
+	LET l_vec_opc2[4] = FLD:post:vec_opc2[4] 
+
+	CALL CSR:cleararray (post:cod_opc)
+	CALL CSR:cleararray (post:vec_opc2)
+
+	//REFRESH SCR:post:SCRNgral			
+			
+	CDS ENDSELECT  DSC:post:CONsesion_ped
+	
+	//cargo y calculo la tarifa de los opcionales
+	l_cantidad = 0
+	clearfield cant_opc
+	WHILE (l_cantidad < 5)
+		IF (l_cod_opc[l_cantidad].NUMCHARS > 0) THEN
+			LET post:sel_opc = l_cod_opc[l_cantidad]
+			
+			IF (l_vec_opc2[l_cantidad].NUMCHARS > 0) THEN
+		  	LET post:valor_dec = l_vec_opc2[l_cantidad] 
+			END IF
+			
+			CALL post:FVALsel_opc
+		END IF
+		l_cantidad = l_cantidad + 1
+	END WHILE
+	
+	LET post:adt_tarif_dest = post:destino
+	
+	//si tiene tipo de caja
+	IF (post:tipo_caja.NUMCHARS > 0) THEN
+		CALL post:FVALtipo_caja
+		PROTFIELD post:tipo_caja
+	END IF
+
+	//por ahora cargamos post:cant_caja_prev = 1 y protejemos el campo...
+	IF (post:cant_caja_desc.NUMCHARS > 0) THEN
+		post:cant_caja_prev = 1
+		CALL post:FVALcant_prodmerch
+		PROTFIELD post:cant_caja_prev
+	END IF
+	
+	REFRESH SCR:post:SCRNgral	
+END SUB
+
+/*******/

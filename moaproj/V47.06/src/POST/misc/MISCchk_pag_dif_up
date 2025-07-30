@@ -1,0 +1,125 @@
+/****o* Sesión Correo/OFB:post:MISCchk_pag_dif_up
+* NOMBRE
+*   OFB:post:MISCchk_pag_dif_up
+* DESCRIPCION
+*   Ante una Caida del sistema este OFB verifica si en el inicio de sesion se seleccionó pagar con cheque diferido o no. 
+*   Y recupera los datos correspondientes de la Presu.
+*   Realiza tratamiento de recuperacion de datos de TX Facturacion Comp Pendiente 99490, Cobranza CM 99460 y 99461 Cobranza 
+*   Facturas Vencidas CM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:siaf:MISCcheck_bus_date
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCchk_pag_dif_up
+
+
+local Lmensaje like post:post_string_aux
+
+	clearfield post:pago_diferido
+	// Busco la marca que se deja en la Presu una vez que se realizo la consulta.
+	// (restauro los campos de venta c/cheque diferido por si las moscas...)
+	CDS SELECT FROM DSC:post:TABPresu BECOMES DSC:post:CONPresu \
+		WHERE post:op_operator_id == post:op_operator_id && \
+			  post:PresNro == post:PresNro && \
+			  post:fecha == post:fecha
+	if (cdsretval == 0) then
+		CDS FINDFIRST DSC:post:CONPresu NOLOCK
+		if (cdsretval == 0) then
+			CDS EXTRACT DSC:post:CONPresu post:pago_diferido, \
+										  post:importe, \
+										  post:monto_chk_dif, \
+										  post:monto_vta_neta, \
+										  post:monto_impuestos, \
+										  post:imp_afecta_saldo \
+										  post:monto_int \
+										  post:monto_bonif \
+										  post:monto_bruto
+										  
+			//MFM - En una caida tengo que recuperar estos datos, sino no se realizan los viajes.
+			if (post:cli_tipo == CLIMED) then
+				CDS EXTRACT DSC:post:CONPresu \
+								post:climed_tipo \
+								post:climed_numero \
+								post:ConvenioSesion \
+								post:ConvenioSesionV \
+								post:ConvenioProducto \
+								post:ExcepSesion \
+								post:ExcepProducto \
+								post:consulta_excepcionCM \
+								post:ModalidadAT \
+								post:ModalidadCC \
+								post:ModalidadCD \
+								post:OperacionCob \
+								post:OperacionAut \
+								post:OperacionInt \
+								post:ImpCC_Min \
+								post:nisDep_CM \
+								post:diasPago_CM \
+								post:limite_CM \
+								post:bloqueo_CM \
+								post:saldoAnticipo_CM \
+								post:convenioAnticipo \
+								post:ConsumoAnticipo \
+								post:nro_recibo \
+								post:consulta_ordenCM \
+								post:ModalidadOC \
+								post:diasPago_OC \
+								post:ModalidadTB \
+								post:saldo_TB
+			end if
+		endif
+	endif
+
+	// Si el flag de pago diferido está activado y no se grabó el campo pago_diferido en la Presu
+	// entonces emito un mensaje de advertencia 
+    If (post:estado_presu == 2 && (post:cli_tipo == CLIUP || post:cli_tipo == CLIMED) && \
+		post:pago_diferido.numchars == 0 && \
+		TESTFLAG (post:cheque_dif,UPpago_dif)) Then
+      		let Lmensaje =  "La Solicitud de Pago Diferido no quedó registrada\n"
+			fprint Lmensaje "%s   NO PODRA UTILIZAR CHEQUE DIFERIDO \n" Lmensaje
+		 	fprint Lmensaje "%s   COMO MEDIO DE PAGO EN ESTA SESION.\n" Lmensaje
+      		MSGBOX Lmensaje,OFB_ICONEXCLAMATION,"ADVERTENCIA"
+      		Lmensaje = "Para realizar la solicitud nuevamente deberá iniciar una nueva sesión." 
+      		MSGBOX Lmensaje,OFB_ICONINFORMATION,"Aviso"
+    End if
+	
+	if (post:OperacionAut) then
+		//verificar que exista una 99490 en la presudet
+		call post:CDSBuscaTx_99490
+		if (retval < 0) then
+			OperacionAut = FALSE
+			call post:CDSgrabo_CMCobranza
+		endif
+	endif
+	if (post:OperacionCob) then
+		//verificar que exista una 99460 en la presudet
+		call post:CDSBuscaTx_99460
+		if (retval < 0) then
+			OperacionCob = 	FALSE
+			call post:CDSgrabo_CMCobranza
+		endif
+	endif
+	//50244
+	if (post:ModalidadTB) then
+		//borro el importe total de facturas vencidas a pagar porque sino se acumula.
+		Imp_TotFactVenc = 0
+ //NI 50552
+		post:importe_factpend = 0
+    post:importe_fpendsel = 0
+		call post:CDSsave_TotFactVenc
+	endif
+	
+END SUB
+
+/*******/

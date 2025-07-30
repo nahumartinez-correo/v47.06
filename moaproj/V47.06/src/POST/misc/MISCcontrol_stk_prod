@@ -1,0 +1,70 @@
+/****o* Productos Varios/OFB:post:MISCcontrol_stk_prod
+* NOMBRE
+*   OFB:post:MISCcontrol_stk_prod
+* DESCRIPCION
+*   Controla el Stock del producto.
+* ENTRADAS
+*   cant_caja: cantidad que se vende.
+*   prod_asoc: codigo del producto vario.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:FVALcant_prodmerch
+*   OFB:post:MISCvalida_adicional
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcontrol_stk_prod(cant_caja,prod_asoc)
+/*Controla el Stock del producto. Recibe como parametros:
+La cantidad que se vende y el producto.*/
+local cant_stk like post:adt_stock_stock
+local cant_traida like post:adt_stock_stock
+local cant_vendida like post:adt_stock_stock
+local cant_aux	like post:cant_caja_prev
+local desc_aux like post:adt_prodvs_desc
+local l_cant   like post:cantidad2_backUP
+	
+	cant_aux = 0
+	cant_vendida = 0
+	l_cant = 0
+	
+	adt_stock_codprod = prod_asoc
+    adt_stock_coddep = 0
+    adt_stock_stock = 0
+    adt_stock_reserva = 0
+    CALL post:CDSstock_load
+    //PS 9575 - Se debe sumar la cantidad que no se resta al entrar, en el caso de que
+    //el bien de cambio sea el mismo!!!!
+    if (post:adt_stock_codprod == post:prod_serv_backUP) then
+    	l_cant = post:cantidad2_backUP
+    end if
+    if (cant_caja > (post:adt_stock_stock - post:adt_stock_reserva + l_cant))
+	    errmsg clear
+	    CDS SELECT FROM DSC:adt_prodvs_table BECOMES DSC:adt_prodvs_context \
+    	WHERE adt_prodvs_cod == prod_asoc
+    	CDS FINDFIRST DSC:adt_prodvs_context NOLOCK
+	    LET lib:err_retval = CDSRETVAL
+    	IF (lib:err_retval == -801) THEN
+    		cds endselect dsc:adt_prodvs_context
+        	RETURN (-2)
+    	END IF
+    	
+    	//NI 503254
+    	clearfield post:adt_prodvs_bonifCM
+    	CDS EXTRACT DSC:adt_prodvs_context post:adt_prodvs_desc into desc_aux \
+    	post:adt_prodvs_bonifCM
+    	cds endselect dsc:adt_prodvs_context
+	    fprint common:csr_string,"EL PRODUCTO %-s SUPERA EL STOCK EXISTENTE",desc_aux
+        errmsg common:errmsg_list,FLD:common:csr_string
+	    RETURN (-2)
+    end if
+	
+	return 0
+END SUB
+
+/*******/

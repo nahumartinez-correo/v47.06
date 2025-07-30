@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:post:CDSget_mp_sf1_corar
+* NOMBRE
+*   OFB:post:CDSget_mp_sf1_corar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSget_mp_sf1_corar(prmPlataf,prmProv,prmTrx,prmMedPag,prmMoneda)
+local Lmed_pago		like post:adt_sf1_med_pago
+local Lplataf		like common:csr_string
+local Lprovincia	like post:adt_pcia_cod
+local Ltransac		like siaf:adt_tran_codigo
+local Lcdsretval	like lib:err_retval
+local Lmoneda 		like post:adt_sf1_moneda
+
+let Lmed_pago = prmMedPag
+let Lplataf = prmPlataf
+let Lprovincia = prmProv
+let Ltransac = prmTrx
+call csr:fld_to_upper(Lplataf)
+
+// busco en la tabla segun en que plataforma me encuentro para la provincia en cuestion...
+do
+	select (prmPlataf)
+		case "SF1"
+			cds select from DSC:post:MonedaSf1_Tab becomes DSC:post:MonedaSf1_Ctx \
+				where	post:adt_pcia_cod == Lprovincia && \
+						siaf:adt_tran_codigo == Ltransac && \
+						post:adt_sf1_med_pago == Lmed_pago
+			break
+		case "CORAR"
+			cds select from DSC:post:MonedaSf1_Tab becomes DSC:post:MonedaSf1_Ctx \
+				where	post:adt_pcia_cod == Lprovincia && \
+						siaf:adt_tran_codigo == Ltransac && \
+						siaf:moneda == Lmed_pago
+		break
+		case else
+			let cdsretval = (-2)
+	end select
+	if (cdsretval == 0) then
+		cds findfirst DSC:post:MonedaSf1_Ctx NOLOCK
+		if (cdsretval == -CDS_RECORD_NOT_FOUND ) then
+			if (Lprovincia != MONEDA_SF1_PROV_GENERICA) then
+				let Lprovincia = MONEDA_SF1_PROV_GENERICA
+				let cdsretval = 0
+			else
+				return (-2)
+			endif
+		elseif (cdsretval == 0) then
+			break
+		else
+			return (-2)
+		end if
+	end if
+loop
+
+// si pudo realizar la seleccion en la tabla...
+select (prmPlataf)
+	case "SF1"
+		cds extract DSC:post:MonedaSf1_Ctx siaf:moneda INTO Lmed_pago \
+		post:adt_sf1_moneda into Lmoneda
+		// FGB 26.9.2001: me trato de asegurar que la parametria del med.pago para bonos en las tablas de correo 
+		// este cargada...
+		if (cdsretval == 0) then
+			CDS SELECT FROM "MedPago" BECOMES "CONmed_pago" WHERE post:adt_mp_cod == Lmed_pago
+			if (cdsretval == 0) then
+				CDS FINDFIRST "CONmed_pago" NOLOCK
+				Lcdsretval = cdsretval
+				CDS ENDSELECT "CONmed_pago"
+				cdsretval = Lcdsretval
+			end if
+		end if
+		// FGB fin
+		break
+	case "CORAR"
+		cds extract DSC:post:MonedaSf1_Ctx post:adt_sf1_med_pago INTO Lmed_pago \
+		post:adt_sf1_moneda into Lmoneda
+		break
+	case else
+		let cdsretval = (-2)
+end select
+if (cdsretval == 0) then
+	fprint prmMedPag "%s" Lmed_pago
+	prmMoneda = Lmoneda
+	return (0)
+end if
+
+// si llegue hasta aca... algo paso! Ups!
+return (-2)
+END SUB
+
+/*******/

@@ -1,0 +1,143 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALrecep_cheq
+* NOMBRE
+*   OFB:tes:SVALrecep_cheq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALrecep_cheq
+    local superviso like tes:rend_marca_cierre
+    local hora_aux like siaf:hora
+    
+    if (testflag(tlr:tran_flags,correction))
+	call tes:CDSctasbanc_lock	
+	/* Esta lockeado */
+        if (retval < 0)
+        	return (-2)
+        end if
+    end if
+    if (!TESTFLAG(tlr:tran_flags,correction)) then 
+        popup SCRNconfirma
+    	IF (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then    
+          return (-2)
+        END IF
+
+     
+        CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq2_ctx where \
+        tes:adt_cheqaux_suc == op:op_branch_id && \
+        adt_cheqaux_op == op:op_tesoro_id && \
+        adt_cheqaux_tesoro == "S"
+        CDS FINDFIRST DSC:AuxCheq2_ctx LOCK
+        if (cdsretval != 0) then
+            errmsg lst:common:errmsg_list, \
+           "No Hay Chequeras Cargadas"
+           cds unlock dsc:AuxCheq2_ctx
+           cds endselect dsc:AuxCheq2_ctx                        
+           return (-2)
+        end if
+
+    end if
+ 
+    CALL siaf:SVALnivel_sup
+    if (retval < 0)
+        return (-2)
+    end if
+    
+ 
+    // Guardo si fue supervisada para marcar las otras
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+	  let superviso = "S"
+    else
+	  let superviso = "N"
+    endif
+    if (!TESTFLAG(tlr:tran_flags,correction)) then 
+             
+        let siaf:nro_cheque = 0
+        let siaf:cantidad = 0 
+        hora_aux = siaf:hora
+        FLD:drv:INDjnl_rtn = OFB:tes:JNLrecep_cheq
+	UNGETKEY 0x190
+	CALL siaf:MISClleno_modalidad
+        ;let drv:INDscr = SCRN:tes:SCRNtotal_cheqmov
+        clearfield siaf:importe
+        CALL tlr:JNLtran
+	// le sumo 6 al codigo de transacción porque cada uno de los pases
+	// tiene ese código de transacción
+	let siaf:codigo_siaf = siaf:codigo_siaf + 6
+
+	call siaf:PRESfecha_hora
+	let siaf:hora = hora_aux
+
+        
+	CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq2_ctx where \
+	        tes:adt_cheqaux_suc == op:op_branch_id && \
+	        adt_cheqaux_op == op:op_tesoro_id && \
+                adt_cheqaux_tesoro == "S"
+	        
+        CDS FINDFIRST DSC:AuxCheq2_ctx LOCK
+	let lib:err_retval = CDSRETVAL	
+
+        call csr:f_sadroppl dsc:Cheque
+        call csr:f_sanewpl dsc:Cheque pic:Cheque
+        DO
+          IF (lib:err_retval != 0) THEN
+              BREAK
+          END IF
+          CDS EXTRACT DSC:AuxCheq2_ctx ALL
+	  siaf:nro_cheque = adt_cheqaux_nro
+	  siaf:cantidad = adt_cheqaux_cant
+
+          let tes:es_tesoro = "S"
+ 
+          if (superviso == "S") then
+	     // si la primera fue supervisada , marco todas
+	     	setflag tlr:tran_flags,supovr_granted
+    	  endif
+       
+          UNGETKEY 0x190
+          CALL tlr:JNLtran
+          fprint common:csr_string "%8.8e              %3.3s \n", \
+                           adt_cheqaux_nro,adt_cheqaux_cant
+	  call csr:f_saaddpl dsc:Cheque common:csr_string
+ 	  CDS delete DSC:AuxCheq2_ctx
+          CDS UNLOCK DSC:AuxCheq2_ctx
+          CDS FINDNEXT DSC:AuxCheq2_ctx LOCK
+	  let lib:err_retval = CDSRETVAL
+        LOOP
+        CLEARFIELD drv:INDjnl_rtn
+        let drv:INDspc_rtn[2] = ofb:tes:TRANBancos_Cheques
+        CDS UNLOCK DSC:AuxCheq2_ctx
+        CDS ENDSELECT DSC:AuxCheq2_ctx
+        call post:MISCactivar_buts
+       else
+            if (siaf:codigo_siaf == 7500)
+                CALL MISCreverso_sesion
+	        if (retval < 0) then
+			return (-2)
+	        end if
+	    else
+	        /*  Se puede reversar de a una */
+	        call CDSchequera_load(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,siaf:nro_cheque)
+                if (adt_chequera_stat != NUEVA)
+                        errmsg lst:common:errmsg_list, "Chequera En Uso. No se Puede Reverar"
+                        return (-2)
+                END IF
+            end if
+    end if
+    cds unlock dsc:adt_cta_ctx
+    cds endselect dsc:adt_cta_ctx
+END SUB
+
+/*******/

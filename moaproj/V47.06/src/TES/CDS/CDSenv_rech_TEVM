@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSenv_rech_TEVM
+* NOMBRE
+*   OFB:tes:CDSenv_rech_TEVM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSenv_rech_TEVM(subesp,imp,cant)
+	LOCAL i            LIKE cont1
+	LOCAL total        LIKE adt_espv_importe
+	LOCAL loc_login    LIKE tes:adt_espv_orig
+	LOCAL loc_op       LIKE tes:adt_espv_op_orig
+	LOCAL loc_hora     LIKE tes:adt_espv_hora
+	LOCAL loc_sequence LIKE tes:adt_espv_seq
+	LOCAL loc_fecha    LIKE tes:adt_espv_fecha
+
+	loc_fecha        = tes:adt_espv_fecha
+	loc_sequence     = tes:adt_espv_seq
+	loc_hora         = tes:adt_espv_hora
+	loc_login        = adt_espv_dest
+	adt_espv_dest    = adt_espv_orig
+	adt_espv_orig    = loc_login
+	loc_op           = adt_espv_op_orig
+	adt_espv_fecha   = common:system_date
+	adt_espv_op_orig = adt_espv_op_dest
+	adt_espv_op_dest = loc_op
+	adt_espv_hora    = tes:hora_aux
+	adt_espv_cod     = espv_cod
+	adt_espv_subcod  = subesp
+/**************************************************************************
+Si es el encabezado le pongo en importe TOTAL al movimiento, si no, lo grabo
+como detalle.
+***************************************************************************/
+	adt_espv_seq         = tlr:jnl_sequence
+	adt_espv_marca_ing   = "E"
+	adt_espv_importe     = imp
+	adt_espv_cantidad    = cant
+	let adt_espv_seq_aux = aux_sequence_mov
+	adt_espv_comp = " "
+    adt_espv_es_rechazo = "S"
+
+    /* Grabo una marca que indica si el pase es desde el tesoro
+    o desde caja */
+	if (drv:dt_app == 4) then
+        tes:adt_espv_pase_tesoro = "S"
+    else
+        tes:adt_espv_pase_tesoro = "N"
+    end if
+
+	cds select from TesEspVMov becomes TesEspVMov3 where \
+	adt_espv_fecha  == adt_espv_fecha  && \
+	adt_espv_cod    == adt_espv_cod    && \
+	adt_espv_subcod == adt_espv_subcod && \
+	adt_espv_suc    == adt_espv_suc    && \
+	adt_espv_orig   == adt_espv_orig   && \
+	adt_espv_dest   == adt_espv_dest   && \
+	adt_espv_hora   == adt_espv_hora
+
+	cds findfirst TesEspVMov3 lock
+	lib:err_retval = cdsretval
+	cds clearbuffer TesEspVMov3
+
+    CALL csr:proc_list(F_APPEND,dsc:tes:TesEspVMov3,LST:tes:LISTEspVMov,0)
+
+	if (lib:err_retval == -801)
+	   cds insert TesEspVMov3 lock
+	else
+	   cds replace TesEspVMov3 lock
+	end if
+	cds endselect TesEspVMov3
+
+	//restaurar los campos del movimiento original
+	tes:adt_espv_fecha   = loc_fecha
+	tes:adt_espv_orig    = tes:adt_espv_dest
+	tes:adt_espv_dest    = loc_login
+	tes:adt_espv_op_dest = tes:adt_espv_op_orig
+	tes:adt_espv_op_orig = loc_op
+	tes:adt_espv_seq     = loc_sequence
+	tes:adt_espv_hora    = loc_hora
+    if (drv:dt_app != 4) && (tes:adt_espv_subcod != TOTAL_TESO)then
+        /* Si el cajero rechaza un pase se genera igual el registro
+        en la TesEspV con importe 0 */
+        call CDSmodif_TesEspV("suma",op:op_branch_id,"N",op:op_operator_id,0)
+    end if
+END SUB
+
+/*******/

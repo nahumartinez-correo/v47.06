@@ -1,0 +1,70 @@
+/****o* Pago en Destino/OFB:post:SVAL30030
+* NOMBRE
+*   OFB:post:SVAL30030
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)   
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN30030
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL30030
+	LOCAL l_retval LIKE lib:err_retval
+
+	IF (post:track_trace.NUMCHARS == 0) THEN
+		MSGBOX "Campo requerido" ,OFB_OK,"Error"
+		NEXTFIELD post:track_trace
+		RETURN -2	
+	END IF
+
+	CALL post:OFBcons_comp
+	IF (retval < 0)
+		return -2
+	END IF
+	
+	//valido que el Servicio este hablitado para PED
+	CALL post:CDSvalida_serv_ped
+	IF (RETVAL < 0) THEN
+			IF (RETVAL == -3) THEN
+				MSGBOX "No se pudo obtener el servicio de la tabla DetNCpedEnOrigen" ,OFB_OK,"Error"
+			ELSE
+				MSGBOX "Servicio no habilitado con Pago en Destino" ,OFB_OK,"Error"
+			END IF
+			RETURN -2		
+	END IF
+
+	//traigo los datos identificatorios del Destinatario
+	CALL post:CDSdestiNCped
+
+	//gpb:tengo que controlar que el cliente minorista exista en la CliOca (post:TipoDocDestPED,post:CloCuitDestPED),
+	//se hace por si el compress ya depuro la tabla
+	CALL post:CDSped_clioca_verif
+	IF (RETVAL < 0) THEN
+		//no existe el la CliOca, lo vuelvo a dar de alta
+		CALL post:CDSped_clioca_save2("NCpedEnOrigen")
+		IF (RETVAL < 0) THEN
+			MSGBOX "No se pudo actualizar la CliOca con los datos\ndel Cliente Minorista" ,OFB_OK,"Atencion"
+			RETURN -2
+		END IF
+	END IF
+	
+	//"PRNC" - Pieza en proceso de nota de credito
+	CALL post:CDSupd_est_NCped("PRNC")
+	
+	SETFLAG post:sesion_ped_flags,genera_nc_ped
+
+	//Elimino el picklist de memoria
+ 	CALL csr:f_sadroppl DSC:post:PickPiezasPED
+
+END SUB
+
+/*******/

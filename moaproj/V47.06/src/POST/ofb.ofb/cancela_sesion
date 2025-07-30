@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:post:cancela_sesion
+* NOMBRE
+*   OFB:post:cancela_sesion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:cancela_sesion
+	//cancela las transacciones de la presudet que estan con PreDEst = 1
+	local loc_RetVal		like lib:err_retval 
+	local loc_INDtran_name	like tlr:INDtran_name
+	
+	call post:MISCfinProgressBar
+	fyimsg clear
+	
+	fyimsg common:fyimsg_list,"Cancelando Sesion..."
+	
+	let loc_INDtran_name = tlr:INDtran_name // resguardo
+	
+	// busco los templates asociados, que esten sin confirmar en el presupuesto.
+	
+	//cgw:Se agrego la busqueda por el nro.presupuesto,ya que arrastraba registros de presupuestos anteriores.
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES "CONcanc_preDet" WHERE \
+		post:fecha			== common:system_date	&& \
+		post:op_operator_id == op:op_operator_id    && \
+		post:PresNro        == post:PresNro         && \
+		post:PreDEst 		== 1					&& \
+		siaf:codigo_siaf 	!= 99023
+	if (cdsretval == 0) then
+		CDS FINDFIRST "CONcanc_preDet" NOLOCK
+		while (cdsretval == 0) 
+			
+			clearfield tlr:INDtran_name
+			cds extract "CONcanc_preDet" tlr:INDtran_name INTO siaf:INDscratch
+			if (cdsretval == 0 && siaf:INDscratch != 0) then
+				call csr:dt_tran DT_TRAN_START FLD:siaf:INDscratch // inicio tran a borrar
+			endif
+			
+			CDS EXTRACT "CONcanc_preDet" ALL
+			if (cdsretval == 0) then
+				
+				//SBA: borra tabla AuxIngBr
+				call post:CDSdelAll_AuxIngBr
+				Cds EndSelect DSC:AuxIngBr_ctx
+				
+				// SBA: Borro tabla AuxIva
+				call post:CDSdelete_AuxIva
+				if (post:cli_tipo == CLIUP) then
+					//cgw:borra tabla AuxIvaUp
+					call post:CDSdelAll_AuxIvaUP
+					Cds EndSelect DSC:AuxIvaUP_ctx
+				end if
+
+				// SBA: borra los sellados calculados.
+				call post:CDSdelete_AuxImpp
+				
+				call post:MISCdel_tx_sesion
+			endif
+			let loc_RetVal = loc_RetVal + cdsretval 
+			
+			if (tlr:INDtran_name != 0) then
+				call csr:dt_tran DT_TRAN_END FLD:siaf:INDscratch // fin tran a borrar
+			endif
+			
+			CDS FINDNEXT "CONcanc_preDet" NOLOCK
+		end while
+		CDS UNLOCK "CONcanc_preDet"
+		CDS ENDSELECT "CONcanc_preDet"
+	endif
+	
+	fyimsg clear
+	
+	let tlr:INDtran_name = loc_INDtran_name // recupero 
+	
+	if (loc_RetVal == 0) then
+		// ey! salio todo pipi-cucu!
+		return (0)
+	endif
+	
+	// ups! algo salio mal... 
+	errmsg common:errmsg_list,"PROBLEMAS CANCELANDO LA VENTA POR COMBO. CANCELE EL PRESUPUESTO"
+	return (-2)
+
+
+END SUB
+
+/*******/

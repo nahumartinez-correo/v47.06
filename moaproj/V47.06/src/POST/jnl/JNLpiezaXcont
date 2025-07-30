@@ -1,0 +1,119 @@
+/****o* Pendientes de agrupación/OFB:post:JNLpiezaXcont
+* NOMBRE
+*   OFB:post:JNLpiezaXcont
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLpiezaXcont
+    /* Registro T&T - Recepción Pieza - JNL*/
+    /* B. Petrella - May. 1998 -           */
+    /* Módulo de Expedición - Jun. 1999 - B. Petrella */
+    
+    /*Defino una vble local para hacer el append del codigo de la guia especial*/
+    LOCAL guia_esp_aux LIKE jnl_guia_especial
+    
+    clearfield post:jnl_guia_saca
+    clearfield post:jnl_fecha_llensaca
+    clearfield post:jnl_hora_llensaca
+
+    CDS APPEND DSC:tlr:CONjnl_write \
+        post:adt_codseq_nro as post:jnl_guia_cont \
+        common:system_date as post:jnl_fecha_llencont\
+        common:time_of_day as post:jnl_hora_llencont
+            
+            
+            
+    if (siaf:codigo_siaf == "99036") then /* Detalle de las piezas */
+	  	/* Grabo los campos que resguardan la clave */
+	  	/* de la transaccion original, para poder modificar ese */
+        /* registro en caso de que se reverse la transaccion */
+        CDS APPEND DSC:tlr:CONjnl_write \
+		    post:jnl_branch_ori \
+			post:jnl_operator_ori \
+			post:jnl_date_ori \
+			post:jnl_time_ori \
+			post:jnl_bus_date_ori \
+            post:jnl_sequence_ori
+            
+		fprint post:DetalleContenidoGC, "%-10.10e %-32.32s" , \
+	        post:jnl_date_ori,\
+          	post:Pieza_id
+
+        CDS APPEND DSC:tlr:CONjnl_write \
+           	post:DetalleContenidoGC \
+		    post:Pieza_id
+		
+		
+		/*Si el detalle de contenedor que estoy journalizando es simple especial
+		debo jounalizar el codigo de la guia en caso contrario lo journalizo
+		en blanco*/
+		IF (jnl_simp_esp == "S")
+		    guia_esp_aux = jnl_guia_especial
+		END IF
+        CDS APPEND DSC:tlr:CONjnl_write \
+           	guia_esp_aux AS jnl_guia_especial \
+           	jnl_simp_esp
+		
+    else
+        if (siaf:codigo_siaf == "99030") then /* Hdr. de la transac. */
+            /* Cpos. vacìos, se completan con la transac. 99040 */
+            /* llenado de saca - Y los que tienen datos son para */
+		    /* poder acceder desde llenado de saca */
+		    LET jnl_corteop_guiacont = "N"
+		    IF (adt_corteop_ctrl == "N")
+			    /* Consulto si requiere o no saca */
+			    /* y dependiendo de esto cargo jnl_corteop_saca */
+                
+			    CALL CDSextractSaca
+		    	IF (post:adt_relMod_sacatipo.numchars == 0)
+				    LET post:jnl_corteop_saca = "N"
+			    ELSE
+				    LET post:jnl_corteop_saca = "S"
+			    END IF
+		    	/* el campo de despacho no esta cargado */
+		    	LET post:jnl_corteop_despacho = "S"
+		    END IF
+            CDS APPEND DSC:tlr:CONjnl_write \
+                post:jnl_guia_saca \
+                post:jnl_fecha_llensaca \
+                post:jnl_hora_llensaca \
+		        post:jnl_corteop_guiacont \
+		        post:jnl_corteop_saca \
+		        post:jnl_corteop_despacho
+		    /* Para los contenedores que van directo al corte de linea */
+            CDS APPEND DSC:tlr:CONjnl_write \
+		        post:jnl_guia_despacho \
+		        post:jnl_fecha_despacho \
+		        post:jnl_hora_despacho \
+		        jnl_guia_especial \
+		        jnl_guia_reenc
+		    
+        end if
+    end if
+    if (testflag(tlr:tran_flags,correction)) then
+        /* Si se esta reversando una pieza hay que limpiar */
+        /* los campos jnl_guia_cont jnl_fecha_llencont y   */
+        /* jnl_hora_llencont del journal de la pieza original */
+        /* lo que quiere decir que la pieza debe ir en otro contenedor */
+        /* esto siempre que sea una pieza de control */
+        swapdup adt_corteop_ctrl /* Ya esta en el area dup */
+        if (adt_corteop_ctrl == "S") then
+            call CDSrevJNLcont
+        end if
+    endif
+END SUB
+
+/*******/

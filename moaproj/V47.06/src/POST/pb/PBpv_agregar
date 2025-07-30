@@ -1,0 +1,138 @@
+/****o* Productos Varios/OFB:post:PBpv_agregar
+* NOMBRE
+*   OFB:post:PBpv_agregar
+* DESCRIPCION
+*   Agrega los datos del producto en el picklist (TX Entrada Salida de productos suc almacen) 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:BUTent_pv_suc,LST:post:BUTsal_pv_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBpv_agregar
+    LOCAL LineaPick  LIKE common:csr_string
+	
+	//PREPAQ
+	if (cant_barras != "4") then
+	
+	
+	//Aut-2517
+	//Si el valor ingresado en el campo de sucursal es distinto de la sucursal Almacen
+	//se verifica que el mismo sea un dato valido.
+	IF (siaf:sucursal_tmp != tes:sucursal)
+	    CALL post:FVALsuc_pv
+	    IF (RETVAL < 0)
+			drv:button = 6
+			call drv:but_up_enable		
+			RETURN -2
+		END IF    
+	END if
+	
+	endif
+    /*IF (tes:sucursal.numchars == 0)
+		MSGBOX "FALTA INGRESAR SUCURSAL",0x00,"AVISO"
+        drv:button = drv:last_button
+        call drv:but_up_enable		
+		RETURN -2
+	END IF*/
+    
+    drv:button = drv:last_button
+    call drv:but_disable
+    SETFLAG post:pick_spvCM_flags,agrega //se esta agregando
+    
+    call csr:trimfield (post:adt_prodvs_cod)
+    IF (post:adt_prodvs_cod.numchars == 0) THEN
+    	MSGBOX "FALTA INGRESAR EL CODIGO DE PRODUCTO",0x00,"AVISO"
+    	CALL CSR:proc_list(170,LST:LISTmult_pv) //clear
+        CALL CSR:proc_list(190,LST:LISTmult_pv) //refresh
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        drv:button = 6
+        call drv:but_disable
+        //habilita productos
+        UNPROTFIELD adt_prodvs_codbarra
+        UNPROTFIELD adt_prodvs_cod
+        RESETFLAG post:pick_spvCM_flags,agrega
+        RETURN (-2)
+    END IF
+    
+    //NI 50254
+    IF (siaf:cantidad > 99999) THEN
+	FPRINT common:csr_string,"LA CANTIDAD DEBE SER MENOR O IGUAL A 99999"
+	MSGBOX common:csr_string,0x00,"ERROR"
+	clearfield siaf:cantidad
+	refresh siaf:cantidad
+	drv:button = drv:last_button
+        call drv:but_up_enable	
+	RETURN (-2)
+    ENDIF
+    
+    //Valida que el producto no este en el picklist
+    CALL post:MISCverPicksal_pv
+    IF (retval < 0)
+    	MSGBOX "Producto ya Ingresado",0x00,"AVISO"
+    	CALL CSR:proc_list(170,LST:LISTmult_pv) //clear
+        CALL CSR:proc_list(190,LST:LISTmult_pv) //refresh
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        //habilita productos
+        UNPROTFIELD adt_prodvs_codbarra
+        UNPROTFIELD adt_prodvs_cod
+        RESETFLAG post:pick_spvCM_flags,agrega
+        RETURN (-2)
+    END IF
+
+    CALL post:MISCvalida_cant_pv //Valida producto y cantidad
+    IF (RETVAL < 0) THEN
+    	IF (RETVAL == -2) THEN
+    		//inconsistencia con el producto
+    	    CALL CSR:proc_list(170,LST:LISTmult_pv) //clear
+            CALL CSR:proc_list(190,LST:LISTmult_pv) //refresh
+            drv:button = 6
+            call drv:but_disable
+            RESETFLAG post:pick_spvCM_flags,agrega
+        END IF
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        RETURN (-2)
+    END IF
+
+    CLEARFIELD LineaPick
+   	FPRINT LineaPick "%5.5s   %-10.10s   %-40.40s %7.7s %10.10e",\
+      	   tes:sucursal,post:adt_prodvs_cod,post:adt_prodvs_desc,siaf:cantidad,adt_prodvs_tarifa 
+    ;Agrego en el PickList
+    CALL CSR:f_saaddpl DSC:Picksal_pv FLD:LineaPick
+    CALL CSR:PickOp 4 DSC:Picksal_pv "8,10"
+    
+    CALL CSR:proc_list(170,LST:LISTmult_pv)
+    CALL CSR:proc_list(190,LST:LISTmult_pv)
+
+    RESETFLAG post:pick_spvCM_flags,agrega //se termino de agregar
+
+    //habilita productos
+    UNPROTFIELD adt_prodvs_codbarra
+    UNPROTFIELD adt_prodvs_cod
+	DISABLECONTROL op:chk0 //drv:PBcb2
+	DISABLECONTROL op:chk1 //drv:PBcb3
+	DISABLECONTROL op:chk2 //drv:PBcb4
+	DISABLECONTROL op:chk3 //drv:PBcb10
+	PROTFIELD tes:sucursal
+	DISABLECONTROL drv:PBcb1	
+        
+   // drv:button = drv:last_button
+    
+    drv:button = 6 
+    CALL drv:but_up_enable
+    //drv:button = 6    
+    call drv:but_disable
+END SUB
+
+/*******/

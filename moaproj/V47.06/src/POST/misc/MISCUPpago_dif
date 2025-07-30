@@ -1,0 +1,71 @@
+/****o* Tratamiento de Cheques/OFB:post:MISCUPpago_dif
+* NOMBRE
+*   OFB:post:MISCUPpago_dif
+* DESCRIPCION
+*   Esta rutina se encarga de enviar una consulta al switch en el caso de 
+*   que la sesión sea Venta UP y se seleccione pagar con Cheque Diferido.
+*   Si hubo un rechazo por error de comunicación, se saca de la sesión, sino 
+*    se permite continuar, pero se limpian y deshabilitan los checkbox.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:TRANPago_Dif
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCUPpago_dif
+    LOCAL L_PresNro LIKE post:PresNro
+    LOCAL P_PresNro LIKE post:PresNro
+
+    IF (TESTFLAG (cheque_dif, UPpago_dif)) THEN
+	/*MFM - Esta rutina se encarga de enviar una consulta al switch en el caso de 
+	que la sesión sea Venta UP y se seleccione pagar con Cheque Diferido*/
+	SETFLAG giros:tran_send_mode,ventaUP_diferida
+	CALL MISCsolicPago_UP //si vuelve un rechazo esta rutina lo journaliza
+	IF (RETVAL < 0) then
+	    /*MFM - Si el HOST rechazó el registro...*/
+	    /*Lo dejamos seguir, pero limpio y deshabilito el checkbox */
+	    CLEARFIELD post:cheque_dif
+	    RESETFLAG cheque_dif,UPpago_dif
+	    ALTERCONTROLSET TAG:post:CHK9
+	    DISABLECONTROL TAG:post:CHK9
+  	    ;SC50200
+  	    RESETFLAG cheque_dif,chq_dif_al_dia
+	    ALTERCONTROLSET TAG:post:CHK2
+	    DISABLECONTROL TAG:post:CHK2
+	    
+            //cgw:Obtiene post:PresNro, que en este momento perdio su valor, lo recupero en una
+            //    variable temporal, luego de realizar las actualizaciones repongo valor (que estaba en 0).
+            //    Actualiza flag de cheque en la Presu.
+            //    Actualiza journalizacion de campos flag de cheques en el inicio de sesion.            
+            L_PresNro = post:PresNro
+            CLEARFIELD P_PresNro
+            CALL post:CDSobtienePresNro(P_PresNro) //cgw:Obtiene post:PresNro en la variable P_PresNro.
+            IF (RETVAL == 0) THEN
+            	post:PresNro = P_PresNro
+                CALL CDSUP_PagoDif_save
+	        CALL post:MISCjour_cheq_99021
+	    END IF
+	    post:PresNro = L_PresNro
+	    
+	END IF
+	/*MFM - Si hubo un rechazo por error de comunicación, lo debo sacar de la sesión*/
+	IF (tlr:jnl_status == 002 && giros:CodRespuesta_comm.numchars == 0) THEN
+	    drv:INDrun_funct = LST:post:TRANimpre_fiscal
+	    UNGETKEY RT_SEND
+	END IF
+    ELSE
+  	pago_diferido = "N"
+	CALL CDSUP_PagoDif_save
+    END IF
+
+END SUB
+
+/*******/

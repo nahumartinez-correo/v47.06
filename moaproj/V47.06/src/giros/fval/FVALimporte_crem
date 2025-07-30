@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:giros:FVALimporte_crem
+* NOMBRE
+*   OFB:giros:FVALimporte_crem
+* DESCRIPCION
+*   Esta rutina calcula a, partir del un valor ingresado (importe de contrareembolso),
+*	el importe del giro, la comision, los sellados de las provincias, si los hubiera y 
+*	el acrecentamiento si lo hubiera.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:giros:SCRN70041
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosfval.h"
+
+SUB giros:FVALimporte_crem
+	local ImpAux like ImporteNeto
+	local calc like   ComisionSinIva_fld	
+	
+	
+    //cgw:controla que el importe sea requerido y distinto de cero.
+    CALL siaf:FVALimporte_no_cero
+    IF (RETVAL < 0) THEN
+      	RETURN (-2)
+    END IF 
+    
+    IF (Importe_crem.NUMCHARS > 8) THEN
+    	msgbox "IMPORTE SUPERA MAXIMO HABILITADO" OFB_OK "Error"
+    	nextfield Importe_crem
+    	return (-2)
+    END IF
+    	
+    //cgw:si es combo validar importe en rango de tarifas de composicion del combo.
+/*	IF (post:enCombo == "S") THEN
+	    CALL post:CDScheckRangoCombo(ImporteNeto)
+	    IF (RETVAL < 0) THEN
+	    	RETURN (-2)
+	    END IF	
+    END IF
+*/
+    post:adt_tarif_desde = Importe_crem
+    CALL post:MISCactualizo_tarifa
+    if (retval < 0) then
+    	nextfield Importe_crem
+    	return (-2)
+    end if
+    
+    
+       
+    
+    IF (post:enCombo != "S") THEN	
+	    //cgw:si no es un producto de un combo, calcula giros:Comision_fld.
+        Comision_fld = post:tarifa
+	else
+		post:adt_tarif_fijo = 0
+    END IF
+    
+       
+    
+    IF (post:adt_tarif_fijo > 0) THEN
+      	REFRESH post:adt_tarif_fijo
+;      	IF (post:enCombo != "S") THEN	        
+;	        //cgw:si no es un producto de un combo, calcula giros:Comision_fld.
+      	    Comision_fld = Comision_fld - post:adt_tarif_fijo
+;      	END IF
+      	REFRESH Comision_fld
+    END IF
+    REFRESH Comision_fld
+	
+	//ImporteNeto es auxiliar para calcular el sellado hasta este momento
+	ImporteNeto = Importe_crem - Comision_fld
+	//Refresh ImporteNeto
+	
+	
+//
+		if (SucSel2_fld.NUMCHARS > 0) then
+		CALL MISCcalculo_sellados(SucSel2_fld)
+	end if
+	//	
+	
+	
+	
+	
+	//calculo acrecentamiento sobre la comision
+	/*******************************/
+   
+   CDS SELECT FROM dsc:post:adt_acreperc_tbl BECOMES dsc:post:adt_acreperc_ctx WHERE \
+   	post:adt_acreperc_aliciva == post:adt_serv_aliciva && \
+   	post:adt_acreperc_cativa == post:IvaCod
+   	CDS FINDFIRST dsc:post:adt_acreperc_ctx NOLOCK
+   	IF (CDSRETVAL == 0)
+   		CDS EXTRACT dsc:post:adt_acreperc_ctx ALL
+	     INIT 22,1
+           calc = (Comision_fld * post:adt_acreperc_aliacre / 100)
+    	 INIT 22,0   		
+   	END IF
+   CDS ENDSELECT dsc:post:adt_acreperc_ctx
+
+	
+	
+/***********************************/	
+	
+	//ImporteNeto = ImporteNeto - calc
+	
+
+	
+	ImporteNeto = ImporteNeto - ImporteSelloEmis - ImporteSelloPag - calc
+	
+	refresh ImporteNeto
+	
+	if (post:enCombo == "S") then // fgb
+		ImporteTotal_fld = ImporteNeto
+	else
+    	ImporteTotal_fld =  \
+			(((((post:costo_opc + Impuesto) + Impuesto_abonado) + Comision_fld) + post:adt_tarif_fijo))
+			;if (siaf:codigo_siaf != 70322 && siaf:codigo_siaf != 70323) then
+				ImporteTotal_fld = ImporteTotal_fld + ImporteNeto
+			;endif
+	endif
+    REFRESH ImporteTotal_fld
+END SUB 
+
+/*******/

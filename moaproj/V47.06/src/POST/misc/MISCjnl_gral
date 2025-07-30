@@ -1,0 +1,443 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_gral
+* NOMBRE
+*   OFB:post:MISCjnl_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_gral
+	LOCAL descuento_aux LIKE descuento
+	LOCAL costo_opc_aux LIKE costo_opc
+	LOCAL cont LIKE cant_opc
+	LOCAL ar_aux LIKE valor_ar
+	LOCAL csar_aux LIKE valor_csar
+	LOCAL tiene_csar_aux LIKE tiene_csar
+	LOCAL tiene_vd_aux LIKE tiene_vd
+	LOCAL tiene_cre_aux LIKE tiene_cre
+	LOCAL valor_dec_aux LIKE valor_dec
+	LOCAl valor_cre_aux LIKE valor_cre
+	LOCAL retval_tmp LIKE lib:err_retval
+	LOCAL cant_opc_aux LIKE cant_opc
+	LOCAL sap_prod_franq_aux LIKE post:sap_prod_franq
+	LOCAL tarifa_label_cc_aux LIKE post:tarifa_label_cc
+	/* Variable local para bloques - Maricel 25/7/2000 */
+	LOCAL imp_bloques_aux LIKE imp_bloques
+	LOCAL ImpServUp_aux LIKE ImpServUP
+	LOCAL ImpSinIva_aux LIKE ImporteSinIva
+	LOCAL ImpConIva_aux LIKE ImporteConIva
+	LOCAL ImpSinIvaNeto_aux LIKE ImporteSinIvaNeto
+	LOCAL ImpConIvaNeto_aux LIKE ImporteConIvaNeto
+	LOCAL cant_aux1 LIKE post:cantidad
+	LOCAL codesp_serv_aux LIKE post:codesp_serv
+	LOCAL prod_serv_aux LIKE post:prod_serv
+	LOCAL codesp_prod_aux LIKE post:codesp_prod
+	LOCAL imp_nemo_aux LIKE post:adt_tarif_imp_nemo
+	LOCAL imp_dest_aux LIKE post:adt_tarif_imp_dest
+	LOCAL imp_peso_aux LIKE post:adt_tarif_imp_peso
+	LOCAL destino_aux LIKE post:destino
+
+	LOCAL DescSinIva_aux LIKE DescSinIva_serv
+	LOCAL BloqueSinIva_aux LIKE BloqueSinIva_serv
+	LOCAL ImpSinIva_serv_aux LIKE ImpSinIva_serv
+
+	LOCAL promo_imp_srv_aux LIKE promo_imp_srv_tot
+	LOCAL promo_imp_blq_aux LIKE promo_imp_blq_tot
+	LOCAL aux_promo_imp_opc LIKE promo_imp_tot_opc
+	LOCAL fld_promo_imp_aux LIKE fld_promo_imp
+	LOCAL promo_tot_Serv_aux LIKE promo_tot_Serv
+	LOCAL importe_bc1_aux LIKE post:importe_bc1
+	LOCAL importe_bc2_aux LIKE post:importe_bc2
+	LOCAL importe_bc3_aux LIKE post:importe_bc3
+	
+	//gpb:PS10695
+	LOCAL l_nombre_transac LIKE siaf:nombre_transac
+	LOCAL l_adt_tran_desc LIKE siaf:adt_tran_desc
+	LOCAL l_longitud LIKE siaf:i
+
+	CALL post:MISCinicio_labels
+	WHILE (cont < 6)
+		MOVE cos_opc[cont] TO cos_opc_aux[cont]
+		MOVE siniva_opc[cont] TO siniva_opc_aux[cont]
+		MOVE cod_opc[cont] TO cod_opc_aux[cont]
+		MOVE promo_imp_opc_tot[cont] TO promo_imp_opc_aux[cont]
+		cont = cont + 1
+	END WHILE
+	
+	/* MDG - Valores para bonificaciones locales */
+	MOVE promo_imp_srv_tot TO promo_imp_srv_aux
+	MOVE promo_imp_blq_tot TO promo_imp_blq_aux
+	MOVE promo_imp_tot_opc TO aux_promo_imp_opc
+	MOVE fld_promo_imp TO fld_promo_imp_aux
+	MOVE promo_tot_Serv TO promo_tot_Serv_aux
+
+	MOVE siaf:importe TO imp_aux/*para imprimir el total en el ticket*/
+	MOVE costo_opc TO costo_opc_aux /*para journalizar costo opcionales en forma individual*/
+	MOVE tarifa TO tarifa_aux
+	MOVE descuento TO descuento_aux
+	MOVE valor_ar TO ar_aux
+	MOVE valor_csar TO csar_aux
+	MOVE tiene_csar TO tiene_csar_aux
+	MOVE tiene_vd TO tiene_vd_aux
+	MOVE tiene_cre TO tiene_cre_aux
+	MOVE valor_dec TO valor_dec_aux
+	MOVE valor_cre TO valor_cre_aux
+	/* Muevo el valor a la variable local de bloques - Maricel 25/7/2000 */
+	MOVE imp_bloques TO imp_bloques_aux
+	// FGB (SAP) 6.10.2000
+	// Resguardo los valores del franqueo antes de la journalizacion de las piezas...
+	MOVE sap_prod_franq TO sap_prod_franq_aux
+	MOVE tarifa_label_cc TO tarifa_label_cc_aux
+	//Resguardo valores para Ventas UP
+	ImpServUp_aux = ImpServUP
+	//Ingresos Brutos
+	ImpSinIva_aux = ImporteSinIva
+	ImpConIva_aux = ImporteConIva
+	ImpSinIvaNeto_aux = ImporteSinIvaNeto
+	ImpConIvaNeto_aux = ImporteConIvaNeto
+	/*Ingresos brutos para opcionales - guardo los importes con y sin iva de
+	los opcionales y el servicio*/
+	cont = 0
+
+	WHILE (cont < MAX_VEC_INGBR)
+	  impciva_vec_aux[cont] = impciva_vec[cont]
+	  impsiva_vec_aux[cont] = impsiva_vec[cont]
+	  cont = cont + 1
+	END WHILE
+	;CALL post:MISCinicio_labels
+
+	/* MLD Guardo los campos de Bienes De Cambio */
+	MOVE codesp_serv TO codesp_serv_aux
+	MOVE prod_serv TO prod_serv_aux
+	MOVE codesp_prod TO codesp_prod_aux
+	MOVE importe_bc1 TO importe_bc1_aux
+	MOVE importe_bc2 TO importe_bc2_aux
+	MOVE importe_bc3 TO importe_bc3_aux
+		
+	MOVE post:adt_tarif_imp_nemo TO imp_nemo_aux
+	MOVE post:adt_tarif_imp_dest TO imp_dest_aux
+	MOVE post:adt_tarif_imp_peso TO imp_peso_aux
+	MOVE post:destino TO destino_aux
+
+	DescSinIva_aux = DescSinIva_serv
+	BloqueSinIva_aux = BloqueSinIva_serv
+	ImpSinIva_serv_aux = ImpSinIva_serv
+
+	cant_opc_aux = cant_opc
+	label_produc = tipo_produc
+
+	//gpb:PS10695 - Inicio
+	l_nombre_transac = siaf:nombre_transac
+	l_adt_tran_desc = siaf:adt_tran_desc
+	CALL post:MISCFtrim(l_nombre_transac)
+	CALL post:MISCFtrim(l_adt_tran_desc)
+	CALL CSR:fld_to_upper(l_nombre_transac)
+	CALL CSR:fld_to_upper(l_adt_tran_desc)
+	l_longitud = l_adt_tran_desc.NUMCHARS
+	l_nombre_transac = SUBSTR(l_nombre_transac,0,l_longitud)
+	IF (l_nombre_transac != l_adt_tran_desc) THEN
+		siaf:nombre_transac = siaf:adt_tran_desc
+	END IF
+	//gpb:PS10695 - Fin
+	
+	IF ((siaf:adt_tran_fliatran == "CST" || adt_serv_piezacont == "T") && (estado_presu == 1 || estado_presu == 4)) THEN
+		IF (cli_tipo != 1) THEN
+			IF (siaf:codigo_siaf != 12901 && siaf:codigo_siaf != 12902) THEN
+				;IF (siaf:codigo_siaf == 13101) THEN
+				IF (siaf:adt_tran_fliatran == "CST") THEN // Trx's Telegraficas
+					CALL MISCjnl_tele
+					LET retval_tmp = -1 //Para que no ejecute la TRANprint
+				ELSE
+					/*journaliza de a 1 las transacciones que tienen track_trace*/
+					CALL MISCjnl
+					LET retval_tmp = RETVAL
+				END IF
+			ELSE
+				/*journaliza de a 1 las transacciones que tienen codigo de control*/
+				CALL MISCjnl_cctrl
+				LET retval_tmp = RETVAL
+			END IF
+
+			MOVE imp_aux TO siaf:importe
+			MOVE tarifa_aux TO tarifa
+			MOVE descuento_aux TO descuento
+			MOVE ar_aux TO valor_ar
+			MOVE csar_aux TO valor_csar
+			MOVE tiene_csar_aux TO tiene_csar
+			MOVE tiene_vd_aux TO tiene_vd
+			MOVE tiene_cre_aux TO tiene_cre
+			MOVE valor_dec_aux TO valor_dec
+			MOVE valor_cre_aux TO valor_cre
+			/* Restauro el valor de la varibles de bonificaciones locales */
+			MOVE promo_imp_srv_aux  TO promo_imp_srv_tot
+			MOVE promo_imp_blq_aux  TO promo_imp_blq_tot
+			MOVE aux_promo_imp_opc  TO promo_imp_tot_opc
+			MOVE fld_promo_imp_aux  TO fld_promo_imp
+			MOVE promo_tot_Serv_aux TO promo_tot_Serv
+
+			/* Restauro el valor de la varible imp_bloques - maricel 25/7/2000*/
+			MOVE imp_bloques_aux TO imp_bloques
+			// FGB (SAP) 6.10.2000
+			MOVE sap_prod_franq_aux TO sap_prod_franq
+			MOVE tarifa_label_cc_aux TO tarifa_label_cc
+			//Ventas UP
+			ImpServUP = ImpServUp_aux
+			//Ingresos Brutos
+			ImporteSinIva = ImpSinIva_aux
+			ImporteConIva = ImpConIva_aux
+			ImporteSinIvaNeto = ImpSinIvaNeto_aux
+			ImporteConIvaNeto = ImpConIvaNeto_aux
+
+			cont = 0
+			WHILE (cont < cant_opc)
+				MOVE cos_opc_aux[cont] TO  cos_opc[cont]
+				MOVE siniva_opc_aux[cont] TO siniva_opc[cont]
+				MOVE promo_imp_opc_aux[cont] TO promo_imp_opc_tot[cont]
+				cont = cont + 1
+			END WHILE
+
+			cont = 0
+			WHILE (cont < MAX_VEC_INGBR)
+				impciva_vec[cont] = impciva_vec_aux[cont]
+				impsiva_vec[cont] = impsiva_vec_aux[cont]
+				cont = cont + 1
+			END WHILE
+
+			/* MLD Restauro los campos de bienes de Cambio */
+			MOVE codesp_serv_aux TO codesp_serv
+			MOVE prod_serv_aux TO prod_serv
+			MOVE codesp_prod_aux TO codesp_prod
+			MOVE importe_bc1_aux TO importe_bc1
+			MOVE importe_bc2_aux TO importe_bc2
+			MOVE importe_bc3_aux TO importe_bc3			
+			MOVE imp_nemo_aux TO post:adt_tarif_imp_nemo
+			MOVE imp_dest_aux TO post:adt_tarif_imp_dest
+			MOVE imp_peso_aux TO post:adt_tarif_imp_peso
+			MOVE destino_aux TO post:destino
+
+			DescSinIva_serv = DescSinIva_aux
+			BloqueSinIva_serv = BloqueSinIva_aux
+			ImpSinIva_serv = ImpSinIva_serv_aux
+
+			cant_aux1 = cantidad
+			cantidad = cant_aux
+
+			CALL post:MISCjnl_TR
+			cantidad = cant_aux1
+
+			IF (retval_tmp >= 0) THEN
+				//gpb:Original
+				//CALL post:TRANprint
+				
+				//gpb:NI50479 - Refacturacion PED
+				IF (!TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN        				
+					CALL post:TRANprint
+				END IF
+			ELSE
+				IF (retval_tmp == -1) //Para imprimir solamente el Ticket (y no el label) cuando es Telegrafia
+					IF (post:estado_presu == 1 && post:importe_acum != 0) THEN
+						// PJM 18-08-98  Tira Auditora
+						//post:tira_auditora = "S"
+						post:tira_auditora = "N"
+						PRINTDOC OFB:post:PRT_Ticket_Postal,docprt,"Imprimiendo Ticket"
+					END IF
+					CLEARFIELD tlr:INDdocs_list
+				END IF
+			END IF
+			CLEARFIELD drv:INDscr
+			CLEARFIELD drv:INDjnl_rtn
+		END IF
+
+		IF (cli_tipo == 1) THEN
+			NroTrn = PreDNroTrn
+			gseqcont = 0
+			//IF (siaf:codigo_siaf == 13101) THEN
+			IF (siaf:adt_tran_fliatran == "CST") THEN
+				CALL MISCjnl_tele
+				LET retval_tmp = -1 //para que no ejecute la TRANprint
+			ELSE
+				CALL MISCjnl   /*journaliza de a 1*/
+				LET retval_tmp = RETVAL
+			END IF
+		
+			MOVE cant_opc_aux TO cant_opc
+		
+			cont = 0
+			WHILE (cont < 6)
+				MOVE cod_opc_aux[cont] TO cod_opc[cont]
+				cont = cont + 1
+			END WHILE
+		    
+			MOVE imp_aux TO siaf:importe
+			MOVE tarifa_aux TO tarifa
+			MOVE descuento_aux TO descuento
+			/* Restauro el valor de la varibles de bonificaciones locales */
+			MOVE promo_imp_srv_aux  TO promo_imp_srv_tot
+			MOVE promo_imp_blq_aux  TO promo_imp_blq_tot
+			MOVE aux_promo_imp_opc  TO promo_imp_tot_opc
+			MOVE fld_promo_imp_aux  TO fld_promo_imp
+			MOVE promo_tot_Serv_aux TO promo_tot_Serv
+			/* Muevo el valor de bloques - Maricel 25/7/2000 */
+			MOVE imp_bloques_aux TO imp_bloques
+			// FGB (SAP) 6.10.2000
+			MOVE sap_prod_franq_aux TO sap_prod_franq
+			MOVE tarifa_label_cc_aux TO tarifa_label_cc
+			//Ventas UP
+			ImpServUP = ImpServUp_aux
+			//Ingresos Brutos
+			ImporteSinIva = ImpSinIva_aux
+			ImporteConIva = ImpConIva_aux
+			ImporteSinIvaNeto = ImpSinIvaNeto_aux
+			ImporteConIvaNeto = ImpConIvaNeto_aux
+			/* MLD Restauro los campos de bienes de Cambio */
+			MOVE codesp_serv_aux TO codesp_serv
+			MOVE prod_serv_aux TO prod_serv
+			MOVE codesp_prod_aux TO codesp_prod
+			MOVE imp_nemo_aux TO post:adt_tarif_imp_nemo
+			MOVE imp_dest_aux TO post:adt_tarif_imp_dest
+			MOVE imp_peso_aux TO post:adt_tarif_imp_peso
+			MOVE destino_aux TO post:destino
+
+			IF (retval_tmp >= 0) THEN
+				//PreDEst = 2
+				//CALL CDSupd_PreDEst(PreDEst)
+				
+				//gpb:Original
+				//CALL post:TRANprint
+				
+				//gpb:NI50479 - Refacturacion PED
+				IF (!TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN        				
+					CALL post:TRANprint
+				END IF
+			ELSE
+				IF (retval_tmp == -1) THEN //Para imprimir solamente el Ticket (y no el label) cuando es Telegrafia
+					IF (post:estado_presu == 1 && post:importe_acum != 0) THEN
+						// PJM 18-08-98  Tira Auditora
+						//post:tira_auditora = "S"
+						post:tira_auditora = "N"
+						PRINTDOC OFB:post:PRT_Ticket_Postal,docprt,"Imprimiendo Ticket"
+					END IF
+					CLEARFIELD tlr:INDdocs_list
+				END IF
+			END IF
+
+			IF (post:estado_presu == 4) THEN
+				/* No se usa más la Tabla CliCCte - Gabriel Falciola
+				CALL CDSadt_clicod_load*/
+				// Cargo Piezas en Tabla de Piezas sin T&T
+				CALL CDScargo_TT
+			END IF
+			CLEARFIELD drv:INDscr
+			CLEARFIELD drv:INDjnl_rtn
+		END IF
+		LET cantidad = cant_aux
+	ELSE
+		//seteo los campos necesarios para la reimpresion de labels para
+		//clientes medios con facturacion diferida - Solicitud 50086
+		CALL MISCset_LabelCM
+	
+		IF (post:estado_presu == 1) THEN
+			CLEARFIELD drv:INDspc_rtn[2]
+			CALL tlr:JNLtran
+			CALL post:MISCjnl_TR
+			
+			//gpb:Original
+			//CALL post:TRANprint
+			
+			//gpb:NI50479 - Refacturacion PED
+			IF (!TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN        				
+				CALL post:TRANprint
+			END IF
+		END IF
+
+		IF (post:estado_presu == 4 ) THEN
+			//Para Cliente con cobro diferido se blanquean los campos y no
+			//se imprime el label, es por eso que se saca la TRANprint fuera del
+			//journal y se restauran los valores correspondientes.
+			IF (post:ImpCC_Min == "S") THEN
+				IF (siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE") THEN
+					CLEARFIELD drv:INDspc_rtn[2]
+				END IF
+				CALL tlr:JNLtran
+				
+				cont = 0
+				WHILE (cont < 6)
+					cos_opc[cont] = cos_opc_aux[cont]
+					siniva_opc[cont] = siniva_opc_aux[cont]
+					cod_opc[cont] = cod_opc_aux[cont]
+					promo_imp_opc_tot[cont] = promo_imp_opc_aux[cont]
+					cont = cont + 1
+				END WHILE
+				
+				siaf:importe = imp_aux/*para imprimir el total en el ticket*/
+				costo_opc = costo_opc_aux /*para journalizar costo opcionales en forma individual*/
+				tarifa = tarifa_aux
+				descuento = descuento_aux
+				valor_ar = ar_aux
+				valor_csar = csar_aux
+				tiene_csar = tiene_csar_aux
+				tiene_vd = tiene_vd_aux
+				tiene_cre = tiene_cre_aux
+				valor_dec = valor_dec_aux
+				valor_cre = valor_cre_aux
+				imp_bloques = imp_bloques_aux
+				sap_prod_franq = sap_prod_franq_aux
+		    tarifa_label_cc = tarifa_label_cc_aux
+				ImpServUP = ImpServUp_aux
+				ImporteSinIva = ImpSinIva_aux
+				ImporteConIva = ImpConIva_aux
+				ImporteSinIvaNeto = ImpSinIvaNeto_aux
+				ImporteConIvaNeto = ImpConIvaNeto_aux
+				promo_imp_srv_tot = promo_imp_srv_aux
+				promo_imp_blq_tot = promo_imp_blq_aux
+				promo_imp_tot_opc = aux_promo_imp_opc
+				fld_promo_imp = fld_promo_imp_aux
+				promo_tot_Serv = promo_tot_Serv_aux
+
+				cont = 0
+				WHILE (cont < MAX_VEC_INGBR)
+					impciva_vec[cont] = impciva_vec_aux[cont]
+					impsiva_vec[cont] = impsiva_vec_aux[cont]
+					cont = cont + 1
+				END WHILE
+
+				codesp_serv = codesp_serv_aux
+				prod_serv = prod_serv_aux
+				codesp_prod = codesp_prod_aux
+				post:adt_tarif_imp_nemo = imp_nemo_aux
+				post:adt_tarif_imp_dest = imp_dest_aux
+				post:adt_tarif_imp_peso = imp_peso_aux
+				post:destino = destino_aux
+
+				DescSinIva_serv = DescSinIva_aux
+				BloqueSinIva_serv = BloqueSinIva_aux
+				ImpSinIva_serv = ImpSinIva_serv_aux
+				IF (siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE") THEN
+				//gpb:Original
+				//CALL post:TRANprint
+				
+				//gpb:NI50479 - Refacturacion PED
+				IF (!TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN        				
+					CALL post:TRANprint
+				END IF
+				END IF
+			ELSE
+				CALL tlr:JNLtran
+			END IF
+		END IF
+	END IF
+
+END SUB
+
+/*******/

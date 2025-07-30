@@ -1,0 +1,156 @@
+/****o* Facturación/OFB:post:FVALvalidaCodBarra
+* NOMBRE
+*   OFB:post:FVALvalidaCodBarra
+* DESCRIPCION
+*   Valida el codigo de barra escaneado en una facturacion o anulación de factura.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:SCRNvalidaCodBarra
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2179
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALvalidaCodBarra
+	LOCAL bError LIKE siaf:i
+	LOCAL l_str LIKE common:csr_string
+	LOCAL bSucVirt LIKE siaf:i
+
+	bSucVirt = (adt_Tipo_Sistema_web != "")
+
+	bError = false
+
+	IF (CodBarrasFact.NUMCHARS == 0) THEN
+		bError = true
+	END IF
+
+	IF (!bError) THEN
+		; primero valido la longitud...
+		IF (CodBarrasFact.NUMCHARS != 40) THEN
+			FPRINT mensajeVal "%s", "ERROR en longitud de codigo de barras"
+			bError = true
+		END IF
+	END IF
+
+	; después el dígito verificador...
+	IF (!bError) THEN
+		CALL MISCvalDigVerifFact(CodBarrasFact)
+		IF (RETVAL != 0) THEN
+			FPRINT mensajeVal "%s", "ERROR en el dígito verificador"
+			bError = true
+		END IF
+	END IF
+
+	; y después el resto...
+	IF (!bError) THEN
+		MOVE "CORAR" TO post:adt_emp_cod
+		CALL post:CDSadt_emp_load
+		IF (RETVAL != 0) THEN
+			FPRINT mensajeVal "%s", "ERROR al obtener datos de la empresa"
+			bError = true
+		END IF
+	END IF
+
+	IF (!bError) THEN
+		IF (adt_emp_cuit != SUBSTR(CodBarrasFact,0,11))
+			FPRINT mensajeVal "%s", "ERROR en el CUIT"
+			bError = true
+		END IF
+	END IF
+
+	IF (!bError) THEN
+		//AUT-2179
+		IF (!OperacionNC) THEN
+			CALL MISCleeEstado(NOTACRED)
+
+			//gpb:NI50479
+			//fuerzo para que vaya por Nota de Credito
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+				RETVAL = 0
+			END IF
+
+			IF (RETVAL == FALSO) THEN
+				IF (SUBSTR(DocInic,0,1) == 1 && SUBSTR(CodBarrasFact,11,2) != CODBAR_FAC_A) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+				IF (SUBSTR(DocInic,0,1) == 2 && SUBSTR(CodBarrasFact,11,2) != CODBAR_FAC_B) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+			ELSE
+				IF (SUBSTR(DocInic,0,1) == 1 && SUBSTR(CodBarrasFact,11,2) != CODBAR_NC_A) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				ENDIF
+				IF (SUBSTR(DocInic,0,1) == 2 && SUBSTR(CodBarrasFact,11,2) != CODBAR_NC_B) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+			END IF
+		ELSE
+			IF (!AnulOperNC) THEN
+				IF (SUBSTR(DocInic,0,1) == 1 && SUBSTR(CodBarrasFact,11,2) != CODBAR_NC_A) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+				IF (SUBSTR(DocInic,0,1) == 2 && SUBSTR(CodBarrasFact,11,2) != CODBAR_NC_B) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+			ELSE
+				IF (SUBSTR(DocInic,0,1) == 1 && SUBSTR(CodBarrasFact,11,2) != CODBAR_FAC_A) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+				IF (SUBSTR(DocInic,0,1) == 2 && SUBSTR(CodBarrasFact,11,2) != CODBAR_FAC_B) THEN
+					FPRINT mensajeVal "%s", "ERROR en el tipo de factura"
+					bError = true
+				END IF
+			END IF
+		END IF
+	END IF
+
+	IF (!bError) THEN
+		IF (SUBSTR(DocInic,1,4) != SUBSTR(CodBarrasFact,13,4))
+			FPRINT mensajeVal "%s", "ERROR en el centro de emision"
+			bError = true
+		END IF
+	END IF
+
+	IF (!bError) THEN
+		CALL CDScai_load_min
+		admin:nro_cai = admin:adt_nro_cai
+		admin:fecha_venc_cai = admin:adt_fecha_cai
+		IF (admin:nro_cai != SUBSTR(CodBarrasFact,17,14)) THEN
+			FPRINT mensajeVal "%s", "ERROR en el CAI"
+			bError = true
+		END IF
+	END IF
+
+	IF (!bError) THEN
+		IF (admin:fecha_venc_cai != SUBSTR(CodBarrasFact,31,8)) THEN
+			FPRINT mensajeVal "%s", "ERROR en la fecha de vencimiento"
+			bError = true
+		END IF
+	END IF
+
+	If (bError) THEN
+		NEXTFIELD FLD:post:CodBarrasFact
+		REFRESH mensajeVal
+		RETURN -2
+	END IF
+
+	SETVALDONE CodBarrasFact
+	
+	UNGETKEY RT_SEND
+
+END SUB
+
+/*******/

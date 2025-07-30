@@ -1,0 +1,133 @@
+/****o* Expedición/OFB:post:SVALtransfOtroCont
+* NOMBRE
+*   OFB:post:SVALtransfOtroCont
+* DESCRIPCION
+*   Rutina de confirmación de la TX de Transferencia de Piezas
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANtransfOtroCont
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALtransfOtroCont
+    /* Transferencia a Otro Contenedor      */
+    /* B. Petrella - Jul. 1998              */
+    /* verifica que se haya seleccionado por lo menos una pieza */
+    /* para la transferencia                        */
+    /* Lee DetTmp (Siempre que haya seleccionado un CteOp de ctrl)*/
+
+	if (!testflag(tlr:tran_flags,correction))
+		
+	    if (Contcargado == FALSE) then
+    	//50242
+    		//IF (post:grupo_apertura.numchars == 0) THEN
+    		call post:CDSVerifGpoApTmp_inc("GpoCteTmp")
+    		IF (RETVAL < 0) THEN
+    			let common:csr_string = "POR FAVOR, SELECCIONE AL MENOS UN GRUPO DE CORTE Y APERTURA."
+    	   		errmsg common:errmsg_list,FLD:common:csr_string
+				CALL MISCrefPzaCont
+    	  		let drv:button = 1
+				call drv:but_up_enable
+				RETURN -2
+			ENDIF
+    			
+        //cargar en la DetTmp las piezas correspondientes a los grupos de corte operativos seleccionados.
+        	CALL CDScargaDetTmp
+        	if (retval < 0) then
+	       		let common:csr_string = "NO EXISTEN PIEZAS PENDIENTES CON LAS CARACTERISTICAS PARA COMPLETAR EL CONTENEDOR."
+    	   		errmsg common:errmsg_list,FLD:common:csr_string
+				CALL MISCrefPzaCont
+    	   		//let drv:button = 0
+				//call drv:but_up_enable
+    	  		let drv:button = 1
+				call drv:but_up_enable
+     			//call csr:restore_currentfield
+     			//INIT 33,0
+        		return (-2)
+        	/*else
+        	   	Contcargado = TRUE
+        	   	CALL MISCprotTransf
+				CALL MISCunprotTransf
+				CALL MISCrefPzaCont*/
+			endif
+        endif
+        
+		call CDSselect_DetTmp
+		if (Contcargado == TRUE) then
+			if (retval < 0) then
+				errmsg common:errmsg_list,"DEBE TRANSFERIR AL MENOS UNA PIEZA"
+				return -2
+			endif
+		endif
+ 		if (Contcargado == TRUE) then
+			move "S"  to siaf:continua_transaccion
+			popup siaf:SCRNcontinua
+			if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+				/* 0x0190 = ESC */
+				return -2
+			endif
+		
+			/* Marca para terminar de procesar */
+			//call CDSextCont_max
+		
+			/* Journaliza con otra pantalla 
+			drv:INDscr = SCR:post:SCRNotroContHdr
+			let orden = 0*/
+		
+			/*MFM - Borro de la tabla temporal GpoCteTmp todos los registros
+		 	correspondientes al operador logueado*/
+			CALL CDSBorro_GpoCteTmp	
+		
+			//50242 - Por cada grupo de corte y apertura cerrado se debe journalizar una cabecera y sus detalles
+			CALL MISCjnl_DetTCont
+			
+			/*MFM - Se obtiene un número de secuencia para journalizar la cabecera y
+			los detalles. Esto es util para la reversa
+			CLEARFIELD post:codseq_dev
+    		CALL CDSobtiene_secuen("CABEC")
+			post:codseq_dev = post:adt_codseq_nro*/
+		else
+			Contcargado = TRUE
+    		 CALL MISCprotLLenChdr
+    		 CALL MISCunprotLlenC
+    		 return -2
+		endif
+		
+    else
+	    
+	    //Borrar TranPend y desmarcar el journal!!
+	    
+	    /* MFM - verifico si puedo reversar el encabezado */
+		CALL CDSreverso_cabecera("2")
+	  	post:err_retval = 0
+		IF (RETVAL == 0) THEN
+  			//tlr:INDdcol_scrn[0] = SCR:post:SCRNtransfHdr
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRNotroContHdr
+  			tlr:INDjnl_append = OFB:post:JNLtransfOtroCont
+			CALL MISCreversa_transac
+  			post:err_retval = -5
+  		END IF
+	  	
+	  	/* MFM - Septiembre 2000 - Reverso los detalles*/
+  		CALL CDSSelect_Piezas("4")
+  		IF (post:err_retval != -5) THEN
+	  		MSGBOX "Ninguna pieza está en condiciones de reversarse.Todas han sido expedidas",0x00,"AVISO"
+	  	END IF
+  		;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+	  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		Resetflag tlr:tran_flags,correction
+       	
+	end if
+	
+END SUB
+
+/*******/

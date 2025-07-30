@@ -1,0 +1,128 @@
+/****o* Sesion Correo/OFB:post:CDSmedioElegido_save
+* NOMBRE
+*   OFB:post:CDSmedioElegido_save
+* DESCRIPCION
+*   Esta rutina graba los medios de pago utilizados en la sesion en la tabla TotMedPago.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCprocMedios_Web,OFB:post:MISCprocesoMedios,OFB:post:MISCpfacil_cap_save
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+Sub post:CDSmedioElegido_save
+
+	journalizacionOk = "N"
+	Cds SELECT FROM Dsc:TblImpreMedio BECOMES DSC:CtxImpreMedio \
+		WHERE (Fld:post:op_operator_id == fld:post:op_operator_id ) && \
+		(siaf:moneda == siaf:moneda)
+	Cds FINDFIRST DSC:CtxImpreMedio  LOCK
+	Let lib:err_retval = cdsretval
+	If (lib:err_retval == -801) THEN
+		Cds CLEARBUFFER DSC:CtxImpreMedio
+		Cds APPEND DSC:CtxImpreMedio \
+		op_operator_id  \
+		post:NroCompPago \
+		siaf:moneda  \
+		DescripMedPag \
+		adt_mp_mon \
+		adt_mp_rest \
+		adt_mp_min \
+		adt_mp_max \
+		adt_mp_auto  \
+		adt_mp_adm \
+		adt_mp_admban \
+		adt_mp_int \
+		adt_mp_dias_plazo \
+		codigo_interno \
+		journalizacionOk \
+		Tipo_Adm \
+		SupMedPago \
+		ovr:ovr_sup_id \
+		adt_mp_viaje \
+		montoEntregado \
+		montoVuelto
+
+		//Agregar todos los datos que se captura!!!!
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTtarjeta,2)
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTcheque,2)
+		// Importes
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTimportes,2)
+
+
+		/**************************************************************************/
+/*		MFM - Preguntar si el medio de pago admite viaje y si el cliente es una UP*/
+		IF (adt_mp_viaje == "S" && adt_mp_diferido == "S" && (post:cli_tipo == CLIUP || cli_tipo == CLIMED))
+		    es_diferido = "D"
+		ELSE
+			es_diferido = "N"
+        END IF
+        /**************************************************************************/
+
+
+		/*El status se graba en esta tabla para el caso de que se haya enviado un
+		mensaje de registro y se caiga el sistema antes de que journalice la
+		captura del mismo. De manera que sabiendo el status del mensaje vè si
+		tiene que journalizar directamente la captura o levantar nuevamente el
+		popup para cargar los datos del cheque*/
+		status_up_dif = 999 //status trucho para saber que todavia no se realizò
+		//el viaje al switch
+		Cds APPEND DSC:CtxImpreMedio \
+		es_diferido \
+		status_up_dif
+
+
+		IF (!TESTFLAG(giros:tran_send_mode,cancelacion)) THEN
+			/*MFM (26.12.2001) Se agrega un campo más que indique, en el caso de que se deba registrar
+			un pago diferido en el switch, si el mismo fue aceptado o no*/
+			post:moneda_status = "002"
+		ELSE
+			post:moneda_status = "003"
+			//Este append ya no es mas necesario porque para la facturación los intereses se toman de la PresuDet
+			/*Cds APPEND DSC:CtxImpreMedio \
+			post:jnl_interes_diferido \
+			post:jnl_iva_int_dif \
+			post:iva_Porcentaje*/
+		END IF
+
+		Cds APPEND DSC:CtxImpreMedio \
+		post:moneda_status
+
+		// Inserto porque uno Nuevo
+		Cds INSERT  DSC:CtxImpreMedio LOCK
+	Else
+		if (consulta_excepcionCM == "S" && siaf:moneda == 02) then
+			//el medio de pago ya existe en la totmediopago y esto es correcto por eso no se emite el mensaje de error
+		else
+			if ( post:pasadaMP == CORRECCION && siaf:moneda == 02 )
+			// Si se esta en la segunda pasada (Modificacion) de la captura 
+			// de medio de pago y es cheque diferido como se obtiene
+			// el valor de la primer pasada esta bien que no se vea el
+			//  mensaje de medio de pago ya seleccionado
+			//MFM - Se actualiza el importe del cheque diferido por si en la segunda pasada se le ingresan los intereses
+				CDS APPEND DSC:CtxImpreMedio \
+							montoEntregado \
+							montoVuelto
+				CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTimportes,2)
+
+				CDS UPDATE DSC:CtxImpreMedio LOCK
+			else
+				MSGBOX "No se puede agregar un medio de pago ya elegido ,puede modificarlo o borrarlo" OFB_OK "ERROR"
+			end if
+
+			Cds EndSelect DSC:CtxImpreMedio
+			Return -2
+		end if
+	End If
+
+	Cds EndSelect DSC:CtxImpreMedio
+END SUB
+
+/*******/

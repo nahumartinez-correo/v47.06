@@ -1,0 +1,265 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVALtran_ie
+* NOMBRE
+*   OFB:siaf:SVALtran_ie
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVALtran_ie
+
+local ProvEmi like siaf:ProvImpuesto
+local motivo_codigo like adt_mot_codigo
+local imp_tran like siaf:importe
+local flia like siaf:adt_tran_fliatran
+local alic	like siaf:adt_mot_aliciva
+
+	; [PAW] --> Si el cliente es un cliente UP, se pidió verificar en la tabla de_
+	;           Unidades de negocio si tiene el flag Bonificación ventas UP en S para_
+	;           permitir la transacción.
+
+	if (post:cli_tipo == 4 && siaf:adt_tran_fliatran != "USR" && post:estado_presu > 1 \
+		&& siaf:adt_tran_fliatran != "PCL" )
+		call post:CDSverificaFliaUP(siaf:adt_tran_fliatran)
+		if (retval == NOTOK)
+			msgbox "LA TRANSACCION NO PERMITE CLIENTE UP",0x00,"Error"
+			return (-2)
+		endif
+	endif
+
+    if (post:estado_presu == 1) && (post:MedPTipMon == "CHEQ") then
+            /* No se puede realizar una transacción en cheques fuera
+            de sesión */
+            Errmsg lst:common:errmsg_list,"Para realizar la captura del cheque debe estar en modo presupuesto"
+            return (-2)
+    end if
+    /* En el caso de que el Codigo de documento no sea
+     TIK_O no imprimo el ticket */
+    motivo_codigo = adt_mot_codigo
+    /* MLD Si estoy en una cobranza de cliente medio o en una facturacion automática
+    no sale el ticket */
+    if (adt_mot_cod_doc != "TICKO" || post:OperacionCob || post:OperacionAut) then
+    	clearfield tlr:INDdocs_list
+    	let imprime_comprobante = "N"
+    endif
+
+	//Se comenta a partir de la V26
+	/************************************************************************/
+    /*// FGB: Si es cliente de Cuentas Corrientes, hay que validar si esta en
+    // condiciones para SAP de realizar esta transaccion.
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+        if (post:cli_tipo == 1 && !testflag(tlr:tran_flags,correction)) then
+            call post:sap_valida_postal
+            if (retval < 0) then
+                return (-2)
+            end if
+        end if
+    end if*/
+    /***********************************************************************/
+
+	/* MLD Modificio para Reingenieria */
+
+	;IF (post:estado_presu == 1 || post:estado_presu == 4) then
+	 IF (post:estado_presu != 4) then		
+	    /*
+        IF (siaf:adt_mot_aliciva > 0) then
+            CALL post:MISCdesglosaIva(ImporteSinSello,siaf:adt_mot_aliciva,1)
+        END IF
+        */
+        if (post:estado_presu == 1)
+            post:importe_origen = siaf:importe
+        end if
+
+		//Si el motivo colecta datos muestro pantalla para tal fin
+		IF (adt_mot_dat_adic == "S")
+			INIT 71 1 //Para que no se pueda clickear otro objeto
+			CALL drv:MISCpopup(scr:SCRNmot_dat_adic,ofb:PDISmot_dat_adic,ofb:PCOLmot_dat_adic,ofb:SVALmot_dat_adic,LST:siaf:BUTmot_dat_adic)
+			IF (LASTKEY == RT_ESC)
+				INIT 71 0
+				RETURN (-2)
+			END IF
+			INIT 71 0
+		END IF
+
+
+	    call siaf:SVALnivel_sup
+	    if (retval < 0) then
+	        if (RETVAL == -3) then
+	            call post:MISCrechazo_transac
+	            return -3
+	        else
+	            return (retval)
+	        endif
+	    endif
+
+        /*Se pide supervision en el caso de que exista un motivo del template que
+        la requiera*/
+        IF (adt_mot_req_sup == "S")
+           IF (siaf:ovr_sup_siaf_id.NUMCHARS == 0)
+                CLEARFIELD siaf:cartel
+                SETFLAG  tlr:tran_flags, supovr_request
+                SETFLAG  siaf:siaf_flags, req_tes
+                SETFLAG  siaf:siaf_flags, req_sup1
+                CALL siaf:MISCovr_process
+                IF (RETVAL < 0)THEN
+                    RETURN (-2)
+                END IF
+               INIT 33,0
+            END IF
+        END IF
+
+	END IF
+
+
+	/*Valido que estas asignaciones no se ejecuten si estoy reversando
+	PS 7945 - Gabriel Falciola*/
+	if (!testflag(tlr:tran_flags,correction)) then
+		/*Seteo los campos necesarios para tener el importe con y sin IVA - Gabriel Falciola*/
+		siaf:ImporteConIva = siaf:ImporteSinSello
+		post:ImporteConIva = siaf:ImporteSinSello
+		siaf:ImporteSinIva = post:ImporteSinIva
+		post:PreDForFis = siaf:adt_mot_formfiscal
+
+		/* Calculo de Ventas UP */
+		post:AliServUP = siaf:adt_mot_aliciva  // Alicuota de IVA
+		post:ImpServUP = siaf:ImporteSinSello // Importe con Iva
+		/* Limpio campos que no utilizo */
+		call csr:cleararray(post:ali_opc)
+		call csr:cleararray(post:ali_opc)
+		call csr:cleararray(post:flia_opc)
+    	call csr:cleararray(post:cos_opc)
+    	clearfield post:adt_tarif_fijo
+    	clearfield post:adt_tarif_fj_aliciva
+    	clearfield post:adt_tarif_uneg
+	end if
+
+	if (post:estado_presu != 1 && post:estado_presu != 4)
+		/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago - Gabriel Falciola*/
+		call post:MISCAcumTotalesSes
+
+		/*Se cambió el tratamiento para Impuesto de Sellos - Gabriel Falciola*/
+		call post:MISCImpSellosTratam("ING/EGR")
+	end if
+
+	if (post:estado_presu == 1 || post:estado_presu == 4) then
+
+	     if (siaf:codigo_siaf == 6800 || siaf:codigo_siaf == 6600 || siaf:codigo_siaf == 6810)
+	        //Ingresos o Egresos Varios. Acumulo en la TotalTransac. Hernán.
+	        ;call post:MISCTotalTransac(siaf:motivo)
+	        Fprint common:csr_string_171 "%s%s%s" siaf:motivo,adt_mot_modulo,adt_mot_submodulo
+                call post:MISCTotalTransac(common:csr_string_171)
+	     else
+	        // Motivos. Acumulo en la TotalTransac. Hernán.
+	        call post:MISCTotalTransac(motivo_codigo)
+	        ;Fprint common:csr_string_171 "%s%s%s" siaf:motivo,adt_mot_modulo,adt_mot_submodulo
+                ;call post:MISCTotalTransac(common:csr_string_171)
+	     end if
+	end if
+
+	/* Limpio estos campos porque van en el journal para
+	templates */
+	clearfield post:ver_anulacion
+	clearfield post:cod_agrupacion
+
+
+
+/****************************************************************************
+     Si se imprime comprobante y el codigo de secuenciador
+     es distinto de blanco busco el nro. de secuenciador para
+	 imprimir en el comprobante. Si no tiene codigo de secuenciador
+     el nro de impre lo debe ingresar el cajero.
+     Ademas controlo que este en la etapa de inicio o en la de
+     fin de sesion y que no sea reversa para que no lo vuelva
+ 	 a calcular.
+****************************************************************************/
+    /* MLD Si estoy en una cobranza de cliente medio o en una facturacion automática
+    no sale el ticket */
+
+	if (adt_mot_codseq != " ") && ((post:estado_presu == 1) || \
+	(post:estado_presu == 4)) && \
+    (!testflag(tlr:tran_flags,correction)) && \
+    (!post:OperacionCob) && \
+    (!post:OperacionAut) then
+		call post:CDSobtiene_secuen(adt_mot_codseq)
+	    let nro_impre = post:adt_codseq_nro
+	    refresh nro_impre
+	endif
+
+	siaf:adt_mot_codigo = siaf:motivo
+	call post:MISCRestFlia
+	//Tratamiento Cliente Medio
+	if (post:cli_tipo == CLIMED && post:estado_presu == 3 && post:tran_presu_est == "M" && post:Dcto_CliMedAux > 0) then
+		// tengo que borrar el descuento de la presudet!!
+		call post:CDSBorroDctoCM
+	end if
+	
+   	if (post:cli_tipo == CLIMED && post:estado_presu != 4) then
+	   /*if (post:ConvenioProducto || \
+	      (post:ConvenioSesion && !post:ConvenioSesionV)) then*/
+	    if (post:Dcto_CliMed > 0) then
+			init 22,1
+			post:Imp_DctoCliMed = (siaf:importe * post:Dcto_CliMed) / 100
+			init 22,0
+	   	else
+			post:Imp_DctoCliMed = 0
+		endif
+	endif
+
+	call post:MISCGrabaDetalleTrn
+
+
+	drv:INDscr = SCR:siaf:SCRNmotivo_jnl
+
+
+    	if (post:estado_presu == 1)
+           if (!testflag(tlr:tran_flags,correction))
+            	call tlr:JNLtran
+            	//post:importe_origen = siaf:importe
+           	if (siaf:codigo_siaf == 6800 || siaf:codigo_siaf == 6810)
+                	Call post:MISCcap_teclas_rap(siaf:importe)
+            	else
+                	imp_tran = importe * -1
+                	Call post:MISCcap_teclas_rap(imp_tran)
+            	end if
+            else
+            	call tes:MISCreverso_sesion
+            end if
+    	end if
+		//Tratamiento Cliente Medio
+    	if (post:cli_tipo == CLIMED && post:estado_presu != 4) then
+    		post:PreDNroTrnAsoc = post:PreDNroTrn 
+    		if (post:Dcto_CliMed > 0) then
+    			post:tarifa = siaf:importe
+    			siaf:importe = post:Imp_DctoCliMed
+    			post:prod_DescuentoCM = siaf:nombre_transac
+    			//Para interfaz de Nina: Calculo importe de vectores
+				CALL post:CDSCalcTotVentasCM(siaf:adt_mot_aliciva,post:Imp_DctoCliMed)
+    			call post:MISCagregTrnDctoCM\
+			(siaf:adt_mot_fliatran,siaf:adt_mot_aliciva,siaf:importe)
+    		else
+    			if (post:estado_presu == 3) then
+    				post:tarifa = siaf:importe
+    				siaf:importe = post:Imp_DctoCliMed
+    				//Para interfaz de Nina: Calculo importe de vectores
+					CALL post:CDSCalcTotVentasCM(siaf:adt_mot_aliciva,post:Imp_DctoCliMed)
+    				CALL post:MISCagregTrnDctoCM\
+				(siaf:adt_mot_fliatran,siaf:adt_mot_aliciva,siaf:importe)
+    			endif
+    		endif
+    	end if        	
+	unprotfield post:Dcto_CliMed
+   	return (retval)
+END SUB
+
+/*******/

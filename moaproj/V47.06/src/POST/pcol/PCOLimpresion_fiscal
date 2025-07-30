@@ -1,0 +1,257 @@
+/****o* Pendientes de agrupación/OFB:post:PCOLimpresion_fiscal
+* NOMBRE
+*   OFB:post:PCOLimpresion_fiscal
+* DESCRIPCION
+*   Rutina de Precollect de la TX Fin de Sesion del presupuesto.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOLimpresion_fiscal()
+    local LOC_ERROR like lib:err_retval
+    local l_importe_aux like post:importe
+    local l_importe_tmp like siaf:importe
+    local l_retval_aux like lib:err_retval
+    local HAY_TX like lib:err_retval 
+    local ing_item_cm like post:ImpCC_Min
+
+    enSesion = "S"
+    HAY_TX = 0
+    // PJM toque Magico
+    setflag tlr:state_flags,tran_active
+    
+    Call post:MISCdeshab1_reqfactu // cgw:deshabilita req_factura, setea segun corresponda
+    
+	call MISCleeEstado(TERMINO)
+	if (retval != VERDAD && !huboEscape)   // Se agregó esto ultimo por si ejecuta de nuevo la pcol por un escape.
+		sistCaido = "S"
+		recienCaido = "S"
+		;grabo la cadena de error en la presu.
+		call post:MISCregErrorSes("CAIDA", estAnul)
+		;genero el campo post:Importe_sin_iva.
+		Call post:MISCtotal_sin_iva
+	else
+		Importe_sin_iva = 0
+	endif
+	huboEscape = false
+	LOC_ERROR = 0
+	Call post:MISCprotege_doc
+	If (testflag(tlr:tran_flags,correction))
+		Return
+	Endif
+	Protfield DocFiscal
+	If (PresEst == 3)
+		Return (0)
+	Else
+		ClearField DocInic
+		ClearField DocFin
+	Endif
+	Refresh DocInic
+	Refresh DocFin
+
+	If (Modo != "R")
+		call post:CDStraeNum
+		if (adt_DocInic.numchars != 0)
+			DocInic = adt_DocInic
+			DocFin = adt_DocFin
+		endif
+	endif
+
+	if (sistCaido != "S")
+		CALL MISCtrn_a_confirmar
+		IF (Retval < 0)
+			LOC_ERROR = -1
+			ungetkey RT_SEND
+			ungetkey RT_SEND
+			HAY_TX = -1
+		ELSE
+			//Guardo la familia porque se pierde
+	    	//PS 9225:resguardo el campo ImpCC_Min
+	    	ing_item_cm = ImpCC_Min
+	    	Call post:MISCarmo_ImpreTmp
+			l_retval_aux = retval
+       		siaf:adt_tran_fliatran = siaf:adt_fliatran_tmp
+	       	// sba 20001106 - Actualizo el visor despues de los envios
+	        l_importe_aux = post:importe
+    	    l_importe_tmp = siaf:importe
+			if (post:Modo == "R") then
+	       		siaf:importe = post:importe_sesion
+			endif
+       		post:importe = post:importe_sesion
+			call post:MISCmensaje_visor("D")
+			post:importe = l_importe_aux
+			siaf:importe = l_importe_tmp
+			retval = l_retval_aux
+			ClearField post:DocInic
+			ClearField post:DocFin
+			ClearField post:cant
+			If (Retval > 0)
+				If (cli_tipo == OCASIONAL || cli_tipo == CLIUP || cli_tipo ==  CLIMED )
+					Select (IvaCod)
+						Case FACTURAA
+						Case FACTURAA2
+						Case REGIMSIMP
+							Tipo_Formulario = FACTURA_A
+							DocFiscal = "FACTURA A"
+							/*Si es NC a CM cambio el doc fiscal - Gabriel Falciola*/
+							if (OperacionNC) then
+								DocFiscal = "NOTA DE CREDITO A"
+							end if
+							call MISCverifMonto
+							call MISCmuestraPaginas("S")
+							Call post:MISCtotal_sin_iva							
+							Call post:MISCdeshab2_reqfactu // cgw:deshabilita y setea req_factura							
+							Break
+						Case TICKFACTB
+						Case TICKFACTB2
+						//Case REGIMSIMP
+						Case TRIBNOIDENT
+							Tipo_Formulario = FACTURA_B
+							DocFiscal = "FACTURA B"
+							/*Si es NC a CM cambio el doc fiscal - Gabriel Falciola*/
+							if (OperacionNC) then
+								DocFiscal = "NOTA DE CREDITO B"
+							end if
+							call MISCverifMonto
+							If ( Tipo_Formulario == FACTURA_B )
+								call MISCmuestraPaginas("S")
+							Endif
+							Call post:MISCdeshab2_reqfactu // cgw:deshabilita y setea req_factura
+							Break
+						Case TICKFACTB3
+						    /* Fijar Tipo Fomulario Consumidor Final */
+						    call post:MISCTipoFormularioCF
+						    If (Retval < 0)
+			                    LOC_ERROR = -1
+			                    ungetkey RT_SEND
+						    Endif
+							Break
+					End Select
+				Else
+					Tipo_Formulario = IRP
+					DocFiscal = "IR"
+					Call post:MISCprotege_doc
+				Endif
+			Else
+				LOC_ERROR = -1
+				DocFiscal  = ""
+				IF (post:Modo != "R") THEN
+					//cgw:Solo se muestra en sesion msgbox de tx. s/form.asociado					
+					/*PS 9225: Si estoy en una sesion de CM con modalidad Facturacion Diferida o haciendo una
+					  cobranza de Facturas no se debe emitir el mensaje*/
+					
+					if ((ing_item_cm == "S") || (OperacionCob && post:importe_sesion == 0) || (emite_mensaje == "S") || (OperacionCan) || (post:Adelanto_TB)) then
+						//no emitir mensaje
+
+						//cgw:NI50244 - Transferencias Bancarias.
+						//Se agrego al If anterior la condicion que si Adeltanto de Transf.Bancarias (post:Adelanto_TB) no muestre el msgbox "TRANSACCIONES SIN FORMULARIO ASOCIADO"
+						//Lo mismo si es Cobranzas de Facturas Vencidas (post:OperacionCan) (Flor M.)
+					else				    	
+				    	MsgBox "TRANSACCIONES SIN FORMULARIO ASOCIADO",OFB_OK,"Aviso"
+				    end if
+				END IF
+				ungetkey RT_SEND
+				ungetkey RT_SEND
+			Endif
+		ENDIF
+	endif
+
+	IF (LOC_ERROR < 0)
+		If (Modo == "R")
+			If (post:nro_impre.numchars == 0)
+				// Este seria el Caso que este en modo rapido y salio con esc
+				Call post:MISCclear_FinSesion
+
+				/*Este mesnaje se envia puesto que queda el fin de sesion en blanco cuando
+				el sistema se cae luego de grabar la tx de giros pero antes de grabar la
+				captura y no se pueden recuperar los datos de la PresuDet porque nunca fueron
+				grabados.(tx post venta de giros)
+				Para que este mensaje sea visible hay que considerar tres cosas:
+				-La familia: tiene que ser para una tx correspondiente a giros
+				-El status: unicamente si la tx ha sido aceptada por el switch, ya que en caso
+						contrario es normal que grabe el fin de sesion en blanco
+				-El formulario fiscal asociado: ya que si la tx no emite factura, como en el caso
+					de un pago de giros, es normal que grabe el fin de sesion en blanco */
+				IF (giros:flia_tran_aux == "CSM" && giros:PreDForFis_aux != "" && \
+				    giros:status_aux == HOST_ACCEPTED)
+				    //cgw:si el servicio no tiene captura no muestro mensaje de error.
+				    IF (post:importe_sesion.numchars > 0 && post:importe_sesion > 0) THEN
+					Fprint common:csr_string "Error en el Presupuesto Nro: %e. Por favor, comuniquese con Soporte de Sucursales",post:PresNro
+					MSGBOX common:csr_string,0x00,"ATENCION"
+				    END IF    
+				END IF
+			Else
+				DocFiscal = "TICKET"
+				Fprint DocInic "%1.1s%04.4s%08.8s0" "4",\
+				substr(op:op_branch_id,1,4),nro_impre
+				DocFin  = DocInic
+			Endif
+			// PJM 1999-12-01 por el problema de Especies por teclas rapidas que tenian Iva
+			//Importe_sin_iva = post:importe_sesion
+			Importe_sin_iva = post:TotalSinIva
+			ClearField post:TotalSinIva
+			Tipo_Formulario = 4
+		Else			
+			Call post:MISCclear_FinSesion
+			Call post:MISCdeshab1_reqfactu // cgw:deshabilita req_factura, setea segun corresponda
+		Endif
+		// Seteo el Estado como Ya Impreso
+		PresEst = 3
+		Call CDSadt_presu_estado
+		Call post:MISCprotege_doc
+		DisableControl drv:PBcb0
+		// Lo Unico que le queda es dar enter en la transaccion
+	Endif
+
+	Refresh DocInic
+	Refresh DocFin
+	Refresh DocFiscal
+
+	/*Se agrega que si el importe total de la Sesion es 0, no se realicen las validaciones e
+	ingresos de los campos DocInic y DocFin - Gabriel Falciola*/
+	if (post:importe_sesion <= 0)
+		protfield DocInic
+		protfield DocFin
+		protfield cant
+		;Si la transaccion es la de Cobranza a Cliente Medio, e involucra una factura con saldo positivo
+		;debo imprimir un recibo que contiene el numero de factura, por lo que debe imprimirse despues de
+		;la impresion de la factura. (esto lo indica el flag (post:ImprimeRecCob)
+		if (!post:rechazoDiferido && HAY_TX == 0) then
+			call post:MISCImprimoRecCM
+		end if		
+	end if
+	if (sistCaido == "S")
+		setvaldone DocInic
+		setvaldone DocFin
+		ungetkey RT_SEND
+	else
+		If (Modo != "R")
+			; para marcar que ya empezo el manejo de caidas.
+			; primero grabo el importe para que lo levante en caso de caida.
+			call post:CDSpresu_imp_save
+			call CDSgrbEstado("OK_")
+		endif
+	endif
+	//PS10390: Se limpia el campo revTicket. El mismo queda sucio luego de finalizar
+	//una sesion teclas rapidas que imprima Ticket. Si lo que se hace a continuacion 
+	//es una reversa de un IRP, se produce un error, ya que se le asocia una 
+	//"NOTA DE RECIBO" al DocFiscal cuando no corresponde.
+	clearfield revTicket
+	if (DocFiscal == "TICKET")
+		revTicket = "S"
+	else
+		clearfield revTicket
+	end if
+END SUB
+
+/*******/

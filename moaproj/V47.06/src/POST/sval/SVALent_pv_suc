@@ -1,0 +1,91 @@
+/****o* Pendientes de agrupación/OFB:post:SVALent_pv_suc
+* NOMBRE
+*   OFB:post:SVALent_pv_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALent_pv_suc  //SVALstock_prodvs
+
+	LOCAL Lpos        LIKE post:idx
+	LOCAL LineaError  LIKE common:csr_string
+	
+	if (testflag(tlr:tran_flags,correction)) then
+		;para la reversa tengo que controlar que el stock no quede negativo
+		fld:adt_stock_coddep = 0
+		fld:adt_stock_codprod = adt_prodvs_cod
+		call CDSstock_load
+		if (siaf:cantidad > (adt_stock_stock - adt_stock_reserva)) THEN	    	
+			msgbox "No se puede reversar - Stock insuficiente",0x00,"ERROR"
+			return (-2)
+		end if
+	end if   
+    
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		CALL post:MISChayPicksal_pv_CM
+		IF (RETVAL < 0) THEN	      
+			MSGBOX "NO SE HAN SELECCIONADO PRODUCTOS.",0x00,"AVISO"
+			RETURN (-2)
+		END IF    	    	    
+
+		MOVE "S" TO siaf:continua_transaccion
+		POPUP siaf:SCRNcontinua
+		IF (siaf:continua_transaccion == "N" || LASTKEY == 0x0190 ) THEN
+			call csr:restore_currentfield
+			INIT 33,0
+			return -2
+		END IF
+	END IF
+    
+	CALL siaf:SVALnivel_sup
+	IF (RETVAL < 0) THEN
+		return (-2)
+	END IF
+
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		//cgw:recorro el picklist con las salidas de prod.vs CM.
+		Lpos = PL_GETITEM
+		DO
+			CALL csr:myPickcontrol(DSC:Picksal_pv,post:linea_spvCM,Lpos)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+			tes:sucursal = SUBSTR(post:linea_spvCM,0,5)
+			post:adt_prodvs_cod = SUBSTR(post:linea_spvCM,8,10)
+			post:adt_prodvs_desc = SUBSTR(post:linea_spvCM,21,40)
+			siaf:cantidad = SUBSTR(post:linea_spvCM,62,7)
+			post:adt_prodvs_tarifa = SUBSTR(post:linea_spvCM,70,10)
+     
+			fld:adt_stock_codprod = adt_prodvs_cod
+			fld:adt_stock_coddep = 00
+			; PS9385
+			; Leo cada producto para refrescar todos los 
+			; campos que se journalizan *** MDG
+			call post:CDSprodvs_load
+			CALL CDSstock_load            
+			adt_stock_stock = adt_stock_stock + siaf:cantidad
+			tes:es_tesoro = "S"
+			siaf:importe = siaf:cantidad * post:adt_prodvs_tarifa
+
+			UNGETKEY 0x190
+			FLD:drv:INDjnl_rtn = OFB:post:JNLtransf_pv
+			CALL tlr:JNLtran
+			Lpos = Lpos + 1
+		LOOP
+		CLEARFIELD drv:INDjnl_rtn        
+	END IF
+END SUB
+
+/*******/

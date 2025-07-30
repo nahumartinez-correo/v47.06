@@ -1,0 +1,199 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVALmonto_operador
+* NOMBRE
+*   OFB:siaf:SVALmonto_operador
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVALmonto_operador
+	local varl_total_efvo like siaf:importe
+	local total_pases like siaf:importe
+	local importe_neto like post:importe_origen
+	local total_aux like post:importe_origen
+	    
+	local flag like siaf:imprime_comprobante
+	local imp_aux like siaf:importe
+	local total_pases_parcial like siaf:importe
+	local total_pases_dol like siaf:importe
+	local varl_total_caja like siaf:importe
+	local importe_neto_coti like post:importe_origen
+	local total_pases_efec like siaf:importe
+	                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+	/* Esto lo puedo controlar únicamente si la transacción captura Medio de Pago
+	o si es modo rapido */
+	if (siaf:moneda == 99) 
+		return (0)
+	end if
+	
+	/*Por ahora No controlo la extraccion de subtesoro, la salida de efectivo ni el deposito en subtesoro */
+	if (siaf:codigo_siaf == 8990 || siaf:codigo_siaf == 8620 || siaf:codigo_siaf == 8910) then
+		return (0)
+	end if
+	
+	if ((drv:dt_app != 4) && !testflag(tlr:tran_flags,correction))then
+		/* Si la moneda es pesos o dolares se controla
+		los límites de dinero permitidos para cada una */ 
+		varl_total_caja = tefectivo_vec[siaf:moneda] + tefec_inic_vec[siaf:moneda] 
+	
+		if (siaf:moneda == 1) then
+			let total_pases_dol = 0
+			call siaf:CDStotal_en_pases("N",op:op_operator_id,siaf:moneda,total_pases_dol)
+		end if
+	
+		post:adt_mp_cod = siaf:moneda
+		
+		call post:CDSadt_MedPago_load
+	
+		flag = "N"
+	
+		/* Para calcular el importe de la transaccion debo sumar los dos importes */
+		/* Ademas si alguno de los dos contrla encaje debo calcular el total */
+		/* MLD Las transacciones que utilizan multiples medios de pago dejan 
+		los importes de cada medio de pago en un array. Se deben sumar aquellos
+		que forman parte del encaje */
+		if (post:Modo == "R" && siaf:codigo_siaf == 6820) ||\
+			(siaf:codigo_siaf == 8820 ) then
+			call post:MISCtotal_Imp_trx(importe_neto_coti)
+			if (retval == 0)
+				post:adt_mp_encaje = "S"
+			end if
+		else
+			let importe_neto = post:importe_origen
+	
+			/* Si es modo rapido el importe esta en pesos*/
+			if (post:Modo == "R") then
+				importe_neto = siaf:importe
+			end if
+	
+			call post:MISCconvierto_coti2(importe_neto,importe_neto_coti)       
+			if (post:importe_origen < 0) then
+				importe_neto = importe_neto * -1
+				importe_neto_coti = importe_neto_coti * -1
+			end if		
+		end if
+	
+		/* Si el medio de pago está involucrado en el encaje */
+		if (post:adt_mp_encaje == "S") then
+	
+			flag = "S"
+			total_pases = 0
+			varl_total_efvo = 0
+	
+			/* Me fijo que los totales de todos los medios de pago que intervienen
+			no superen al maximo */
+			CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX WHERE \
+				(post:adt_mp_encaje == "S")
+			cds findfirst DSC:post:MEDIOS_CTX nolock
+			do
+				if (cdsretval < 0) then
+					cds endselect dsc:post:MEDIOS_CTX
+					break
+				end if
+				cds extract dsc:post:MEDIOS_CTX all
+					
+				if (post:adt_mp_adm == "G") then
+					call siaf:CDStotal_en_pases("N",op:op_operator_id,post:adt_mp_cod,total_pases_parcial)
+				else
+					call siaf:CDStotal_en_pases_ch("N",op:op_operator_id,post:adt_mp_cod,total_pases_parcial)
+				end if       			
+				if (total_pases_parcial > 0) then
+					call post:MISCconvierto_coti2(total_pases_parcial,total_aux)
+				else
+					total_aux = 0
+				end if
+				total_pases = total_pases + total_aux
+	
+				imp_aux = tefectivo_vec[post:adt_mp_cod] + tefec_inic_vec[post:adt_mp_cod] 
+	
+				/* Si estoy en una captura, tengo importes que aun no se totalizaron*/
+				//cgw:Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+				if (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097) then
+					imp_aux = imp_aux + siaf:suma_monto_vec[post:adt_mp_cod]
+				end if
+	
+				if (imp_aux > 0) then
+					call post:MISCconvierto_coti2(imp_aux,total_aux)
+				else
+					total_aux = 0
+				end if
+				varl_total_efvo = varl_total_efvo + total_aux
+	
+				cds findnext dsc:post:MEDIOS_CTX nolock
+			loop
+		end if
+	
+		let post:adt_mp_cod = siaf:moneda
+		call post:CDSadt_MedPago_load
+	
+		SELECT (afecta_efectivo)
+			CASE "+"
+				IF (((flag == "S") && \
+					((varl_total_efvo + importe_neto_coti + total_pases) > tlr:op_cash_max)) || \
+					((moneda == 1) && \
+					((varl_total_caja + importe_neto + total_pases_dol) > tlr:op_cash_max_dol))) THEN
+					call MISClim_efvo_ovr_set // setea flags de supervision
+				ELSE
+					IF (((flag == "S") && \
+						((varl_total_efvo + importe_neto_coti + total_pases) < tlr:op_cash_min)) || \
+						((moneda == 1) && \
+						((varl_total_caja + importe_neto + total_pases_dol) < tlr:op_cash_min_dol))) THEN
+						call MISClim_efvo_ovr_set // setea flags de supervision
+					END IF
+				END IF
+				BREAK
+			CASE "-"
+				//cgw:verificar si hay pases realizados al operador
+	
+				if (varl_total_caja - importe_neto < 0) then
+					total_pases_efec = 0
+					CALL post:MISCverifica_pases(siaf:moneda,total_pases_efec) 
+					varl_total_caja = varl_total_caja + total_pases_efec
+					if (varl_total_caja - importe_neto < 0) then
+						IF (siaf:codigo_siaf == 6675) //Cancelacion CCT
+							fprint common:csr_string "No cuenta con el medio de pago '%s' suficiente en caja para poder realizar la anulacion.",post:adt_mp_desc
+						ELSE
+							let common:csr_string = "(L) SALDO EN CAJA NO PUEDE SER MENOR QUE CERO"
+						END IF
+						errmsg common:errmsg_list,fld:common:csr_string
+						if (post:pasadaMP == 3) then //en la 2da captura.
+							msgbox "SOLICITE UN PASE",0X00,"AVISO"
+						end if
+						return (-2)
+					end if
+					//cgw:marca en teso_mov para obligar a realizar los pases.
+					CALL post:MISCmarca_pases(moneda)
+				end if
+						    
+				IF (((flag == "S") && \
+					((varl_total_efvo - importe_neto_coti + total_pases) > tlr:op_cash_max)) || \
+					((moneda == 1) && \
+					((varl_total_caja - importe_neto + total_pases_dol) > tlr:op_cash_max_dol))) THEN
+					call MISClim_efvo_ovr_set // setea flags de supervision
+				ELSE
+					if (((flag == "S") && \
+						((varl_total_efvo + total_pases - importe_neto_coti) < tlr:op_cash_min)) || \
+						((moneda == 1) && \
+						((varl_total_caja + total_pases_dol - importe_neto) < tlr:op_cash_min_dol))) THEN
+						call MISClim_efvo_ovr_set // setea flags de supervision
+					end if
+				end if
+				BREAK
+			CASE ELSE
+		END SELECT
+	end if
+	RETURN (0)
+END SUB
+
+/*******/

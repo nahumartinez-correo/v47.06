@@ -1,0 +1,138 @@
+/****o* Pendientes de agrupación/OFB:post:CDSpv_cod_sel
+* NOMBRE
+*   OFB:post:CDSpv_cod_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpv_cod_sel
+	LOCAL cant_stk like post:cantidad2
+	LOCAL encontro LIKE siaf:i
+
+	encontro = 0
+	call csr:f_sanewpl dsc:post:pic_prod_stk,PIC:post:PICprod_stk
+
+	CDS SELECT FROM dsc:post:adt_prodvs_table BECOMES dsc:post:adt_prodvs_context
+	CDS FINDFIRST dsc:post:adt_prodvs_context NOLOCK
+	LET lib:err_retval = CDSRETVAL
+	DO 
+		IF (lib:err_retval != 0)
+			BREAK
+		END IF
+		CLEARFIELD post:adt_prodvs_prepaq
+		CDS EXTRACT dsc:post:adt_prodvs_context all
+		
+
+		CDS SELECT FROM dsc:post:adt_stock_table BECOMES dsc:adt_stock_context \
+        where adt_stock_codprod == post:adt_prodvs_cod && \
+              adt_stock_stock != 0 && \
+              adt_stock_coddep == 0
+		CDS FINDFIRST dsc:post:adt_stock_context NOLOCK
+			
+		IF (CDSRETVAL == 0)
+				
+			CDS EXTRACT dsc:post:adt_stock_context all
+				
+			cant_stk = post:adt_stock_stock - post:adt_stock_reserva
+			
+			if (cant_stk > 0)
+				Fprint common:csr_string "%-10.10s   %-5.5s %12.12e %-40.40s% -1.1s", \
+				post:adt_prodvs_cod				\
+				cant_stk						\
+				post:adt_prodvs_tarifa			\
+				post:adt_prodvs_desc		\
+				post:adt_prodvs_prepaq
+				
+				call csr:f_saaddpl dsc:post:pic_prod_stk common:csr_string	
+				
+				Let encontro = 1
+			end if
+					
+		END IF	//Correspondiente al control del stock		
+		CDS ENDSELECT dsc:post:adt_stock_context
+		CDS FINDNEXT dsc:post:adt_prodvs_context nolock
+		LET lib:err_retval = CDSRETVAL
+	LOOP
+	CDS ENDSELECT dsc:post:adt_prodvs_context
+
+	IF (encontro == 0) THEN
+        //cgw:estaban quedando sucios
+        CLEARFIELD post:adt_prodvs_cod
+		CLEARFIELD post:adt_prodvs_tarifa
+		CLEARFIELD post:adt_prodvs_desc
+        CLEARFIELD post:adt_prodvs_codbarra
+        CLEARFIELD siaf:cantidad
+        REFRESH post:adt_prodvs_cod
+		REFRESH post:adt_prodvs_tarifa
+		REFRESH post:adt_prodvs_desc
+        REFRESH post:adt_prodvs_codbarra
+        REFRESH siaf:cantidad
+        CLEARFIELD post:adt_prodvs_prepaq
+		MSGBOX "NO SE ENCONTRARON PRODUCTOS",OFB_OK,"ERROR"
+		RETURN (-2)
+	END IF
+
+    //cgw:para que no arrastre la descripcion del ultimo producto leido en el do-loop.
+    CLEARFIELD post:adt_prodvs_desc
+    REFRESH post:adt_prodvs_desc
+    CLEARFIELD post:adt_prodvs_prepaq
+    
+    call csr:f_sadopl dsc:post:pic_prod_stk common:csr_string	
+    LET lib:err_retval = RETVAL
+    call csr:f_sadroppl dsc:post:pic_prod_stk
+
+	IF (lib:err_retval >= 0) THEN
+		Let post:adt_prodvs_cod = substr(common:csr_string,0,10)
+		Let	post:adt_prodvs_prepaq = substr(common:csr_string,72,1)
+		   //PREPAQ 
+		   //CENTRAL DE TIMBRES solo PRODUCTOS PREPAQ
+        if (post:cant_barras == "4") then
+        		 if (post:adt_prodvs_prepaq != "S") then
+			        	 	CALL CSR:proc_list(170,LST:LISTmult_pv) //clear
+		        			CALL CSR:proc_list(190,LST:LISTmult_pv) //refresh
+			        	 	MSGBOX "No corresponde a un Producto PrePaq.",0x00,"Error"
+			        		return -2
+	         		endif
+	      else
+					//si es ORIGEN/DESTINO SUCURSAL permitir seleccionar cualquier producto
+						if (post:cant_barras != "1")
+						//ORIGEN/DESTINO != SUCURSAL Y REGION METROPOLITANA NO ADMITE PREPAQ
+			      		if  (post:region == "1" && post:adt_prodvs_prepaq == "S") then
+			        	 	CALL CSR:proc_list(170,LST:LISTmult_pv) //clear
+		        			CALL CSR:proc_list(190,LST:LISTmult_pv) //refresh
+			        	 		MSGBOX "Producto PrePaq no corresponde.",0x00,"Error"
+			        		return -2
+	         		endif
+	         	endif
+	      endif
+
+		
+		call CDSprodvs_load
+		Let post:adt_stock_codprod = substr(common:csr_string,0,10)
+		Let post:adt_stock_coddep = 0
+		call CDSstock_load
+		;Let post:adt_stock_stock = substr(common:csr_string,25,5)
+	ELSE
+		CLEARFIELD post:adt_prodvs_desc
+		CLEARFIELD post:adt_prodvs_cod	
+    CLEARFIELD post:adt_prodvs_codbarra
+    CLEARFIELD post:adt_prodvs_tarifa
+    CLEARFIELD siaf:cantidad
+    CLEARFIELD post:adt_prodvs_prepaq
+	END IF
+
+END SUB
+
+/*******/

@@ -1,0 +1,122 @@
+/****o* Giros Masivos/OFB:giros:PBIngresar_GM
+* NOMBRE
+*   OFB:giros:PBIngresar_GM
+* DESCRIPCION
+*   Esta rutina levanta la pantalla del giro seleccionado para que el operador pueda inciar
+*   la carga del mismo. Luego genera el ingreso y acumula totales. Finalmente restaura los 
+*   datos de la TX Principal 70610 para que no queden datos sucios.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospb.h"
+
+SUB giros:PBIngresar_GM
+local l_last_button like drv:last_button
+
+    l_last_button = drv:last_button
+    drv:button = drv:last_button    
+    CALL drv:but_down_disable   
+    
+    call CSR:proc_list(F_CLEAR,LST:giros:LISTcamposPant_gm)
+    call CSR:proc_list(F_CLEAR,LST:giros:LISTgm_post)
+    call CSR:proc_list(F_CLEAR,LST:giros:LISTgm_tele)
+    call csr:proc_list(F_CLEAR,LST:LISTbenef_flds)
+    call  CSR:cleararray (post:cod_opc)
+    call  CSR:cleararray (post:cos_opc)
+    call  CSR:cleararray (post:vec_opc)
+    call  CSR:cleararray (post:vec_opc2)
+    call  CSR:cleararray (post:ali_opc)
+    call  CSR:cleararray (post:inf_opc)
+    call  CSR:cleararray (post:comb_opc)
+    call  CSR:cleararray (post:siniva_opc)
+    call  CSR:cleararray (post:flia_opc)
+    call  CSR:cleararray (post:fliatran_vec)
+    call  CSR:cleararray (post:impciva_vec)
+    call  CSR:cleararray (post:impsiva_vec)
+    clearfield giros:Giros_cargados
+   //BUG- Con una determinada secuencia me quedaba este campo sucio y me permitia ingresar más
+   //de un CEC con el mismo tipo y nro de documento.
+    clearfield giros:nro_trx_gm
+   //PS 9893 - Cuando se selecciona un cec existente y luego se elige INGRESAR este campo queda sucio y el sistema permite
+   //ingresar más de un CEC con el mismo tipo y nro de documento.
+    clearfield giros:codagrupacion_gm
+    //SC 50170-FACTURACION
+    clearfield giros:ComisionSinIva4_fld
+    clearfield giros:TasaSinIva4_fld 
+    call  CSR:cleararray (post:siniva_opc4)
+    select (tipo_gm)
+    case "H" // CEC
+        POPUP SCRNgm_CEC,PRESgm_CEC,PCOLgm_CEC,SVALgm_CEC       
+       // call drv:MISCpopup(scr:giros:SCRNgm_CEC,ofb:giros:PRESgm_CEC,ofb:giros:PCOLgm_CEC,ofb:giros:SVALgm_CEC,post:nada)
+            if (LASTKEY != RT_ESC) then
+                //Grabar los CEC ingresados en la tabla Sesion_GM
+                CALL CDSIngresar_gm("H")
+                if (retval == 0) then
+                    //Acumular importes y cantidad de giros de pantalla principal
+                    cantidad_chk_emi =  cantidad_chk_emi + Cantgm_cec
+                    SumaImpGiros = SumaImpGiros + (giros:ImporteNeto * Cantgm_cec)
+                    ImpTotGiros =  ImpTotGiros  + (giros:ImporteTotal_fld * Cantgm_cec)
+                endif
+                clearfield giros:nro_trx_gm
+                clearfield giros:codagrupacion_gm
+            endif
+        break   
+    case else
+        select (tipo_gm)
+        case "P" //Postales
+            POPUP giros:SCRNgmPostal,giros:PRESgm_post,giros:PCOL70030,SVALgm_post  
+            //call drv:MISCpopup(scr:giros:SCRNgmPostal,ofb:giros:PRESgm_post,ofb:giros:PCOL70030,ofb:giros:SVALgm_post,ofb:post:nada)
+            break
+        case "T" //Telegraficos
+            POPUP giros:SCRNgmTelegrafico,giros:PRESgm_tele,giros:PCOL70030,SVALgm_tele 
+            //call drv:MISCpopup(scr:giros:SCRNgmTelegrafico,ofb:giros:PRESgm_tele,ofb:giros:PCOL70030,ofb:giros:SVALgm_tele,ofb:post:nada)
+            break
+        case else
+            MSGBOX "No hay ningún tipo de giro seleccionado.",0x00,"Error"
+            drv:button = l_last_button
+            CALL drv:but_up_enable
+            return
+            break
+        end select
+        if (LASTKEY != RT_ESC) then
+            CALL CDSIngresar_gm(tipo_gm)
+            if (retval == 0) then
+                //Acumular importes y cantidad de giros de pantalla principal
+                cantidad_chk_emi = cantidad_chk_emi + 1
+                SumaImpGiros = SumaImpGiros + ImporteNeto
+                ImpTotGiros = ImpTotGiros + ImporteTotal_fld
+            endif
+            clearfield giros:nro_trx_gm
+            clearfield giros:codagrupacion_gm
+        endif
+        break
+    end select
+    //Borro todos los campos que se graban en sesion_gm para que no queden sucios en las siguientes cargas
+    call csr:proc_list(F_CLEAR,LST:LISTgm_clear)
+    
+    //Refresco los campos de Totales
+    refresh cantidad_chk_emi
+    refresh SumaImpGiros
+    refresh ImpTotGiros
+    refresh giros:Giros_cargados
+    
+    //Recupero los campos correspondientes a la transacción de giros masivos
+    call giros:MISCgmleotransac(70610)
+    refresh siaf:nombre_transac
+    refresh siaf:codigo_siaf
+        
+    drv:button = l_last_button
+    call drv:but_up_enable
+    
+END SUB
+
+/*******/

@@ -1,0 +1,165 @@
+/****o* Caja Unificada/OFB:post:PREC6680
+* NOMBRE
+*   OFB:post:PREC6680
+* DESCRIPCION
+*   Rutina Pre Collect de la trx de Registracion WEB.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:PBaceptar_web
+* REFERENCIADO POR
+*   LST:post:TRAN6680
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postprec.h"
+
+SUB post:PREC6680
+	LOCAL contingencia LIKE cantidad
+	local x like siaf:i
+
+	IF (estado_presu != 4) THEN
+		//verifico si está registrada la cabecera ( => vengo de una caida de RT )
+		CALL post:CDSverif_web_tmp("PREC")
+		IF (RETVAL < 0) THEN //no se grabó cabecera
+  			//Se borran los campos de la tabla ParamWeb
+    		CALL csr:proc_list(F_CLEAR,LST:post:LISTparam_web_fld) 
+  			CALL csr:proc_list(F_REFRESH,LST:post:LISTparam_web_fld) 
+  			PROTFIELD post:adt_pweb_nombre
+  			ENABLECONTROL drv:PBcb0
+    		ENABLECONTROL drv:PBcb1
+    		//Se deben proteger los campos de la CARGA MANUAL  
+    		DISABLECONTROL drv:PBcb2
+    		DISABLECONTROL drv:PBcb3
+	    	DISABLECONTROL drv:PBcb4
+	    	DISABLECONTROL drv:PBcb5
+	    	CALL CSR:proc_list(F_CLEAR,LST:post:LISTManualWEB_flds)
+	    	CALL CSR:proc_list(F_REFRESH,LST:post:LISTManualWEB_flds)
+	    	CALL CSR:proc_list(F_PROTECT,LST:post:LISTManualWEB_flds)
+	    	CLEARFIELD web_tmp_cantidad
+	  		REFRESH web_tmp_cantidad
+	  		CLEARFIELD web_tmp_impweb
+	  		REFRESH web_tmp_impweb
+	  		
+	  		IF (estado_presu == 2)
+				//Seteo el Motivo Ecommerce por defecto
+				adt_pweb_nombre = "01. ECOMMERCE"
+				CALL post:CDSparam_web_load
+				post:PreDForFis = post:adt_pweb_formfisc
+		    	if (post:adt_pweb_ing_egr == 1) then
+	    			siaf:adt_tran_afec_efvo = "+"
+    				siaf:afecta_efectivo = "+"
+    			else
+    				siaf:adt_tran_afec_efvo = "-"
+    				siaf:afecta_efectivo = "-"
+    			endif
+    			x = 0
+				while (x < 5)	
+					refresh post:adt_pweb_datos[x]
+					x = x + 1
+				end while
+	  		END IF		
+		
+	  		
+		ELSE
+			//Fuerzo el nombre de la aplicacion web y protejo el campo
+			REFRESH post:adt_pweb_nombre 
+			PROTFIELD post:adt_pweb_nombre
+			//deshabilito campo Aplicacion WEB y BOTON ACEPTAR
+			DISABLECONTROL drv:PBcb0
+			DISABLECONTROL drv:PBcb1
+			//Se deben proteger BOTONES y campos de la CARGA MANUAL  
+    		DISABLECONTROL drv:PBcb2
+    		DISABLECONTROL drv:PBcb3
+	    	DISABLECONTROL drv:PBcb4
+	    	DISABLECONTROL drv:PBcb5
+	    	CALL CSR:proc_list(F_CLEAR,LST:post:LISTManualWEB_flds)
+	    	CALL CSR:proc_list(F_REFRESH,LST:post:LISTManualWEB_flds)
+	    	CALL CSR:proc_list(F_PROTECT,LST:post:LISTManualWEB_flds)
+	    	CLEARFIELD web_tmp_cantidad
+	  		REFRESH web_tmp_cantidad
+	  		CLEARFIELD web_tmp_impweb
+	  		REFRESH web_tmp_impweb
+   			
+			//primero chequear que si hay una tx grabada (que no sea cabecera) entonces se puede
+			//confirmar la sesión (sin necesidad de volver a hacer la consulta o cargar los datos
+	  		//en forma manual en el caso de no haber linea.)
+	  		CALL post:CDSverif_web_tmp("CAIDA")
+	  		IF (RETVAL == 0) THEN
+	  			//verifico que no sea Multiple
+	  			IF (post:adt_pweb_jnlMulti == "N") THEN
+		  			MSGBOX "SE REALIZÓ UNA REGISTRACIÓN WEB. POR FAVOR, CONFIRME LA TRANSACCION CON ENTER.",0X00,"AVISO"
+		  			RETURN 0
+		  		ELSE
+		  			//gpb:NI50498 - Mercado Libre - elimino los registros menos la cabecera
+		  			CALL post:CDSdel_web_tmp_reg
+		  		END IF
+	  		END IF
+	  	
+			//SE ENVIA LA CONSULTA AL HOST PARA RECUPERAR LAS NOVEDADES
+			//limpio el nro de aplicacion web para que no tome el de la cabecera 
+			CLEARFIELD post:web_tmp_nro_tx_web
+			siaf:i = 0
+			WHILE (siaf:i <= 3)
+				CALL post:OFBconsulta_CajaUnif
+				IF (RETVAL < 0) THEN
+					IF (RETVAL == -3 ) THEN //No hay transacciones WEB procesadas Con estado OK
+						MSGBOX "NO SE REGISTRARON TRANSACCIONES WEB. SI LO DESEA PUEDE SALIR CON ESC",0x00,"AVISO"
+						RETURN -2
+					ELSE
+						//REINTENTO: no se pudo realizar la consulta 
+						contingencia = TRUE
+						siaf:i = siaf:i + 1
+					END IF
+				ELSE
+					contingencia = FALSE
+					lib:stat_msg_line = "Op. WEB satisfactoria. Finalice el presupuesto presionando ENTER"
+					REFRESH lib:stat_msg_line				
+					BREAK
+				END IF
+			END WHILE	
+			
+    		// CONTINGENCIA
+    		//MGI:AUT-2457
+    		IF (contingencia) THEN
+    			IF (adt_pweb_mandatoria == "S") THEN
+    				MSGBOX  \
+    				"REINTENTE RECUPERAR LOS DATOS O LLAME A MESA DE AYUDA PARA REALIZAR LA CARGA MANUAL.", \
+    				0x00,"ATENCION"
+    				CALL csr:proc_list(F_REFRESH,LST:LISTparam_web_fld) 
+    				CALL CSR:proc_list(F_CLEAR,LST:LISTManualWEB_flds)
+    				CALL CSR:proc_list(F_REFRESH,LST:LISTManualWEB_flds)
+    				ENABLECONTROL drv:PBcb2 //BOTON REINTENTAR
+    				ENABLECONTROL drv:PBcb3 //BOTON CARGA MANUAL
+    				//NI 50417 - Se comenta la habilitación del boton cancelar.
+    				//ENABLECONTROL drv:PBcb5 //BOTON CANCELAR SESION
+    			ELSE 
+    				MSGBOX  \
+    				"TRANSACCION NO MANDATORIA. SE FINALIZARA LA SESION EN FORMA AUTOMATICA.", \
+					0x00,"AVISO"
+					CALL CSR:proc_list(F_CLEAR,LST:LISTparam_web_fld)
+					CLEARFIELD web_tmp_cantidad 
+					CLEARFIELD web_tmp_impweb 
+					CALL CSR:proc_list(F_CLEAR,LST:LISTManualWEB_flds)
+					//Cancelar Presupuesto!
+					CLEARFIELD drv:INDsend_rtn
+					UNGETKEY RT_SEND
+					drv:stack_cnt = drv:stack_cnt - 1
+					LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+					CALL drv:do_mode
+			  	END IF 
+			ELSE
+				//en la mensajeria se agrega un mensaje para indicar al operador que presione ENTER para confirma la sesion
+				SETVALDONE post:firma_web
+				SETVALDONE post:web_tmp_codbarra
+				//SOLICITUD DEL USUARIO
+				UNGETKEY RT_SEND
+			END IF 
+		END IF  
+	END IF
+END SUB
+
+/*******/

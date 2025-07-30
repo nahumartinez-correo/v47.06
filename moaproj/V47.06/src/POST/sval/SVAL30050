@@ -1,0 +1,137 @@
+/****o* Pago en Destino/OFB:post:SVAL30050
+* NOMBRE
+*   OFB:post:SVAL30050
+* DESCRIPCION
+*   Procesa los datos a cargar en la PresuDet para generar la NC PED
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN30050
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL30050
+	LOCAL l_tran_flia_tran LIKE siaf:adt_tran_fliatran
+	LOCAL l_cod_agrupacion LIKE post:cod_agrupacion 
+	LOCAL l_msje LIKE common:csr_string
+	LOCAL l_flag_err LIKE siaf:i
+	
+	//actualizo la Presu con el flag
+	CALL post:CDSactPresuPed_flags	
+	
+	//resguardo la flia de la tx
+	l_tran_flia_tran = siaf:adt_tran_fliatran
+	
+	post:pieza_ped = post:track_trace
+	post:NroCompPago = 0
+	
+	l_flag_err = 0
+	
+	IF (post:adt_serv_serv.NUMCHARS == 0) THEN
+		MSGBOX "No existe codigo del servicio",0X00,"ERROR"
+		RETURN -2
+	END IF
+
+	//[01] - Proceso Servicio y grabo en la PresuDet
+	CALL post:MISCprocesa_serv_ped
+	IF (RETVAL < 0 ) THEN
+		l_msje = "No se pudo procesar el servicio."
+		l_flag_err = 1
+		GOTO CANCELA
+	END IF
+	l_cod_agrupacion = post:cod_agrupacion 
+	CALL post:CDSagregServPostPed
+	post:PreDNroTrnAsoc = post:PreDNroTrn
+	
+	post:tt_journalizado = "S"
+	//cargo la tabla track_trace
+	CALL post:SVALgral_tt_cctrl
+
+	//[02] - Proceso Dto. Servicio y grabo en la PresuDet
+	IF (post:Dcto_CliMed > 0) THEN
+		CALL post:MISCdcto_serv_ped
+		IF (RETVAL < 0 ) THEN
+		l_msje = "No se pudo procesar el descuento para el servicio."
+		l_flag_err = 1
+		GOTO CANCELA
+		END IF
+	 	CALL post:CDSagregTrnDcto30300(post:adt_serv_serv)
+	END IF
+ 	
+	//[03] - Proceso Dto. Opcionales y grabo en la PresuDet
+	IF (post:Dcto_CliMed > 0 && post:cant_opc > 0) THEN
+		CALL post:MISCdcto_opc_ped
+		IF (RETVAL < 0 ) THEN
+		l_msje = "No se pudo procesar el descuento para los opcionales del servicio."
+		l_flag_err = 1
+		GOTO CANCELA
+		END IF
+	END IF
+
+	//[04] - Proceso Especies Valorizadas (8500) y grabo en la PresuDet
+	IF (post:codesp_serv.NUMCHARS > 0 && post:subcod_serv.NUMCHARS > 0) THEN
+		CALL post:MISCproc_espval_ped
+		IF (RETVAL < 0 ) THEN
+		l_msje = "No se pudo procesar especie valorizada."
+		l_flag_err = 1
+		GOTO CANCELA
+		END IF		
+		post:cod_agrupacion = l_cod_agrupacion 
+		CALL post:CDSagregEspValPed
+		post:PreDNroTrnAsoc = post:PreDNroTrn
+	
+		//[05] - Proceso Dto. Especies Valorizadas y grabo en la PresuDet
+		IF (post:item_dcto_ev > 0) THEN
+			CALL post:MISCdcto_espval_ped
+			IF (RETVAL < 0 ) THEN
+				l_msje = "No se pudo procesar el descuento para especie valorizada."
+				l_flag_err = 1
+				GOTO CANCELA
+			END IF	
+			CALL post:CDSagregTrnDcto30300(8500)
+		END IF
+	END IF
+
+	//[06] - Proceso Productos Varios (40002) y grabo en la PresuDet
+	IF (post:prod_serv.NUMCHARS > 0 && post:cant_caja_prev == 0 ) THEN
+		CALL post:MISCproc_prodvar_ped
+		IF (RETVAL < 0 ) THEN
+			l_msje = "No se pudo procesar productos varios."
+			l_flag_err = 1
+			GOTO CANCELA
+		END IF
+		post:cod_agrupacion = l_cod_agrupacion 
+		CALL post:CDSagregProdVarPed
+		post:PreDNroTrnAsoc = post:PreDNroTrn
+		
+		//[07] - Proceso Dto. Productos Varios y grabo en la PresuDet
+		IF (post:item_dcto_pv > 0) THEN
+			CALL post:MISCdcto_prodvar_ped
+			IF (RETVAL < 0 ) THEN
+				l_msje = "No se pudo procesar descuento para productos varios."
+				l_flag_err = 1
+				GOTO CANCELA
+			END IF
+			CALL post:CDSagregTrnDcto30300(40002)
+		END IF
+	END IF
+	
+	//recupero el valor original
+	siaf:adt_tran_fliatran = l_tran_flia_tran
+	
+CANCELA:
+	IF (l_flag_err > 0) THEN
+		FPRINT l_msje "%s\nSe cancela presupuesto." l_msje
+		MSGBOX l_msje,0X00,"ERROR"	
+		CALL post:MISCcancelPresuNCped
+	END IF
+
+END SUB
+/*******/

@@ -1,0 +1,231 @@
+/****o* Pendientes de agrupación/OFB:post:SVALpagos_masivos
+* NOMBRE
+*   OFB:post:SVALpagos_masivos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALpagos_masivos
+LOCAL NroTrn_aux LIKE post:PreDNroTrn
+LOCAL l_benTmp_estado like adt_benTmp_estado
+LOCAL l_err_retval like lib:err_retval
+LOCAL l_fin like tipo_pm
+LOCAL l_cogigo_siaf like siaf:codigo_siaf
+LOCAL l_cont like siaf:i
+    select (post:estado_presu)
+        case 2
+        case 3
+            IF (TESTFLAG(admin:mode_flags,grb)) then
+                RESETFLAG admin:mode_flags,grb
+                call MISCpagoMasivo_agreg
+                INIT 33,0
+                return (-2)
+            END IF
+            IF (TESTFLAG(admin:mode_flags,bor)) then
+                RESETFLAG admin:mode_flags,bor
+                call MISCpagoMasivo_borra
+                INIT 33,0
+                return (-2)
+            END IF
+            IF (TESTFLAG(admin:mode_flags,act)) then                
+                RESETFLAG admin:mode_flags,act
+                call MISCpagoMasivo_modif
+                return (-2)
+            END IF 
+            IF (TESTFLAG(admin:mode_flags,todos)) then                
+                RESETFLAG admin:mode_flags,todos
+                call MISCpagoMasivo_todos
+                return (-2)
+            END IF
+            IF (TESTFLAG(admin:mode_flags,ninguno)) then                
+                RESETFLAG admin:mode_flags,ninguno
+                call MISCpagoMasivo_ning
+                return (-2)
+            END IF   
+            select (siaf:codigo_siaf)
+                case 6640
+                    if (post:pagoMsvImpRendPag == 0) then
+                        msgbox "No hay beneficios enviados", OFB_OK ,"Aviso"
+			            return (-2)
+		            end if
+		            call post:CDSbenefTmp("H","S","","")
+		            if (retval == 0) then
+		                MSGBOX "Hay beneficios pendientes de envío. ¿Desea continuar?",OFB_YESNO2,"Atención" 
+		                if ( retval == 7) then
+		                    return -2
+		                end if
+		            end if
+		            siaf:importe = post:pagoMsvImpRendPag
+                    break
+                case 6650
+                    Select (drv:screen_active)
+                        case 0
+                            call post:CDSbenefTmp("H","X","","")
+		                    if (retval == 0) then
+		                        ;MSGBOX "Hay beneficios pagados pendientes de envío. ¿Desea continuar?",OFB_YESNO2,"Atención" 
+		                        MSGBOX "Hay beneficios pagados pendientes de envío.",OFB_OK,"Atención" 
+		                        ;if ( retval == 7) then
+		                            return -2
+		                        ;end if
+		                    end if
+                            drv:next_screen = drv:screen_active + 1
+                            return 0
+                            break
+                        CASE 1
+                            if (post:pagoMsvImpRendPag == 0 && post:pagoMsvImpRendNoPag == 0) then
+                                msgbox "No hay beneficios enviados", OFB_OK ,"Aviso"
+			                    return (-2)
+		                    end if
+		                    call post:CDSbenefTmp("H","Y","","")
+		                    if (retval == 0) then
+		                        ;MSGBOX "Hay beneficios no pagados pendientes de envío. ¿Desea continuar?",OFB_YESNO2,"Atención" 
+		                        MSGBOX "Hay beneficios no pagados pendientes de envío.",OFB_OK,"Atención" 
+		                        ;if ( retval == 7) then
+		                            return -2
+		                        ;end if
+		                    end if
+		                    
+		                    ;Validación de rendición de beneficios en su totalidad
+		                    call post:MISCvalidoBenefRend
+		                    if (retval == -2) then
+		                    	return -2
+		                    end if
+		                    
+		                    
+		                    if (post:pagoMsvImpRendNoPag > 0) then
+		                        label_3 = "Importe devuelto por el pagador"
+		                        POPUP post:SCRNpagosMsv_popup
+		                        if (post:pagoMsvImpRendNoPag != pagoMsvImpDevuelto) then
+		                            MSGBOX "El importe devuelto difiere con el total de beneficios impagos confirmados.\nSe generará un fallo por la diferencia. ¿Desea continuar?",OFB_YESNO2,"Atención" 
+		                            if ( retval == 7) then
+		                                return -2
+		                            end if
+		                        end if
+                        	end if
+                        	siaf:importe = post:pagoMsvImpRendNoPag
+                        	break
+                    End select
+                    break
+            end select
+            call csr:f_sadroppl("pic_suc_cli")
+            CALL post:CDSobtiene_secuen("CABEC")
+			cod_agrupacion = adt_codseq_nro
+		    CLEARFIELD post:PreDForFis
+		    call post:MISCTotalTransac(siaf:codigo_siaf)
+		    call post:MISCAcumTotalesSes
+			CALL post:MISCGrabaDetalleTrn
+		    NroTrn_aux = post:PreDNroTrn
+		    ;CALL post:MISCcompensacion6650(NroTrn_aux)
+		    CALL post:MISCfallosSimon(NroTrn_aux)
+            break
+        case 4
+            IF (!(testflag(tlr:tran_flags,correction)))
+                l_cont = 1
+                do
+                    if (l_cont == 13) then
+                        break
+                    end if
+                    IF (drv:INDscreen[l_cont] != 0) THEN
+                        clearfield drv:INDscreen[l_cont]
+                        l_cont = l_cont + 1    
+                    else
+                        break
+                    END IF
+                loop
+                call post:CDSbenefTmp("EJ","","","")
+                if (adt_benTmp_cab_est != "J") then
+	                FLD:drv:INDjnl_rtn = OFB:post:JNLpagos_masivos
+	                ungetkey 0x190
+	                call siaf:MISClleno_modalidad
+                    let drv:INDscr = SCR:post:SCRNpagos_msv_hdr
+	                call tlr:JNLtran
+	                ;Imprimo reporte
+	                init 33,0
+	                CALL post:MISCRep_beneficios
+	            end if
+	            l_cogigo_siaf = siaf:codigo_siaf
+	            clearfield drv:INDspc_rtn[0]
+	            
+	            do
+	                let drv:INDscr = SCR:post:SCRNpagos_msv_body
+	                siaf:codigo_siaf = siaf:codigo_siaf + 2
+	                select (siaf:codigo_siaf)
+	                    case 6642
+	                        let siaf:nombre_transac = "PAGO MASIVO DE OPERATIVOS"
+	                        move "PGOMV" to tlr:tran_mnemonic
+	                        l_benTmp_estado = "JS"
+	                        break
+	                    case 6652
+	                        let siaf:nombre_transac = "REND. BENEFICIO PAGADO DE PAGO MSV OP"
+	                        move "RPGOMV" to tlr:tran_mnemonic
+	                        l_benTmp_estado = "JX"
+	                        break
+	                    case 6654
+	                        let siaf:nombre_transac = "REND. BENEFICIO NO PAGADO DE PAGO MSV OP"
+	                        move "RPGOMV" to tlr:tran_mnemonic
+	                        l_benTmp_estado = "JY"
+	                        break
+	                    case else
+	                        l_fin = "S"
+	                end select
+	                
+	                if (l_fin == "S") then
+	                    break
+	                end if
+	                    
+	                CDS ENDSELECT "BenefTmp_ctx"
+	                CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+    	            adt_benTmp_PresNro == post:PresNro && \
+    	            adt_benTmp_estado == l_benTmp_estado
+                    cds findfirst "BenefTmp_ctx" LOCK
+                    l_err_retval = CDSRETVAL
+                        
+	                do
+	                    if (l_err_retval != 0) then
+	                        break
+	                    end if
+	                     
+		                cds extract "BenefTmp_ctx" ALL
+		                if (siaf:codigo_siaf == 6652) then
+		                    post:fecFacturacion = adt_benTmp_fecha_pag
+		                else
+		                    clearfield post:fecFacturacion		                    
+		                end if
+		                siaf:importe = post:adt_benTmp_importe
+		                FLD:drv:INDjnl_rtn = OFB:post:JNLpagos_masivos
+		                ungetkey 0x190
+		                call siaf:MISClleno_modalidad
+		                call tlr:JNLtran
+	                    cds findagain "BenefTmp_ctx" LOCK
+ 	 	                cds delete "BenefTmp_ctx"
+		                cds findnext "BenefTmp_ctx" LOCK
+		                let l_err_retval = CDSRETVAL
+	                loop
+                    cds unlock "BenefTmp_ctx"
+                    cds endselect "BenefTmp_ctx"
+                loop
+                CLEARFIELD drv:INDjnl_rtn
+                siaf:codigo_siaf = l_cogigo_siaf
+                ;call post:CDSgenFalloRPMO
+                CALL post:MISCGrabaDetalleTrn
+            END IF
+            break
+    end select
+    ;Recuperación de caídas en vuelo
+    call post:CDSchk_pagos_masivos
+    setflag post:pagos_masivos,proc_pagos_masivos
+END SUB
+
+/*******/

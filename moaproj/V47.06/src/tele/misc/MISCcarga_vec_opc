@@ -1,0 +1,171 @@
+/****o* Pendientes de agrupación/OFB:tele:MISCcarga_vec_opc
+* NOMBRE
+*   OFB:tele:MISCcarga_vec_opc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telemisc.h"
+
+SUB tele:MISCcarga_vec_opc
+LOCAL idx LIKE siaf:i
+LOCAL idx2 LIKE siaf:i
+LOCAL desc_temp LIKE post:adt_opc_desc
+
+    //cgw:limpio los arrays para que no arrastren valores al eliminar un opcional de la tx.
+    CALL CSR:cleararray(post:cod_opc)
+    CALL CSR:cleararray(post:cos_opc)
+    CALL CSR:cleararray(post:cor_opc)
+    CALL CSR:cleararray(post:vec_opc2)
+    CALL CSR:cleararray(post:ali_opc)
+    CALL CSR:cleararray(post:inf_opc)
+    CALL CSR:cleararray(post:cal_opc)
+    CALL CSR:cleararray(post:val_opc)
+    CALL CSR:cleararray(post:tas_opc)
+    CALL CSR:cleararray(post:siniva_opc)
+    CALL CSR:cleararray(post:comb_opc)
+    CALL CSR:cleararray(post:flia_opc)
+    //SC 50170 FACTURACION
+    CALL CSR:cleararray(post:siniva_opc4)
+    
+    Call tele:MISCOrdeno_opc(DSC:OpcInd_sel,post:cant_opc)
+
+	//Recorro el picklist con los opcionales marcados
+    idx = 0x8000
+    idx2 = 0
+    CALL CSR:cleararray OpcInd_vec
+            
+    DO 
+    	CALL CSR:myPickcontrol(DSC:OpcInd_sel,common:csr_string,idx)
+      	IF (RETVAL < 0) THEN
+	        BREAK
+    	END IF 
+      
+		desc_temp = SUBSTR(common:csr_string,0,4)
+		
+        /* se agrego para giros */
+        giros:mnemonic_opc_wu = SUBSTR(common:csr_string,0,4)
+        giros:desc_opc_wu = common:csr_string
+	   	/*if (siaf:adt_tran_fliatran == "CSM")
+	   		call giros:MISCflg_opc_wu(desc_temp)
+       	    call giros:MISCOpcionalesWU(desc_temp) //,valor_temp)
+       		if (lastkey == RT_ESC || retval == -2) then
+       			clearfield post:sel_opc
+    		    refresh post:sel_opc
+    		    drv:button = drv:last_button
+				CALL drv:but_up_enable
+    		    return (-2)
+			end if
+		end if*/
+	    
+        /***********************************************************/
+        /* A partir del Req. 600 todos los opcionales influyen 	*/
+        /* Creo que no tiene más sentido este campo salvo	*/
+        /* que en el futuro vuelvan a existir opcionales cuyo	*/
+        /* costo no influya en el costo total de opcionales.		*/
+        /***********************************************************/
+        post:inf_opc[idx2] = "S"
+ 		
+ 		/********************************/
+    	/* Extraigo el Código de Opcional , el campo que determina si el opc. combina*/
+  		/* y la Al¡cuota del IVA del mismo	*/
+  		/********************************/
+   		CLEARFIELD post:adt_opc_combina
+      	CDS SELECT FROM post:OPC_TAB BECOMES post:OPC_CTX WHERE \
+        post:adt_opc_opci == desc_temp
+      	CDS FINDFIRST post:OPC_CTX NOLOCK
+      	
+      	CDS EXTRACT post:OPC_CTX post:adt_opc_opci \
+       	post:adt_opc_aliciva \
+   		post:adt_opc_cortepropio \
+        post:adt_opc_disccp \
+        post:adt_opc_combina \
+        post:adt_opc_desc
+        
+        CDS ENDSELECT post:OPC_CTX
+        post:cod_opc[idx2] = desc_temp
+        post:ali_opc[idx2] = post:adt_opc_aliciva
+        post:comb_opc[idx2] = post:adt_opc_combina
+        FPRINT post:cor_opc[idx2], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+
+		#ifdef COMPILA_SAP
+			// FGB: para cuentas corrientes, si el opcional no combina 
+			//      tengo que validarlo como un producto aparte ante SAP.
+			if (post:cli_tipo == 1) then
+			    // si el opcional no combina, lo valido
+			    if (post:comb_opc[idx2] == "N") then
+			       //call post:sap_valida_opc
+			       CALL post:MISCbuscar_prod_sap("OPC")
+			       if (retval < 0) then
+			          RETURN (-2)
+			       end if
+			    end if
+			end if
+		#endif		           		
+        	
+        /*tratamiento embarazosa*/
+        IF (post:cod_opc[idx2] == "EMBA")
+            post:vec_opc2[idx2] = post:tarifa
+            post:posicion_emba = post:cant_opc
+            post:tiene_emba = "S"
+        END IF
+        		
+        REFRESH post:cod_opc[idx2]
+        REFRESH post:vec_opc2[idx2]
+      	/**************************************/
+      	/* Extraigo el Modo de Cálculo y	*/
+      	/* el porcentaje que fue aplicado 	*/
+      	/*************************************/
+        CDS SELECT FROM post:OPC_SERV_TAB BECOMES post:OPC_SERV_CTX WHERE \
+    	post:adt_opcserv_serv == post:tipo_produc2 && \
+        post:adt_opcserv_opci == desc_temp
+        CDS FINDFIRST post:OPC_SERV_CTX NOLOCK
+        CDS EXTRACT post:OPC_SERV_CTX \
+		post:adt_opcserv_valor INTO post:val_opc[idx2] \
+	    post:adt_opcserv_tipo INTO post:cal_opc[idx2]
+        CDS EXTRACT post:OPC_SERV_CTX \
+		post:adt_opcserv_uneg INTO post:flia_opc[idx2]
+        CDS ENDSELECT post:OPC_SERV_CTX      
+		
+       	idx2 = idx2 + 1
+       	idx = idx + 1
+    LOOP 
+    call post:MISCsortVecBonifOPC
+	IF (!TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+		/**********************************************/
+		/* Actualizo el Costo Total de los Opcionales */
+		/**********************************************/
+		CALL post:MISCactualizo_opc
+		/****************************************************************/
+		/* Actualizo el costo de cada uno de los opcionales   		*/
+		/* por separado. Quizás parezca sin sentido hacer esto	*/
+		/* para cada opcional pero si el valor declarado actual 		*/
+		/* es mayor al anterior, cambia el costo de algunos de  	*/
+		/* los opcionales que ya estaban seleccionados.         		*/
+		/****************************************************************/
+		CALL post:MISCactualizo_1opc
+		//	IF (post:adt_opcserv_tipo == "P") THEN
+       	//	    post:vec_opc2[idx - 1] = post:tarifa
+       	//	END IF
+        /* giros */
+      	if (siaf:adt_tran_fliatran == "CSM")
+      		if (testflag(giros:opcionales_wu,palabra_adicional))
+       			call giros:MISCopc_pala_wu
+       		end if
+        end if
+        /* fin giros */
+	END IF    
+END SUB 
+
+
+/*******/

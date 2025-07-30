@@ -1,0 +1,335 @@
+/****o* Pendientes de agrupación/OFB:post:combo_builder
+* NOMBRE
+*   OFB:post:combo_builder
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:combo_builder
+local loc_tran_name			like siaf:nombre_transac
+local loc_message			like common:csr_string
+local loc_build_retval		like lib:err_retval 
+
+
+clearfield drv:INDrun_funct
+
+let plataf:cant_proc = 0
+let plataf:cant_total = 0 
+
+//////////////////////////////////////////////////////////////
+//                 INICIO DEL PROCESO                       //
+//////////////////////////////////////////////////////////////
+  FLD:plataf:INDconf_cur_list = OFB:post:combo_builder
+  CALL  CSR:dt_tran DT_TRAN_START FLD:plataf:INDconf_cur_list
+//////////////////////////////////////////////////////////////
+
+clearfield tlr:INDtran_name
+clearfield siaf:codigo_siaf
+
+keydef push
+
+call CDScombo_trx_count(op:op_operator_id,post:PresNro)
+if (retval > 0) then
+	plataf:cant_total = retval 
+	call post:MISCinicProgressBar("Armando Combo: ",plataf:cant_total) 
+else
+	errmsg common:errmsg_list,"EL COMBO NO TIENE CARGADA TRANSACCIONES"
+	goto fin 	
+endif
+
+
+//  consigo parametria generica del combo...
+call csr:proc_list F_CLEAR LST:post:LISTCombos1_flds
+call CDSget_combo_id(op:op_operator_id,post:PresNro,adt_cb_cod,combo_nro)
+if (retval < 0) then
+	errmsg common:errmsg_list,"FALLO EN LA GENERACION DEL COMBO"
+	call cancela_combo(common:system_date,op:op_operator_id,combo_nro)
+	call drv:prev_funct 
+	return 	
+endif
+
+call CDSCombos_load
+if (retval < 0) then
+	errmsg common:errmsg_list "IMPOSIBLE LEER PARAMETRIA DE COMBO"
+	call cancela_combo(common:system_date,op:op_operator_id,combo_nro)
+	call drv:prev_funct
+	return 
+endif
+
+
+call trans_to_build(common:system_date,op:op_operator_id,post:combo_nro,"TRN") 
+while (retval == 0) 
+
+	let plataf:cant_items = 0
+	refresh plataf:cant_items
+	
+
+	call plataf:clear_drv_lst_flds 
+
+	clearfield plataf:INDconf_cur_list
+	clearfield drv:INDcur_tran
+	// let plataf:INDconf_cur_list = tlr:INDtran_name 
+	let drv:INDcur_tran  = tlr:INDtran_name 
+	let drv:INDcur_list	 = tlr:INDtran_name
+
+	LET lib:ind_type = (tlr:INDtran_name >> 24) & 0xff
+	if (lib:ind_type == LST_OBJ) then
+		call plataf:load_drv_trn_flds
+		loc_build_retval = retval
+		call plataf:load_drv_trn_flds5
+		loc_build_retval = loc_build_retval + retval
+	else
+		loc_build_retval = -2
+	endif 
+
+	if (loc_build_retval == 0) then
+		CALL  CSR:dt_tran DT_TRAN_START FLD:drv:INDcur_tran
+		setflag tlr:state_flags,tran_active
+		// levanto los datos de la transaccion
+		call trans_to_build(common:system_date,op:op_operator_id,post:combo_nro,"ALL") 
+
+		// para postales...
+		let post:cod_tx = siaf:codigo_siaf
+		let plataf:chosen_codtrn = siaf:codigo_siaf
+
+		if (adt_concb_jerarquia > 0) then
+			// levanto los valores de la parametria de combo...
+			call CDScombo_elem_load(adt_cb_cod,adt_concb_jerarquia)
+			if (retval < 0) then
+				goto cancela
+			endif
+		endif
+		
+		call MISCcombo_tx_param
+		if (retval < 0) then
+			goto cancela
+		endif
+
+		
+		let enCombo = "S"	
+		call post:CDSPreAct_NroTrn_upd(post:PreDNroTrn)
+		
+pres:
+		//// PRE TRANSACTION /////
+		if (fld:drv:INDspc_rtn[5] != 0) then
+			call FLD:drv:INDspc_rtn[5]	
+			if (retval < 0) then
+				goto cancela
+			endif
+		endif
+		//////////////////////////
+
+
+		//// PRE DISPLAY ////////// 
+		if (fld:drv:INDpre_dis_rtn != 0) then
+			call FLD:drv:INDpre_dis_rtn 
+			if (retval < 0) then
+				goto cancela
+			endif
+		endif
+		///////////////////////////
+		
+
+		if (adt_concb_principal != "S") then
+			// verifico si hay que hacer collect?
+			let drv:screen_active = 0
+			if (post:adt_concb_colecta == "S" then) then
+				do
+				//while (drv:INDscreen[drv:screen_active] != 0) 
+					let drv:INDscr = drv:INDscreen[drv:screen_active]
+					
+					
+					// Initialize all the BUTTON routines on the current screen,
+					IF (drv:INDbut_list[drv:screen_active] != 0)
+						CALL  CSR:listexec drv:INDbut_list[drv:screen_active]
+					ELSE
+						CALL  CSR:listexec LST:drv:LISTbutton_clear
+					END IF
+	
+					// show screen
+					joinscreen FLD:drv:INDscr , NOCURSOR
+					
+					//// PRE COLLECT ////////// 
+					if (fld:drv:INDpre_col_rtn != 0) then
+						call FLD:drv:INDpre_col_rtn 
+						;if (retval < 0) then
+						;	goto cancela
+						;endif
+					endif
+					///////////////////////////
+			
+					// cargo datos para la transaccion
+					call MISCcombo_tx_data
+					if (retval < 0) then
+						goto cancela
+					endif
+	
+	coll:				
+					init 33,0
+					while (nextkey == 0x0404) 
+						getkey
+					end while
+					clearfield drv:INDrun_funct
+					setflag drv:mode_flags,popup_mode
+					call csr:f_orsklock() // habilito el ESC
+					// collect data
+					collect
+					resetflag drv:mode_flags,popup_mode
+					call csr:f_orskunlk() // inhabilito el ESC
+					
+					if (lastkey == RT_ESC) then
+						msgbox "CANCELA EL COMBO?",OFB_YESNO,"Aviso"
+						if (retval == OFB_IDYES) then
+							goto cancela
+						else
+							goto coll
+						endif
+					endif
+					if (lastkey == RT_SEND && drv:INDrun_funct == 0) then
+						drv:screen_active = drv:screen_active + 1
+						if (drv:INDscreen[drv:screen_active] != 0) then
+							cutscreen FLD:drv:INDscr, NOCURSOR
+						else
+							break // <--- salida del loop
+						endif
+					endif
+					
+				// end while
+				loop
+			else
+				// cargo datos para la transaccion
+				call MISCcombo_tx_data
+				if (retval < 0) then
+					goto cancela
+				endif
+				// no colecta, pero hago las validaciones que se harian en la pantalla...
+				call post:MISCcombo_tx_dataval
+				if (retval < 0) then
+					goto cancela
+				endif
+			endif
+		endif
+		
+		if (drv:screen_active > 0) then
+			drv:screen_active = drv:screen_active - 1
+		endif
+	
+		//// SEND VALIDATION //// 
+		if (drv:INDsend_rtn != 0) then
+			call FLD:drv:INDsend_rtn	
+			let loc_build_retval = retval
+		endif
+		/////////////////////////
+
+		// Esto es xq al llamar a la JNLtran dentro de las SVAL se resetea la flag 
+		if (!testflag(tlr:state_flags,tran_active)) then
+			setflag tlr:state_flags,tran_active
+		endif
+
+        if (loc_build_retval == -5) then
+        	//cgw:Venta Combo: emision giro postal con cheque inexistente o chequera no perteneciente al operador
+        	msgbox "DESEA REINTENTAR?",OFB_YESNO,"Aviso"
+			if (retval == OFB_IDYES) then
+				loc_build_retval = -2
+			endif
+		endif	
+
+		// Si tengo que volver al collect de la  captura...
+		if (loc_build_retval < 0) then
+			//cgw:Si loc_build_retval = -5 (emision giro postal con cheque inexistente o chequera no perteneciente al operador).
+			if (post:adt_concb_colecta == "S" && hcomm:tran_status != HOST_REJECTED && \
+			    loc_build_retval != -5) then
+					goto coll // como presento pantalla, vuelvo al collect
+			else // la trx. se genera automaticamente... 
+cancela:
+				fprint loc_message "LA OPERACION:\n%s\nNO PUDO SER CONFIRMADA." siaf:nombre_transac
+				errmsg common:errmsg_list,FLD:loc_message
+				
+				if (drv:INDscr != 0 && post:adt_concb_colecta == "S") then
+					cutscreen FLD:drv:INDscr NOCURSOR
+				endif
+
+				resetflag tlr:state_flags,tran_active
+				CALL  CSR:dt_tran DT_TRAN_END FLD:drv:INDcur_tran
+				
+				call cancela_combo(common:system_date,op:op_operator_id,combo_nro)
+				
+				CALL post:MISCactivar_buts  //cgw:se vuelve a habilitar menubar.
+
+				goto fin
+			endif
+		endif
+
+		// si corregi la captura => quito la pantalla de la 99099 
+		if (post:adt_concb_colecta == "S") then
+			;let drv:INDscr = drv:INDscreen[drv:screen_active]
+			cutscreen FLD:drv:INDscr,NOCURSOR
+		endif
+		let drv:screen_active = 0
+
+		clearfield enCombo
+		
+		resetflag tlr:state_flags,tran_active
+		CALL  CSR:dt_tran DT_TRAN_END FLD:drv:INDcur_tran
+	else
+		//
+		// error levantando la lista de la transaccion...
+		//
+		errmsg common:errmsg_list,"ERROR PROCESANDO TRANSACCION"
+		call cancela_combo(common:system_date,op:op_operator_id,combo_nro)
+	endif
+
+	// actualiza la barra 
+	if (!testflag(tlr:tran_flags,correction) && plataf:cant_proc <= plataf:cant_total) then
+			call post:MISCactProgressBar("Generando venta: ",1,BARRAPORCENT,1)
+			let plataf:cant_proc = plataf:cant_proc + 1
+			refresh plataf:cant_proc
+	endif
+
+
+	// leo los datos de la proxima trx. a confirmar...
+	call post:CDSadt_presuact_load
+	;call post:CDSpresud_Pend_Conf 
+	clearfield tlr:INDtran_name
+	clearfield siaf:codigo_siaf
+
+	;let post:estado_presu = 2
+	;call post:CDSadt_presuact_upd
+
+	call trans_to_build(common:system_date,op:op_operator_id,post:combo_nro,"TRN") 
+
+end while
+
+fin:
+
+call post:MISCfinProgressBar
+fyimsg clear
+
+keydef pop
+
+//////////////////////////////////////////////////////////////
+//                   FIN DEL PROCESO                        //
+//////////////////////////////////////////////////////////////
+  FLD:plataf:INDconf_cur_list = OFB:post:combo_builder
+  CALL  CSR:dt_tran DT_TRAN_END FLD:plataf:INDconf_cur_list
+//////////////////////////////////////////////////////////////
+
+call plataf:TRANcalc_impuestos
+
+call drv:prev_funct
+
+END SUB
+
+/*******/

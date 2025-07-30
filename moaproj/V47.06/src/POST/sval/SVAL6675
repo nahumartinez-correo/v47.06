@@ -1,0 +1,66 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:SVAL6675
+* NOMBRE
+*   OFB:post:SVAL6675
+* DESCRIPCION
+*   Rutina SVAL de la transaccion de Cancelación de Cobro por Cuenta de Terceros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN6675
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL6675
+	
+	local sumaCaptNue like siaf:i
+	
+	if (cobros_CCT.numchars == 0) then
+		MSGBOX "Debe seleccionar un cupón.", OFB_OK, "Error"
+		return (-2)
+	end if
+	MSGBOX "Confirma la Cancelación de la operación seleccionada?",OFB_YESNO2,"Confirmación"
+ 	IF (RETVAL != 6) THEN
+ 		return (-2)
+ 	END IF
+ 	
+    /*Solicito Supervision*/
+	clearfield siaf:cartel
+	setflag  tlr:tran_flags, supovr_request
+	setflag  siaf:siaf_flags, req_tes
+	setflag  siaf:siaf_flags, req_sup1
+	call siaf:OVRsupovr_request
+	let lib:err_retval = retval
+	resetflag siaf:siaf_flags, req_tes
+	resetflag  tlr:tran_flags, supovr_request
+	resetflag  siaf:siaf_flags, req_sup1
+	IF (lib:err_retval < 0)THEN
+		clearfield giros:op_sup_id
+		return (-2)
+   	else
+		giros:op_sup_id = ovr:ovr_sup_id
+        setflag tlr:tran_flags,supovr_granted
+	end if
+
+	/*Instancio campos para la totalización*/
+	siaf:importe = post:adt_cupon_imp_cob
+	post:importe_origen = siaf:importe
+
+	//Verifico si el operador tiene monto disponible para realizar la cancelacion
+	CALL siaf:SVALmonto_operador
+    if (retval < 0) then
+        return (-2) // no puede realizar la trx. por desvio de limites
+    end if
+
+
+	/*Resguardo sequence de la tran original para luego marcarla como cancelada*/
+	jnl_sequence_ori1 = tlr:jnl_sequence
+END SUB
+
+/*******/

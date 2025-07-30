@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:PRESentrega_pieza
+* NOMBRE
+*   OFB:post:PRESentrega_pieza
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*	crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+*	crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESentrega_pieza
+
+	siaf:codigo_siaf = 99020
+	unprotfield post:Pieza
+	CLEARFIELD post:Pieza
+	CALL CSR:proc_list(F_PROTECT,LST:post:LISTentrega_pieza)
+	prod_cli = "0000000000"
+	
+	/* si estoy en teclas ráìdas y tiene curso legal protejo el
+	campo y si no tiene le muestro un mensaje de error y no le permito
+	hacer la transacción - Hernán 14/11/2000*/
+	if (post:estado_presu == 1) then
+		call post:CDSMPago_Clegal_load
+		if (retval == 0) then
+			siaf:moneda = post:adt_mp_cod
+			;protfield siaf:moneda
+			;DISABLECONTROL drv:PBcb1
+			else
+			errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+			return (-2)
+		end if
+	end if
+
+	CALL siaf:PRESfecha_hora
+	IF (retval < 0) then
+		RETURN (-1)
+	END IF
+
+
+	CALL post:MISCAdelCredCM		
+		IF (RETVAL == -2) THEN	
+			MSGBOX "No se permite el consumo de Credito/Adelanto de Clientes Medios en la Entrega de Piezas.\nVuelva a iniciar la sesion sin consumir Credito/Adelanto.",0x00,"Mensaje"
+			RETURN (-2)
+		ELSEIF (RETVAL == -1) THEN
+			MSGBOX "NO EXISTE DATOS EN LA TABLA PRESU",0x00,"ERROR"
+			RETURN (-2)
+		END IF
+	
+	/*El medio de pago se va a elegir mediante un popup luego del ENTER*/
+	PROTFIELD siaf:moneda
+	IF (estado_presu == 2)
+		CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+		CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	//MDG
+		drv:INDscreen[0] = scr:post:SCRNentrega_PiezaMul
+		/*
+		;Obtengo el secuenciador de cabecera
+		IF (!testflag(tlr:tran_flags,correction)) THEN
+			CALL post:CDSobtiene_secuen("CABEC")
+			cod_agrupacion = adt_codseq_nro
+		END IF
+		*/
+		
+	/*crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+	CALL siaf:MISCSuc_CapImagen     
+	if (RETVAL != -2) THEN // SI no se pudo realizar la consulta o dio un error nuevo no se continua con el proceso.
+		//crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+ 		 CALL post:CDSConsulta_Imagen("T")
+  ENDIF*/
+  
+  //SE TIENE QUE CONSULTAR SI HAY PIEZAS EN STOCKP CON DESTINO ECOMMERCE QUE TENGAN PALABRA CLAVE Y CON ENTREGA AUN NO REALIZADA. SE ENVIA POR CADA UNA
+  //UNA CONSULTA A T&T PARA SABER SI FUERON ENTREGADAS POR HANDHELD Y ASI REALIZAR LA ACTUALIZACION CORRESPONDIENTE EN LA STOCKP (BAJA = "S" FECHA DE ENTREGA DEL DIA DE LA CONSULTA O LA DEVUELVA T&T?) 
+
+  
+	END IF
+    
+	IF (post:cli_tipo == 1) THEN
+		LET siaf:moneda = "00"
+		PROTFIELD siaf:moneda
+	END IF
+	
+	PresNro_EP = PresNro
+	INDPresuD_Dat = OFB:CDS99020_append
+	CALL post:MISCLeo_PresDet
+	
+	IF (estado_presu == 3)
+		CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+		CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	//MDG
+		IF (promo_imp_lista > 0) THEN
+			IF (post:promoLisTipoBon == TIPO_BONIF_VALOR)
+				CALL post:MISCdetalleBonifGral(promo_desc_lista,post:tarifa,"----",promo_imp_lista,"Lista", "")
+			ELSE
+				CALL post:MISCdetalleBonifGral(promo_desc_lista,post:tarifa,promo_bon_lista,promo_imp_lista,"Lista", "")
+			END IF
+		END IF
+		IF (promo_imp_presAdu > 0) THEN
+			IF (post:promoPrsAdTipoBon == TIPO_BONIF_VALOR)
+				CALL post:MISCdetalleBonifGral(promo_desc_presAd,costo_presAd,"----",promo_imp_presAdu,"PresAdu", "")
+				ELSE
+				CALL post:MISCdetalleBonifGral(promo_desc_presAd,costo_presAd,promo_bon_presAdu,promo_imp_presAdu,"PresAdu", "")
+			END IF
+		END IF
+		IF (promo_imp_almc > 0) THEN
+			IF (post:promoAlmaTipoBon == TIPO_BONIF_VALOR)
+				CALL post:MISCdetalleBonifGral(promo_desc_almc,costo_almac,"----",promo_imp_almc,"Almac.", "")
+			ELSE
+				CALL post:MISCdetalleBonifGral(promo_desc_almc,costo_almac,promo_bon_almac,promo_imp_almc,"Almac.", "")
+			END IF
+		END if
+	  
+	  IF (post:cod_HandHeld > 0) THEN
+					unprotfield post:cod_HandHeld
+		ENDIF
+
+		PROTFIELD Pieza
+	END IF
+		
+	IF (estado_presu == 4) THEN
+		PROTFIELD Pieza
+		//     PROTFIELD siaf:moneda
+	ELSE
+		CLEARFIELD ApelNom_Entrega
+	END IF
+	;Borro tabla temporal
+	CALL post:CDSEntPzas_tmpDelAll
+END SUB
+
+/*******/

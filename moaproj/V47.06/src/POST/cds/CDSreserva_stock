@@ -1,0 +1,86 @@
+/****o* Pendientes de agrupación/OFB:post:CDSreserva_stock
+* NOMBRE
+*   OFB:post:CDSreserva_stock
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSreserva_stock(prod,coddep,stk_cant)
+	local LRetval like lib:err_retval
+	;local dif like lib:err_retval
+	    
+    cds select from DSC:adt_stock_table becomes DSC:adt_stock_context \
+    where adt_stock_codprod == prod && \
+    adt_stock_coddep == coddep
+    cds findfirst dsc:adt_stock_context lock
+    let lib:err_retval = cdsretval
+    select (lib:err_retval) then
+    	/* Actualizo la reserva */
+    	case 0
+    		cds extract dsc:adt_stock_context all
+    		/* MLD Para las modificaciones dejo reservado lo que tengo vendido,
+    		;pero acyualizo la diferencia */
+    		;dif = cantidad2 - stock_ant
+    		if ((adt_stock_stock - adt_stock_reserva) >= stk_cant) then
+    			cds findagain dsc:adt_stock_context lock
+    			;post:adt_stock_reserva = post:adt_stock_reserva + dif
+    			post:adt_stock_reserva = post:adt_stock_reserva + stk_cant
+    			cds clearbuffer dsc:adt_stock_context
+    			cds append dsc:adt_stock_context adt_stock_reserva
+	   			cds update dsc:adt_stock_context lock
+	   			LRetval = 0
+	   		else
+	   			SELECT (siaf:codigo_siaf)
+	   				CASE 40005
+	   				CASE 40003
+	   				CASE 40004
+		   			    FPRINT common:csr_string "No hay stock Disponible para el producto %-10.10s" prod
+		   			    errmsg lst:common:errmsg_list FLD:common:csr_string
+						BREAK
+		   			CASE ELSE
+		    		    errmsg lst:common:errmsg_list "No hay stock Disponible"
+		    		    BREAK
+		    	END SELECT
+    			LRetval = -2
+    		end if
+    		break	
+    	case -803
+    		/* Registro Lockeado, no puedo actualizar */
+   			SELECT (siaf:codigo_siaf)
+   				CASE 40005
+   				CASE 40003
+   				CASE 40004
+	   			    FPRINT common:csr_string "Otro operador se encuentra modificando el stock %-10.10s" prod
+	   			    errmsg lst:common:errmsg_list FLD:common:csr_string
+					BREAK
+	   			CASE ELSE
+	    		    errmsg lst:common:errmsg_list "Otro operador se encuentra modificando el stock"
+	    		    BREAK
+	    	END SELECT
+    		LRetval = -2
+    		break
+    		/*
+    	case -801
+    		errmsg lst:common:errmsg_list "Registro De Stock No localizado"
+    		LRetval = -2
+    		break
+    		*/
+    end select
+	cds unlock dsc:adt_stock_context
+	cds endselect dsc:adt_stock_context
+	return (LRetval)
+END SUB
+
+/*******/

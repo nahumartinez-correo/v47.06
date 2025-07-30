@@ -1,0 +1,180 @@
+/****o* Pendientes de agrupación/OFB:post:MISCsaveMAgrup
+* NOMBRE
+*   OFB:post:MISCsaveMAgrup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsaveMAgrup
+local retval_aux like lib:err_retval
+local ImpConIva like siaf:ImporteConIva
+local ImpSinIva like siaf:ImporteConIva
+local ImpConIva_anterior like siaf:ImporteConIva
+local ImpSinIva_anterior like siaf:ImporteSinIva
+local ImpConIva_Bak like siaf:ImporteConIva
+local ImpSinIva_Bak like siaf:ImporteSinIva
+local Codigo_bak	like siaf:codigo_siaf
+local ImpUP_anterior like post:ImpServUP
+local Formulario like post:PreDForFis
+
+	/*Voy a buscar el afecta efectivo para el motivo - Gabriel Falciola*/
+    CDS SELECT FROM dsc:siaf:adt_tran_table BECOMES dsc:siaf:adt_tran_context \
+        WHERE siaf:adt_tran_codigo == motagr_submodulo
+    CDS FINDFIRST dsc:siaf:adt_tran_context NOLOCK
+    IF (CDSRETVAL == -801) THEN
+        return (-2)
+    END IF
+    CDS EXTRACT dsc:siaf:adt_tran_context siaf:adt_tran_afec_efvo into siaf:afecta_efectivo
+	CDS ENDSELECT dsc:siaf:adt_tran_context
+
+	/*Se agrega el tratamiento para acumular importes con iva y sin iva para el cálculo de
+ 	 Ingresos Brutos - Gabriel Falciola*/
+
+    post:operador_tmpl = op:op_operator_id
+    post:fecha_tmpl = common:system_date
+    CDS SELECT FROM DSC:MotAgrup_tbl BECOMES DSC:MotAgrup_ctx \
+    WHERE fecha_tmpl == FLD:common:system_date && \
+        operador_tmpl == FLD:op:op_operator_id && \
+        PresNro_tmpl == PresNro && \
+        cod_agrupacion == FLD:cod_agrupacion && \
+        nro_mot == nro_mot && \
+        motagr_tmpl == template && \
+        motagr_cod == motagr_cod && \
+        motagr_modulo == motagr_modulo && \
+        motagr_submodulo == motagr_submodulo
+        CDS FINDFIRST DSC:MotAgrup_ctx LOCK
+        LET retval_aux = CDSRETVAL
+        if (cdsretval == 0)
+       		CDS EXTRACT DSC:MotAgrup_ctx siaf:ImporteConIva into ImpConIva_anterior \
+       		siaf:ImporteSinIva into ImpSinIva_anterior monedaNC \
+       		ImpServUP into ImpUP_anterior siaf:adt_mot_formfiscal into Formulario
+       	end if
+       	/*Selecciono el motivo correspondiente en la tabla de motivos para rescatar los
+	    datos de dicho motivo que hay que journalizar*/
+		CDS SELECT FROM siaf:adt_motiv_table BECOMES siaf:adt_motiv_context \
+		WHERE siaf:adt_mot_codigo == motagr_cod && \
+		siaf:adt_mot_modulo == motagr_modulo && \
+		siaf:adt_mot_submodulo == motagr_submodulo
+        CDS FINDFIRST siaf:adt_motiv_context NOLOCK
+        IF (CDSRETVAL == -801)
+	    	RETURN (-2)
+        END IF
+        clearfield siaf:adt_mot_formfiscal
+        CDS EXTRACT siaf:adt_motiv_context ALL
+        
+		if (siaf:adt_mot_formfiscal.numchars == 0 && Formulario.numchars == 0)
+			EstadoFormu = SIN_FORM
+		end if
+		if (siaf:adt_mot_formfiscal.numchars != 0 && Formulario.numchars != 0)
+			EstadoFormu = CON_FORM
+		end if
+		if (siaf:adt_mot_formfiscal.numchars != 0 && Formulario.numchars == 0)
+			EstadoFormu = CON_FORM_DES
+		end if
+		if (siaf:adt_mot_formfiscal.numchars == 0 && Formulario.numchars != 0)
+			EstadoFormu = CON_FORM_ANT
+		end if
+		
+		
+		//SC 50170
+		CALL MISCdesglosaIva(motagr_imp, siaf:adt_mot_aliciva,1,0)
+		siaf:ImporteSinIva = post:ImporteSinIva
+		ImpSinIva = siaf:ImporteSinIva
+		siaf:ImporteConIva = motagr_imp
+		ImpConIva = siaf:ImporteConIva
+		post:PreDForFis = siaf:adt_mot_formfiscal
+		
+		/*Cargo los campos de Ventas UP - Gabriel Falciola*/
+		ImpServUP = siaf:ImporteConIva
+		AliServUP = siaf:adt_mot_aliciva
+
+		ImpConIva_Bak = siaf:ImporteConIva
+		ImpSinIva_Bak = siaf:ImporteSinIva
+		Codigo_bak = siaf:codigo_siaf
+
+			
+		if (EstadoFormu != SIN_FORM)
+			// Mi querido pichon si tu maestro tiene  que estar en todo
+			// PJM 24-01-200
+			// Se resguarda el campo siaf:Importe con Iva y siaf:Importe_sin_Ïva
+			// Porque se perdian en la rutina que acumula
+			/*Acumulo el el Importe Total con y sin IVA en la Tabla AuxIngBr*/
+			Clearfield siaf:codigo_siaf
+		
+			call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,ImpConIva,ImpSinIva,siaf:adt_mot_fliatran,siaf:afecta_efectivo,PresNro,siaf:moneda,monedaNC)
+			
+			/*Acumulo importes para Ventas UP - Gabriel Falciola*/
+			call CDSAcumImpUP(ImpUP_anterior,ImpServUP,siaf:adt_mot_fliatran,AliServUP,siaf:afecta_efectivo,PresNro)
+		end if
+			
+		siaf:ImporteConIva = ImpConIva_Bak
+		siaf:ImporteSinIva = ImpSinIva_Bak
+		siaf:codigo_siaf = Codigo_bak
+
+
+		
+		CDS ENDSELECT siaf:adt_motiv_context
+
+       	CDS CLEARBUFFER DSC:MotAgrup_ctx
+        CDS APPEND DSC:MotAgrup_ctx \
+            FLD:fecha_tmpl \
+            FLD:operador_tmpl \
+            FLD:PresNro_tmpl \
+            FLD:cod_agrupacion \
+            FLD:nro_mot \
+            FLD:motagr_tmpl  \
+            FLD:motagr_cod \
+            FLD:motagr_modulo \
+            FLD:motagr_submodulo
+        CDS APPEND DSC:MotAgrup_ctx \
+            FLD:motagr_desc  \
+            FLD:motagr_comp \
+            FLD:motagr_sucdest \
+            FLD:motagr_impsell \
+			FLD:giros:Impuesto \
+			FLD:giros:Impuesto_abonado \
+            FLD:motagr_imp  \
+            FLD:siaf:ProvImpuesto
+        CDS APPEND DSC:MotAgrup_ctx \
+            FLD:siaf:adt_mot_aliciva \
+            FLD:siaf:adt_mot_formfiscal \
+            FLD:siaf:adt_mot_fliatran \
+            FLD:giros:adt_impp_serv \
+			FLD:giros:Impp_impdesc_emi \
+			FLD:giros:Impp_pdesc_emi \
+			FLD:giros:Impp_impdesc_pag \
+			FLD:giros:Impp_pdesc_pag \
+            FLD:motagr_impsell AS siaf:ImporteSello
+		CDS APPEND DSC:MotAgrup_ctx \
+            FLD:siaf:afecta_efectivo \
+    		FLD:siaf:ImporteConIva \
+    		FLD:siaf:ImporteSinIva \
+    		FLD:siaf:moneda as monedaNC \
+    		FLD:post:ImpServUP \
+    		FLD:post:AliServUP
+    		//SC 50170 FACTURACION
+    		CDS APPEND DSC:MotAgrup_ctx \
+    		post:ImporteIva \
+    		post:ImporteSinIva_bis
+    		
+        IF (retval_aux == -801)
+            CDS INSERT DSC:MotAgrup_ctx LOCK
+        ELSE
+            CDS REPLACE DSC:MotAgrup_ctx LOCK
+        END IF
+     CDS ENDSELECT DSC:MotAgrup_ctx
+END SUB
+
+/*******/

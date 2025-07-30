@@ -1,0 +1,122 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALhabilita_Chk
+* NOMBRE
+*   OFB:tes:SVALhabilita_Chk
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALhabilita_Chk
+    local hora_aux like tes:adt_chk_hora
+    local supervis like tes:rend_marca_cierre 
+	LOCAL nro LIKE siaf:i
+	
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+	    
+	    if (adt_chk_cantidad == 0) then
+		errmsg lst:common:errmsg_list,\
+			   "No hay ningún Movimiento cargado"
+		return (-1)
+	    end if
+	    
+	    popup tes:SCRNconfirma
+	    if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+		return (-2)
+	    end if
+	    
+        // Guardo si fue supervisada para marcar las otras
+        if (testflag(tlr:tran_flags,supovr_granted)) then
+            let supervis = "S"
+        else
+	        let supervis = "N"
+        endif
+	    
+ 	     LET adt_chk_fecha = common:system_date
+        LET adt_chk_hora  = common:time_of_day
+        
+    	let siaf:nombre_transac = "HABILITA CHEQUERA"
+		move "HABCHEK" to tlr:tran_mnemonic
+
+	    cds select FROM DSC:AuxChkV_tbl becomes DSC:AuxChkV_ctx 
+	    cds findfirst DSC:AuxChkV_ctx LOCK
+	    WHILE (cdsretval == 0)
+			cds extract DSC:AuxChkV_ctx ALL
+			let tes:es_tesoro = "S"
+			
+			FLD:drv:INDjnl_rtn = OFB:tes:JNLsalida_Chk
+;			ungetkey 0x190
+			call siaf:MISClleno_modalidad 
+			
+			if (supervis == "S") then
+			// si la primera fue supervisada , marco todas
+			 setflag tlr:tran_flags,supovr_granted
+			endif
+			// 
+			giros:clave_hdr_giros  = 0
+			giros:codigo_procesamiento = siaf:codigo_proc
+			giros:hora_viaje = common:time_of_day
+			giros:dia_viaje  = common:system_date
+			Call post:CDSobtiene_secuen("STAN")
+			//
+			clearfield adt_chk_datos
+			fprint cheques_ingresados "Serie: %1s Proximo Nro: %06s Libres: %3s" \
+				            adt_chk_serie adt_chk_proxim adt_chk_libres
+			adt_chk_cantidad = adt_chk_cantid		 
+			//
+		   	giros:Serie_fld = adt_chk_serie
+		   	giros:NroGiro_fld = adt_chk_nrogiro
+		    CALL giros:digito_verificador(giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld)
+		   	giros:Cantid_fld = adt_chk_cantid
+		    giros:remito_fld = adt_chk_remito
+		    giros:nuevo_num_giro_fld = (adt_chk_nrogiro + adt_chk_cantid) - 1
+		    CALL giros:digito_verificador(giros:Serie_fld,giros:nuevo_num_giro_fld,giros:nuevo_dig_fld)
+		    //
+			call tlr:JNLtran
+			//			
+		   If (hcomm:tran_status == HOST_ACCEPTED) 
+				LET giros:adt_chk_suc = adt_chk_suc
+				LET giros:adt_chk_serie = adt_chk_serie
+				LET giros:adt_chk_nrogiro = adt_chk_nrogiro
+				
+				LET giros:adt_chk_fecha = adt_chk_fecha
+				LET giros:adt_chk_hora  = adt_chk_hora
+				LET giros:adt_chk_estado = 0
+				
+				LET nro = 0
+				WHILE (nro < giros:adt_chk_cantid)
+				    LET giros:adt_chk_cheque[nro] = "HA"
+				    LET nro = nro + 1
+				END WHILE	    
+			
+				CALL tes:CDSadt_chk_habi   // Actualiza el archivo de chequeras
+				
+		        LET tes:adt_chk_tesoro = giros:adt_chk_tesoro
+				LET tes:adt_chk_marca_ing = "T"
+				
+				call tes:CDSgraba_TesChkVMov  
+			end if	
+			//	 
+			cds delete dsc:AuxChkV_ctx
+			cds unlock DSC:AuxChkV_ctx
+			cds findnext DSC:AuxChkV_ctx LOCK
+	    END WHILE
+	    
+	    CLEARFIELD drv:INDjnl_rtn
+        CLEARFIELD drv:INDhcomm_rtn
+;       CLEARFIELD drv:INDspc_rtn[1]
+	    cds endselect DSC:AuxChkV_ctx
+	END IF  
+END SUB
+
+/*******/

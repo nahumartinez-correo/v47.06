@@ -1,0 +1,192 @@
+/****o* Pendientes de agrupación/OFB:post:RCVEiplan
+* NOMBRE
+*   OFB:post:RCVEiplan
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postrcve.h"
+
+sub post:RCVEiplan
+	local l_codigoSiaf like siaf:codigo_siaf
+	local l_str_tmp like common:csr_string
+	local cant like siaf:i
+	local sclave like common:csr_string
+	local key like common:csr_string
+	local esIplan 		like siaf:i
+	local l_codbarras_id like post:sf1_codbarras
+	local loc_numero	like post:cuenta
+
+	//l_codigoSiaf = siaf:codigo_siaf
+	// siaf:codigo_siaf = 6680
+    call hcomm:RCVEheaderV105
+    // siaf:codigo_siaf = l_codigoSiaf
+    clearfield common:csr_string
+    clearfield fieldRespuestaBULK
+
+    if (hcomm:ResultCode != 0)
+        if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+            msg = msg + 45
+        else
+            msg = msg + 69
+        endif
+        return 0
+    endif
+
+	; PAW 28.05.2003 - agrego una capa para la desencriptacion.
+	l_str_tmp = common:csr_string
+	cant = MSGEND - MSG
+    COMM  GET fieldRespuestaBULK  FROM MSG TYPE BULK LENGTH cant
+
+	comm deallocate
+
+	; PAW 28.05.2003 - desencripto la respuesta.
+	fprint sclave "%04s%06s%04s%02s%02s%02s%02s%02s",\
+		tlr:jnl_sequence,\
+		op:op_operator_id, \
+		substr(tlr:jnl_date,0,4), \
+		substr(tlr:jnl_time,0,2), \
+		substr(tlr:jnl_date,4,2), \
+		substr(tlr:jnl_time,2,2), \
+		substr(tlr:jnl_date,6,2), \
+		substr(tlr:jnl_time,4,2)
+
+    clearfield fieldRespuestaSTR
+    DLL _BfJ_creaClave ( sclave key )
+    DLL _BfJ_inicia ( key )
+    DLL _BfJ_desencripta (fieldRespuestaBULK fieldRespuestaSTR  cant )
+    DLL _BfJ_fin ( )
+    siaf:i = 0
+
+    if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+        ; Terminal
+		call MISCcommGet(fieldRespuestaSTR, 6)
+		terminal = common:csr_string
+        ; Operador
+		call MISCcommGet(fieldRespuestaSTR, 1) //porque nuestro operador es de 5 y en la mensajeria de 6
+		call MISCcommGet(fieldRespuestaSTR, 5)
+		operador_tmpl = common:csr_string
+        ; Ticket
+		call MISCcommGet(fieldRespuestaSTR, 4)
+		ticket = common:csr_string
+		; Pin
+		select (post:adt_tran_sf1_ver)
+			case 1
+				call MISCcommGet(fieldRespuestaSTR, 9)
+				result_pin = common:csr_string
+				break
+			case 2
+				call MISCcommGet(fieldRespuestaSTR, 9)
+				result_pin = common:csr_string
+				call MISCcommGet(fieldRespuestaSTR, 20)
+				result_id_pin = common:csr_string
+				break
+			case 3
+			case else
+				call MISCcommGet(fieldRespuestaSTR, 20)
+				result_pin = common:csr_string
+				call MISCcommGet(fieldRespuestaSTR, 20)
+				result_id_pin = common:csr_string
+				break
+		end select
+        ; id
+		call MISCcommGet(fieldRespuestaSTR, 20)
+		result_id = common:csr_string
+		
+
+    else // es una anulacion de pin
+        ; Terminal
+		call MISCcommGet(fieldRespuestaSTR, 6)
+		terminal = common:csr_string
+        ; Operador
+		call MISCcommGet(fieldRespuestaSTR, 1) //porque nuestro operador es de 5 y en la mensajeria de 6
+		call MISCcommGet(fieldRespuestaSTR, 5)
+		operador_tmpl = common:csr_string
+        ; Ticket
+		call MISCcommGet(fieldRespuestaSTR, 4)
+		ticket = common:csr_string
+        ; saldo
+		call MISCcommGet(fieldRespuestaSTR, 13)
+        ; id
+		call MISCcommGet(fieldRespuestaSTR, 20)
+		result_id = common:csr_string
+        ; idorig
+		call MISCcommGet(fieldRespuestaSTR, 20)
+		result_id_orig = common:csr_string
+		
+		// si estoy reversando o recuperando una caida, aca termina la historia...
+		return 
+		
+    endif
+    
+	// FGB: estas líneas estaban en la MISCimprimo_sf1, y la paso acá para que, si hay problemas con el BOB,
+	//		pueda poner a la trx. como caida en vuelo, y así la doy por no hecha.    
+	if (!testflag(tlr:tran_flags,correction))
+		call post:CDSutility_cod_prod("")
+		esIplan = (post:utility_cod_prod == "IPLAN")
+		//
+		
+	   dprint "\nRCVEiplan: -------------------------\n"
+	   dprint "result_id: %s \n" result_id
+	   dprint "result_id_pin: %s \n" result_id_pin
+	   dprint "result_pin: %s \n" result_pin
+	   dprint "-------------------------------------\n"
+	   
+		if (esIplan)
+		    select (post:adt_tran_sf1_ver)
+	            case 1
+	            	l_codbarras_id = sf1_codbarras_nuevo
+	                fprint sf1_codbarras_nuevo, "%s%s", sf1_codbarras_nuevo, result_pin
+	                break
+	            case 2
+	                ;SMC Agrego importe y Pin ID al final de la barra
+	                fprint sf1_codbarras_nuevo, "%s%20.20s", sf1_codbarras_nuevo, result_id_pin
+	                l_codbarras_id = sf1_codbarras_nuevo
+	                ;Si es Solicitud... mando el tambien el pin para el Ticket (9 CARACTERES)
+	                if (adt_tran_sf1_codigo == 6680) then
+	                    fprint sf1_codbarras_nuevo, "%s%s", sf1_codbarras_nuevo, result_pin
+	                endif
+	                break        
+	            case 3
+	            case else
+	                ;SMC Agrego importe y Pin ID al final de la barra
+	                loc_numero = result_id_pin
+	                fprint sf1_codbarras_nuevo, "%s%020.20s", sf1_codbarras_nuevo, loc_numero
+	                ;Si es Solicitud... mando el tambien el pin para el Ticket (20 CARACTERES)
+	                if (adt_tran_sf1_codigo == 6680) then
+	                	loc_numero = result_pin
+	                    fprint sf1_codbarras_nuevo, "%s%020.20s", sf1_codbarras_nuevo, loc_numero
+	                endif
+	                l_codbarras_id = sf1_codbarras_nuevo
+	                post:sf1_cta_nro = result_id
+	                break        
+	            case else
+	                break
+	        end select
+	        
+		        
+	        call MISCobtiene_impreSf1("N")
+	        if (retval < 0)
+                let hcomm:tran_status = 106
+	            let siaf:mensaje = "Canc. Automática por problema en los BOB"
+    	        let hcomm:Gravedad = 10
+    	        sf1_codbarras_nuevo = l_codbarras_id
+	            return -2
+	    	endif
+	    	sf1_codbarras_nuevo = l_codbarras_id
+		endif
+	endif	
+    
+end sub
+
+/*******/

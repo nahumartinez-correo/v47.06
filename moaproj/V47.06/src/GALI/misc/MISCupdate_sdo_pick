@@ -1,0 +1,136 @@
+/****o* Pendientes de agrupación/OFB:gali:MISCupdate_sdo_pick
+* NOMBRE
+*   OFB:gali:MISCupdate_sdo_pick
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "galimisc.h"
+
+SUB gali:MISCupdate_sdo_pick
+	local SIGNO like fila_pic /* indica si la operacion suma o resta */
+	call csr:cleararray siaf:paquete_rcv
+	clearfield gali:item_picklist
+
+	move "cuentas" to pick_name
+	call gali:MISCpaso_a_vector
+
+	if (testflag(tlr:tran_flags,correction)) then
+		call gali:MISCubicar_item
+		if (retval < 0) then
+			dprint "\nNo encontre la fila del item ....\n"
+			return (-2)
+		end if
+		let SIGNO = -1
+	else 
+
+		/* Obtengo en item_picklist la ultima fila clickeada del picklist */
+		let NRO_ITEM = fila_pic
+		let SIGNO = 1
+
+	end if
+	
+	/* Pongo el valor del saldo del picklist en un campo numerico */
+	/* Para hacer esta asignacion a campos numericos, se utilizaros estas 
+	dos variables por separado por no saber si los saldos futuros se 
+	actualizaran. De ser asi, seria bueno utilizar el array creado para
+	tal fin saldo_cliente[8], siendo muy facil hacerlo a traves de un 
+	bucle */
+	let saldo_disp = substr(gali:item_picklist,23,17)
+	
+	/* Modifico el valor del saldo segun la tran realizada */
+	select (siaf:codigo_siaf)
+		case 800 /* las directas ...*/
+		case 810
+		case 860
+		case 870
+		case 801 /* las reversas...*/
+		case 811
+		case 861
+		case 871
+			let saldo_disp = saldo_disp + (gali:importe * SIGNO)
+			
+			break
+		case 700 /* las directas ...*/
+		case 710 
+		case 701 /* las reversas ...*/
+		case 711 
+			let saldo_disp = saldo_disp - (gali:importe * SIGNO)
+			
+			break
+		case else
+			return (0) /* Cualquier otra tran no hace nada */
+	end select
+
+	/* 0000000000111111111122222222223333333333 */
+	/* 01234 678901234-6789-1 34567890123456789 */	
+	/* Vuelvo a armar la fila del picklist */
+	fprint gali:item_picklist "%22.22s %17.17e %s",\
+		substr(gali:item_picklist,0,22),saldo_disp,\
+		substr(gali:item_picklist,40,233)
+
+	let siaf:paquete_rcv[fila_pic] = gali:item_picklist
+
+	/* REHAGO EL PICKLIST ACCOUNTS EN BASE AL DE CUENTAS*/
+	/* Destruyo el viejo "accounts" */
+	call csr:f_sadroppl "accounts"
+	call csr:f_sadroppl "cuentas"
+
+	/* Vuelvo a crear "accounts" para ingresarle los valores actuales*/
+	CALL  csr:f_sanewpl "accounts" PIC:plataf:accounts_list 300 100
+	CALL  csr:f_sanewpl "cuentas" PIC:plataf:cuentas_y_saldos
+
+	/* Inicializo el indice a la fila del picklist siendo copiada */
+	clearfield NRO_ITEM
+	let NRO_ITEM = 0
+
+	/* Copia elemento a elemento del origen al destino (reflejo picklist)*/
+	do
+		if (siaf:paquete_rcv[NRO_ITEM].NUMCHARS < 16) then
+			break
+		end if	
+		/* Arma la linea del picklist accounts */
+		if (substr(siaf:paquete_rcv[NRO_ITEM],41,7) != "CERRADA") then
+			if (substr(siaf:paquete_rcv[NRO_ITEM],0,2) == LIT_PR)
+				/* Prestamos muestra en el combo el saldo_disp */
+				fprint drv:dis_info_work, "%18.18s %19.19e" , \
+				substr(siaf:paquete_rcv[NRO_ITEM],0,18) \
+				substr(siaf:paquete_rcv[NRO_ITEM],27,19)	
+			else				
+				/* Los demas productos muestran el el combo 
+				el saldo_disp */
+				fprint drv:dis_info_work, "%s" ,siaf:paquete_rcv[NRO_ITEM]
+				
+			end if
+		else
+			fprint drv:dis_info_work,"%21.21" \
+				substr(siaf:paquete_rcv[NRO_ITEM],0,26)
+
+		end if
+		/* Si estoy en la fila del item elegido aprovecho y
+		le pongo en nuevo valor al compo de inf. de cuentas */
+		if (NRO_ITEM == fila_pic)  then
+			move drv:dis_info_work to drv:dis_info_acct
+		end if
+
+		/* llena el picklist principal: account_list*/
+   		CALL  csr:f_saaddpl "accounts" drv:dis_info_work
+		call  csr:f_saaddpl "cuentas" siaf:paquete_rcv[NRO_ITEM]
+		
+		let NRO_ITEM = NRO_ITEM + 1 /* paso al siguiente item */
+	loop
+	refresh drv:dis_info_acct /* refresca el combofield de la pantalla */
+
+END SUB
+
+/*******/

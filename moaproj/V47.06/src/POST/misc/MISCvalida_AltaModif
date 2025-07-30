@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalida_AltaModif
+* NOMBRE
+*   OFB:post:MISCvalida_AltaModif
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalida_AltaModif
+	LOCAL moneda LIKE siaf:moneda
+	LOCAL cheq LIKE nro_cheque
+	LOCAL bco LIKE cod_banco
+	LOCAL cta LIKE cuenta
+
+	//Reutilizo TotMedPago
+	NroCompPago = 0
+	Tipo_Adm = "G"
+	//CALL FVALmed_pago_imp
+	IF (adt_mp_adm == "I" && adt_mp_admban == "S") THEN
+		moneda = siaf:moneda
+		cheq = nro_cheque
+		bco = cod_banco
+		cta  = cuenta
+		Tipo_Adm = "I"
+		IF (consulta_excepcionCM == "S" && siaf:moneda == 02) THEN
+			siaf:importe = importeChqMult
+		END IF
+		FPRINT NroCompPago, "%03.3s%020.20s%020.20s", cod_banco, cuenta, nro_cheque
+		//Valida que los datos del cheque estén cargados en pantalla y valida el formato de la fecha
+		CALL MISCvalidaCheque
+	END IF
+	
+	//Estilo Tarjeta
+  IF (adt_mp_adm == "I" && adt_mp_auto == "S") THEN
+  	//No posee mensaje al HOST
+  	RESETFLAG post:journal_flags,enviar_mensaje_host
+  	
+		//gpb:NI50525 POS Integrado
+		//gpb:NI50546 Mercado Pago 
+		CALL post:MISCsplit_flow_card
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+
+ 		moneda = siaf:moneda
+ 		bco = 0
+ 		cta = codigo_interno
+		cheq = NroCompPago2
+		Tipo_Adm = "I"
+		
+		//gpb:PS10899, esta validacion se realizaba cuando la carga de datos era manual y NO integrada
+		//CALL MISCvalidaTarjeta
+  END IF
+  IF (RETVAL < 0) THEN
+		RETURN (-2)
+  END IF
+	//Para Cheques y Tarjetas Valido que no exista ya el cheque
+	IF (Tipo_Adm == "I") THEN
+		//CALL tes:CDSverif_cheque_tes(moneda,cheq,bco,cta)
+		CALL tes:CDSverif_cheque_tes2(siaf:moneda,cod_banco,cuenta,nro_cheque,post:codigo_interno,NroCompPago2)
+		IF (RETVAL < 0) THEN
+			MSGBOX "Los Datos de este medio de pago ya fueron registrados" OFB_OK "ERROR"
+			RETURN (-2)
+		END IF
+	END IF
+	//Codigo Interno
+	IF (adt_mp_int == "S") THEN
+		IF (codigo_interno == 0) THEN
+			MSGBOX "El codigo interno tiene que estar cargado" OFB_OK "ERROR"
+			RETURN (-2)
+		ELSE
+			CALL post:FVALMedio_CodInt
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+		END IF
+	END IF
+
+  CALL post:CDSadt_MedPago_load
+	/*Se saca la validacion local puesto que ahora se valida contra el switch*/
+	/*IF (cli_tipo == CLIUP && adt_mp_admban == "S") THEN
+		CALL CDSbusco_cliUP(NisUP, CloTipDoc, CloCuit)
+		IF (RETVAL == 0) THEN
+			IF (CliUP_bco != cod_banco || CliUP_cuenta != cuenta) THEN
+				MSGBOX "Banco y/o Cuenta no coincide" OFB_OK "ERROR"
+				RETURN (-2)
+			END IF
+		ELSE
+			MSGBOX "Cliente UP Inexistente" OFB_OK "ERROR"
+			RETURN (-2)
+		END IF
+	END IF*/
+
+	IF (adt_mp_diferido != "S") THEN
+		CALL csr:date_compare(fec_e,fec_d)
+		IF (RETVAL == 1) THEN /* fecha de emision es mayor o igual a la fecha de vencimiento*/
+			ERRMSG LST:common:errmsg_list,"FECHA INVALIDA"
+			NEXTFIELD fec_e
+			RETURN (-2)
+		END IF
+	END IF
+    
+END SUB
+
+/*******/

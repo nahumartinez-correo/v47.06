@@ -1,0 +1,116 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBmonitoreo_ped
+* NOMBRE
+*   OFB:post:OFBmonitoreo_ped
+* DESCRIPCION
+*		Envia un mensaje de alerta al HOST
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:OFBgenera_alertas
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBmonitoreo_ped
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_cdsretval  LIKE lib:err_retval
+	LOCAL cant_reg LIKE tlr:jnl_branch
+	LOCAL l_tabla LIKE common:csr_string
+	LOCAL l_op_operator LIKE tlr:jnl_operator
+
+	//Resguardo el operador 
+	LET l_op_operator = tlr:jnl_operator
+	
+	LET l_tabla = "estadoPED"
+
+Inicio:
+	IF (l_tabla == "estadoPED")THEN
+		//1-Recorro estadoPED
+		CDS SELECT FROM "estadoPED" BECOMES "tabla_ctx" \
+			WHERE tlr:jnl_status >= 100
+	ELSE
+		//2-Recorro CompPED
+		CDS SELECT FROM "CompPED" BECOMES "tabla_ctx" \
+			WHERE tlr:jnl_status >= 100
+	END IF
+	
+	/* Si encontró al menos uno, me fijo cuántos son*/
+	cant_reg = 0
+	CDS AGGREGATE "tabla_ctx" COUNT tlr:jnl_branch AS cant_reg
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT "tabla_ctx" cant_reg
+		CALL post:MISCinicProgressBar("ACTIVANDO PIEZAS PED RECHAZADAS - ", cant_reg)
+	END IF	
+	
+	CDS FINDFIRST "tabla_ctx" LOCK
+	LET l_cdsretval = CDSRETVAL
+	WHILE (l_cdsretval == 0)
+		CDS EXTRACT "tabla_ctx" ALL
+		
+		CDS BEGINWORK
+		
+		CALL post:CDSped_msg_rech(l_tabla)
+		LET l_retval = RETVAL
+		//Actualizo estadoPED/CompPED
+		IF (l_retval == 0) THEN
+			//Limpio campos del viaje del cupon 
+			CLEARFIELD siaf:adt_jnlc_locktime
+			CLEARFIELD giros:codigo_procesamiento
+			CLEARFIELD giros:CodRespuesta_comm
+			CLEARFIELD post:adt_codseq_nro
+			CLEARFIELD giros:hora_viaje
+			CLEARFIELD giros:dia_viaje
+			//Dejo el campo como pendiente de envio para que lo tome el rt-batch en la proxima iteracion
+			LET tlr:jnl_status = "001"
+				
+			CDS CLEARBUFFER "tabla_ctx"
+			
+			CDS APPEND "tabla_ctx" siaf:adt_jnlc_locktime \
+				giros:codigo_procesamiento \
+				giros:CodRespuesta_comm \
+				post:adt_codseq_nro \
+				giros:hora_viaje \
+				giros:dia_viaje \
+				tlr:jnl_status
+			
+			CDS UPDATE "tabla_ctx" LOCK
+			//Si actualizo OK la tabla estadoPED/CompPED
+			IF (CDSRETVAL == 0) THEN
+				CDS COMMITWORK
+			ELSE
+				CDS ROLLBACKWORK
+			END IF
+		ELSE
+			CDS ROLLBACKWORK
+  	END IF
+  	
+		NAP 250
+		
+		CALL post:MISCactProgressBar("ACTIVANDO PIEZAS PED RECHAZADAS - ", 1, BARRAPORCENT, 1)
+
+		CDS FINDNEXT "tabla_ctx" LOCK
+		LET l_cdsretval = CDSRETVAL	
+	END WHILE
+	
+	CALL post:MISCfinProgressBar
+	
+	CDS UNLOCK "tabla_ctx"
+	CDS ENDSELECT "tabla_ctx"
+	
+	IF (l_tabla == "estadoPED") THEN
+		l_tabla = "CompPED"
+		GOTO Inicio
+	END IF
+	
+	//Vuelvo a recuperar el operador 
+	LET tlr:jnl_operator = l_op_operator	
+	
+END SUB
+
+/*******/

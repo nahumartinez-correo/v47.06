@@ -1,0 +1,143 @@
+/****o* Mensajeria/OFB:post:MISCclimed_cons_fcli
+* NOMBRE
+*   OFB:post:MISCclimed_cons_fcli
+* DESCRIPCION
+*   RECIBE LOS DATOS DATOS DE LA FACTURACION DE TODOS LOS CLIENTES PERTENCIENTES A LA SUCURSAL
+*   ENVIADOS POR EL HOST (DE LA TABLA CLIENTES) EN LOS BITS 105,106,107 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCclimed_clie_fact
+* DOCUMENTACION
+*   PS10915 Demora en el cierre de la sucursal a fin de mes
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCclimed_cons_fcli(datos,long)
+
+	/****************************************************************************/
+	/* OBTENER LOS DATOS DE LA FACTURACION DE TODOS LOS CLIENTES DE LA SUCURSAL */
+	/* BITS : 105,106,107 						 	    */
+	/****************************************************************************/
+
+	local posicion            like post:cantidad
+	local longitud            like post:Longitud_105
+	local loc_retval          like lib:err_retval
+	local varl_importe        like common:csr_string
+	local varl_cm_numero      like post:climed_numero
+	local varl_cm_cuit        like post:CloCuit
+	local varl_cm_razon_soc   like post:CloRazon	
+	local varl_cm_subcuenta   like post:subcuentaDesc_CM
+	local varl_cm_modalidad   like post:modalidad_CM
+	local varl_cm_fecinic     like post:inicio_facturacion
+	local varl_cm_facturacion like post:facturacion_CM
+	local varl_cm_bloqueo  	  like post:bloqueo_CM
+	local varl_cm_saldo       like post:anticipo_CM
+	local varl_fecha          like common:csr_string
+	local varl_cli_tipo       like post:climed_tipo
+	
+	fprint longitud,"%s",long
+	posicion = 0
+	loc_retval = -2
+
+	while ( posicion < longitud )
+
+		clearfield varl_cm_numero
+		clearfield varl_cm_cuit
+		clearfield varl_cm_razon_soc
+		clearfield varl_cm_subcuenta
+		clearfield varl_cm_modalidad
+		clearfield varl_cm_facturacion
+		clearfield varl_cm_bloqueo
+		clearfield varl_importe
+		clearfield varl_cm_saldo
+		clearfield varl_fecha
+		clearfield varl_cm_fecinic
+		
+		varl_cm_numero      = substr(datos,posicion,11)
+		posicion = posicion + 11
+
+		varl_cm_cuit        = substr(datos,posicion,11)
+		posicion = posicion + 11
+
+		varl_cm_razon_soc   = substr(datos,posicion,50)
+		posicion = posicion + 50
+
+		varl_cm_subcuenta   = substr(datos,posicion,30)
+		posicion = posicion + 30
+
+		varl_cm_modalidad   = substr(datos,posicion,1)
+		posicion = posicion + 1
+
+		varl_cm_facturacion = substr(datos,posicion,2)
+		posicion = posicion + 2
+
+		varl_cm_bloqueo     = substr(datos,posicion,1)
+		posicion = posicion + 1
+
+		varl_importe  = substr(datos,posicion,12)
+		if ( varl_importe == "000000000000")
+			varl_cm_saldo = 0.00
+		else
+			varl_cm_saldo = (varl_importe / 100 )
+		end if
+		posicion = posicion + 12
+
+		varl_fecha = substr(datos,posicion,8)
+		posicion = posicion + 8
+		//post:fecha_vencimiento = varl_fecha
+
+		varl_cm_fecinic = substr(datos,posicion,3)
+		posicion = posicion + 3
+
+
+		fprint common:csr_string,\
+		"%-11.11s %11.11s %-50.50s %-30.30s %1.1s %3.3s",\
+		varl_cm_numero,varl_cm_cuit,varl_cm_razon_soc,\
+		varl_cm_subcuenta,varl_cm_modalidad,varl_cm_fecinic
+
+		
+		//50244
+		if (post:climed_tipo == "")
+			varl_cli_tipo = CLIMED
+		else
+			varl_cli_tipo = post:climed_tipo
+		endif
+		
+		fprint common:csr_string,\
+		"%s %2.2s %1.1s %16.16e %e %1.1s",\
+		common:csr_string,varl_cm_facturacion,varl_cm_bloqueo,varl_cm_saldo,varl_fecha,varl_cli_tipo
+	  //common:csr_string,varl_cm_facturacion,varl_cm_bloqueo,varl_cm_saldo,varl_fecha,post:climed_tipo
+	
+		//fprint climed_ult_item,"%-11.11s%-1.1s",varl_cm_numero,post:climed_tipo
+		fprint climed_ult_item,"%-11.11s%-1.1s",varl_cm_numero,varl_cli_tipo
+		
+//Mejorar los tiempos en el cierre de sucursal
+if ((tes:estado_aper_cier == "CIERRE" && varl_cm_modalidad == "C" ) || (tes:estado_aper_cier != "CIERRE") )
+
+
+	   	call csr:f_saaddpl(DSC:clientes_deuda,common:csr_string)
+		if (retval < 0 )
+			loc_retval = -2
+			msgbox \
+			"ERROR AL AGREGAR ITEMS AL PICKLIST.",OFB_OK,"Atencion"
+			break
+		else
+			loc_retval = 0
+		end if
+else
+loc_retval = 0
+endif
+		//clearfield fecha_vencimiento
+	end while
+
+	return loc_retval
+
+END SUB
+
+/*******/

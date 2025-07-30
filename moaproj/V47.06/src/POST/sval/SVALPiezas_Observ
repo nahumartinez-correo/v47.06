@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:post:SVALPiezas_Observ
+* NOMBRE
+*   OFB:post:SVALPiezas_Observ
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALPiezas_Observ
+
+	IF (!testflag(tlr:tran_flags,correction)) THEN
+	 	
+	 	CALL CDSVerif_PzaObsReen("PiezasObs","PiezasObs_ctx")
+     	IF (RETVAL < 0) THEN
+       		errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA PIEZA"
+       		RETURN -2
+	 	END IF
+	 	PROTFIELD Pieza
+	 	DISABLECONTROL drv:PBcb0
+	 	DISABLECONTROL drv:PBcb1
+	 	ENABLECONTROL drv:PBcb2
+		UNPROTFIELD mot_piezas_observ
+        UNPROTFIELD desc_piezas_observ
+        
+        call csr:trimfield mot_piezas_observ
+	  	call csr:trimfield desc_piezas_observ
+	  	
+        CALL FVALMot_PiezasObs
+        IF (RETVAL < 0) THEN
+		   NEXTFIELD mot_piezas_observ
+		   RETURN -2
+	    END IF
+	   
+	    MOVE "S" TO siaf:continua_transaccion
+        POPUP siaf:SCRNcontinua
+	    IF (siaf:continua_transaccion == "N" || LASTKEY == 0x0190 ) THEN
+       	    call csr:restore_currentfield
+		    INIT 33,0
+     	    return -2
+        END IF
+	
+        /* Se obtiene un numero de secuencia para journalizar la cabecera y
+        los detalles. Esto es util para la reversa*/
+        CLEARFIELD post:codseq_pie_obs
+        CALL CDSobtiene_secuen("CABEC")
+        post:codseq_pie_obs = post:adt_codseq_nro
+        /* Journaliza el encabezado con otra pantalla */
+        drv:INDscr = SCR:post:SCRNPiezas_Obs_Hdr
+        drv:INDjnl_rtn = OFB:post:JNLPiezas_Observ
+		
+		UNGETKEY RT_SEND
+	    CALL tlr:JNLtran
+    	UNGETKEY RT_SEND
+	  	
+	  	
+	  	/*Actualizo las piezas seleccionadas y las journalizo */
+    	CALL CDSAct_PiezasObs
+        
+        CLEARFIELD drv:INDscr
+        CLEARFIELD drv:INDjnl_rtn
+        CLEARFIELD drv:INDspc_rtn[0]
+        CLEARFIELD drv:INDspc_rtn[2]
+        
+        /*Fuerzo un Enter*/
+     	UNGETKEY RT_SEND
+     	
+	ELSE
+		/* MFM - Verifico si tengo que reversar el encabezado*/
+		CALL CDSreverso_cabecera("4")
+  		post:err_retval = 0
+  		IF (RETVAL == 0) THEN
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRNPiezas_Obs_Hdr
+  			tlr:INDtran_name = "OBSERVADAS"
+  			tlr:INDjnl_append = OFB:post:JNLPiezas_Observ
+  			CALL MISCreversa_transac
+  			post:err_retval = -5
+  		ELSE
+  			IF (RETVAL == -3) THEN
+  				MSGBOX "Todas las piezas asociadas a esta transacción ya han sido reversadas.",0x00,"AVISO"
+  				RESETFLAG  tlr:tran_flags, supovr_request
+            	RESETFLAG  siaf:siaf_flags, req_tes
+            	RESETFLAG  siaf:siaf_flags, req_sup1
+            	;Para que no journalice de más....
+  				CALL post:MISCclear_campos_jou
+  				;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  				Resetflag tlr:tran_flags,correction
+				RETURN
+  			END IF
+  		END IF
+  		/* MFM - Reverso los detalles*/
+  		CALL CDSSelect_Piezas("5")
+  		IF (post:err_retval != -5) THEN
+		  	MSGBOX "Ninguna pieza está en condiciones de reversarse.",0x00,"AVISO"
+  		END IF
+  		;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+  		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		Resetflag tlr:tran_flags,correction
+  	END IF
+  	
+END SUB
+
+/*******/

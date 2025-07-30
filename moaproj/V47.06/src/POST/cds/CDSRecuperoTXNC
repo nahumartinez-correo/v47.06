@@ -1,0 +1,147 @@
+/****o* Notas de Credito CM/OFB:post:CDSRecuperoTXNC
+* NOMBRE
+*   OFB:post:CDSRecuperoTXNC
+* DESCRIPCION
+*   Esta rutina recupera de la tabla PresuDet las TX 99511 y 99513 para generar los registros en la ImpreTmp y en el 
+*   caso de reimpresion genera la AuxIva.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCgenero_ImpreTmp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSRecuperoTXNC(Tipo_Impresion)
+LOCAL l_tasa_serv[20] like post:AliTrnCM 
+LOCAL l_tasa_dcto[20] like post:AliTrnCM 
+LOCAL l_impciva_serv[20] like siaf:importe
+LOCAL l_impciva_dcto[20] like siaf:importe
+LOCAL l_ImporteConIva like post:ImporteConIva
+local serv like siaf:i
+local dcto like siaf:i
+local l_iva like post:AliTrnCM
+local l_impresion like post:cantidad
+
+
+l_impresion = Tipo_Impresion
+
+	//Recupero los vectores de la 99511 (Indeminazacion de Serv por alicuota)
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+	WHERE post:fecha    == FLD:common:system_date && \
+	post:op_operator_id == FLD:op:op_operator_id && \
+	post:PresNro        == post:PresNro && \
+	siaf:codigo_siaf    == 99511
+
+	cds findfirst DSC:CONPresuDeta2 nolock
+	if (cdsretval == 0)
+		cds extract DSC:CONPresuDeta2 \
+		array docfis_tasa_por into  array l_tasa_serv \
+    	 array docfis_importe into array l_impciva_serv 
+/*    	 docfis_imp_siva into l_impsiva_serv \
+    	 docfis_imp_siva4 into l_impsivabis_serv*/
+	end if
+	cds endselect DSC:CONPresuDeta2
+	
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+	WHERE (post:fecha == FLD:common:system_date && \
+	post:op_operator_id == FLD:op:op_operator_id && \
+	post:PresNro        == post:PresNro && \
+	siaf:codigo_siaf    == 99513)
+	
+	cds findfirst DSC:CONPresuDeta2 nolock
+	if (cdsretval == 0)
+		cds extract DSC:CONPresuDeta2 \
+		 array docfis_tasa_por into  array l_tasa_dcto \
+    	 array docfis_importe into array l_impciva_dcto 
+    	/* docfis_imp_siva into l_impsiva_dcto \
+    	 docfis_imp_siva4 into l_impsivabis_dcto*/
+	else
+		//AUT-741 Cuando el precio de mosaic es igual al de la OC no se genera descuento pero igualmente
+		//los vectores se tienen que setear en cero porque sino no emite la Nota de Credito
+		serv = 0
+		do
+			if (serv > 19)
+    			break
+    		endif
+			l_tasa_dcto[serv] = l_tasa_serv[serv]
+			l_impciva_dcto[serv] = 0
+			serv = serv + 1
+		loop
+	end if
+	cds endselect DSC:CONPresuDeta2
+	
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+	WHERE (post:fecha == FLD:common:system_date && \
+	post:op_operator_id == FLD:op:op_operator_id && \
+	post:PresNro        == post:PresNro && \
+	siaf:codigo_siaf    == 99510)
+	
+	cds findfirst DSC:CONPresuDeta2 nolock
+	if (cdsretval == 0)
+		cds extract DSC:CONPresuDeta2 \
+		post:fact_fec_emis
+	end if
+	cds endselect DSC:CONPresuDeta2
+	
+	//bug
+	if (post:AnulOperNC || post:reimpresion == "S")
+	 call post:CDSdelete_AuxIva
+	endif
+    
+    serv = 0
+   	dcto = 0
+	do
+		if (serv > 19 || dcto > 19)
+    		break
+    	end if 
+		if (l_tasa_serv[serv] == l_tasa_dcto[dcto] && l_tasa_serv[serv].numchars != 0) then
+    		
+    		l_ImporteConIva = l_impciva_serv[serv] - l_impciva_dcto[dcto]
+    		l_iva = l_tasa_serv[serv]
+    		Call post:MISCdesglosaIva(l_ImporteConIva,l_iva,1,0)
+    		
+    		//Genero un registro en la ImpreTmp por cada alicuota de servicio ajustado.
+    		post:codigo_impre = l_iva
+    		post:tarifa = l_ImporteConIva
+    		importeSinIva_impre = post:ImporteSinIva
+    		post:importeIva_impre = post:ImporteIva
+    		post:cantidad = 1
+    		Call CDSUpdate_ImpreTmp(l_impresion,l_iva)	
+    		siaf:importe = l_ImporteConIva
+			/*Si es estoy anulando una NC a CM tengo que hacer todo - Gabriel Falciola*/
+    		if (AnulOperNC) then
+    			CALL MISCtotalizo_MedPag //aca se setea el post:importe_sesion
+    			//grabo AUXIVA
+    			siaf:afecta_efectivo = "+"
+    			call post:CDSUpdate_ImpreIvaNC(l_iva)
+			else
+	    		if (post:reimpresion != "S")
+    				CALL MISCtotalizo_MedPag //aca se setea el post:importe_sesion
+	    		else
+    				//grabo AUXIVA
+    				siaf:afecta_efectivo = "+"
+    				call post:CDSUpdate_ImpreIvaNC(l_iva) 
+    			endif
+    		end if
+    		dcto = 0//dcto + 1
+    		serv = serv + 1
+    		
+    	else
+    		if (l_tasa_serv[serv].numchars == 0) then
+    			serv = serv + 1
+    		else
+    			dcto = dcto + 1
+    		endif
+    	endif
+    loop
+   
+END SUB
+
+/*******/

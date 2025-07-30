@@ -1,0 +1,252 @@
+/****o* Chequeras/OFB:tes:SVALsalida_Chk
+* NOMBRE
+* OFB:tes:SVALsalida_Chk
+* DESCRIPCION
+* Salida de Tesoro a Caja, y Salida de Caja a Tesoro de Chequeras Postales (SVAL).
+* ENTRADAS
+* SALIDAS
+* RETURN (-1): No hay ningún Movimiento cargado.
+* RETURN (-2): No permite continuar con la transaccion, por motivos variados.
+* RETURN (-3): Imposible Reversar. Pase Rechazado.
+* RETURN (-3): Imposible Reversar. Pase ya Ingresado.
+* REFERENCIADO POR
+* LST:tes:TRAN9900
+* LST:tes:TRAN9920
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALsalida_Chk
+
+    local hora_aux like tes:adt_chk_hora
+    local supervis like tes:rend_marca_cierre
+    local aux_total_chequeras like post:cantidad
+    local adt_chk_nrofin like giros:adt_chk_nrofin
+
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+
+	CALL CDSauxchk_count
+	IF (RETVAL < 0)
+	    errmsg lst:common:errmsg_list,\
+	    "No hay ningún Movimiento cargado"
+	    return (-1)
+	END IF
+
+	popup tes:SCRNconfirma
+	if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+	    return (-2)
+	end if
+
+	if (siaf:codigo_siaf == 9920) then
+	   Call giros:MISCsupervision
+	   IF (RETVAL < 0) THEN
+	       RETURN (-2)
+	   END IF
+        end if
+		
+        // Guardo si fue supervisada para marcar las otras
+        if (testflag(tlr:tran_flags,supovr_granted)) then
+            let supervis = "S"
+        else
+	    let supervis = "N"
+        endif
+
+	FLD:drv:INDjnl_rtn = OFB:tes:JNLsalida_Chk
+	ungetkey 0x190
+	siaf:imprime_comprobante = "S"   //HF
+        LET adt_chk_fecha = common:system_date
+        LET adt_chk_hora  = common:time_of_day
+	//
+	giros:clave_hdr_giros  = 0
+	giros:codigo_procesamiento = 0
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	Call post:CDSobtiene_secuen("STAN")
+	//
+	clearfield cheques_ingresados
+	clearfield adt_chk_datos
+	clearfield adt_chk_serie
+	clearfield adt_chk_nrogiro
+	clearfield adt_chk_cantid
+	clearfield adt_chk_proxim
+	clearfield adt_chk_libres
+	clearfield adt_chk_remito
+	clearfield adt_chk_tesoro
+	clearfield adt_chk_marca_ing
+	clearfield  aux_total_chequeras
+	//
+ 	call tlr:JNLtran
+
+        LET siaf:codigo_siaf = siaf:codigo_siaf + 6
+
+	SELECT (siaf:codigo_siaf)
+	       CASE 9906
+		    siaf:nombre_transac = "SALIDA CHQ.DE TESORO A CAJA"
+		    move "SALCTES" to tlr:tran_mnemonic
+		    BREAK
+	       CASE 9926
+		    siaf:nombre_transac = "SALIDA CHQ.DE CAJA A TESORO"
+		    move "SALCCAJ" to tlr:tran_mnemonic
+		    BREAK
+	END SELECT
+		
+	cds select FROM DSC:AuxChkV_tbl becomes DSC:AuxChkV_ctx \
+	    where adt_chk_suc == adt_chk_suc && \
+	          adt_chk_op_orig == adt_chk_op_orig && \
+		  adt_chk_op_dest == adt_chk_op_dest
+
+	cds findfirst DSC:AuxChkV_ctx LOCK
+	let lib:err_retval = CDSRETVAL
+
+	call csr:f_sadroppl dsc:RecepChk
+	call csr:f_sanewpl  dsc:RecepChk pic:RecepChk
+
+	WHILE (lib:err_retval == 0)
+
+	       cds extract DSC:AuxChkV_ctx ALL
+	       ungetkey 0x190
+
+	       if (supervis == "S") then
+		   // si la primera fue supervisada , marco todas
+	    	   setflag tlr:tran_flags,supovr_granted
+	       endif
+
+               LET giros:adt_chk_fecha = adt_chk_fecha
+               LET giros:adt_chk_hora = adt_chk_hora
+               LET giros:adt_chk_op = adt_chk_op_dest
+
+    	       /*******************************************/
+               /*Calculo el Cantidad de cheques libres    */
+               /* cantidad = (ultimo - primero) + 1       */
+               /*                                    HRF  */
+               /*******************************************/
+    	       siaf:secuencia_aux = tlr:jnl_sequence
+    	       adt_chk_nrofin = (adt_chk_nrogiro + adt_chk_cantid) - 1
+
+    	       LET giros:adt_chk_estado = 1
+     	       IF (siaf:codigo_siaf == 9906) THEN
+		   LET giros:adt_chk_tesoro = "N"
+	       ELSE
+		   LET giros:adt_chk_tesoro = op:adt_tesoro
+    	       END IF
+
+	       call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+	       call CDSupd_habilitador
+
+	       fprint common:csr_string " %1.1s  %6.6s  %6.6s     %3.3s\n" \
+		      adt_chk_serie adt_chk_proxim adt_chk_nrofin\
+		      adt_chk_libres
+	       call csr:f_saaddpl dsc:RecepChk common:csr_string
+  		 
+  	       LET adt_chk_tesoro  = giros:adt_chk_tesoro
+    	       LET adt_chk_marca_ing = "P"
+
+	       call CDSgraba_TesChkVMov
+	       //
+	       giros:clave_hdr_giros  = 0
+	       giros:codigo_procesamiento = 0
+	       giros:hora_viaje = common:time_of_day
+	       giros:dia_viaje  = common:system_date
+	       Call post:CDSobtiene_secuen("STAN")
+	       //
+	       clearfield adt_chk_datos
+	       fprint cheques_ingresados "Serie: %1s Proximo Nro: %06s Libres: %3s" \
+		      adt_chk_serie adt_chk_proxim adt_chk_libres
+	       adt_chk_cantidad = adt_chk_libres		 
+	       aux_total_chequeras = aux_total_chequeras + 1
+	       //
+	       call tlr:JNLtran
+	       //
+	       cds delete dsc:AuxChkV_ctx
+	       cds unlock DSC:AuxChkV_ctx
+	       cds findnext DSC:AuxChkV_ctx LOCK
+	       let lib:err_retval = CDSRETVAL
+	END WHILE
+
+	; Imprimo la cantidad de Chequeras. Hernán.
+	fprint common:csr_string " "
+	call csr:f_saaddpl dsc:RecepChk common:csr_string
+        fprint common:csr_string "Total Chequeras: %3.3s", aux_total_chequeras
+	call csr:f_saaddpl dsc:RecepChk common:csr_string
+	CLEARFIELD drv:INDjnl_rtn
+
+        call MISCsend_msg_dest(tes:login_dest,"LE HAN HECHO UN PASE DE CHEQUERAS")
+
+	cds endselect DSC:AuxChkV_ctx
+
+	let drv:INDspc_rtn[2] = ofb:TRANprint_salida_ck
+
+    ELSE
+	let siaf:codigo_siaf = siaf:jnl_codigo_siaf
+	/* Estoy en Reversa */
+	IF (siaf:codigo_siaf == 9906 || siaf:codigo_siaf == 9926) then
+            cds select from DSC:TesChkMov becomes DSC:TesChkMov \
+	        where adt_chk_suc == adt_chk_suc && \
+	              adt_chk_serie == adt_chk_serie && \
+	              adt_chk_nrogiro == adt_chk_nrogiro
+	ELSE
+            cds select from DSC:TesChkMov becomes DSC:TesChkMov \
+	        where adt_chk_fecha == adt_chk_fecha && \
+	              adt_chk_hora  == adt_chk_hora
+	END IF
+
+    	CDS FINDFIRST DSC:TesChkMov NOLOCK
+        WHILE (CDSRETVAL == 0)
+               CDS EXTRACT DSC:TesChkMov adt_chk_marca_ing
+               IF (adt_chk_marca_ing == "R")
+	           let common:csr_string = "IMPOSIBLE REVERSAR. PASE RECHAZADO"
+	           errmsg common:errmsg_list,fld:common:csr_string
+                   CDS ENDSELECT DSC:TesChkMov
+	           return (-3)
+  	       END IF
+               IF (adt_chk_marca_ing == "C" || adt_chk_marca_ing == "T")
+	           let common:csr_string = "IMPOSIBLE REVERSAR. PASE YA INGRESADO"
+	           errmsg common:errmsg_list,fld:common:csr_string
+                   CDS ENDSELECT DSC:TesChkMov
+	           return (-3)
+  	       END IF
+    	       CDS FINDNEXT  DSC:TesChkMov NOLOCK
+	END WHILE
+        CDS ENDSELECT DSC:TesChkMov
+
+	if (siaf:codigo_siaf == 9900 || siaf:codigo_siaf == 9920) then
+	    CALL MISCreverso_sesion
+	    if (retval < 0) then
+	        return (-2)
+	    end if
+	else
+	    LET giros:adt_chk_fecha = adt_chk_fecha
+	    LET giros:adt_chk_hora  = adt_chk_hora
+	    LET giros:adt_chk_op = adt_chk_op_orig
+	    if (siaf:codigo_siaf == 9906) then
+	        MOVE "SALCTES" TO tlr:tran_mnemonic
+	        LET giros:adt_chk_tesoro = "S"
+	        LET giros:adt_chk_estado = 0
+                //cgw:si vuelve al estado de HABILITADA, se invierte los operadores origen y destino.
+                LET adt_chk_orig    = adt_chk_dest
+	        LET adt_chk_op_orig = adt_chk_op_dest		    		    
+		LET adt_chk_dest    = op:op_login_id
+	        LET adt_chk_op_dest = op:op_operator_id
+
+	        LET adt_chk_tesoro = giros:adt_chk_tesoro
+	        LET adt_chk_marca_ing = "T"
+	    else
+	        MOVE "SALCCAJ" TO tlr:tran_mnemonic
+	        LET giros:adt_chk_tesoro = "N"
+	        LET giros:adt_chk_estado = 2
+                //cgw:si vuelve al estado RECIBIDA CAJERO, se invierte los operadores origen y destino.
+	        LET adt_chk_orig    = adt_chk_dest
+	        LET adt_chk_op_orig = adt_chk_op_dest		    		    
+		LET adt_chk_dest    = op:op_login_id
+	        LET adt_chk_op_dest = op:op_operator_id
+
+	        LET adt_chk_tesoro = giros:adt_chk_tesoro
+	        LET adt_chk_marca_ing = "C"
+	    end if
+	    call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+	    call CDSupd_habilitador
+	    call CDSgraba_TesChkVMov
+	end if
+    END IF
+END SUB
+/*******/

@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:op:MISCverify_rend_op
+* NOMBRE
+*   OFB:op:MISCverify_rend_op
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCverify_rend_op
+    local status like tlr:tots_status
+    if (op:adt_tlr_auth == "X" || op:adt_ret_auth == "X") then
+        // Si el cajero nunca opero no verifico la rendicion y permito
+        // que sea borrado
+        CDS select tlr:tots_status from tlr:TABtots becomes tlr:CONtots_temp \
+	    where tlr:tots_branch == op:adt_branch_id && \
+	    tlr:tots_operator == op:adt_operator_id
+	    cds findfirst dsc:tlr:CONtots_temp nolock
+    	if (cdsretval == 0) then
+    	   cds extract dsc:tlr:CONtots_temp tlr:tots_status into status
+    	   if (status == "A" || status == "R") then
+               cds endselect dsc:tlr:CONtots_temp
+               return (0)
+           end if
+        else
+        	if (cdsretval == -801) then
+               cds endselect dsc:tlr:CONtots_temp
+               return (0)
+            end if
+    	end if
+        cds endselect dsc:tlr:CONtots_temp
+        call tes:CDSver_cierre_op(op:adt_branch_id,op:adt_operator_id)
+        if (retval < 0) then
+    	    errmsg lst:common:errmsg_list, "Operador sin Cierre. Debe realizar cierre de Caja."
+            return (-2)
+        endif
+
+    	call tes:CDSver_rend_cero(op:adt_branch_id,op:adt_operator_id)
+        select (retval)
+        	case -1
+        	    // Error en Lectura de MedPago
+        	    return (-2)
+                case -2
+        	    FPRINT common:csr_string, \
+        	    "El operador debe rendir todas las monedas en cero, antes de ser borrado"
+        	    ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+        	    return (-2)
+        	case 0
+        	   break
+    	end select
+    	/*
+    	call tes:CDSver_cierre_op(op:adt_branch_id,op:adt_operator_id)
+        if (retval < 0) then
+    	    errmsg lst:common:errmsg_list, "Operador sin Cierre. Debe realizar cierre de Caja."
+            return (-2)
+        endif
+        */
+    	call tes:CDSget_saldos_EspV(op:adt_branch_id,op:adt_operator_id)
+        if (retval < 0) then
+    	    errmsg lst:common:errmsg_list, "Operador con Saldo de Especies Valorizadas, no podra ser borrado"
+            return (-2)
+        endif
+        
+        /*Se agrega el control para movimientos y pases pendientes - Gabriel Falciola*/
+        call op:MISCverif_pas_pend(op:adt_branch_id,op:adt_operator_id)
+        if (retval < 0) then
+			return (-3)
+        end if
+
+        /* Corrijo para que pregunte por el adt_operator_id */
+         /*Flor*/
+        CDS SELECT FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context WHERE \
+        tes:rend_suc_id == op:adt_branch_id && \
+        tes:rend_op_id == op:adt_operator_id
+        CDS FINDFIRST DSC:tes:rend_caj_context NOLOCK
+        let lib:err_retval = cdsretval
+        if (lib:err_retval == -801) then
+    		let common:csr_string = "Operador Sin Registro de Rendicion"
+    		errmsg lst:common:errmsg_list,FLD:common:csr_string
+    		return (-2)
+        end if
+        CDS EXTRACT DSC:tes:rend_caj_context ALL
+        CDS ENDSELECT DSC:tes:rend_caj_context
+        clearfield tes:suc_marca_cierre
+        CDS SELECT FROM "DiaSuc" BECOMES "DiaSuc_ctx3" WHERE \
+        tes:suc_br_id == op:adt_branch_id
+        CDS FINDFIRST "DiaSuc_ctx3" NOLOCK
+        let lib:err_retval = CDSRETVAL
+        if (lib:err_retval == -801) then
+                    errmsg lst:common:errmsg_list,"Tabla DiaSuc Vacia"
+    		return (-2)
+        end if
+        CDS EXTRACT "DiaSuc_ctx3" ALL
+        CDS ENDSELECT "DiaSuc_ctx3"
+        IF (tes:suc_fecha == tes:rend_fecha)
+           return (-1)
+        END IF
+    end if
+END SUB
+
+/*******/

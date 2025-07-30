@@ -1,0 +1,74 @@
+/****o* Clientes Medios/OFB:post:MISCTipoVentaCM
+* NOMBRE
+*   OFB:post:MISCTipoVentaCM
+* DESCRIPCION
+*   Se recuperan datos para generar el LISTADO DE VENTAS A CLIENTES MEDIOS
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:JNLimpre_fiscal
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCTipoVentaCM
+
+LOCAL varl_cli_tipo LIKE post:cli_tipo
+
+	//Tratamiento Cliente Medio
+    CDS SELECT FROM DSC:TABPresu BECOMES DSC:CONPresu \
+    WHERE (FLD:post:fecha == FLD:common:system_date ) && \
+    (Fld:post:op_operator_id == fld:op:op_operator_id )&& \
+    (fld:post:PresNro == fld:post:PresNro)
+    
+    CDS FINDFIRST DSC:CONPresu NOLOCK
+    post:VentaCliMed = "N"
+    IF (CDSRETVAL == 0) THEN
+    	CDS EXTRACT DSC:CONPresu post:cli_tipo INTO varl_cli_tipo	
+        if (varl_cli_tipo == CLIMED && post:PreDNroTrn > 0 && !OperacionInt && !OperacionNC && !AnulOperNC) then
+        	//50295 - No se deben contabilizar como ventas las importaciones de listas de giros
+        	if (giros:importacion_lg != "S") then
+    			VentaCliMed = "S"
+    		endif
+    	endif
+	ENDIF
+	CDS ENDSELECT DSC:CONPresu
+	
+//MFM - Seteo el valor de los campos que se journalizaran en el fin de sesion para 
+//indicar si la venta hecha es una venta a cliente medio con / sin descuento
+	VentaCdcto_CM = "N"
+	if (VentaCliMed == "S") then
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+		WHERE post:PresNro == post:PresNro && \
+		siaf:codigo_siaf == 99300
+		CDS FINDFIRST DSC:CONPresuDeta2 NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			if (post:PreDNroTrn > 0 && !OperacionInt && !OperacionNC && !AnulOperNC) then
+				VentaCdcto_CM = "S"
+			endif
+		ENDIF
+		CDS ENDSELECT DSC:CONPresuDeta2
+	endif
+	
+//MFM Busco si realmente se hizo un Consumo de Adelanto
+	if (post:cli_tipo  == CLIMED && post:ConsumoAnticipo ) then
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+	WHERE post:PresNro == post:PresNro && \
+	siaf:codigo_siaf == 99450
+	CDS FINDFIRST DSC:CONPresuDeta2 NOLOCK
+	IF (CDSRETVAL == -801) THEN
+		post:ConsumoAnticipo = FALSE
+		call post:CDSpresu_modalidadCM
+	END IF
+	CDS ENDSELECT DSC:CONPresuDeta2
+	endif	
+END SUB
+
+/*******/

@@ -1,0 +1,222 @@
+/****o* Pendientes de agrupación/OFB:giros:PRESgm_tele
+* NOMBRE
+*   OFB:giros:PRESgm_tele
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:PBIngresar_GM
+* DOCUMENTACION
+* SC50186.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=620074&
+* SOURCE
+*/
+
+#include "girospres.h"
+
+SUB giros:PRESgm_tele
+	call giros:MISCgmleotransac(70050)
+	siaf:codigo_proc = 992002
+	es_emision_tele = "S"
+    /********************************************************/
+    /* Protejo el campo Importe porque en las Transacciones */
+    /* Postales se calcula mediante una Funci¢n en vez de   */
+    /* ser digitado por el Cajero.			    */
+    /********************************************************/
+     PROTFIELD ImporteIva_fld
+     PROTFIELD Comision_fld
+     PROTFIELD ImpSellos_fld
+     PROTFIELD siaf:importe
+
+
+    /*********************************************************/
+    /* Por default asigno como Medio de Pago, Efectivo Pesos */
+    /* Despues se puede modificar, pero conviene asignarle   */
+    /* ese valor para agilizar ya que en el 95% de los casos */
+    /* se paga mediante ese Medio de Pago.		     */
+    /*********************************************************/
+    siaf:moneda = "00"
+    post:medio_pago_desc = "PESOS"
+    post:cantidad = 1
+
+    /*********************************************************/
+    /* Por default asigno a Producto-CLiente el valor en 0.   */
+    /*********************************************************/
+    post:prod_cli = "0000000000"
+
+    /* Inicio de Agregado para manejo de IVAS en Productos Telegraficos */
+    if (post:PresGrupoIva == "G2" && post:tipo_produc2.NUMCHARS != 0) then
+		post:tipo_produc = post:tipo_produc2
+    else
+		post:tipo_produc2 = post:tipo_produc
+    endif
+
+	//PS 9488
+    IF (siaf:codigo_siaf == 70050 && post:IvaCod == "SNC") THEN
+		post:tipo_produc  = 14123
+		post:tipo_produc2 = 14123
+    ENDIF
+	
+	/* Fin de Agregado para manejo de IVAS en Productos Telegraficos */
+	;Restricciones a servicios *** MDG
+	call post:MISCventasRestGen("CSM", post:tipo_produc2)
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+    END IF
+	
+	
+    /*********************************************************/
+    /* Accedo a la Tabla de Servicios Postales para obtener  */
+    /* la parametr¡a del producto.  		             */
+    /*********************************************************/
+    CALL giros:PRESserv_gral_giro
+    IF (RETVAL < 0) THEN
+		msgbox "SERVICIO NO EXISTE EN TABLAS",OFB_OK,"Error"
+		RETURN (-2)
+    END IF
+
+	/*Comienzo de Control de cliente con el canal*/
+    /*Agrego modificacion para que cuando controle el canal de la transaccion, al
+    no dejar realizarla por distinto tipo de cliente, cierre la sesion. Diego Priore 16/5/2000*/
+
+	if (post:cli_tipo != 0)
+		if (post:cli_tipo == 1)
+			msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",OFB_OK,"Error"
+			return (-2)
+		else
+			/* cLIENTE ES MINORISTA */
+			if (post:adt_serv_canal == "MAYORISTA") THEN
+				msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",OFB_OK,"Error"
+				return (-2)
+			endif
+		endif
+	endif
+
+    /*Fin de Control de cliente con el canal*/
+
+
+    /********************************************************/
+    /* Si el Cliente no es Mayorista, le asigno al campo    */
+    /* tarifa la tarifa b sica para ese Servicio, siempre   */
+    /* y cuando sea un Servicio Postal con alcance Nacional */
+    /* ya que en los Postales Internacionales y Encomiendas */
+    /* debo saber el destino para tarifar.		    */
+    /********************************************************/
+    IF (post:cli_tipo != 1 ) THEN
+        post:adt_tarif_dest = "BASICO NACIONAL"
+        post:adt_tarif_desde = 1
+    END IF
+
+    CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+    post:tarifa =  post:adt_tarif_precio
+    IF (post:enCombo != "S") THEN
+        //cgw:si no es un producto de un combo, calcula importes.
+     	//SC 50170
+     	CALL post:MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+    ELSE
+    	//cgw:si es un producto de un combo.
+    	post:SobreTasaIva = 0
+    END IF
+	post:sobretasa_prod = post:SobreTasaIva
+ 	post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+
+ 	IF (post:enCombo != "S") THEN
+      	//cgw:si no es un producto de un combo, calcula importes.
+        siaf:importe = post:tarifa + post:sobretasa
+    END IF
+
+
+    /* Verifico si es una Directa o una Reversa */
+    IF (!TESTFLAG(tlr:tran_flags,correction))
+	    /* Es una Directa */
+	    CALL post:MISCprotege(LST:post:LISTgral_prot,LST:post:LISTgral_unprot)
+        /* Verifico en que modo estoy */
+    END IF
+   
+
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+        /*Genero el picklist para los medios de pago*/
+        post:tipo_rest = TODOS
+        IF (post:adt_serv_formfiscal == "FACTU" || post:adt_serv_formfiscal == "TICKE")
+            CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",0)
+        ELSE
+            CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",1)
+        END IF
+    END IF
+	
+	call drv:but_number(OFB:giros:PBModificar_GM)
+	
+	if (retval != drv:button)
+	;if (giros:nro_trx_gm < 1)
+		CALL CSR:proc_list(F_CLEAR,LST:giros:LISTgm_tele)
+	end if
+		
+	FechaEmision_fld = common:system_date
+    PROTFIELD FechaEmision_fld
+    PROTFIELD ProvBenef_fld
+    PROTFIELD Serie_fld
+    PROTFIELD NroGiro_fld
+    PROTFIELD digito_fld
+    PROTFIELD Comision_fld
+    PROTFIELD ImporteSelloEmis
+    PROTFIELD ImporteSelloPag
+    PROTFIELD ImporteTotal_fld
+    PROTFIELD post:adt_tarif_fijo
+    REFRESH FechaEmision_fld
+    REFRESH ProvBenef_fld
+    REFRESH Serie_fld
+    REFRESH NroGiro_fld
+    REFRESH digito_fld
+    REFRESH Comision_fld
+    REFRESH ImporteSelloEmis
+    REFRESH ImporteSelloPag
+    REFRESH ImporteTotal_fld
+    REFRESH post:adt_tarif_fijo
+
+
+	es_emision_postal = "N"
+	es_envio_WU = "N"
+    resetflag flags_back,no_habilitado
+	resetflag flags_back,enviado
+	es_emision_correohoy = "N"
+	resetflag flags_back,ya_pasado
+	resetflag flags_back,manual
+	resetflag flags_back,rechazado
+	resetflag flags_back,vencido
+	
+	call drv:but_number(OFB:giros:PBModificar_GM)
+
+	if (retval != drv:button)
+		resetflag camara_flags,clear1
+		resetflag camara_flags,clear2
+		resetflag camara_flags,emis1
+		resetflag camara_flags,emis2
+
+		resetflag env_post_flag,envia_postal
+		resetflag pers_jur_flag,nocuit_emis
+		resetflag pjurid_benef_flag,persona_juridica
+		resetflag pjurid_benef_flag,nocuit_benef
+
+	 //PAGO ABIERTO - GENERA TELEGRAMA
+    giros:genera_teleg = "S"
+		
+	endif
+	
+	// FGB 22.5.2001: Borro este campo de postales porque, en estado_presu = 3, si quedo cargado de alguna
+	// lectura de la PresuDet, genera que se calcule mal el importe en base al tarifario...
+	clearfield post:peso_en_kgs
+
+
+    enablecontrol op:chk8
+    enablecontrol op:chk9
+    giros:orden_nispagadora = "orden_des"
+    altercontrolset op:chk8
+    altercontrolset op:chk9
+
+END SUB
+
+/*******/

@@ -1,0 +1,464 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70030
+* NOMBRE
+*   OFB:giros:SVAL70030
+* DESCRIPCION
+*   Validaciones globales de la transacción de giro postal
+*   Se encarga de generar la presudet y generar los totales para la captura
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:TRAN70030,giros:TRAN70040,giros:TRAN70041, giros:SVAL70322, giros:SVALnuevo_giro
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+sub giros:SVAL70030
+    LOCAL ind like siaf:i
+    LOCAL importe_aux LIKE siaf:importe
+    LOCAL formulario_aux LIKE post:PreDForFis
+    local l_ind_rtn_3 like common:local_ascii
+    local l_ind_rtn_4 like common:local_ascii
+    local enSesion_aux like post:enSesion
+    local loc_combostr  like common:csr_string
+    LOCAL NroTrn_aux LIKE post:PreDNroTrn
+    local l_esBaja like post:adt_stockp_Baja
+    local l_NroGiro like giros:NroGiro_fld
+    
+    // FGB 14.6.2001: Dado que la SVAL de una emision contiene toda la logica de la transaccion,
+    //  y que una caida del sistema resulta critica si no se reestablece a la misma en el punto 
+    // donde se cayo, es que se graba en la PresuDet un checkpoint indicando los pasos ya 
+    // realizados con el fin de continuar la transaccion sin repetir pasos.
+    // (situaciones deseperadas, requieren medidas desesperadas).
+    select (checkpoint_emision)
+        case ANTES_JNL
+            giros:consulta = 0 // el RSC ya habia decidido confirmar la trx...
+            goto antes_jnl
+            break
+        case ANTES_ANULACION
+            goto antes_anulacion
+            break
+        case ANTES_IMPRESION
+         case ANTES_IMPRE_SUB_1
+         case ANTES_IMPRE_SUB_2
+         case ANTES_IMPRE_SUB_3
+            if (siaf:codigo_siaf == 95000) then
+                break
+            end if
+         case ANTES_IMPRE_SUB_4
+            // recupero el nro. secuencia y fecha de la trx. que estaba haciendo 
+            let tlr:aux_sequence = siaf:jnl_secuence_bull 
+            let tlr:jnl_bus_date = common:system_date
+         case ANTES_IMPRE_SUB_5
+         case ANTES_IMPRE_SUB_6
+         case ANTES_IMPRE_SUB_7
+            goto antes_impresion
+            break
+        case ANTES_TOTAL_TRANSAC_1
+            goto antes_TotalTransac_1
+            break
+        case ANTES_TOTAL_TRANSAC_2
+            goto antes_TotalTransac_2
+            break
+        case ANTES_PRESUDET
+            goto antes_PresuDet
+            break
+        case else
+    end select
+    // FGB FIN 
+
+    CALL csr:proc_list(F_SETVALDONE,LST:LIST70030)
+
+
+    // FGB 19.12.2001: Las emisiones de Giros NO PUEDEN ser hechas en modo teclas rapidas, por lo tanto, modifico
+    // las condiciones donde se pregunta por el estado del presupuesto (obviando la posibilidad de que sea 1) y
+    // controlo al principio que de no haber sesion, no se pueda continuar.
+    if (post:estado_presu == 1 || post:Modo == "R") then
+        if (post:estado_presu == 1) then
+            msgbox "NO HAY PRESUPUESTO ACTIVO\nIMPOSIBLE CONTINUAR",OFB_ICONEXCLAMATION,"Error"
+            ungetkey RT_ESC
+            return (-2)
+        else
+            let post:Modo = "NR"
+        endif
+    end if
+
+
+
+
+    /*****************************************************************/
+    //SE PASA A ESTADO_PRESU = 2 o 3 POR REINGENIERIA
+    
+    ;if ((post:estado_presu == 1 || post:estado_presu == 4) && !testflag(flags_back,ya_pasado)) then
+    
+    //if ((post:estado_presu == 4) && !testflag(flags_back,ya_pasado)) then = ANTES REING
+    if (post:estado_presu == 2 || post:estado_presu == 3)  then 
+    
+ 	 // NI REEMPLAZO DE CHEQUE GP - SOLO PARA LIQUIDACION CREM SIN CONEXION.
+ 			 if (siaf:codigo_siaf == 95000 && Serie_fld.numchars == 0 && NroGiro_fld.numchars == 0) then
+            CALL giros:lee_cheque_solo
+            if (retval < 0) then
+                return (-2)
+            end if
+        end if
+
+       // call giros:MISCvalida_giros //NI REEMPLAZO DE CHEQUE GP
+        //if (retval < 0) then // NI REEMPLAZO DE CHEQUE GP
+            if (post:enCombo == "S" && retval == -5) then
+                //cgw:Si venta de combo, permite salir si un giro postal sin cheques, o sin chequera para el operador.
+                //    No afecta si no es venta de combo.
+                return (-5)
+            end if
+           // call giros:MISClimpio_nro NI REEMPLAZO DE CHEQUE GP
+           // ungetkey RT_SEND NI REEMPLAZO DE CHEQUE GP
+           // return (-2) NI REEMPLAZO DE CHEQUE GP
+       // end if NI REEMPLAZO DE CHEQUE GP
+        SETFLAG flags_back,ya_pasado
+
+        //Obtengo la cantidad de cheques y si es menor a 6 doy aviso !
+        // Call MISCctr_cant_chq NI REEMPLAZO DE CHEQUE GP
+
+    end if
+
+
+    ;if (post:estado_presu == 1 || post:estado_presu == 4 || post:estado_presu == 3) then
+        
+    //if (post:estado_presu == 4 || post:estado_presu == 3) then = ANTES REING
+    if (post:estado_presu == 2 || post:estado_presu == 3)
+        //PANTALLA DATOS DE BENEFICIARIO
+        popup giros:SCRNemis2,PRESbenef,PCOLemis2,POSTCOLemis2
+        if (lastkey == RT_ESC) then
+            RESETFLAG flags_back,ya_pasado
+            return (-2)
+        end if
+ 				//PANTALLA DATOS DE EMISOR
+        popup giros:SCRNemis1,PRESemis,PCOLemis1,POSTCOLemis1
+        if (lastkey == RT_ESC) then
+            RESETFLAG flags_back,ya_pasado
+            return (-2)
+        end if
+        
+        // 2 ETAPA REEMPLAZO DE CHEQUERAS POSTALES- NUEVA PANTALLA DATOS DE EMISOR 2
+  			if (siaf:codigo_siaf != 70041 && siaf:codigo_siaf != 95000) //Emision Contrareembolso	
+         popup giros:SCRNemis3,PRESemis3,PCOLemis3,POSTCOLemis3
+        if (lastkey == RT_ESC) then
+            RESETFLAG flags_back,ya_pasado
+            return (-2)
+        end if
+        endif
+        // FGB 16.02.2005: me trato de asegurar de que no ingresen caracteres inválidos en los campos
+        call valido_flds_list
+        if (retval != 0) then
+            msgbox "Hay caracteres inválidos cargados (en Emisor o Beneficiario).\n (Ej: |, >, <, \, !, etc.)",OFB_OK,"Error"
+            return (-2)
+        endif
+        
+        setflag camara_flags,emis2
+        setflag camara_flags,emis1
+        setflag camara_flags,emis3
+    end if
+    /**************************************************************************/
+
+    consulta = 1
+    ;if (post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) then
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+       if (siaf:codigo_siaf != 70041 && siaf:codigo_siaf != 95000) //liquidacion crem no lleva formulario previo
+		        msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+		       if (retval == 7) then //NO
+				    	MSGBOX "NO SE OLVIDE de imprimir el Formulario Previo y verificar los datos con el cliente.",0x00,"ATENCION"
+						//	ungetkey RT_ESC
+							return -2
+				    else //6 (SI)  
+							msgbox "¿Confirma que el cliente verificó los datos filiatorios indicados en el Formulario Previo?",OFB_YESNO2,"Atencion"
+							if (retval == 7) then //NO
+							//	ungetkey RT_ESC
+								return -2
+							else //6 (SI)
+							endif
+					 endif
+				else
+					 msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+	        if (retval == 7) then
+	            return (-2)
+	        end if
+				endif
+    end if
+
+    if (post:estado_presu < 4) then
+        if (siaf:codigo_siaf == 70040) then
+            call MISCsupervision
+            if (retval < 0) then
+                return (-2)
+            end if
+        end if
+    endif
+
+    ;if (post:estado_presu < 4) then
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+        //
+        post:destino    = post:adt_tarif_dest
+        post:unidad_fac = post:adt_tarif_um
+        //
+        //SC 50170
+        CALL post:MISCdesglosaIva(Comision_fld,post:adt_serv_aliciva,1,0)
+        ComisionSinIva_fld = post:ImporteSinIva
+        IvaComision_fld = post:ImporteIva
+        //SC 50170 FACTURACION
+        giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis
+        //
+        post:ImporteConIva = Comision_fld + post:costo_opc
+        //
+        post:ImpServUP = Comision_fld
+        post:AliServUP = post:adt_serv_aliciva
+        //
+        ind = 0
+        while (ind < post:cant_opc)
+            post:ImporteSinIva = post:ImporteSinIva + post:siniva_opc[ind]
+            ind = ind + 1
+        end while
+        //
+        siaf:ProvImpuesto = SucSel2_fld
+        call post:MISCImpSellosTratam("ING/EGR") /* llamo rutina de tratamiento de Sellados */
+        //
+        siaf:ImporteConIva = post:ImporteConIva
+        siaf:ImporteSinIva = post:ImporteSinIva
+        //
+        siaf:importe = post:costo_opc + Comision_fld
+        if (siaf:codigo_siaf != 70322) then
+            siaf:importe = siaf:importe + ImporteNeto
+        endif
+        //
+        call csr:cleararray(post:fliatran_vec)
+        call csr:cleararray(post:impciva_vec)
+        call csr:cleararray(post:impsiva_vec)
+        //
+        call MISCsumo_a_vectores(siaf:adt_tran_fliatran,Comision_fld,ComisionSinIva_fld)
+        //
+        ind = 0
+        while (ind < post:cant_opc)
+            call MISCsumo_a_vectores(post:flia_opc[ind],post:cos_opc[ind],post:siniva_opc[ind])
+            ind = ind + 1
+        end while
+        
+        /* Si la transaccion se cobra por porcentaje, esta SVAL deja la formula en el 
+        campo formuCalc para ser impreso en la factura*/
+        call SVALgralFormCalGiro
+
+    end if
+
+
+    consulta = 0
+    siaf:siaf_status = HOST_ACCEPTED
+    
+    ;if (post:estado_presu == 1 || post:estado_presu == 4) then
+    if (post:estado_presu == 4) then
+         // FGB 28.11.2003: conting. para Giro por Contrarrembolso
+        if (siaf:codigo_siaf == 70041 ||siaf:codigo_siaf == 95000) then
+            let giros:Serie_rev = giros:Serie_fld
+            let giros:NroGiro_rev = giros:NroGiro_fld
+            let giros:digito_rev = giros:digito_fld
+        endif
+        call giros:MISCemi_snapshot
+        call giros:CDSsval_chkpoint(ANTES_JNL)
+antes_jnl:
+
+        /* sba 20020108 - En caso que se haya caido la aplicación, despues de journalizar */
+        /* y quedando la sesión abierta, al reingresar hay que terminar la sesión. */
+        /* No tiene que volver a ejecutar la JNLtran */
+        call giros:CDSbusco_trx_jnl
+        if (retval == 0) then
+            let hcomm:tran_status = HOST_ACCEPTED
+            goto after_jnl
+        end if
+        //
+        
+        //
+        clave_hdr_giros  = 0
+        codigo_procesamiento = siaf:codigo_proc
+        giros:hora_viaje = common:time_of_day
+        giros:dia_viaje  = common:system_date
+        Call post:CDSobtiene_secuen("STAN")
+        //
+        post:ImporteConIva = siaf:ImporteConIva
+        post:ImporteSinIva = siaf:ImporteSinIva
+        //
+        post:ctrol_ult_tt = "S"
+
+      /* sba 04/01/2002  Resguardo estos valores para que la JNLtran no linkee con la TRANPresu*/
+      /* Esto traía problemas con el giro contrareembolso */
+        l_ind_rtn_3 = drv:INDspc_rtn[3]
+        l_ind_rtn_4 = drv:INDspc_rtn[4]
+        clearfield drv:INDspc_rtn[3]
+        clearfield drv:INDspc_rtn[4]
+        // SBA 04.02.2002 - parece que hay veces que el campo post:enSesion queda sucio
+        // y esto hace que el Pago quede journalizado con tlr:jnl_status = 002 (MEMO)
+        enSesion_aux = post:enSesion
+        clearfield post:enSesion
+        if (siaf:codigo_siaf == 95000) THEN
+            CALL giros:rutina_cheque  //LIQ. CONTRA REEMB. SIN CONEXION
+        end if
+        call tlr:JNLtran
+
+        post:enSesion = enSesion_aux
+       drv:INDspc_rtn[3] = l_ind_rtn_3
+       drv:INDspc_rtn[4] = l_ind_rtn_4
+       /* fin sba */
+after_jnl:
+        post:ctrol_ult_tt = ""
+        //
+        let siaf:siaf_status = hcomm:tran_status
+        call MISCemi_snapshot
+        //REEMPLAZO CHEQUE GIRO POSTAL - ACTUALIZAR STOCKP CON PIEZA CREM LIQUIDADA
+        IF (hcomm:tran_status == HOST_ACCEPTED || siaf:codigo_siaf == 95000) THEN
+         		call post:MISCstockp_CDD_up_li(l_esBaja)
+            call giros:CDSsval_chkpoint(ANTES_IMPRESION)
+antes_impresion:
+            l_NroGiro = giros:NroGiro_fld
+            if (siaf:codigo_siaf != 95000) THEN
+							 //IMPRIMIR FORMULARIO EMISION GP SIN NRO DE GIRO
+       					CALL giros:rutina_form_emision
+               //Se imprime la orden de pago 
+               CALL giros:rutina_orden_pago
+                
+                lib:err_retval = RETVAL
+                if (lib:err_retval >= 0)
+                    // cheque impreso correcamente. Genero registro de combo
+                    // FGB 12.02.2004 - Combos -
+                    fprint loc_combostr "%s-%e/%d ($%e)" Serie_fld,NroGiro_fld,digito_fld,ImporteNeto
+                    call post:CDScb_prt_aux_save(post:adt_serv_nemonico,loc_combostr)
+                end if              
+                /* WHILE (lib:err_retval < 0)
+                    popup giros:SCRNingreso_giro,PRESnuevo_giro,PCOLnuevo_giro,SVALnuevo_giro
+                    lib:err_retval = RETVAL
+                    WHILE (lastkey == RT_ESC)
+                        MSGBOX "No puede cancelar la transaccion",0x00,"Error"
+                        popup giros:SCRNingreso_giro,PRESnuevo_giro,PCOLnuevo_giro,SVALnuevo_giro
+                        lib:err_retval = RETVAL
+                    END WHILE   
+                END WHILE*/
+            end if
+            if ((((plataf:current_state == RECOVERY && hcomm:tran_status == MEMO) || hcomm:tran_status == HOST_ACCEPTED) && lib:err_retval >= 0 && siaf:codigo_siaf == 70041) || siaf:codigo_siaf == 95000) then
+                call post:MISCstockp_CDD_up_li(l_esBaja)
+                call post:CDSgenFalloCrem
+                if (l_esBaja == "S") then
+                    ; PS9829 Para que se imprima una sola vez, ya que se llama a la SVAL70030
+                    ;en cada impresión de cheque *** MDG
+                    if (l_NroGiro == giros:NroGiro_fld) then
+                        ;Se traslada el reporte al fin de sesión por SC50288
+                        ;CALL post:DOCSreportesCREM
+                    end if
+                end if
+            end if      
+
+            //elseif (retval == 0)  /*Agrega Hernán*/
+            /* Llamo a la MISCTotalTransac solo si la transacción
+            fue ACEPTADA. Hernán 21/12/2000*/               
+            
+            call giros:CDSsval_chkpoint(ANTES_TOTAL_TRANSAC_1)
+antes_TotalTransac_1:
+
+            // FGB 19.6.2001: en caso de caida del sistema, tengo que restaurar algunos campos...
+            call MISCemi_recall
+
+            /*CSZ - resguardo el importe de la tx y el formulario fiscal*/
+            importe_aux = siaf:importe
+            formulario_aux = post:PreDForFis
+
+
+            /*CSZ - Primero se llama a la rutina con el monto del giro emitido y el 
+            formulario fiscal vacio*/
+            CLEARFIELD post:PreDForFis
+            siaf:importe = ImporteNeto
+            CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+            // FGB 12.02.2004 - Combos -
+            //fprint loc_combostr "%s-%e/%d ($%e)" Serie_fld,NroGiro_fld,digito_fld,ImporteNeto
+            //call post:CDScb_prt_aux_save(post:adt_serv_nemonico,loc_combostr)
+            
+            call giros:CDSsval_chkpoint(ANTES_TOTAL_TRANSAC_2)
+antes_TotalTransac_2:
+
+            // FGB 19.6.2001: en caso de caida del sistema, tengo que restaurar algunos campos...
+            call MISCemi_recall
+
+            /*CSZ - Luego se llama a la rutina con el monto del servicio(comision,
+            tasa y opcionales) que se cobra por la emision y el formulario fiscal
+            asociado al servicio*/
+            siaf:importe = post:ImporteConIva
+            post:PreDForFis = formulario_aux              
+            CALL post:MISCTotalTransac(siaf:codigo_siaf)
+            
+            /*Restauro el importe de la tx*/
+            siaf:importe = importe_aux
+       
+            //end if  
+        
+        
+        ELSE
+            call giros:CDSsval_chkpoint(ANTES_ANULACION)
+antes_anulacion:
+            call MISCanulo_transac("NONE")
+        END IF
+        call giros:CDSsval_chkpoint(ANTES_PRESUDET)
+antes_PresuDet:
+        CLEARFIELD drv:INDhcomm_rtn
+        CLEARFIELD drv:INDspc_rtn[1]
+        CLEARFIELD drv:INDcur_tran
+        CLEARFIELD drv:INDjnl_rtn
+        CLEARFIELD drv:INDspc_rtn[0]
+        //
+    end if
+    //
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+        post:PreDForFis = post:adt_serv_formfiscal
+        call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+    end if
+    //
+    call post:MISCGrabaDetalleTrn
+    call post:MISCgrabo_sinsesion
+    
+    
+    
+    If (siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) then
+        select (post:estado_presu)
+            case 2
+            case 3
+                NroTrn_aux = post:PreDNroTrn
+                ; Genero fallos positivos *** MDG
+                call post:CDSdel_6860(NroTrn_aux)
+                call post:CDSgenFalloCrem
+                CALL giros:MISCdestoContrareemb(NroTrn_aux)
+            break
+            case 4
+                call giros:CDSup99130()
+            break
+        end select
+    end if
+    
+    //robo de linea 
+    IF (post:estado_presu < 4 && (TESTFLAG(env_post_flag,envia_postal) || siaf:codigo_siaf == 95000))
+        CALL giros:CDSgrabo_tt_Presu        
+    END IF
+    
+    IF (giros:TrackTrace_giros.numchars != 0 && post:estado_presu == 4 && siaf:codigo_siaf == 95000)
+		//verifico si en la sesion se impuso un tt asociado a este giro, de ser así
+		// marco en la TTgiros como tt usado
+		CALL post:CDSver_tt_impuesto
+		IF (RETVAL < 0)
+			//tt NO impuesto en la sesion
+			CALL giros:CDSgrabo_TTgiro("N")
+		ELSE
+			//tt impuesto en la sesion
+			CALL giros:CDSgrabo_TTgiro("S")
+		END IF
+	END IF
+
+    
+end sub
+
+/*******/

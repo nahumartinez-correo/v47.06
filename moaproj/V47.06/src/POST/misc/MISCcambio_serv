@@ -1,0 +1,198 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcambio_serv
+* NOMBRE
+*   OFB:post:MISCcambio_serv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcambio_serv
+
+	/*Comienzo de Control de cliente con el canal*/
+    if (post:cli_tipo != 0)
+
+
+      	cds select from dsc:adt_serv_table becomes dsc:adt_serv_context \
+      	where adt_serv_serv == siaf:codigo_siaf
+      	cds findfirst dsc:adt_serv_context NOLOCK
+      	if (cdsretval == 0)
+        	cds extract dsc:adt_serv_context ALL
+        	if (cdsretval == 0)
+	        	let adt_serv_canal = adt_serv_canal
+          		if (cli_tipo == 1)
+            		/* cLIENTE MAYORISTA O CTA CTES*/
+            		if (adt_serv_canal == "MINORISTA" )
+              			msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",0x00,"Error"
+              			RETURN (-2)
+            		endif
+          		else
+             		/* cLIENTE MINORISTA */
+            		if (adt_serv_canal == "MAYORISTA") THEN
+              			msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",0x00,"Error"
+              			RETURN (-2)
+            		endif
+          		endif
+        	endif
+      	endif
+    endif
+
+    /* MLD Agrego para que Me cargue los datos del producto asociado en Memoria */
+    if (post:estado_presu == 2 || post:estado_presu == 1) then
+		call post:MISCParam_Asoc
+		if (post:cli_tipo == 4) then
+			/*Si vende alguna especie asociada al producto,
+			y el cliente es UP controlo que la familia TES lo admita*/
+			if (codesp_serv.numchars > 0) then
+				call post:CDSverificaFliaUP("TES")
+				if (retval == NOTOK)
+					msgbox "LA FAMILIA DE LA ESPECIE NO PERMITE VENTA UP",0x00,"Error"
+					RETURN (-2)
+				endif
+			end if
+			if (codesp_serv.numchars > 0)
+				call post:MISCAdmiteUP(codesp_serv,subcod_serv)
+				if (retval < 0) then
+					RETURN (-2)
+				end if
+			end if
+		end if
+		adt_prodvs_desc = bck_prodvs_desc
+	end if
+
+	/*Para Teclas Rapidas, valida que la especie asociada al servicio no tenga fomulario fiscal = factura*/
+	if (post:estado_presu == 1)
+		if (codesp_serv.numchars > 0)
+			tes:adt_espv_cod = codesp_serv
+	    	tes:adt_espv_subcod = subcod_serv
+	    	CALL tes:CDSadt_esp_load
+			if (tes:adt_espv_formfiscal == "FACTU")
+				MSGBOX "Especie asociada al servicio no admitida por modo rapido (Formulario Fiscal = Factura)",0x00,"Error"
+				UNGETKEY RT_ESC
+			end if
+		end if
+	end if
+    /*Fin de Control de cliente con el canal*/
+
+	/*Controlo si el Servicio tiene un destino asociado*/
+	CDS SELECT FROM DSC:post:DESPOST_TAB BECOMES DSC:post:DESPOST_CTX WHERE \
+	post:adt_despost_serv == post:tipo_produc
+    CDS FINDFIRST DSC:post:DESPOST_CTX NOLOCK
+    IF (CDSRETVAL < 0) THEN
+	    MSGBOX "EL SERVICIO NO TIENE UN DESTINO HABILITADO",0x00,"ERROR"
+	    CDS ENDSELECT DSC:post:DESPOST_CTX
+		Call tele:MISClimpia_importes
+		return (-2)
+    ELSE
+	    CDS EXTRACT DSC:post:DESPOST_CTX ALL
+    END IF
+    CDS ENDSELECT DSC:post:DESPOST_CTX
+
+    /*********************************************************/
+    /* Verifico si el Servicio tiene definido Opcionales.    */
+    /* Lo necesito saber antes de dibujar la Pantalla de la  */
+    /* Transacci¢n para decidir si debo displayar el Combo   */
+    /* para seleccionar los Opcionales o no.		     */
+    /*********************************************************/
+    CALL tele:PRESopc_gral
+    IF (RETVAL < 0) THEN
+		RETURN (-2)
+    END IF
+
+    /********************************************************/
+    /* Si el Cliente no es Mayorista, le asigno al campo    */
+    /* tarifa la tarifa básica para ese Servicio, siempre   */
+    /* y cuando sea un Servicio Postal con alcance Nacional */
+    /* ya que en los Postales Internacionales y Encomiendas */
+    /* debo saber el destino para tarifar.		    */
+    /********************************************************/
+    /*IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+	    IF ((post:adt_serv_tipo == "PO" && post:adt_serv_alcance == "N") || \
+	        tipo_produc == 10111 || tipo_produc == 10121) THEN
+	        IF (tipo_produc != 11203) THEN
+		        CDS SELECT FROM DESPOST_TAB BECOMES DESPOST_CTX WHERE \
+        		    post:adt_despost_serv == post:tipo_produc
+    		    CDS FINDFIRST DESPOST_CTX NOLOCK
+    		    IF (CDSRETVAL < 0) THEN
+    			    MSGBOX "LA TRANSACCION NO SE PUEDE EJECUTAR YA QUE EL SERVICIO NO TIENE UN DESTINO HABILITADO EN LA TABLA DE DESTINOS POSTALES",0x00,"ERROR"
+					UNGETKEY RT_ESC
+	    	    ELSE
+	    		    CDS EXTRACT DESPOST_CTX ALL
+	    		    post:adt_tarif_dest = post:adt_despost_dest
+	    		    post:destino = post:adt_despost_dest
+	    	    END IF
+	    	    CDS ENDSELECT DESPOST_CTX
+		        IF (post:adt_serv_umstd != "PAG") THEN
+			        post:adt_tarif_desde = 0.001
+		        ELSE
+			        post:adt_tarif_desde = 1
+		        END IF
+	            post:aforo = 0
+                CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+
+	        END IF
+	        IF (post:cli_tipo != 1) THEN
+	    	    post:tarifa =  post:adt_tarif_precio
+	    	    IF ((post:estado_presu == 2 || post:estado_presu == 3) && \
+	                post:IvaCod == "RNI") THEN
+			        CALL MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad)
+			        post:sobretasa_prod = post:SobreTasaIva
+	    	    END IF
+	    	    post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+        	    siaf:importe = post:tarifa + post:sobretasa
+            END IF
+	    END IF
+    END IF*/
+
+    /*Limpio los vectores que almacenan los importes con y sin iva de los opcionales
+    y del servicio*/
+    IF (estado_presu != 4 || estado_presu != 1 )
+        CALL CSR:cleararray(fliatran_vec)
+        CALL CSR:cleararray(impciva_vec)
+        CALL CSR:cleararray(impsiva_vec)
+    END IF
+
+	IF (estado_presu == 4)
+		siaf:importe_tot_serv = siaf:importe
+	ELSE
+		/*Asigno siaf:importe al campo siaf:importe_tot_serv en el cual se va a mostrar el importe total
+		acumulado en la transaccion, con el valor del producto asociado, de la especie asociada, etc..*/
+		siaf:importe_tot_serv = siaf:importe
+		/*Si tiene una especie asociada, sumo el importe de la misma*/
+		if (codesp_serv.numchars > 0 && cli_tipo != 1 && \
+		    post:enCombo != "S") then
+		    //cgw:si no es un producto de un combo, calcula importes.
+			tes:adt_espv_cod = codesp_serv
+		    tes:adt_espv_subcod = subcod_serv
+		    CALL tes:CDSadt_esp_load
+
+		    siaf:importe_tot_serv = siaf:importe_tot_serv + (cantidad * tes:adt_espv_valor)
+		end if
+		/*Calcula la tarifa total del servicio*/
+	    CALL MISCact_tarif_serv
+	END IF
+	refresh siaf:importe_tot_serv
+
+	/*MFM - Tratamiento Cliente Medio*/
+    IF (cli_tipo == CLIMED) THEN
+		//chequeo que el producto esté habilitado para la venta y bonificacion a CM
+		CALL MISCVerifCM
+		if (retval < 0)
+			Return (-2)
+		end if
+	END IF
+
+    RETURN (0)
+END SUB
+
+/*******/

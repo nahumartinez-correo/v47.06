@@ -1,0 +1,219 @@
+/****o* Servicios Telegráficos/OFB:tele:PRT_tel_ticko
+* NOMBRE
+*   OFB:tele:PRT_tel_ticko
+* DESCRIPCION
+*   Rutina que imprime un ticko para los telegramas que no tienen importe
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tele:SVALgral_tele
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2387
+* SOURCE
+*/
+#include "teleprt.h"
+
+SUB tele:PRT_tel_ticko
+	local INDICE like post:cantidad /* indice que cuentas las lineas del cuerpo */
+	local cx like siaf:idx
+	local Lretval like lib:err_retval
+
+	call post:MISCobtiene_empresa(dsc:post:CorreoArgentino)
+	
+	INDICE = 0
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call post:PRTtransparent_set(SETEODEFAULT)
+    
+    /*Encabezado */
+    CALL  post:PRT_Hdr_Ticket
+
+   	/* Comienzo del SubEncabezado */
+    FPRINT common:csr_string "%s %-4.4e \n",dsc:gali:DAUsecuencia,tlr:sequence
+    CALL post:PRTtransparent(common:csr_string)
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call post:PRTtransparent_set(LINEANUEVA)
+/*MGI:AUT-2387 Si NO es Telegrama Nacional de Servicio
+    //Solic 50188
+	CALL post:MISCname_suc
+	CALL post:PRTtransparent(common:csr_string_tmp)    
+	Call post:MISCavaz_linea_imp(1)
+*/	
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	//call post:PRTtransparent_set(LINEANUEVA)
+    /* Fin del SubEncabezado */
+
+	// FGB 29.12.2005 - PS 9462
+	cds select from dsc:tele:TABtickomsg becomes dsc:tele:CONtickomsg \
+		where fld:tele:adt_tckomsg_serv == fld:post:adt_serv_serv
+	Lretval = cdsretval //cgw:reservo
+	if (cdsretval == 0) then
+		cds findfirst dsc:tele:CONtickomsg nolock
+		if (cdsretval == 0) then
+			cds extract dsc:tele:CONtickomsg all
+		endif
+		cds endselect dsc:tele:CONtickomsg
+	endif
+
+	/*Leyenda LEY*/
+	//mgi:AUT-2387 si es Telegrama Nacional Laboral Renuncia
+	//cgw: Si no es este servicio telegrafico no imprime Leyenda Ley
+	IF ((post:adt_serv_serv == 13421 || \
+	    post:adt_serv_serv == 13422 || \
+	    post:adt_serv_serv == 13423) && \
+	    Lretval == 0) THEN
+		IF (tele:adt_tckomsg_msg1.NUMCHARS > 0) THEN
+			FPRINT common:csr_string "%s\n",tele:adt_tckomsg_msg1
+			CALL post:PRTtransparent(common:csr_string)
+			INDICE = INDICE + 1
+		END IF
+		IF (tele:adt_tckomsg_msg2.NUMCHARS > 0) THEN
+			FPRINT common:csr_string "%s\n",tele:adt_tckomsg_msg2
+			CALL post:PRTtransparent(common:csr_string)
+			INDICE = INDICE + 1
+		END IF
+	END IF
+	
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call post:PRTtransparent_set(LINEANUEVA)
+    
+    /* Comienzo del Cuerpo del Ticko */
+    Fprint common:csr_string  "%-4.4s %6.6e\n",post:cant_aux,post:adt_tarif_precio
+    Call post:PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+    Fprint common:csr_string  "%-30.30s %8.8e\n",post:adt_serv_desc,post:tarifa
+    Call post:PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+    Fprint common:csr_string  "%-18.18s\n",post:destino
+    Call post:PRTtransparent(common:csr_string)
+	INDICE = INDICE + 1
+
+    /* Imprimo Bloques Adicionales. DP 23/5/2000*/
+    IF (post:cant_bloq > 0)  
+		clearfield common:csr_string
+       	//FPRINT  common:csr_string "%-28.28s %10.10s\n",post:leyenlar_bloq,post:imp_bloques    
+       	FPRINT  common:csr_string "%-26.26s %12.12s\n",post:leyenlar_bloq,post:imp_bloques     
+       	Call post:PRTtransparent(common:csr_string)
+	END IF
+
+    /* Impresion del opcional */
+    let cx = 0
+	do
+		if (post:cod_opc[cx].numchars == 0) then
+        	break
+       	endif
+       	let post:adt_opc_opci = post:cod_opc[cx]
+       	call post:CDSopc_desc_load
+       	let post:desc_impre = post:adt_opc_desc
+       	Fprint common:csr_string  "%-30.30s %8.8s\n",post:desc_impre,post:cos_opc[cx]
+       	Call post:PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+       	let cx = cx + 1
+	loop
+
+    /*
+    //Imprimo el descuento
+    if (post:tipo_descto.numchars != 0) then
+    	let post:adt_descto_cod = post:tipo_descto
+       	call post:CDSdesco_desc_load
+       	let post:desc_impre = post:adt_descto_desc
+       	Fprint common:csr_string  "Desc: %-24.24s %8.8s\n",post:desc_impre,post:descuento
+       	Call post:PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+	end if
+     */
+     
+         
+	// Imprimo el nro. de telegrana
+   	IF (post:cant_aux > 1 && tele:adt_cattel_serv_sm == "S")
+		CDS SELECT FROM DSC:post:cod_ctrl_tbl BECOMES post:TT_CTX WHERE \
+    		post:fecha == common:system_date && \
+        	post:operador_tt == op:op_operator_id && \
+        	post:PresNro_tt == post:PresNro && \
+        	post:NroTrn_tt == post:PreDNroTrn
+       	CDS FINDFIRST post:TT_CTX LOCK
+       	LET lib:err_retval = CDSRETVAL
+       	WHILE (lib:err_retval != -801)
+       		CDS EXTRACT post:TT_CTX ALL
+			// en el campo cod_ctrol esta el nro. de telegrama...
+   			Fprint common:csr_string  "%10.10s %17.17s\n"," ",post:cod_ctrol 
+       		Call post:PRTtransparent(common:csr_string)
+       		INDICE = INDICE + 1
+			CDS FINDNEXT post:TT_CTX LOCK
+			LET lib:err_retval = CDSRETVAL
+		END WHILE
+		CDS ENDSELECT post:TT_CTX
+	ELSE
+		Fprint common:csr_string  "%10.10s %17.17s\n"," ",tele:tele_nro_telegrama
+       	Call post:PRTtransparent(common:csr_string)
+      	INDICE = INDICE + 1
+	END IF
+  
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call post:MISCprt2laser(LINEANUEVA)
+	
+	/*
+	//Imprimo TOTAL
+	Call post:PRTtransparent(LINE_GUIONES)    
+	Fprint common:csr_string  "TOTAL %33.33s\n",siaf:importe
+ 	CALL post:PRTtransparent(common:csr_string)
+	//Por si el modo prt es laser - Gabriel Falciola
+	call post:PRTtransparent_set(LINE_GUIONES)
+	//Por si el modo prt es laser - Gabriel Falciola
+	call MISCprt2laser(LINEANUEVA)
+    INDICE = INDICE + 4
+    
+    Fprint common:csr_string  "%-30.30s %8.8s\n",medio_pago_desc,imp_auxi
+    Call post:PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+    */
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call post:MISCprt2laser(LINEANUEVA)
+	INDICE = INDICE + 1
+   	/*Se imprime observaciones, Observ1, Observ2 */
+	;FPRINT common:csr_string "%s \n",dsc:siaf:observaciones
+    
+	/*Pie*/
+	//mgi:AUT-2387 si es Telegrama Nacional Laboral Renuncia
+	//cgw: Si no es este servicio telegrafico no imprime pie desde parametria
+	IF ((post:adt_serv_serv == 13421 || \
+	    post:adt_serv_serv == 13422 || \
+	    post:adt_serv_serv == 13423) && \
+	    Lretval == 0) THEN
+	    IF (tele:adt_tckomsg_msg3.NUMCHARS > 0 ) THEN
+			FPRINT common:csr_string "%s\n",tele:adt_tckomsg_msg3
+			CALL post:PRTtransparent(common:csr_string)
+			INDICE = INDICE + 1
+		END IF
+		IF (tele:adt_tckomsg_msg4.NUMCHARS > 0 ) THEN
+			FPRINT common:csr_string "%s\n",tele:adt_tckomsg_msg4
+			CALL post:PRTtransparent(common:csr_string)
+			INDICE = INDICE + 1
+		END IF
+		IF (tele:adt_tckomsg_msg5.NUMCHARS > 0 ) THEN
+			FPRINT common:csr_string "%s\n",tele:adt_tckomsg_msg5
+			CALL post:PRTtransparent(common:csr_string)
+			INDICE = INDICE + 1
+		END IF
+	ELSE
+		//cgw:para otros servicios telegraficos imprime pie prefijado.
+		Fprint common:csr_string "%10.10s %21.21s\n"," ", "COMPROBANTE NO VALIDO"
+		CALL post:PRTtransparent(common:csr_string)
+		INDICE = INDICE + 1
+		FPRINT common:csr_string "%10.10s %21.21s\n"," ", "COMO DOCUMENTO FISCAL"
+		CALL post:PRTtransparent(common:csr_string)
+		INDICE = INDICE + 1
+	END IF
+        
+    /* Fin del Cuerpo del Ticko */
+    CALL post:MISCavaz_linea_imp(12)
+    CALL post:PRT_Ticket_Corte
+END SUB
+
+/*******/

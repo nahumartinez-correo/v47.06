@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSadt_restup_sel
+* NOMBRE
+*   OFB:tes:CDSadt_restup_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSadt_restup_sel
+    LOCAL loc_restric LIKE common:csr_string_171
+	LOCAL ret LIKE cont1
+	
+	CDS SELECT FROM DSC:RestUp_tbl BECOMES DSC:RestUp_ctx
+			
+	IF ((adt_restesp_esp.numchars == 0) && (adt_restesp_subesp.numchars == 0)) THEN
+    	CDS SELECT FROM DSC:RestUp_tbl BECOMES DSC:RestUp_ctx
+    END IF
+    
+    IF ((adt_restesp_esp.numchars != 0) && (adt_restesp_subesp.numchars == 0)) THEN
+    	CDS SELECT FROM DSC:RestUp_tbl BECOMES DSC:RestUp_ctx \
+    	WHERE (adt_restesp_esp == adt_restesp_esp)    	
+    END IF
+    
+    IF ((adt_restesp_esp.numchars == 0) && (adt_restesp_subesp.numchars != 0)) THEN
+    	CDS SELECT FROM DSC:RestUp_tbl BECOMES DSC:RestUp_ctx \
+    	WHERE (adt_restesp_subesp == adt_restesp_subesp)    	
+    END IF
+    
+    IF ((adt_restesp_esp.numchars != 0) && (adt_restesp_subesp.numchars != 0)) THEN
+        CDS SELECT FROM DSC:RestUp_tbl BECOMES DSC:RestUp_ctx \
+    	WHERE ((adt_restesp_esp == adt_restesp_esp) && \
+    			(adt_restesp_subesp == adt_restesp_subesp))
+    	
+    END IF
+			
+    CDS FINDFIRST DSC:RestUp_ctx NOLOCK    
+    LET lib:err_retval = CDSRETVAL
+    
+	CALL lib:MISCcds_find_err
+    
+   	IF (RETVAL != 0) THEN
+	    CALL CSR:proc_list(F_CLEAR,LST:LISTrestup_flds)
+        CALL CSR:proc_list(F_REFRESH,LST:LISTrestup_flds)
+        CALL post:MISCset_sidebar(0, 0, 0, 0)
+     	CDS ENDSELECT DSC:RestUp_ctx
+     	RETURN (-1)
+	END IF
+	
+    IF (lib:err_retval == -801) THEN
+    	CDS ENDSELECT DSC:RestUp_ctx
+        RETURN (-2)
+    END IF
+	CALL csr:f_sadroppl dsc:RestEsp_UP
+	CALL csr:f_sanewpl dsc:RestEsp_UP pic:rest_espe_up
+	DO
+		CDS EXTRACT DSC:RestUp_ctx ALL
+		CDS SELECT FROM DSC:post:cliocaUP_tbl BECOMES DSC:post:cliUP_ctx \
+		WHERE post:NisUP == tes:adt_restesp_up && \
+              post:CloTipDoc == tes:adt_restesp_tipdoc && \
+              post:CloCuit == tes:adt_restesp_cuit
+		CDS FINDFIRST DSC:post:cliUP_ctx NOLOCK
+		IF (lib:err_retval == -801) THEN
+    	    CDS ENDSELECT DSC:RestUp_ctx
+    	ELSE
+    		CDS EXTRACT DSC:post:cliUP_ctx post:CliUP_Nis,post:CloRazon
+    		clearfield loc_restric
+    		Fprint loc_restric "%-20.20s %-20.20s %-5.5s %-50.50s %-5.5s %-2.2s %-11.11s" \
+    		adt_restesp_esp,adt_restesp_subesp, adt_restesp_up,\
+    		post:CloRazon, post:CliUP_Nis, \
+    		adt_restesp_tipdoc,adt_restesp_cuit
+    		
+    		CALL csr:f_saaddpl dsc:RestEsp_UP loc_restric
+        END IF		
+		CDS FINDNEXT DSC:RestUp_ctx NOLOCK
+		IF (CDSRETVAL < 0)
+			BREAK
+		END IF		
+	LOOP
+	clearfield loc_restric
+	CALL csr:f_sadopl dsc:RestEsp_UP loc_restric	
+	ret = RETVAL
+
+    IF (ret >= 0) THEN
+	    adt_restesp_esp = substr(loc_restric,0,20)
+	    adt_restesp_subesp = substr(loc_restric,21,20)
+	    adt_restesp_up = substr(loc_restric,42,5)
+	    adt_restesp_razon = substr(loc_restric,48,50)
+        adt_restesp_nis_dep = substr(loc_restric,99,5)
+        adt_restesp_tipdoc = substr(loc_restric,105,2)
+        adt_restesp_cuit = substr(loc_restric,108,11)
+        call csr:trimfield(adt_restesp_esp)
+        call csr:trimfield(adt_restesp_subesp)
+        call csr:trimfield(adt_restesp_up)
+        call csr:trimfield(adt_restesp_razon)
+        call csr:trimfield(adt_restesp_nis_dep)
+        call csr:trimfield(adt_restesp_tipdoc)
+        call csr:trimfield(adt_restesp_cuit)        
+        CALL CSR:proc_list(F_REFRESH,LST:LISTrestup_flds)
+        PROTFIELD adt_restesp_nis_dep
+        PROTFIELD adt_restesp_cuit
+        PROTFIELD adt_restesp_tipdoc
+        PROTFIELD adt_restesp_razon
+    END IF    
+	CALL csr:f_sadroppl dsc:RestEsp_UP
+	
+	//journalizacion ABM Restriccion Especie por Clente Up
+	call tes:MISCto_bck_RestUp
+
+	CDS ENDSELECT DSC:RestUp_ctx
+	RETURN ret		
+END SUB
+
+/*******/

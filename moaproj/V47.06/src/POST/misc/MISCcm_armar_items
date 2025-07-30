@@ -1,0 +1,268 @@
+/****o*Mensajeria/OFB:post:MISCcm_armar_items
+* NOMBRE
+*   OFB:post:MISCcm_armar_items
+* DESCRIPCION
+*   Genera los BITS 95.96.97.98 del Mensaje Ingeso de ITEMS de Cliente Medio
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCclimed_it_compra
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcm_armar_items
+
+	/****************************************************************************/
+	/* GENERAR ITEMS A PAGAR 		 				    */
+	/* BITS : 95,96,97,98,99 					    	    */
+	/****************************************************************************/
+
+	local loc_retval    	like lib:err_retval
+	local loc_peso_tarifado like post:peso_tarifado
+	local loc_rel_vol		like post:rel_vol
+
+	post:BulkFldCant   = 0
+	post:item_cant_opc = 0
+
+	clearfield post:datos_msg095
+	clearfield post:datos_msg096
+	clearfield post:datos_msg097
+	clearfield post:datos_msg098
+	clearfield post:datos_msg099
+
+
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+	WHERE post:fecha == fecha && post:op_operator_id ==  post:op_operator_id  && \
+	post:PresNro == post:PresNro && \
+	((siaf:adt_tran_fliatran != "PCL") || \
+	(siaf:codigo_siaf == 99450 || siaf:codigo_siaf == 99300 ) ) 
+	
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+    	lib:err_retval = CDSRETVAL
+	if ( lib:err_retval == -801  )
+		CDS ENDSELECT DSC:CONPresuDeta
+		return 0
+	else
+		if ( lib:err_retval < 0 )
+			msgbox "Error al obtener los datos de los productos.",\
+			OFB_OK,"Atencion"
+			CDS ENDSELECT DSC:CONPresuDeta
+			return -1
+		end if
+	end if
+
+	WHILE (lib:err_retval ==  0 )
+		
+		call CSR:proc_list(F_CLEAR,LST:LISTcm_armar_items)
+		clearfield siaf:nota_1
+
+		CDS EXTRACT DSC:CONPresuDeta \
+			siaf:adt_tran_fliatran into item_fliatran \
+			siaf:codigo_siaf       into item_codigo_trx \
+			post:PreDNroTrn        into item_nrotrn
+
+		if (item_codigo_trx == 8500 )
+
+    		CDS SELECT FROM DSC:tes:AuxEspV_tbl \
+			becomes DSC:tes:AuxEspV_ctx \
+        	WHERE tes:adt_evaux_suc == op:op_branch_id && \
+            	tes:adt_evaux_op == op:op_operator_id && \
+            	tes:adt_evaux_prestran == post:item_nrotrn && \
+				tes:adt_evaux_es_venta == "S"
+
+    		CDS FINDFIRST dsc:tes:AuxEspV_ctx NOLOCK
+    		do
+    			if (CDSRETVAL != 0) then
+    	   			break
+    			end if
+
+				clearfield siaf:nota_1
+				clearfield post:item_especie
+				clearfield post:item_subespecie
+				clearfield post:item_cantidad
+				clearfield post:item_bonifCM
+				clearfield post:item_dcto
+				clearfield post:item_desc_factura
+				clearfield post:item_importe_oc
+				clearfield post:item_prodvarios
+				clearfield post:item_bien_cambio
+	
+				CDS EXTRACT dsc:tes:AuxEspV_ctx \
+				tes:adt_evaux_codigo     into item_especie \
+				tes:adt_evaux_subcod     into item_subespecie \
+				tes:adt_evaux_cantidad   into item_cantidad \
+				tes:adt_espv_bonifCM     into item_bonifCM \
+				tes:adt_evaux_descCM     into item_dcto \
+				post:adt_itemoc_factdesc into item_desc_factura \
+				post:adt_itemoc_puni     into item_importe_oc \
+				post:adt_prodvs_cod      into item_prodvarios \
+				post:prod_serv		 	into item_bien_cambio \
+				post:NIS_Imposicion 	into item_nis_impos 
+
+				//post:Dcto_CliMed         into item_dcto \
+				
+				call post:MISCcm_bits_items
+	
+    			CDS FINDNEXT dsc:tes:AuxEspV_ctx NOLOCK
+    		loop
+
+    		CDS ENDSELECT dsc:tes:AuxEspV_ctx
+		else
+			
+			
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:tipo_produc       into item_servicio \
+				siaf:motivo            into item_motivo \
+				siaf:adt_mot_modulo    into item_mod_motivo \
+				siaf:adt_mot_submodulo into item_submod_motivo \
+				siaf:Nis_Destino       into item_nis
+
+			if ( item_codigo_trx != 99450 )
+				CDS EXTRACT DSC:CONPresuDeta \
+				siaf:importe2 into item_importe
+			else
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:anticipo_CM into item_importe
+			end if
+
+			CDS EXTRACT DSC:CONPresuDeta \
+				siaf:nro_impre      into item_comprob_motivo \
+				post:adt_prodvs_cod into item_prodvs_cod 
+
+			if ( item_fliatran == "CME" )
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:cantidad2 into item_cantidad 
+			else
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:cantidad into item_cantidad 
+			end if
+		
+			
+			CDS EXTRACT DSC:CONPresuDeta \
+				tele:tele_cant_palabras	into item_cant_pal \
+				post:peso_en_kgs    into item_peso_kgs \
+				post:peso_en_grs    into item_peso_grs \
+				post:aforo1         into item_aforo1 \
+				post:aforo2         into item_aforo2 \
+				post:aforo3         into item_aforo3 \
+				post:destino        into item_destino \
+				post:tipo_caja      into item_tipo_caja \
+				post:bonificaCM     into item_bonifCM \
+				post:Dcto_CliMed    into item_dcto \
+				tele:tele_tipo_serv into item_categoria
+				
+			//NI 50466 - Peso Volumetrico - NI 50569 REGISTRO RPP
+			IF (item_fliatran == "CSP" || item_fliatran == "CSE" || item_fliatran == "VAP" || item_codigo_trx == 99093)
+				CDS EXTRACT DSC:CONPresuDeta \
+					post:rel_vol		into loc_rel_vol \
+					//Si el peso volumetrico es mayor que el peso real
+					//mando al HOST el peso volumetrico
+					IF (loc_rel_vol > item_peso_kgs)
+						item_peso_kgs = loc_rel_vol
+					END IF
+			END IF
+		//NI 50569 REGISTRO RPP 
+		if (post:item_codigo_trx == 18100)
+				post:item_servicio = 18100 //PARA QUE JOURNALICE ESTE CODIGO EN LA FACTURACION DIF CM
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:adt_serv_serv into item_codigo_trx //PARA QUE TARIFE CON ESTE SERVICIO EN LA FACTURACION DIF CM
+		ENDIF
+		
+		//NI 50569 REGISTRO RPP SIMPLE 
+		if (post:item_codigo_trx == 18101)
+				post:item_servicio = 18101 //PARA QUE JOURNALICE ESTE CODIGO EN LA FACTURACION DIF CM
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:adt_serv_serv into item_codigo_trx //PARA QUE TARIFE CON ESTE SERVICIO EN LA FACTURACION DIF CM
+		ENDIF
+		
+		//NI 50324
+			if (post:item_codigo_trx == 40002 && post:item_dcto == 0) then
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:DctoCM_bc into item_dcto 
+			endif
+	
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:cant_opc    into item_cant_opc \
+				post:cod_opc[0]  into item_opc_opci[0] \
+				post:cod_opc[1]  into item_opc_opci[1] \
+				post:cod_opc[2]  into item_opc_opci[2] \
+				post:cod_opc[3]  into item_opc_opci[3] \
+				post:cod_opc[4]  into item_opc_opci[4] \
+				post:cod_opc[5]  into item_opc_opci[5] 
+
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:bonifCM_opc[0] into item_opc_bonif[0] \
+				post:bonifCM_opc[1] into item_opc_bonif[1] \
+				post:bonifCM_opc[2] into item_opc_bonif[2] \
+				post:bonifCM_opc[3] into item_opc_bonif[3] \
+				post:bonifCM_opc[4] into item_opc_bonif[4] \
+				post:bonifCM_opc[5] into item_opc_bonif[5] 
+	
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:vec_opc2[0] into item_opc_importe[0] \
+				post:vec_opc2[1] into item_opc_importe[1] \
+				post:vec_opc2[2] into item_opc_importe[2] \
+				post:vec_opc2[3] into item_opc_importe[3] \
+				post:vec_opc2[4] into item_opc_importe[4] \
+				post:vec_opc2[5] into item_opc_importe[5] 
+
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:opc_puni_oc[0] into item_opc_imp_oc[0] \
+				post:opc_puni_oc[1] into item_opc_imp_oc[1] \
+				post:opc_puni_oc[2] into item_opc_imp_oc[2] \
+				post:opc_puni_oc[3] into item_opc_imp_oc[3] \
+				post:opc_puni_oc[4] into item_opc_imp_oc[4] \
+				post:opc_puni_oc[5] into item_opc_imp_oc[5] 
+
+			CDS EXTRACT DSC:CONPresuDeta \
+				post:adt_itemoc_factdesc into item_desc_factura \
+				post:adt_itemoc_puni     into item_importe_oc \
+				post:adt_prodvs_cod      into item_prodvarios \
+				post:prod_serv		 into item_bien_cambio \
+				post:peso_tarifado       into loc_peso_tarifado \
+				post:adt_bloqoc_precio   into item_imp_bloq
+				
+				/*if (item_codigo_trx == 21701 || item_codigo_trx == 21801 || \
+					item_codigo_trx == 21401 || item_codigo_trx == 21501)
+					item_peso_kgs = loc_peso_tarifado
+				endif*/
+				
+				CDS EXTRACT DSC:CONPresuDeta \
+					post:NIS_Imposicion into item_nis_impos
+
+				call post:MISCcm_bits_items
+
+		end if
+
+    		CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+    		lib:err_retval = CDSRETVAL
+		if ( lib:err_retval == -801 )
+			loc_retval = 0
+			break
+		else
+			if ( lib:err_retval < 0 )
+				msgbox \
+				"Error al obtener los datos de los productos.",\
+				OFB_OK,"Atencion"
+				loc_retval = -1
+				break
+			end if
+		end if
+	
+	END WHILE
+
+	fprint post:datos_msg095,"%03.3s%s",post:BulkFldCant,post:datos_msg095
+	CDS ENDSELECT DSC:CONPresuDeta
+
+	return loc_retval
+
+END SUB
+
+/*******/

@@ -1,0 +1,109 @@
+/****o* Pendientes de agrupación/OFB:batch:MiscCargaMasivaSuc
+* NOMBRE
+*   OFB:batch:MiscCargaMasivaSuc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "batchmisc.h"
+
+SUB batch:MiscCargaMasivaSuc
+	local l_str_error like common:csr_string_aux
+	local l_directorio like post:mdata_directorio
+	local caracter LIKE common:csr_string
+	local caracter2 LIKE common:csr_string
+	local aux_branch LIKE admin:adt_br_branch
+	local l_tamano like siaf:i
+	local INDICE_INF LIKE post:cantidad
+    local INDICE     LIKE post:cantidad
+    local l_archivo like post:mdata_archivo
+	
+	aux_branch = admin:adt_br_branch
+	clearfield admin:adt_br_branch   
+	post:rep_modalidad = "B"
+	post:tmp_procede = "N"
+	post:adt_mdata_abm = "SUCURSALES"
+	post:adt_mdata_descTabla = "Sucursales"
+	post:mdata_descTabla = post:adt_mdata_descTabla
+	post:mdata_abm = post:adt_mdata_abm
+	call csr:get_profile_string "CARGA_MASIVA" "UNIDAD" post:mdata_unidad
+	call csr:get_profile_string "CARGA_MASIVA" "DIRECTORIO" l_directorio
+	call csr:get_profile_string "CARGA_MASIVA" "ARCHIVO" post:mdata_archivo
+	if (post:mdata_archivo == "") then
+		;nombre por defecto
+		post:mdata_archivo = "BR_adt_br"
+	end if
+	l_archivo = post:mdata_archivo
+	post:mdata_directorio = l_directorio
+  	call post:MISCasigFechaAlArch("TXT")
+  	;Inicio el CDserver
+    CALL batch:CDSinit_gene
+  	call post:CDSdetallesAbm
+	FPRINT caracter "%s", "\\"
+	FPRINT caracter2 "%s", "/"
+	CALL post:MISCremplazaCaracter(l_directorio,caracter2,caracter)
+	
+	if (l_directorio == "" || post:mdata_unidad == "") then
+		;directorio por defecto
+		CALL csr:get_profile_string("cdsmain","CDS_DIRECTORY",batch:log_path)
+		l_tamano = batch:log_path.length
+		l_directorio = substr(log_path,3,l_tamano)
+		CALL csr:str_search (l_directorio,"cdsmain",INDICE,INDICE_INF)
+		if (retval ==0)
+			INDICE = INDICE - 1
+			l_directorio = substr(l_directorio,0,INDICE)
+			post:mdata_unidad = substr(log_path,0,2)
+			call post:MISClogCargaMas_inic(l_directorio, post:mdata_abm)
+			fprint l_str_error "La configuración del DDporg.ini para carga masiva es erronea"
+			call post:MISClogCargaMas(l_directorio, post:mdata_abm, l_str_error)
+		end if
+		return 0
+	end if
+	
+	; ACA HACER LAS VALIDACIONES DEL ARCHIVO.
+	
+	FPRINT common:path_1024,"%2.2s/%s/%s", post:mdata_unidad, l_directorio, post:mdata_archivo
+
+	call post:MISClogCargaMas_inic(post:mdata_directorio, post:mdata_abm)
+   
+	CALL CSR:file_open 1 common:path_1024 "r"
+	if (RETVAL < 0)
+		post:mdata_archivo = l_archivo
+		call post:MISCasigFechaAlArch("FIN")
+		FPRINT common:path_1024,"%2.2s/%s/%s", post:mdata_unidad, l_directorio, post:mdata_archivo
+		CALL CSR:file_open 1 common:path_1024 "r"
+		if (RETVAL < 0)
+			post:mdata_archivo = l_archivo
+			call post:MISCasigFechaAlArch("*  ")
+			fprint l_str_error "El archivo seleccionado no se puede abrir, verifique su existencia. (el archivo %s debe residir en el %2.2s\\%s\\)", post:mdata_archivo, post:mdata_unidad, post:mdata_directorio
+        else
+        	fprint l_str_error, "%e : Carga masiva de datos finalizada correctamente. No hubo registros para procesar.\n", common:time_of_day
+        end if
+        call post:MISClogCargaMas(post:mdata_directorio, post:mdata_abm, l_str_error)
+        CDS DISCONNECT "gene"
+        CALL CSR:file_close 1
+        CALL batch:MiscCargaMasSuc_mail
+		return (0)
+	endif
+	CALL CSR:file_close 1
+	
+	; si las validaciones dan OK, lo modifico en la lista.
+	CALL post:MISCremplazaCaracter(l_directorio,caracter,caracter2)
+	call post:MISCasignarArchivo(post:mdata_descTabla, l_directorio, post:mdata_archivo)
+	call post:PBejecutarCarga
+    CDS DISCONNECT "gene"
+    admin:adt_br_branch = aux_branch
+   	CALL batch:MiscCargaMasSuc_mail
+END SUB
+
+/*******/

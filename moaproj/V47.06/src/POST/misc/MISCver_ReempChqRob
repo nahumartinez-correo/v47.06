@@ -1,0 +1,55 @@
+/****o* Pendientes de agrupación/OFB:post:MISCver_ReempChqRob
+* NOMBRE
+*   OFB:post:MISCver_ReempChqRob
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCver_ReempChqRob
+    LOCAL loc_PresNro LIKE post:PresNro
+    //cgw:Verifica si existe un Reemplazo de Cheque Robado.
+    //    Este tratamiento, es para tener en cuenta los casos de reversa desde journal, para
+    //    los Reemplazos de Cheques. Cancelacion de Reemplazo s/comprobante (siaf:codigo_siaf = 99175).
+    //    Para estos casos el presupuesto a reversar queda en memoria en el campo giros:PresNro_canc,
+    //    y accederemos a la PresuDet por este presupuesto para verificar si la reversa es de reemplazo
+    //    de cheques robados o rechazados/obs.
+    
+    loc_PresNro = giros:PresNro_canc
+    IF (siaf:codigo_siaf == 99200) THEN
+    	//Reemplazo de Cheque Rechazado/Obs.
+        loc_PresNro = post:PresNro
+    END IF
+    
+    /* Cuando es una Cancelacion Reemplazo de Cheque Rechazado/Obs. (siaf:codigo_siaf = 99205),
+       no se tiene en memoria el dato del Presupuesto por lo tanto, tomara giros:PresNro_canc
+       con valor 0, y no encontrara el registro en la PresuDet, que de todas formas no debe
+       tener registros de reemplazo de cheque robado ya que se trata de una cancelacion de
+       reemplazo de cheques rechazados/obs. */
+    
+    CDS SELECT FROM DSC:TABPresuDeta BECOMES "PresuDet_Aux" \
+	WHERE post:fecha == common:system_date &&           \
+	post:op_operator_id == op:op_operator_id &&         \
+	post:PresNro == loc_PresNro &&                      \
+	(siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242)
+    CDS FINDFIRST "PresuDet_Aux" NOLOCK
+    IF (CDSRETVAL == 0) THEN
+	CDS ENDSELECT "PresuDet_Aux"
+	RETURN (0)
+    END IF
+    CDS ENDSELECT "PresuDet_Aux"
+    RETURN (-2)
+END SUB
+
+/*******/

@@ -1,0 +1,100 @@
+/****o* Notas de Credito CM/OFB:post:MISCReimpresionNC
+* NOMBRE
+*   OFB:post:MISCReimpresionNC
+* DESCRIPCION
+*   Reimpresion de Nota de Credito por incumplimiento
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tlr:tlr_fb4
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*   http://jira.sibs.net/jira/browse/AUT-2196
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCReimpresionNC
+	Local IMPORTE_FINAL like importeIva_impre
+	Local l_pres_nro like post:PresNro
+	
+	;AUT-2196
+	if (op:op_operator_id != tlr:jnl_operator) then
+		MSGBOX "No puede reimprimir una nota de crédito generada por otro operador.",0x00,"ERROR"
+		return -2
+	endif	
+	//resguardo porque luego del viaje de actualizacion se pierde el nro de presupuesto y no 
+	//queda journalizado
+	l_pres_nro = post:PresNro
+	//Borro ImpreTmp
+	CALL CDSDelete_ImpreTmp
+	//Borro AuxIVa
+	CALL post:CDSdelete_AuxIva
+	//Armo ImpreTmp y AUXIVA
+	IMPORTE_FINAL = post:importe_sesion //siaf:importe
+	post:noImprimir = "N"
+	siaf:adt_tran_fliatran = "TAV"
+	post:PreDNroTrn = 0 //a veces esta vacio y sale un fatal error, ya que es clave de la tabla ImpreTmp
+	CALL MISCgenero_ImpreTmp(99510,ACTVARIAS,0,IMPORTE_FINAL,1,0)
+	//Reimprimo la NC por DOCPRT
+	post:impNotaCred = "N"
+	post:tira_auditora = "N"
+	post:entraEnUnaPag = "S"
+	
+	//CALL post:MISCmuestraPaginas(mostrar)
+	call csr:printbuffer_init(TAMBUFFER)
+	;[PAW] --> para que sume todas las lineas.
+	entraEnUnaPag = "S"
+	modoPrt = FACTFIELD
+	Call post:MISCobtengo_cai
+	//AUT-780 Recupero datos de categoria de iva del cliente
+	Call post:CDSadt_presu_load
+	adt_cativa_cod = IvaCod
+	Call CDS_CatIva_Load
+	call PRT_Factura
+	Call post:MISCcantidad_fac_pag
+	if (cantidad2 > 1)
+	;[PAW] --> corroboro que entre en una página. (si no entra, calculo la
+	;		   cantidad de paginas sin los items que corresponden al anexo).
+		call csr:printbuffer_init(TAMBUFFER)
+		entraEnUnaPag = "N"
+		call PRT_Factura
+		Call post:MISCcantidad_fac_pag
+	endif
+	post:modoPrt = "D"
+	call post:PRTfac_nc_gral("Fue impresa correctamente La Nota de Crédito?",OFB_IDNO, OFB_YESNO) 
+	if (retval == 0) then
+		//REIMPRESION DE ACUSE DE RECIBO
+		Call post:DOCSacuse_reciboNC
+		
+		//Mando viaje de actualizacion de nro de NC
+		call post:OFBclimed_act_fact
+		call post:MISCjnl_fact_sesion(tlr:jnl_branch,tlr:jnl_operator,\
+		tlr:jnl_date,tlr:jnl_time,tlr:jnl_bus_date,tlr:jnl_sequence)
+		//borro los campos de viaje para que en la journalizacion de la reimpresion no lo vuelva a enviar
+		clearfield hcomm:INDhost_sndrt
+		clearfield hcomm:INDhost_rcvrt
+		
+		//Journalizar la reimpresion 
+		post:PresNro = l_pres_nro //restauro el PresNro 
+		UNGETKEY RT_SEND
+		RESETFLAG tlr:tran_flags,supovr_request
+		RESETFLAG siaf:siaf_flags,req_tes
+		RESETFLAG siaf:siaf_flags,req_sup1
+		cutscreen FLD:tlr:INDjscn_scrn,NOCURSOR
+		drv:stack_cnt = drv:stack_cnt + 1
+		CALL csr:listexec lst:post:TRANreimpresionNC	
+		UNGETKEY 0x0190 /* RT_ESC */
+		UNGETKEY 0x0190 /* RT_ESC */							
+   else
+   		msgbox "Puede reintentarlo volviendo a presionar F5.",0x00, "Aviso"
+   endif
+   
+			
+END SUB
+
+/*******/

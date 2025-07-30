@@ -1,0 +1,342 @@
+/****o* Facturación/OFB:post:PRT_Ticket_Jou
+* NOMBRE
+*   OFB:post:PRT_Ticket_Jou
+* DESCRIPCION
+*   Esta rutina imprime la tira auditora.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:PRT_Factura
+* REFERENCIADO POR
+*   OFB:post:MISCmanejoImpreIrp,OFB:post:PRTfac_nc_gral
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*	http://jira.sibs.net/jira/browse/AUT-1227
+* SOURCE
+*/
+#include "postprt.h"
+
+
+SUB post:PRT_Ticket_Jou
+	LOCAL SUBTOTAL LIKE siaf:importe
+	LOCAL PRECIO_UNITARIO LIKE post:importe_impre
+	//LOCAL PRECIO_UNITARIO LIKE post:precio_unitario
+	LOCAL INDICE LIKE post:cantidad /* indice que cuentas las lineas del cuerpo */
+	LOCAL primero LIKE post:PreDNroTrn
+	LOCAL a_adt_serv_piezacont LIKE post:adt_serv_piezacont
+	LOCAL a_NroTrn_tt LIKE post:NroTrn_tt
+	LOCAL a_combo_nro LIKE post:combo_nro    
+	LOCAL centEmis LIKE common:csr_string
+	LOCAL numFactur LIKE common:csr_string	
+	LOCAL TipoFormu LIKE post:adt_tipo_formulario
+	LOCAL NC_nro LIKE common:csr_string
+	
+	primero = 0
+	INDICE = 0
+
+	PRT transparent SETEOJOU
+	// PJM 31-08-1999 por las dudas para nota de Credito se perdia si descrimina Iva o No
+	adt_cativa_discri = "N"
+	post:adt_cativa_cod = IvaCod
+	CALL post:CDS_CatIva_Load
+	
+	// Comienazo del Encabezado
+	CALL post:PRT_Hdr_Ticket
+
+	//busco la direccion de la sucursal activa
+	/*MGI:AUT-2387 Esta información ahora se muestra en el encabezado
+	CALL MISCdireccion_suc
+	FPRINT common:csr_string "%-5.5s-%s\n",op:op_branch_id,common:csr_string_171
+	CALL PRTtransparent(common:csr_string)
+	*/
+	
+	CALL post:MISCident_tipo_formu
+	FPRINT common:csr_string "%22.22s\n%s\n",common:csr_string,CliRaz
+	Prt Transparent common:csr_string
+	FPRINT common:csr_string "Nro Inicial : %e\n",post:DocInic
+	CALL PRTtransparent(common:csr_string)
+	FPRINT common:csr_string "Nro Final   : %e\n",post:DocInic
+	CALL PRTtransparent(common:csr_string)
+	Prt Transparent LINEANUEVA
+	
+	//50249
+	IF (AnulOperNC) THEN
+		NC_nro = SUBSTR (post:sesion_anul_string,34,13)
+		FPRINT common:csr_string "%s %s %e", "ANULA NOTA DE CREDITO",post:Letra_Factura,NC_nro
+		CALL PRTtransparent(common:csr_string)
+		Prt Transparent LINEANUEVA
+	END IF 
+	// Fin del Encabezado
+
+	// Comienzo del Cuerpo del Ticket
+	CALL post:MISCinic_datos_imp3
+	IF  (RETVAL >= 0) THEN
+		DO
+			CLEARFIELD nro_ingrvario
+			CALL post:MISCbusca_datos_imp
+			IF (RETVAL < 0) THEN
+				BREAK
+			ELSE
+				// PJM 21/12/98 se agrego para que se descrimine el Iva tambien para las Facturas B
+				IF (adt_cativa_discri == "S") THEN
+					//SC 50170
+					//importe_impre = importe_impre -  importeIva_impre
+					importe_impre = importeSinIva_impre
+				END IF
+				IF (siaf:afecta_efectivo == "-") THEN
+					SUBTOTAL = SUBTOTAL - importe_impre
+				ELSE
+					SUBTOTAL = SUBTOTAL + importe_impre
+				END IF
+				//  Solo se Impre esta Linea si es Servicio o Ingres .....
+				IF (tipo_impre != DESCUENTO && tipo_impre != OPCIONAL && tipo_impre != BONIF_PROD) THEN /* && tipo_impre != BONIF_SUR_POSTAL)*/
+					; ******************************--------------------******************
+					; Req 5233 - no aparecian los T&T en la tira auditora
+					IF (primero > 0) THEN
+						IF (siaf:adt_tran_fliatran == "CMB") THEN
+							CALL PRTaudit_cb_aux(a_combo_nro)  //cgw:busca t&t combo
+							INDICE = INDICE + RETVAL
+						ELSE
+							IF (a_adt_serv_piezacont == "T") THEN
+								CALL PRTtAndT(a_NroTrn_tt)
+								INDICE = INDICE + RETVAL
+							END IF
+						END IF
+					ELSE
+						primero = 1
+					END IF
+					IF (siaf:adt_tran_fliatran == "CMB") THEN
+						a_combo_nro = post:combo_nro //cgw:reserva combo anterior para impresion t&t
+					END IF    
+					a_NroTrn_tt = NroTrn_tt					
+					a_adt_serv_piezacont = adt_serv_piezacont
+					; ******************************--------------------******************
+				
+					//PRECIO_UNITARIO = importe_impre / cantid_impre
+					//SC 50170 FACTURACION
+					PRECIO_UNITARIO = precio_unitario
+					IF (precio_unitario.NUMCHARS == 0) THEN
+						PRECIO_UNITARIO = importe_impre / cantid_impre
+					END IF
+					
+					IF (giros:ImporteGiros4_fld.NUMCHARS != 0) THEN
+						PRECIO_UNITARIO = giros:ImporteGiros4_fld
+					END IF
+
+					// PJM 10-7-98 pedido por marcelo que salga el secuenciador en el ticket
+					// para Ingresos Varios
+					IF (nro_ingrvario.NUMCHARS == 0) THEN
+						;FPRINT common:csr_string  "%-4.4s %6.6s\n",\
+						//SC 50170 FACTURACION - IGUAL VERIFICAR SI HAY LUGAR PARA MOSTRAR EL 4 DECIMAL!
+						/*FPRINT common:csr_string  "%-5.5s %8.8s\n",\*/
+						//NI 50254
+						FPRINT common:csr_string  "%-6.6s %9.9s\n",cantid_impre,PRECIO_UNITARIO
+					ELSE
+						;FPRINT common:csr_string  "%-4.4s %6.6s %010.10s\n",\
+						//SC 50170 FACTURACION - IGUAL VERIFICAR SI HAY LUGAR PARA MOSTRAR EL 4 DECIMAL!
+						/*FPRINT common:csr_string  "%-5.5s %8.8s %010.10s\n",\*/
+						//NI 50254
+						FPRINT common:csr_string  "%-6.6s %9.9s %010.10s\n",cantid_impre,PRECIO_UNITARIO,nro_ingrvario
+					END IF
+					Prt Transparent common:csr_string
+					INDICE = INDICE + 1
+				END IF
+				
+				IF (tipo_impre == DESCUENTO || tipo_impre == BONIF_PROD) THEN /* || tipo_impre == BONIF_SUR_POSTAL)*/
+					importe_impre = importe_impre * -1
+					PRECIO_UNITARIO = PRECIO_UNITARIO * -1
+				END IF
+				//NI 50254
+				FPRINT common:csr_string  "%-29.29s %9.9e\n",\
+				desc_impre,importe_impre
+				CALL PRTtransparent(common:csr_string)
+			END IF
+			INDICE = INDICE + 1
+		LOOP
+		
+		; ******************************--------------------******************
+		; Req 5233 - no aparecian los T&T en la tira auditora
+		IF (primero > 0) THEN
+			IF (siaf:adt_tran_fliatran == "CMB") THEN
+				CALL PRTaudit_cb_aux(a_combo_nro) //cgw:busca t&t combo
+				INDICE = INDICE + RETVAL 
+			ELSE
+				IF (a_adt_serv_piezacont == "T") THEN
+					CALL PRTtAndT(a_NroTrn_tt) 
+					INDICE = INDICE + RETVAL
+				END IF
+			END IF
+		END IF
+		; *****************---------------------------------******************
+
+		Prt  Transparent LINEANUEVA
+
+		IF (!ModalidadAT && !OperacionCob) THEN
+			/*MFM (04.01.2002) - Intereses cobrados por financiación*/
+			CALL CDSGetIntVentaUP(INDICE,SUBTOTAL,3,27)
+			IF (RETVAL == 0) THEN
+				/*CALL post:PRT_INTVENTAUP(INDICE,SUBTOTAL,3,27)*/
+				INDICE = RETVAL
+				SUBTOTAL = siaf:importe
+			END IF
+		END IF
+		
+		// Calcula Iva
+		IF (adt_cativa_discri == "S") THEN
+			CALL post:PRT_IVA(INDICE,SUBTOTAL,3,29)
+			// Me devuelve en Retval la cantidad de Lineas y siaf:importe el TOTAL
+			SUBTOTAL = siaf:importe
+			INDICE = RETVAL
+		ELSE
+			// PJM 23-12-98
+			//Dentro del Cds se fija que solo funcione para RNI
+			// Esto se tiene que hacer por mas que no se imprima hay
+			// que sumarselo al total
+			IF (IvaCod == FACTURAA2) THEN
+				CALL post:CDSsobreTasaTotal(SUBTOTAL)
+				SUBTOTAL = siaf:importe
+			END IF
+		END IF
+
+    ; 23-12-03 PAW Agrego RG3337
+  	CALL post:PRT_RG3337(INDICE, SUBTOTAL, 22)
+  	INDICE = RETVAL
+  	SUBTOTAL = siaf:importe
+
+		/*** MLD 07/08/1999 Impuesto de sellado ***/
+		CALL PRT_Sellos(INDICE,SUBTOTAL,3,13)
+		SUBTOTAL = siaf:importe
+		INDICE = RETVAL
+		/*** Fin MLD ***/
+
+		// 12-11-98 [PAW] ---> Monotributo.
+		IF (IvaCod != FACTURAA2) THEN
+			CALL post:PRT_MONO(INDICE,SUBTOTAL,3,28)
+			SUBTOTAL = siaf:importe
+			INDICE = RETVAL
+		END IF
+		
+		// Calcula Ingresos Brutosssss!!!!
+		CALL PRT_INGBRUT(30, INDICE, SUBTOTAL, 3)
+		// FIN DE INGRESOS BRUTOS
+		
+		SUBTOTAL = SUBTOTAL + siaf:importe
+		CALL PRTtransparent(LINE_GUIONES)
+		FPRINT common:csr_string "TOTAL %33.33e\n",SUBTOTAL
+		CALL PRTtransparent(common:csr_string)
+		CALL PRTtransparent(LINE_GUIONES)
+
+		//cgw:indico que factura anula la nota de credito.
+		IF (impNotaCred == "S" && !OperacionNC) THEN			
+			//gpb:NI50479 - Genera NC PED
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN			
+				centEmis = SUBSTR(post:nro_comp_ped,0,4)
+				numFactur = SUBSTR(post:nro_comp_ped,4,8)
+				TipoFormu = post:letra_comp_ped
+			ELSE			    
+				centEmis = SUBSTR(docAnulado,1,4)
+				numFactur = SUBSTR(docAnulado,5,8)
+				TipoFormu = SUBSTR(docAnulado,0,1)
+			END IF
+			IF (TipoFormu == 4) THEN
+				FPRINT common:csr_string "ANULA RECIBO Nro.: %8.8s\n", numFactur
+			ELSE
+				FPRINT common:csr_string "ANULA FACTURA %s Nro.: %4.4s-%8.8s\n", post:Letra_Factura, centEmis, numFactur
+			END IF
+			CALL PRTtransparent(common:csr_string)
+		END IF
+	    		
+		IF (!ModalidadAT) THEN
+			INDICE = 0
+			CALL PRT_MedioPago(INDICE, INDICE,-28 ,28, 3)
+		END IF
+		
+		//Clientes Medios - Modalidades
+		//IF ((post:ModalidadCD && !OperacionCob) || (post:ModalidadCC && (OperacionInt || OperacionAut))) THEN
+		//mientras haya cobro diferido....
+		IF (post:Imp_CobroDif > 0) THEN
+			IF (impNotaCred != "S") THEN
+				INDICE = 0
+				/* MFM Mostrar Fecha de Vencimiento de la Factura*/
+				CALL PRT_VencimientoCD(INDICE, INDICE, -28, 28, 3)
+			END IF
+			INDICE = 0
+			/* MFM Se muestra el Cobro Diferido como un medio de pago mas */
+			CALL PRT_CobroDiferido(INDICE, INDICE, -28, 28, 3)
+		END IF
+		//END IF
+		
+		IF ((post:ConsumoAnticipo || post:AnticipoRemito) && !OperacionInt) THEN
+			INDICE = 0
+			/* MFM Se muestra el Consumo del Anticipo como un medio de pago mas */
+			/*si es cobranza e imprime recibo no se muestra el consumo ni el saldo en la 
+			factura pues ya se mostró en el recibo...*/
+			IF (OperacionCob && ImprimeRecCob) THEN
+				// muestro el saldo restante
+				IF (impNotaCred != "S") THEN
+					INDICE = 0
+					/* MLD 30-07-2003 Se agrega el saldo del Anticipo CM */
+					CALL PRT_SaldoAnticipo(INDICE, INDICE, -28, 28, 3)
+				END IF
+			ELSE
+				IF (impNotaCred != "S") THEN
+					/* MFM Se muestra el Consumo del Anticipo como un medio de pago mas */
+					CALL PRT_ConsumoAnticipo(INDICE, INDICE, 3, 1)
+				END IF
+				IF (impNotaCred != "S") THEN
+					INDICE = 0
+					/* MLD 30-07-2003 Se agrega el saldo del Anticipo CM */
+					CALL PRT_SaldoAnticipo(INDICE, INDICE, -28, 28, 3)
+				END IF	
+			END IF
+		END IF
+		
+		//50295 - AUT-1227
+		IF (post:ConsumoAnticipoMon) THEN
+			IF (impNotaCred != "S") THEN
+				/* Se agrega el Saldo del Adelanto Monetarios CM */
+				CALL PRT_SaldoAnticipoLG(INDICE, INDICE, -28, 28, 3)
+				INDICE = RETVAL + 1
+			END IF
+		END IF
+		
+		//Orden de Compra
+		IF (post:adt_oc_nro.NUMCHARS != 0) THEN
+			//Muestro el Id de la OC
+			CALL PRT_Id_OC(INDICE, INDICE, -28, 28, 3)
+			INDICE = RETVAL + 1
+		END IF
+		
+		IF (OperacionCob || OperacionAut) THEN
+			//Imprimo los Comprobantes de imposicion
+			CALL PRT_ComproImpo(INDICE, INDICE, 38, 3)
+			INDICE = RETVAL + 1
+		END IF
+		
+		//50249 
+		IF (post:OperacionNC && !AnulOperNC) THEN
+			CALL PRT_Id_OC(INDICE, INDICE, -28, 28, 3)
+			INDICE = RETVAL + 1
+			CALL PRT_Fact_Inc(INDICE, INDICE,-38, 38, 3)
+			INDICE = RETVAL + 1
+			//Imprimo los productos incumplidos
+			CALL PRT_Prod_Incumplidos(INDICE, INDICE, 38, 3)
+			INDICE = RETVAL + 1
+		END IF
+
+		//cgw:se cambia para que avance 5 renglones
+		//INDICE = 17
+		INDICE = 7
+		// la guillotina esta ubicada antes que el rodillo de impresion por lo tanto
+		// hay lineas impresas abajo de esta.
+		// para solucionar el problema hay que avanzar un par de lineas
+		CALL post:MISCavaz_linea_imp(INDICE)
+	END IF
+	
+	// vuelvo al default
+	PRT transparent SETEODEFAULT
+END SUB
+
+/*******/

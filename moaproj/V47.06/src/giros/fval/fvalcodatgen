@@ -1,0 +1,144 @@
+/****o* ABM´s/OFB:giros:fvalcodatgen
+* NOMBRE
+*   OFB:giros:fvalcodatgen
+* DESCRIPCION
+*   Valida el campo "Codigo de Sucursal" de la tabla DGralSuc (Datos Generales de la Sucursal).
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No pudo seleccionar un codigo de Sucursal o este no exixte.
+* IMPACTOS
+*   LST:giros:LISTSucGen_fld_new - La finalidad de este LIST, es que a medida que se vayan agregando campos nuevos
+*   a este abm, esten limpios, debido a que cuando se hace el select de DGralSuc y a continuación su EXTRACT, al
+*   principio no van a existir, al menos que se cargen originalmente por script.
+* REFERENCIADO POR
+*   giros:SCRNdatgrales
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosfval.h"
+
+SUB giros:fvalcodatgen
+    IF (giros:adt_dgralsuc_cod.numchars == 0) THEN
+        MSGBOX "Por favor ingrese una sucursal",OFB_OK,"Atencion"
+        CLEARFIELD adt_dgralsuc_desc
+        REFRESH adt_dgralsuc_desc
+        NEXTFIELD giros:adt_dgralsuc_cod
+    ELSE
+        
+        /* cgw: Se reemplaza por: CALL csr:proc_list(F_CLEAR,lst:giros:LISTSucGen_fld_new)        
+        CLEARFIELD post:adt_dgralsuc_impmin
+        CLEARFIELD post:adt_dgralsuc_impesp //cgw:importe min.esp.v.que imprime factura.
+        CLEARFIELD adt_dgralsuc_maxFrq
+        CLEARFIELD imp_max_crem
+        CLEARFIELD adt_dgralsuc_consPCT
+        CLEARFIELD adt_dgralsuc_BUI
+        CLEARFIELD adt_dgralsuc_tt_VDI        
+        */
+        
+        /* cgw: Llama a una Rutina list de nuevos campos que se vayan agregando en el abm de datos generales
+                de sucursales. La finalidad de este LIST, es que al agregar campos nuevos a este abm, esten
+                limpios, debido a que cuando se hace el select de DGralSuc y a continuación su EXTRACT, al
+                principio no van a existir (al menos que se cargen originalmente por script). */
+        CALL csr:proc_list(F_CLEAR,lst:giros:LISTSucGen_fld_new)
+        
+        cds select from DSC:admin:adt_br_table BECOMES DSC:admin:adt_br_context  \
+        WHERE admin:adt_br_branch == giros:adt_dgralsuc_cod
+        cds findfirst DSC:admin:adt_br_context NOLOCK
+
+        IF (CDSRETVAL ==  -801 && giros:adt_dgralsuc_cod != "99999") then
+	        msgbox "La sucursal no existe",OFB_OK,"Atención"
+	        if (lastkey == RT_SEND) then
+	            call CDSDatGen
+	        end if
+	        resetflag admin:mode_flags,update
+	        resetflag admin:mode_flags,delete
+	        resetflag admin:mode_flags,imprimir
+	        cds endselect DSC:admin:adt_br_context
+	        cds endselect DSC:contexto_dsc
+	        return (-2)
+        else
+            IF (giros:adt_dgralsuc_cod != "99999") THEN
+                cds extract DSC:admin:adt_br_context admin:adt_br_bank_name
+	            adt_dgralsuc_desc = admin:adt_br_bank_name
+       	        refresh adt_dgralsuc_desc
+	        end if
+	        CDS SELECT FROM DSC:Tabla_datgrsuc_dsc BECOMES DSC:contexto_dsc where \
+	        adt_dgralsuc_cod == adt_dgralsuc_cod
+	        cds findfirst DSC:contexto_dsc nolock
+	        IF (CDSRETVAL == 0) THEN
+	            CDS EXTRACT DSC:contexto_dsc ALL			
+			    CALL CSR:proc_list(F_REFRESH,LST:giros:LISTSucGen_fld)
+
+                if (giros:adt_dgralsuc_pase == "N") then
+            	    protfield adt_dgralsuc_Tpase
+   				    DISABLECONTROL drv:PBcb2
+                else
+               	    unprotfield adt_dgralsuc_Tpase
+   				    ENABLECONTROL drv:PBcb2
+                endif
+
+                if (adt_dgralsuc_PFact == 99 || adt_dgralsuc_PFact.numchars == 0)
+                    tipo_opc = "ULTI"                    
+                    clearfield adt_dgralsuc_PFact
+                    refresh adt_dgralsuc_PFact
+                    protfield adt_dgralsuc_PFact
+                    adt_dgralsuc_PFact = 99
+                    refresh adt_dgralsuc_PFact
+                else
+                    refresh adt_dgralsuc_PFact
+                    unprotfield adt_dgralsuc_PFact                    
+                    tipo_opc = "DIA"
+                end if
+                ALTERCONTROLSET tag:op:chk0
+                ALTERCONTROLSET tag:op:chk1
+	            NEXTFIELD adt_dgralsuc_desc
+	            CALL SetCam(1,1,0,0)
+	        else
+	            IF (giros:adt_dgralsuc_cod == "99999") THEN
+	                adt_dgralsuc_desc  = "TODAS LAS SUCURSALES"
+	                refresh adt_dgralsuc_PFact
+	            else /*no existe la sucursal en la tabla*/                    
+                    tipo_opc = "ULTI"
+                    ALTERCONTROLSET tag:op:chk0
+                    ALTERCONTROLSET tag:op:chk1                    
+                    clearfield adt_dgralsuc_PFact
+                    refresh adt_dgralsuc_PFact
+                    protfield adt_dgralsuc_PFact
+                    adt_dgralsuc_PFact = 99
+                    refresh adt_dgralsuc_PFact
+	            end if
+	            adt_dgralsuc_tout   = 30
+	            adt_dgralsuc_pase   = "N"
+	            adt_dgralsuc_agrupa = 0
+	            adt_dgralsuc_bajch  = 0
+	            adt_dgralsuc_tbatch = 0
+	            clearfield adt_dgralsuc_leyVirt
+	            adt_dgralsuc_espera = 0
+	            adt_dgralsuc_caidas = 0	            
+	            clearfield adt_dgralsuc_conv
+	            clearfield adt_dgralsuc_frec
+	            clearfield adt_dgralsuc_dia
+	        	adt_dgralsuc_ctaCero = "S" //por default se debe completar con ceros a izquierda.
+                adt_dgralsuc_chCeros = "S" //por default se debe completar con ceros a izquierda.
+	        	CALL CSR:proc_list(F_REFRESH,LST:giros:LISTSucGen_fld)
+	        	if (giros:adt_dgralsuc_pase == "N") then
+                   	protfield adt_dgralsuc_Tpase
+   					DISABLECONTROL drv:PBcb2
+                else
+                   	unprotfield adt_dgralsuc_Tpase
+   					ENABLECONTROL drv:PBcb2
+                endif
+                   
+	        	CALL SetCam(0,0,1,0)
+	        end if
+        end if
+    end if
+    cds endselect DSC:admin:adt_br_context
+    cds endselect DSC:contexto_dsc
+    CALL csr:proc_list(F_COPY,lst:giros:LISTSucGen_fld,lst:giros:LISTbck_SucGen)
+    setvaldone adt_dgralsuc_cod
+END SUB
+
+/*******/

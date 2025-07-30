@@ -1,0 +1,121 @@
+/****o* Lista de Giros/OFB:giros:PBmodificarLG
+* NOMBRE
+*   OFB:giros:PBmodificarLG
+* DESCRIPCION
+*   Se encarga de llamar a la pantalla de carga manual de giro postal/telegrafico según se elija
+*   para poder modificar los datos del giro.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:BUTCargaListaGiros, giros:BUTSelGirosAEmitir
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1206
+* SOURCE
+*/
+#include "girospb.h"
+
+SUB giros:PBmodificarLG
+    LOCAL l_nombre_transac LIKE siaf:nombre_transac
+    LOCAL l_codigo_siaf    LIKE siaf:codigo_siaf
+    LOCAL l_nro_trx_lg     LIKE giros:nro_trx_lg
+    
+    drv:button = drv:last_button
+    CALL drv:but_down_disable
+
+    l_nombre_transac = siaf:nombre_transac //reservo el nombre de la trx original.
+    l_codigo_siaf    = siaf:codigo_siaf    //reservo el codigo de la trx original.
+    l_nro_trx_lg     = giros:nro_trx_lg    //reservo el codigo de la trx de lista de giros original.
+    
+    IF (((giros:Giros_sel_lg.NUMCHARS       == 0) && (l_codigo_siaf == 70650)) || \
+        ((giros:DetalleContenidoLG.NUMCHARS == 0) && (l_codigo_siaf != 70650))) THEN
+        MSGBOX "Debe seleccionar un giro para modificar.",0x00,"ERROR"
+        drv:button = drv:last_button
+        CALL drv:but_up_enable
+        RETURN -2
+    END IF
+	//gpb:AUT-2052
+	MSGBOX "¿Está seguro que desea modificar el giro?",OFB_YESNO,"ATENCION"
+
+	IF (retval == 7) THEN //NO
+    	drv:button = drv:last_button
+		CALL drv:but_up_enable
+		RETURN -2
+ 	END IF
+
+	SELECT (giros:tipo_sel_lg)
+        CASE "P" //Postales
+            IF (l_codigo_siaf == 70650) THEN
+                //cgw:PS10286 - AUT-1683
+                //POPUP giros:SCRNlgPostal,giros:PRESlg_post,giros:PCOLlg_carga_manual2,giros:SVALlg_post
+                CALL drv:MISCpopup(scr:giros:SCRNlgPostal,ofb:giros:PRESlg_post,ofb:giros:PCOLlg_carga_manual2,ofb:giros:SVALlg_post,LST:giros:BUTPostalManualLG)
+            ELSE
+                //cgw:PS10286 - AUT-1683
+                //POPUP giros:SCRNlgPostal,giros:PRESlg_post,giros:PCOLlg_carga_manual,giros:SVALlg_post
+                CALL drv:MISCpopup(scr:giros:SCRNlgPostal,ofb:giros:PRESlg_post,ofb:giros:PCOLlg_carga_manual,ofb:giros:SVALlg_post,LST:giros:BUTPostalManualLG)
+            END IF
+            BREAK
+        CASE "T" //Telegraficos
+            IF (l_codigo_siaf == 70650) THEN
+                //cgw:PS10286 - AUT-1683
+                //POPUP giros:SCRNlgTelegrafico,giros:PRESlg_tele,giros:PCOLlg_carga_manual2,giros:SVALlg_tele
+            	CALL drv:MISCpopup(scr:giros:SCRNlgTelegrafico,ofb:giros:PRESlg_tele,ofb:giros:PCOLlg_carga_manual2,ofb:giros:SVALlg_tele,LST:giros:BUTTelegrafManualLG)
+            ELSE
+            	//cgw:PS10286 - AUT-1683
+                //POPUP giros:SCRNlgTelegrafico,giros:PRESlg_tele,giros:PCOLlg_carga_manual,giros:SVALlg_tele
+                CALL drv:MISCpopup(scr:giros:SCRNlgTelegrafico,ofb:giros:PRESlg_tele,ofb:giros:PCOLlg_carga_manual,ofb:giros:SVALlg_tele,LST:giros:BUTTelegrafManualLG)
+            END IF
+            BREAK
+        CASE ELSE
+            MSGBOX "No hay ningún tipo de giro seleccionado.",0x00,"Error"
+            drv:button = drv:last_button
+            CALL drv:but_up_enable
+            RETURN
+            BREAK
+    END SELECT
+    
+    IF (LASTKEY != RT_ESC) THEN
+        //Instancia algunos campos necesarios que no estababan instanciados, para grabar en sesion_lg
+        CALL giros:MISCdatos_sesion_lg
+        IF (RETVAL < 0) THEN
+        	RETURN (-2)
+        END IF
+        
+    	CLEARFIELD giros:clave_hdr_giros //para que no arrastre valor despus de una trx de giros con viaje.
+        //Llamo a la rutina que modifica el registro en sesion_lg
+        CALL giros:CDSgrabaSesionLG
+    END IF
+    
+    //Borro todos los campos que se graban en sesion_lg excepto los campos del emisor del giro,
+    //para que no queden sucios en las siguientes cargas.   
+    CALL csr:proc_list(F_CLEAR,LST:giros:LISTlistaGirosCLR)
+    CALL giros:MISCclear_array_lg
+    
+    IF (l_codigo_siaf == 70650) THEN
+        IF (LASTKEY != RT_ESC) THEN
+            CALL giros:CDSregistrosLG
+            CALL giros:MISCactuali_cabec_lg
+        END IF
+        CALL giros:PCOLSelGirosAEmitir
+    ELSE
+        //Refresco en pantalla los campos de Totales
+        //Se invoca giros:PRECCargaListaGiros para refrescar la pantalla de Carga de Lista de Giros
+        CALL giros:PRECCargaListaGiros
+    END IF
+    
+    siaf:nombre_transac = l_nombre_transac //recupero el nombre de la trx original.
+    siaf:codigo_siaf    = l_codigo_siaf    //recupero el codigo de la trx original.
+    giros:nro_trx_lg    = l_nro_trx_lg     //recupero el codigo de la trx de lista de giros original.
+    REFRESH siaf:codigo_siaf
+    
+    drv:button = 2
+    CALL drv:but_enable
+    drv:button = drv:last_button
+    CALL drv:but_up_enable
+END SUB
+
+/*******/

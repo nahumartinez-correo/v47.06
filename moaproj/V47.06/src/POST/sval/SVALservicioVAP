@@ -1,0 +1,94 @@
+/****o* Registro VAP/OFB:post:SVALservicio VAP
+* NOMBRE
+*   OFB:post:SVALservicio VAP
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la venta de un Servicio VAP.
+*   En estado_presu 2 o 3 se carga la TX en la PresuDet, se realizan las bonficaciones locales,
+*   los descuentos de cliente medio, la bonificacion sur postal en caso de corresponder.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN_CorrCargo,LST:post:TRAN_GestionesVs,LST:post:TRAN_Lista,LST:post:TRAN_PNCRAP
+*   LST:post:TRAN_PNCSIM,LST:post:TRANgral
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* SOURCE
+*/
+
+#include "postsval.h"
+
+SUB post:SVALservicioVAP
+	IF (post:NroCompPago == "")
+		post:NroCompPago = 0
+	END IF
+	IF (post:estado_presu == 2)
+		PreDForFis = adt_serv_formfiscal
+	END IF
+	
+	/*Devuelve la formula de calculo usada para determinar la tarifa del producto*/
+	CALL SVALgral_formuCalc
+	
+	/*CSZ - Guardo el modelo de la sucursal para tenerlo journalizado si hay problemas*/
+	modelo_suc = common:br_modelo
+	
+	//Desgloso IVA
+	CALL MISCdesglosaIva(tarifa,adt_serv_aliciva,1,0)
+	ImpSinIva_serv = ImporteSinIva
+	siaf:ImporteSinIva = ImporteSinIva
+	siaf:ImporteConIva = siaf:importe	
+	
+	//este importe viene de la desglosa iva pero por las dudas si hay alguna dif?
+	ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+	post:AliServUP = post:adt_serv_aliciva
+	/* Campos Necesarios Para el reverso de operaciones */
+	post:ImporteConIvaNeto = siaf:ImporteConIva
+	post:ImporteSinIvaNeto = siaf:ImporteSinIva
+	
+	post:ImporteConIva = siaf:ImporteConIva
+	
+	/*Cargo los vectores correspondientes para calcular Ingresos Brutos*/
+	//   CALL MISCgen_vec_iva
+	//si es cliente medio hago tratamiento para vap	  
+	
+	if (cli_tipo == CLIMED)
+		CALL MISCclimed_vap
+	end if
+	
+	post:hasta_fac = post:peso_en_kgs
+	post:unidad_fac = post:adt_tarif_um
+	imp_aux = siaf:importe
+	post:importe_acum = siaf:importe_tot_serv
+	siaf:importe = siaf:importe_tot_serv
+	
+	/* Limpio campos que no utilizo */
+	call csr:cleararray(post:ali_opc)
+	call csr:cleararray(post:ali_opc)
+	call csr:cleararray(post:flia_opc)
+	call csr:cleararray(post:cos_opc)
+	
+	
+	call post:MISCSinIva_CSP
+	
+	;Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago
+	CALL MISCAcumTotalesSes
+	call MISCRestFlia
+	CALL post:MISCGrabaDetalleTrn
+	
+	IF (estado_presu == 4)
+		//Actualizo los datos vap necesarios en la stockp
+		CALL CDSupd_stockp_vap
+		//traigo el indice con el que va a totalizar
+		CALL post:MISCcargoIndiceVAP(siaf:codigo_siaf)
+		tes:es_tesoro = "S"
+	END IF
+	
+	//Tratamiento tx descuento de Cliente Medio
+	CALL MISCgenTxDctoCM_vap
+	RETURN (RETVAL)
+END SUB
+
+/*******/

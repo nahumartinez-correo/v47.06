@@ -1,0 +1,91 @@
+/****o* Pendientes de agrupación/OFB:post:OFBconsulta_fdv
+* NOMBRE
+*   OFB:post:OFBconsulta_fdv
+* DESCRIPCION
+*   Consulta simple de Fe de Vida
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBconsulta_fdv
+
+	resetflag giros:tran_send_mode,consulta_multiple
+	resetflag giros:tran_send_mode,consulta_simple
+	if (!TESTFLAG(giros:tran_send_mode,cancelacion)) then
+	    giros:codigo_procesamiento = 980000
+        call post:CDSobtiene_secuen("STAN")
+        giros:hora_viaje = common:time_of_day
+        giros:dia_viaje  = common:system_date
+    end if
+	hcomm:INDhost_sndrt = OFB:SENDdatos_fdv	//SENDconsulta_simon
+	hcomm:INDhost_rcvrt = OFB:RCVEconsulta_fdv //RCVEconsulta_simon
+	call hcomm:COMM_stat_init
+
+	call siaf:CDSchk_trxs_caidas
+    if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+            clearfield hcomm:INDhost_sndrt 
+            clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    	clearfield hcomm:INDhost_sndrt
+    	clearfield hcomm:INDhost_rcvrt
+    end if
+
+	setflag giros:tran_send_mode,consulta_simple
+
+    call giros:OFBdisable_bt_msg
+    call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh lib:stat_message
+	refresh statusline
+    resetflag tlr:controla_firma,cancelacion
+	tlr:jnl_status = hcomm:tran_status
+	
+	/*if (hcomm:tran_status != HOST_ACCEPTED) then
+		clearfield giros:codigo_procesamiento
+		return -2
+	end if*/
+
+   /* if (testflag(giros:tran_send_mode,consulta_simple)) then
+	    //call csr:trimfield BulkFld_108
+	    call csr:trimfield BulkFld_109
+	    //call csr:trimfield BulkFld_110
+        
+	    if (BulkFld_109.NUMCHARS != 0)
+	    	call MISCcons_fdv109
+	    end if
+
+    end if
+*/	    
+
+	/*if (hcomm:tran_status = HOST_REJECTED) then
+		clearfield giros:codigo_procesamiento
+		return -2
+	end if*/
+	if (hcomm:tran_status > HOST_REJECTED) then
+		clearfield giros:codigo_procesamiento
+		return -2
+	end if	
+	
+    clearfield giros:codigo_procesamiento
+END SUB
+
+/*******/

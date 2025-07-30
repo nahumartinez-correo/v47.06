@@ -1,0 +1,142 @@
+/****o* Sesión Correo/OFB:post:PBcancela_sesion
+* NOMBRE
+*   OFB:post:PBcancela_sesion
+* DESCRIPCION
+* Rutina que se ejecuta al presionar el botón de Cancelar Presupuesto de la grilla al estar dentro de sesión.
+* Verifica que no sea una sesion de giros masivos y que no existan transacciones confirmadas.
+* Luego borra y/o actualiza datos de las siguientes tablas: track_trace,AuxIva,Presu,AdelCM,TransfBanc
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:PRECestado_presu,SCR:post:SCRNestado_presu,SCR:post:SCRNestado_sesion
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBcancela_sesion
+	LOCAL l_msje LIKE common:csr_string
+
+	CALL siaf:CDSverifOpenJNLctx
+	IF (CDSRETVAL == -932) THEN
+		MSGBOX "El contexto de journal se encuentra cerrado. Vuelva al inicio de la aplicación\n saliendo de todos los menues e intentelo de nuevo.", 0x00000030, "ERROR"
+		RETURN 0
+	END IF    
+	
+	IF (post:estado_presu > 1) THEN
+		//ENTREGA CON PALABRA CLAVE
+			CALL post:CDSConsulta_PresuPC("DELPRESU")
+			IF (RETVAL == 0) THEN
+				MSGBOX "NO SE PUEDE CANCELAR UNA SESION CON PIEZAS ENTREGADAS POR HAND HELD.",OFB_OK,"ERROR"
+				LET drv:button = drv:last_button
+				CALL drv:but_up_enable
+				CALL drv:but_redraw
+				RETURN 0
+			END if
+			
+			//ENTREGA PAS
+			CALL post:CDSConsulta_PresuPAS("DELPRESU")
+			IF (RETVAL == 0) THEN
+				MSGBOX "NO SE PUEDE CANCELAR UNA SESION CON PIEZAS ENTREGADAS POR HAND HELD.",OFB_OK,"ERROR"
+				LET drv:button = drv:last_button
+				CALL drv:but_up_enable
+				CALL drv:but_redraw
+				RETURN 0
+			END if
+			
+		//SC 50364 - Caja Unificada    
+		IF (post:es_WEB == "X") THEN
+			MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE OPERACIONES WEB.",OFB_OK,"ERROR"
+			LET drv:button = drv:last_button
+			CALL drv:but_up_enable
+			CALL drv:but_redraw
+			RETURN 0
+		END IF
+		IF (TESTFLAG(post:pagos_masivos,proc_pagos_masivos)) THEN
+			MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE PAGOS MASIVOS",OFB_OK,"ERROR"
+		ELSE
+			IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos)) THEN
+				MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE GIROS MASIVOS",OFB_OK,"ERROR"
+			//50295
+			ELSEIF (TESTFLAG(giros:giros_importacion,proc_em_lg)) THEN
+				CALL giros:CDSBuscaTxLG
+				IF (RETVAL == -2) THEN
+					MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE EMISION DE LISTA DE GIROS CON GIROS EMITIDOS.",OFB_OK,"ERROR"
+				ELSE
+					CALL giros:MISCprocesoCaidasChq
+					//Si no encontro registros en la CaidasChq para la sesion actual PUEDE CANCELAR SINO NO.
+					IF (RETVAL == 0) THEN
+						MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE EMISION DE LISTA DE GIROS CON PROCESO DE IMPRESION NO FINALIZADO.",OFB_OK,"ERROR"
+					END IF
+				END IF
+			ELSE
+				MSGBOX "Cancela la Sesion?",OFB_YESNO,"Aviso"
+				IF (RETVAL == 6) THEN  /*si*/
+					CALL post:MISChay_Trans_Acept
+					IF (RETVAL < 0) THEN
+						MSGBOX "TRANSACCIONES CONFIRMADAS, LA SESION NO PUEDE SER CANCELADA !!!",OFB_OK,"ERROR"
+					ELSE
+						CALL post:MISCverif_multiples
+						IF (RETVAL < 0) THEN
+							MSGBOX "TRANSACCIONES CONFIRMADAS, LA SESION NO PUEDE SER CANCELADA !!!",OFB_OK,"ERROR"	
+						//gpb:NI50479 - INGRESO DE PIEZAS PAGO EN DESTINO
+						ELSEIF ((post:cli_tipo == CLIMED || post:cli_tipo == 2) && TESTFLAG(post:sesion_ped_flags,proc_importacion_ped)) THEN
+							FPRINT l_msje "%s ACTIVA\nVUELVA A ENTRAR A LA TRANSACCION PARA CANCELAR." DSC:post:ImportacionPED
+							MSGBOX l_msje,OFB_OK,"ERROR"
+						ELSE	
+							//gbp:NI50479
+							IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+								//actualizo la Presu con el flag
+								SETFLAG post:sesion_ped_flags,esc_servicio_ped
+								CALL post:CDSactPresuPed_flags	
+
+								//gpb:NI50479 Refacturacion PED
+								IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+									//Recupero valor de la pieza
+									DUPFIELD post:pieza_ped
+									SWAPDUP post:pieza_ped
+									
+									//actualizo estado de la pieza en la tabla stockp\PEDpend y NCpedEnOrigen
+									CALL post:MISCupdEstPzaPed("NTCR")							
+								END IF
+							END IF
+						
+							CALL post:MISCdelServStockp
+							CALL post:CDSdel_tt_presu("SESION")
+							CALL post:CDSdelTrTrace_giro
+							CALL post:CDSdelete_AuxIva
+							CALL post:CDSPresu_delImporte
+							CALL post:CDSdel_PresuDet
+							CALL post:CDSabmAdelCM("B","","","")
+							CALL post:CDSabmTransfBanc("B","","","")
+							CALL post:MISCEnabl_BloqN_Act
+							//cgw:NI50295. Limpia tablas Importacion Lista Giros.
+							IF (post:cli_tipo == CLIMED && post:tipo_giro_presu == "LG") THEN
+								CALL giros:CDSborraSesionLG
+								IF (RETVAL == 0) THEN
+									CALL giros:CDSborraMD5lg
+									CALL post:CDSPresu_limpiaImpLG
+									RESETFLAG giros:giros_importacion,proc_imp_lg
+									RESETFLAG giros:giros_importacion,proc_em_lg
+								END IF
+							END IF
+
+							LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+							CALL drv:do_mode
+						END IF
+					ENDIF
+				ENDIF
+			ENDIF
+		END IF
+		LET drv:button = drv:last_button
+		CALL drv:but_up_enable
+		CALL drv:but_redraw
+	END IF
+END SUB
+
+/*******/

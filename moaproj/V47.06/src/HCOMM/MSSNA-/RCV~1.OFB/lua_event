@@ -1,0 +1,96 @@
+#include "MSSNA-RCV~1.OFB.h"
+
+//
+// This is the event script that is driven by RT for all MS SNA Server
+// sessions.  The name can not be changed and comm setevent will give an error
+// Parameters
+//		Papplid	= this is the name put in the 'luacfg' file for this session
+//		Pmsgtype = #defines are in luaofb.h
+//		Pmsglen = length of the data message
+//		Pflags =  these are flags that roughly equate to the RH/TH bits of the SNA frame
+//				  the #defines are in luaofb.h
+//		Prsptime = this is the the endtoend response time (in millisecs) of the last transaction
+//		Pmsgbuf =  this value can be passed to 'C' code and be used as a (char *) to access
+//				   the received msg
+//		Pindex	=  this is an index that can be used instead of Papplid.  The index is defined
+//				   by the order that the sessions are defined in 'luacfg' Zero is first session
+
+SUB hcomm:lua_event ( Papplid Pmsgtype Pmsglen Pflags Prsptime Pmsgbuf Pindex )
+
+	if ( host_applid[Pindex].numchars == 0 )	// fill names into array
+		host_applid[Pindex] = Papplid
+	end if
+ 
+	dprint "Parametros %s %s %s %s %s %s %s \n" Papplid Pmsgtype Pmsglen Pflags Prsptime Pmsgbuf Pindex
+	select ( Pmsgtype )
+	case LUA_STATUS_UP					// in session with host appl
+		host_status[Pindex] = Pmsgtype
+		CALL  OFB:hcomm:COMM_hoststat_update (Pindex)
+		break
+	case LUA_STATUS_SSCP				// you can send logon's or initself's
+		host_status[Pindex] = Pmsgtype
+		let hcomm:tran_status = SESSION_LOST
+		CALL  OFB:hcomm:COMM_hoststat_update (Pindex) 
+		call hcomm:initself
+		break
+	case LUA_STATUS_DOWN				// connected to SNA Server no session
+		host_status[Pindex] = Pmsgtype
+		let hcomm:tran_status = HOST_RCV_DOWN
+		CALL  OFB:hcomm:COMM_hoststat_update (Pindex)
+		break
+	case LUA_STATUS_CSDN				// unable to connect to SNA server
+		host_status[Pindex] = Pmsgtype
+		let hcomm:tran_status = HOST_COMMSRVR_DOWN
+		CALL  OFB:hcomm:COMM_hoststat_update (Pindex)
+		break
+	case LUA_MESSAGE_TYPE_CRT_DATA		// You are in NOTIFY mode with emulator and something hit the screen
+
+		CALL  FLD:hcomm:INDhost_rcvrt (Pindex)
+		break
+	case LUA_MESSAGE_TYPE_LU_DATA		// normal data for unformatted sessions also PASSTHRU
+		/* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+		/* CALL  FLD:hcomm:INDhost_rcvrt (Pindex) */
+		if (testflag(hcomm_flags,msg_descartable)) // MSG no interesa
+			break
+		endif
+		/* OJO! no se si no habria que setear MENSAJE DESCARTABLE antes
+		del siguiente if */
+		if (tran_status == HOST_REJECTED) then
+			break
+		endif
+
+		setflag hcomm_flags,msg_descartable
+
+		if (testflag(hcomm_flags,msg_autoconsulta)) // MSG AUTOCONSULTA
+			resetflag hcomm_flags,msg_autoconsulta
+			call nauser:COMM_rcv_event
+		else
+			if (INDhost_rcvrt != 0)
+				CALL  FLD:hcomm:INDhost_rcvrt (Pindex)
+			else
+				call siaf:rcve_proc_data
+			endif
+		endif
+		/**/
+		break
+	case LUA_MESSAGE_TYPE_SSCP_DATA		// VTAM banners and such normally ignored
+		CALL  FLD:hcomm:INDhost_rcvrt (Pindex) 
+		break
+	case LUA_MESSAGE_TYPE_RSP			// Negative response from HOST or SNA Server
+		//Pflags has sense code
+		fprint common:csr_string "SNA NEGATIVE RESPONSE RECEIVED (%s)", Pflags
+		msgbox common:csr_string OFB_ICONSTOP "Communications Error"
+		break
+	case else							// There are more msgtype's see luaofb.h
+		break
+	end select
+		 
+END SUB
+
+
+/* NAME: hcomm:COMM_rcv													*/
+/*																		*/
+/* This is the main hostcomm receive script which gets called from		*/
+/* the COMM_host_tran routine.  Its purpose is to wait for a response	*/
+/* if one hasn't been received yet.										*/
+/*																		*/

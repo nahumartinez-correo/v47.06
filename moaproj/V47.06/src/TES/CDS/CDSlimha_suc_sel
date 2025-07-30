@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSlimha_suc_sel
+* NOMBRE
+*   OFB:tes:CDSlimha_suc_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSlimha_suc_sel
+    local LineaPick like common:csr_string
+    local LIndice like common:csr_string
+    local LRetVal like lib:err_retval
+    local LBranch like admin:adt_br_branch
+	local suc_tmp like tes:adt_limha_suc
+
+	SETFLAG drv:mode_flags,picklist_mode
+
+    LIndice = 0
+    LRetVal = 0
+    
+    MOVE adt_limha_suc TO suc_tmp
+    CDS SELECT FROM DSC:admin:adt_br_table BECOMES  DSC:admin:adt_br_context ASCENDING
+
+    ;SMC Genero El PickList
+    CALL  CSR:f_sanewpl DSC:admin:PickSucursales PIC:admin:PickSucursales 330 550
+	CDS FINDFIRST DSC:admin:adt_br_context NOLOCK
+
+	WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:admin:adt_br_context \
+        admin:adt_br_branch,\
+        admin:adt_br_bank_name,\
+        admin:adt_br_address,\
+        admin:adt_br_city,\
+        admin:adt_br_partido, admin:adt_br_zip
+
+        ;SMC Agrego en el Pick List
+        fprint FLD:LineaPick "%-5.5s %-25.25s" admin:adt_br_branch, admin:adt_br_bank_name
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+        fprint FLD:LineaPick "    %-30.30s %-25.25" admin:adt_br_address, admin:adt_br_city
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+        fprint FLD:LineaPick "    %-25.25s %-8.8" admin:adt_br_partido, admin:adt_br_zip
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:admin:adt_br_context NOLOCK
+	END WHILE
+	CDS ENDSELECT DSC:admin:adt_br_context
+	
+    ;SMC restauro datos originales
+    if (suc_tmp != "" && suc_tmp != adt_limha_suc) then
+        let adt_limha_suc = suc_tmp
+        CALL  OFB:CDSadt_limha_suc //Busca la sucursal ingresada en la tabla de sucursales
+	    IF (RETVAL == -2) THEN
+		    LET drv:error_msg = "(L) CODIGO DE OFICINA INEXISTENTE"
+		    errmsg common:errmsg_list,fld:drv:error_msg
+		    CALL CSR:proc_list(F_CLEAR,LST:LISTlimihabi_flds)
+		    CALL CSR:proc_list(F_REFRESH,LST:LISTlimihabi_flds)
+		    RETURN (-2)
+	    END IF 
+    endif
+
+    clearfield LineaPick
+    ;SMC Muestro Pick List
+	SETFLAG drv:mode_flags,picklist_mode
+    CALL CSR:f_sadopl (DSC:admin:PickSucursales,FLD:LineaPick) //Muestra el picklist
+    LRetVal = retval
+	RESETFLAG drv:mode_flags,picklist_mode
+    //CALL CSR:proc_list(F_CLEAR,LST:LISTlimihabi_flds)    
+
+    if (LRetVal >= 0) then //Eligio una linea del picklist
+        let adt_limha_suc = substr(FLD:LineaPick,0,5)
+        //CALL  OFB:CDSadt_limha_suc //Busca la sucursal ingresada en la tabla de sucursales
+    else
+	    //Salio sin elegir nada...
+	    //CALL CSR:proc_list(F_CLEAR,LST:LISTlimihabi_flds)
+        let LRetVal = -2
+    endif
+    CALL CSR:proc_list(F_REFRESH,LST:LISTlimihabi_flds)
+    
+    ;SMC Destruyo PickList
+    CALL  csr:f_sadroppl DSC:admin:PickSucursales
+	
+	RESETFLAG drv:mode_flags,picklist_mode
+    if (LIndice == 0) then
+        ERRMSG LST:common:errmsg_list,"NO SE ENCONTRARON SUCURSALES"
+    endif
+    if (LRetVal < 0) then
+		RETURN (-2)
+	END IF
+	RETURN (0)
+END SUB
+
+/*******/

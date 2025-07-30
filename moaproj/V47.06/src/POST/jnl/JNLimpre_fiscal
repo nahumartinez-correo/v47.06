@@ -1,0 +1,423 @@
+/****o* Sesion Correo/OFB:post:JNLimpre_fiscal
+* NOMBRE
+*   OFB:post:JNLimpre_fiscal
+* DESCRIPCION
+*   Rutina de journalizacion del Fin de Sesion 99023
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANimpre_fiscal,OFB:post:MISCfin_TeclaRapida,OFB:post:MISCFinSesDir,OFB:post:MISCFinSesDirBatch
+*	OFB:post:MISCjnlPend99023,OFB:post:MISCTipoVentaCM
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*   http://jira.sibs.net/jira/browse/AUT-1313
+*   http://jira.sibs.net/jira/browse/AUT-2179
+*   http://jira.sibs.net/jira/browse/AUT-2221
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLimpre_fiscal 
+	LOCAL auxDocFiscal LIKE post:DocFiscal
+
+	;CALL post:MISCtotal_perc
+	IF (post:bloqueoVentas.NUMCHARS == 0)
+		post:bloqueoVentas = "N"
+	END IF
+	
+	/*Se guarda en los campos NroFact_Inic y NroFact_Fin los números de Factura sin el Tipo
+	de Formulario ni el Dígito Verficador - Gabriel Falciola*/
+	CALL MISCpasoDocJnl(DocInic,DocFin)
+
+	IF (rechazoDiferido) THEN
+		CLEARFIELD post:Importe_sin_iva
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:Importe_sin_iva \
+		post:CliRaz \
+		post:DocInic \
+		post:DocFin \
+		post:bloqueoVentas AS post:jnlBloqVentas \
+		post:NroFact_Inic \
+		post:NroFact_Fin
+
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (rechazoDiferido) THEN
+			CLEARFIELD auxDocFiscal
+		ELSE
+			IF (DocFiscal == "FACTURA A") THEN
+				auxDocFiscal = "NOTA DE CREDITO A"
+			END IF
+			IF (DocFiscal == "FACTURA B") THEN
+				auxDocFiscal = "NOTA DE CREDITO B"
+			END IF
+			/*Si es NC a CM cambio el doc fiscal - Gabriel Falciola*/
+			IF (OperacionNC) THEN
+				IF (DocFiscal == "NOTA DE CREDITO A") THEN
+					auxDocFiscal = "FACTURA A"
+				END IF
+				IF (DocFiscal == "NOTA DE CREDITO B") THEN
+					auxDocFiscal = "FACTURA B"
+				END IF
+			END IF	
+			IF (DocFiscal == "TICKET" || revTicket == "S") THEN
+				auxDocFiscal = "NOTA DE CREDITO RECIBO"
+			END IF
+			
+			//gpb:NI50479
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN				
+				IF (DocFiscal == "FACTURA B") THEN
+					DocFiscal = "NOTA DE CREDITO B"
+				END IF
+				
+				IF (DocFiscal == "FACTURA A") THEN
+					DocFiscal = "NOTA DE CREDITO A"
+				END IF
+			END IF			
+
+		END IF
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			auxDocFiscal AS post:DocFiscal
+	ELSE
+		IF (rechazoDiferido) THEN
+			CLEARFIELD DocFiscal
+		ELSE
+			post:Tipo_Formulario = SUBSTR(post:DocInic, 0, 1)
+			SELECT (Tipo_Formulario)
+				CASE FACTURA_A
+					DocFiscal = "FACTURA A"
+					/*Si es NC a CM cambio el doc fiscal - Gabriel Falciola*/
+					IF (OperacionNC) THEN
+						DocFiscal = "NOTA DE CREDITO A"
+					END IF
+				BREAK
+				CASE FACTURA_B
+					DocFiscal = "FACTURA B"
+					/*Si es NC a CM cambio el doc fiscal - Gabriel Falciola*/
+					IF (OperacionNC) THEN
+						DocFiscal = "NOTA DE CREDITO B"
+					END IF
+				BREAK
+				CASE TICKET
+					DocFiscal = "TICKET"
+				BREAK
+			END SELECT
+
+			//gpb:NI50479 - Genera NC PED
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN				
+				IF (DocFiscal == "FACTURA B") THEN
+					DocFiscal = "NOTA DE CREDITO B"
+				END IF
+				
+				IF (DocFiscal == "FACTURA A") THEN
+					DocFiscal = "NOTA DE CREDITO A"
+				END IF
+			END IF				
+	
+		END IF
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:DocFiscal
+	END IF
+
+	IF (rechazoDiferido) THEN
+		CLEARFIELD post:Importe_sin_iva
+		CALL csr:cleararray(docfis_importe)
+		CALL csr:cleararray(docfis_tasa_por)
+	END IF
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:docfis_importe[0] post:docfis_importe[1] post:docfis_importe[2] \
+		post:docfis_importe[3] post:docfis_importe[4] post:docfis_importe[5] \
+		post:docfis_importe[6] post:docfis_importe[7] post:docfis_importe[8] \
+		post:docfis_importe[9] post:docfis_importe[10] post:docfis_importe[11] \
+		post:docfis_importe[12] post:docfis_importe[13] post:docfis_importe[14] \
+		post:docfis_importe[15] post:docfis_importe[16] post:docfis_importe[17] \
+		post:docfis_importe[18] post:docfis_importe[19] \
+		docfis_tasa_por[0] docfis_tasa_por[1] docfis_tasa_por[2] \
+		docfis_tasa_por[3] docfis_tasa_por[4] docfis_tasa_por[5] \
+		docfis_tasa_por[6] docfis_tasa_por[7] docfis_tasa_por[8] \
+		docfis_tasa_por[9] docfis_tasa_por[10] docfis_tasa_por[11] \
+		docfis_tasa_por[12] docfis_tasa_por[13] docfis_tasa_por[14] \
+		docfis_tasa_por[15] docfis_tasa_por[16] docfis_tasa_por[17] \
+		docfis_tasa_por[18] docfis_tasa_por[19]
+        
+	CDS APPEND DSC:tlr:CONjnl_write \
+		importe_sesion
+
+	//[PAW]  -->  Nuevo requerimiento.
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:importe_pesos \
+		post:importe_dolares \
+		post:importe
+		;common:br_CEC as adt_br_CEC_fact \
+
+	IF (Tipo_Formulario != TICKET && Tipo_Formulario != 0) THEN
+		//FGB 12.2.2001: En el caso del IRP, la cantidad de paginas se
+		//calcularon y ya fueron guardadas en el campo cantPagFact
+		IF (Tipo_Formulario == IRP) THEN
+			CDS APPEND DSC:tlr:CONjnl_write post:cantPagFact
+		ELSE
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:cantidad2 AS post:cantPagFact
+		END IF
+		//FGB fin
+	ELSE
+		CLEARFIELD post:cantPagFact
+		CDS APPEND  DSC:tlr:CONjnl_write post:cantPagFact
+	END IF
+
+	/*Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	IF (rechazoDiferido) THEN
+		CLEARFIELD post:Tipo_Formulario
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write FLD:INDticket_laser \
+		post:Tipo_Formulario
+
+	//[PAW] --> Documento de anulacion manual.
+	CALL CDStraeDocAnulManu
+
+	;req 8100
+	CALL CDScentEmisMan
+
+	IF (admin:adt_br_CEC_manu == SUBSTR(DocInic,1,4) && post:DocInic.NUMCHARS > 0) THEN
+		;Factura Manual. ----------- Req 3171.
+		CDS APPEND DSC:tlr:CONjnl_write \
+			admin:adt_br_CEC_manu AS adt_br_CEC_fact
+			
+		post:FacturaManual = "S"
+	ELSE
+		CDS APPEND DSC:tlr:CONjnl_write \
+			common:br_CEC AS adt_br_CEC_fact
+			
+		post:FacturaManual = "N"
+	END IF
+
+	IF (rechazoDiferido) THEN
+		CLEARFIELD post:adt_comp_fisc_anula
+		CLEARFIELD post:adt_formu_fiscal
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:adt_comp_fisc_anula \
+		post:adt_formu_fiscal \
+		post:FacturaManual \
+		rechazoDiferido
+
+  //FGB (11.9.2000) - SAP - Grabo el estado de la conexion al finalizar
+  //la sesion
+  CDS APPEND DSC:tlr:CONjnl_write jnl_sap_status
+  //FGB fin
+
+	/* MFM (04.10.01) - VENTA UP DIFERIDA*/
+	IF (consulta_excepcion.numchars == 0) THEN
+		consulta_excepcion = "N"
+	END IF
+	IF (VentaUP_Excepcion == "") THEN
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			consulta_excepcion AS VentaUP_Excepcion 
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			post:VentaUP_Diferida
+	ELSE
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			VentaUP_Excepcion 
+		IF (VentaUP_Excepcion == "S") THEN
+			CDS APPEND DSC:tlr:CONjnl_write  \
+				post:VentaUP_Excepcion AS post:VentaUP_Diferida
+		ELSE
+			CDS APPEND DSC:tlr:CONjnl_write  \
+				post:VentaUP_Diferida
+		END IF
+	END IF
+    
+  CLEARFIELD consulta_excepcion
+  CLEARFIELD consulta_excepcionCM
+  //Borro el flag de Orden de Compra
+  CLEARFIELD consulta_ordenCM
+  CLEARFIELD post:convenioAnticipo
+
+	//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+	//    y en consulta y venta por OC.
+	CLEARFIELD post:cliente_inhibido
+	CLEARFIELD post:cliente_pagodiferido
+
+  CLEARFIELD drv:dis_customer_name
+  REFRESH drv:dis_customer_name
+
+	/*MFM (10.01.2002) Grabo el iva correspondiente al interes cobrado por financiacion -
+	se agrega la tasa del iva cobrado sobre el interes*/
+	CDS APPEND DSC:tlr:CONjnl_write post:jnl_iva_int_dif \
+		post:iva_Porcentaje 
+
+  CALL MISCTipoVentaCM
+    
+	/* MLD si estoy en cobranza o fact automátcia el consumo no debe quedar seteado */
+	IF (post:OperacionCob || post:OperacionAut) THEN
+		post:ConsumoAnticipo = FALSE
+	END IF
+	//NI 50552 - No supervisar en reversa por Journal de Aplicacion de TB
+	IF (post:OperacionCob then || post:ModalidadAT || post:ModalidadTB) THEN
+		post:Supervisar = "N"
+	ELSE
+		post:Supervisar = "S"
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:ConvenioSesion \
+		post:VentaCliMed \
+		post:VentaCdcto_CM \
+		post:ExcepSesion \
+		post:ExcepProducto \
+		post:ModalidadAT \
+		post:ModalidadCC \
+		post:ModalidadCD \
+		post:nro_recibo \
+		post:ConsumoAnticipo \
+		post:anticipo_CM \
+		post:Imp_CobroDif \
+		post:OperacionCob \
+		post:OperacionInt \
+		post:SeqIdentFact \
+		post:OperacionAut \
+		post:adt_oc_nro
+	
+	//50249
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:OperacionNC \
+		post:fact_nro \
+		post:Supervisar
+
+	//50295 - MFM-Tratamiento de actualización de factura por RT BATCH (tabla jnl_fact_lg)
+	//AUT-1313 
+	IF (post:cli_tipo == CLIMED && post:tipo_giro_presu == "EG") THEN
+		CALL post:CDSsave_fact_lg
+	END IF
+
+	//Cambio el Estado de la Factura
+	CALL post:MISCestado_fac_save("JOUR")
+	//Limpio el Modo
+	CLEARFIELD post:Modo
+	CLEARFIELD drv:INDrun_funct
+    
+	//PJM 21-12-98
+	IF (batch:procesandoBatch != true) THEN
+		CALL post:MISCactivar_buts
+	END IF
+    
+	/* Habilito los botones de menu ppal y activ */
+	CALL post:MISCEnabl_BloqN_Act
+    
+	/* Journalizo el flag requiere factura */
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:req_factura \
+		post:MPcheque //se journaliza el flag del cheque para forzar anulacion total
+
+	//journalizo Nro de Comprobante de Imposicion 
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:NroCompImpos
+    
+  //journalizo el vector de remitos para Cobranza de CM
+	IF (OperacionCob || OperacionAut) THEN
+		CALL CDSvec_remitos_load    	
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		vec_remitos[0] vec_remitos[1] vec_remitos[2] vec_remitos[3] vec_remitos[4] \
+		vec_remitos[5] vec_remitos[6] vec_remitos[7] vec_remitos[8] vec_remitos[9] \
+		vec_remitos[10] vec_remitos[11] vec_remitos[12] vec_remitos[13] vec_remitos[14] \
+		vec_remitos[15] vec_remitos[16] vec_remitos[17] vec_remitos[18] vec_remitos[19] \
+		vec_remitos[20] vec_remitos[21] vec_remitos[22] vec_remitos[23] vec_remitos[24] \
+		vec_remitos[25] vec_remitos[26] vec_remitos[27] vec_remitos[28] vec_remitos[29]
+
+	//este dato me sirve para la cancelacion por journal del reemplazo
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:cliente
+
+	//cgw:NI50295:Journaliza campo giros:importacion_lg.
+	//Si este campo tiene valor "S", indica que se journalizo una sesion con Importacion de Lista de Giro.
+	//Este campo sera validado para que no pueda ser reversada la sesion de Importacion de Giro desde el
+	//journal, en el Fin de Sesion.
+	//MFM - Se graba el campo de consumo de Adelanto para que no se puede anular la factura de emision
+	// de lista de giros por anulación de documentos.
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		giros:importacion_lg \
+		post:ConsumoAnticipoMon
+		
+	//gpb:NI50479 - Journaliza campo post:importacion_ped.
+	//Si este campo tiene valor "S", indica que se journalizo una sesion con Importacion de Lista de Envios con Pago en Destino.
+	//Este campo sera validado para que no pueda ser reversada la sesion de Importacion de Envio desde el
+	//journal, en el Fin de Sesion.	
+	IF (post:importacion_ped == "S") THEN
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			post:importacion_ped
+	END IF
+	
+	//cgw:NI50361 - journaliza marca de CCT y Registracion WEB (MFM)
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:es_CCT \
+		post:es_WEB \
+		post:es_PrePaq
+		
+	//PS-10390: se journaliza el campo pots:revTicket con el valor que tiene al momento de 
+	//finalizar una sesión sesion ya que es un campo que se guarda en muchos lugares como 
+	//PresuAct, Presu, PresuDet, journal, etc. Bajo ciertas combinaciones de teclas puede 
+	//tomar un valor incorrecto que y momento de realizar una reversa graba 
+	//"NOTA DE RECIBO" en el campo DocFiscal cuando debería estar vacío.
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:revTicket
+
+	//SC 50364 - CAJA UNIFICADA
+	CLEARFIELD post:es_WEB
+	CALL post:CDSPresu_es_WEB 
+	//Llamo a una rutina C que limpia campos de una lista
+	//CALL CSR:proc_list(F_CLEAR,LST:LISCclear_fin_sesion)	
+
+	//50385 - Impresion de acuse de recibo en la factura de CM con modalidad cobro diferido
+	//Journalizo campo para calcular la fecha de vencimiento y otros datos del CM en la reimpresión por journal
+	IF (ModalidadCD || OperacionAut) THEN
+		CDS APPEND DSC:tlr:CONjnl_write  \
+			post:diasPago_CM \
+			post:subcuentaDesc_CM \
+			post:CloCalle \
+			post:CloNroDir \
+			post:CloPiso \
+			post:CloLoc \
+			post:CloCuit \
+			post:CloCodPost \
+			post:adt_oc_desc \
+			post:diasPago_OC  \
+			post:FechaAnt      
+	END IF
+    
+	//50316 - Cancelacion de Transferencias Bancarias
+	//Se grabar una marca para impedir la reversa desde la busqueda de journal
+	IF (post:ModalidadCTB) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:ModalidadCTB
+		
+		CLEARFIELD post:ModalidadCTB
+		CALL post:CDSpresuModalidadCTB
+	END IF
+	 
+	//Se grabar una marca para impedir la reversa desde la busqueda de journal
+	IF (post:ModalidadTB) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:ModalidadTB
+			
+		CLEARFIELD post:ModalidadTB
+		CALL post:CDSpresu_modalidadCM
+	END IF
+	
+	//gpb:NI50479
+	CALL post:JNLped
+
+END SUB
+
+/*******/

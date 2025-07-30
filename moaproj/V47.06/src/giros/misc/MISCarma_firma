@@ -1,0 +1,122 @@
+/****o* Giros/OFB:giros:MISCarma_firma
+* NOMBRE
+*   OFB:giros:MISCarma_firma
+* DESCRIPCION
+*   Armado de Firma general para Giros.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:SENDhdr_giros,giros:SENDcanc_simple,giros:SENDcanc_con_comp,giros:SEND70540
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCarma_firma
+    LOCAL importe LIKE common:local_ascii
+    
+    /* sba 20000718 - Agregado para WU Internacional */    
+   	if ( codigo_procesamiento == 442030 || codigo_procesamiento == 442040 \
+           || codigo_procesamiento == 444020 || codigo_procesamiento == 444010 \
+           || codigo_procesamiento == 443020 || codigo_procesamiento == 443010 )
+	
+			// En transacciones Internacionales no verifica firma.
+			return 0
+
+   	end if
+   
+	IF (TESTFLAG(tlr:tran_flags,correction) || testflag(tlr:controla_firma,cancelacion) || \
+	    codigo_procesamiento == 994001 || codigo_procesamiento == 994002 || \
+	    codigo_procesamiento == 994003 || \
+	    giros:codigo_procesamiento == 994010) THEN  // CONSULTA-REVERSA-CANCELACION
+	   //cgw: NI50295 - Consulta Limite Diario Emision de Giros. (Cod.Proc. 994010)
+	   
+		/* Terminal, Stan */
+    	FPRINT firma,"%-20.20s%06d",common:window_node,post:adt_codseq_nro
+	ELSE
+    	IF (!TESTFLAG(tran_send_mode,cancelacion))//Si no es una Cancelacion
+    		importe = ImporteNeto * 100
+			IF (flia_giro_fld == "T") || (flia_giro_fld == "W") THEN  // TELEGRAFICOS Y WESTERN
+				SELECT (siaf:codigo_siaf)
+					CASE 70050 /* Emision Giro Tel. - Automatizada */
+					CASE 70060 /* Emision Giro Tel.Ofic. - Automatizada */
+					CASE 70323 /* Emision Giro Tel.con ch. - Automatizada */
+				    	FPRINT firma,"%-20.20s%-20.20s%-20.20s%012d",\
+				    			common:window_node,NombreBenef_fld,ApellidoBenef_fld,importe
+						break
+					CASE 70110 /* Pago Giro Tel.- Automatizada */
+					CASE 70120 /* Pago Electronico Centralizado */
+					CASE 70132 /* Orden No Pago Giro Tel.- Automatizada */
+					CASE 70152 /* Reembolso Giro Tel.- Automatizada */
+					CASE 70153 /* Reembolso Giro Tel Oficio.- Automatizada */
+					CASE 70172 /* Cambio Suc Pag.Giro Tel.- Automatizada */
+					CASE 70173 /* Cambio Suc Pag Giro Tel.Oficio - Automatizada */
+					CASE 70192 /* Cambio Benef.Giro Tel.- Automatizada */
+					CASE 70193 /* Cambio Benef Giro Tel.Oficio - Automatizada */
+					CASE 70212 /* Revalida Giro Tel.- Automatizada */
+					CASE 70213 /* Revalida Giro Tel.Oficio - Automatizada */
+						FPRINT firma,"%s%06d%d%012d",Serie_fld,NroGiro_fld,digito_fld,importe
+						break
+					CASE 70391 /* Envio de transferencia - Western */
+					CASE 70035 /* Cuenta Efectivo Correo */
+					CASE 70470 /* Emision Giro Tel. - Backoffice */
+					CASE 70480 /* Emision Giro Tel.Ofic. - Backoffice */
+					CASE 72020 /* Emision Giro Tel. - Call Center */
+					CASE 72030 /* Emision Giro Tel.Ofic. - Call Center */
+					CASE 72300 /* Envio de transferencia - Call Center */
+						/* Terminal, Stan, Nombre y Apellido del Beneficiario, Importe */
+    					FPRINT firma,"%-20.20s%06d%-20.20s%-20.20s%012d",\
+    						common:window_node,post:adt_codseq_nro,NombreBenef_fld,ApellidoBenef_fld,importe		
+						break
+					CASE ELSE
+						/* MTCN, Importe */
+    					FPRINT firma,"%012s%012d",cons_nro_ctrol,importe		
+				END SELECT
+			ELSE  //POSTALES
+				SELECT (siaf:codigo_siaf)
+					CASE 70030 /* Emision de Giro Postal*/
+					CASE 70040 /* Emision de Giro Postal Oficio */
+					CASE 70041 /* Emision de Giro Postal Contrarreembolso */
+					CASE 70322 /* Emision de Giro Postal c/Chq */
+					/*	FPRINT firma,"%s%06d%d%-20.20s%-20.20s%012d",\
+							Serie_fld,NroGiro_fld,digito_fld,NombreBenef_fld,ApellidoBenef_fld,importe*/
+							
+							/*Se modifica la firma para la iniciativa REEMPLAZO CHEQUE GIRO POSTAL: 
+							Se valida: TERMINAL,NOMBRE BENEFICIARIO,APELLIDO BENEFICIARIO,IMPORTE*/
+							FPRINT firma,"%-20.20s%-20.20s%-20.20s%012d",\
+							common:window_node,NombreBenef_fld,ApellidoBenef_fld,importe
+						break
+					CASE 70140 /* Duplicacion de Giro */
+					CASE 70141 /* Duplicacion de Giro Ofic.*/
+						FPRINT firma,"%s%06d%d%012d",\
+							vieja_serie_fld,viejo_num_giro_fld,viejo_dig_fld,importe
+						break
+					CASE ELSE
+						/* Giro, Importe */
+						FPRINT firma,"%s%06d%d%012d",\
+							Serie_fld,NroGiro_fld,digito_fld,importe
+				END SELECT
+
+			END IF
+
+		ELSE
+			//Para cancelaciones
+			if ( cod_tran_canc == 70000 || cod_tran_canc  == 70080 ||\
+			    cod_tran_canc == 70130 || cod_tran_canc == 70310 )
+				
+			   	fprint firma,"%s%06d%d%012d",Serie_fld,NroGiro_fld,digito_fld,importe
+			else
+				/* Terminal, Stan */
+  				fprint firma,"%-20.20s%06d",common:window_node,post:adt_codseq_nro
+			end if
+		END IF
+	END IF
+
+END SUB
+
+/*******/

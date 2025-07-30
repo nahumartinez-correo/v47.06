@@ -1,0 +1,201 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALev_pforz_tes
+* NOMBRE
+*   OFB:tes:SVALev_pforz_tes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALev_pforz_tes
+    local loc_evcod_ante like tes:adt_espv_cod
+    local loc_imp_encab  like tes:adt_espv_importe    
+    local loc_cant_encab like tes:adt_espv_cantidad
+    local loc_cantidad   like tes:adt_espv_cantidad
+    local loc_imp_aux    like tes:adt_espv_importe
+    local loc_subcod_aux like tes:adt_espv_subcod
+    local loc_cod        like tes:adt_espv_cod
+    local loc_una_vez    like post:SiNo
+    local muestra_una_vez like post:SiNo
+
+
+    //grabar TesEspVMov con todo lo que hay en TesEspV del operador
+    //origen al operador destino
+
+    CDS SELECT FROM TesEspV BECOMES DSC:TesEspV_ctx WHERE \
+    FLD:adt_espv_suc == FLD:common:sucursal_activa     && \
+    FLD:adt_espv_es_tesoro == "N"                      && \
+    FLD:adt_espv_id ==  tes:tes_operator_id_orig
+
+    CDS FINDFIRST DSC:TesEspV_ctx LOCK
+    IF (cdsretval != 0) THEN
+       CDS UNLOCK DSC:TesEspV_ctx
+       CDS ENDSELECT DSC:TesEspV_ctx
+       return (-1)
+    END IF
+    
+    // el primero lo trato aparte porque necesito preguntar por el anterior
+    CDS EXTRACT DSC:TesEspV_ctx ALL
+    ;loc_evcod_ante = adt_espv_cod
+    
+
+    clearfield loc_evcod_ante
+
+    loc_imp_encab    = 0    
+    loc_cant_encab   = 0
+    loc_cantidad     = 0
+    adt_espv_suc     = common:sucursal_activa
+    adt_espv_op_orig = tes_operator_id_orig
+    adt_espv_op_dest = tes_operator_id_dest
+    adt_espv_orig    = tes_login_orig
+    adt_espv_dest    = tes_login_dest
+    adt_espv_hora    = common:time_of_day
+    loc_una_vez      = "N"
+    clearfield adt_espv_marca_ing
+    
+    FLD:drv:INDjnl_rtn = OFB:tes:JNLev_pft
+    clearfield tlr:INDtots_append
+    clearfield drv:INDspc_rtn[0]
+
+    muestra_una_vez = "N"
+    
+    DO    
+    
+        let drv:INDscr = SCR:tes:SCRNev_pft
+        call CDSespecie_load //para obtener el valor de esa especie
+        if (retval == 0)     
+       /* Grabar el encabezado si corresponde
+          Si el importe total de la especie es nulo entonces no graba el 
+          encabezado */
+       if (tes:adt_espv_cod != loc_evcod_ante && tes:adt_espv_importe != 0)
+            
+	   let drv:INDscr = SCR:tes:SCRNev_pft
+	   siaf:codigo_siaf =  8682
+	   siaf:nombre_transac = "INICIO PASE FORZ ESP VAL"
+	   tlr:tran_mnemonic = "INIPFEV"
+	   
+	   UNGETKEY 0x190
+	   siaf:importe = 0    /* debe journalizarse en cero para el encabezado */
+	   loc_imp_encab = 0   /* Acumula el importe por especie que se  graba
+                                  en el encabezado de la TesEspVMov */
+	   clearfield es_tesoro    
+	   
+	   loc_subcod_aux = adt_espv_subcod 
+	   adt_espv_subcod  = "**FORZADO**"
+	   adt_espv_codtran  = 8680
+	   espv_cod = adt_espv_cod
+	   loc_imp_aux = adt_espv_importe   
+	   //grabar en TesEspVMov
+	   
+	   adt_espv_importe = 0
+	   adt_espv_cantidad = 0
+	   display scr:tes:SCRNev_pft
+	   call tlr:JNLtran
+	   CALL CDSgraba_TesEspVMov(adt_espv_subcod,adt_espv_importe,adt_espv_cantidad)
+	   
+	   loc_evcod_ante = adt_espv_cod
+	   
+	   cds findagain DSC:TesEspV_ctx lock
+	   CDS EXTRACT DSC:TesEspV_ctx ALL
+	   cutscreen tes:SCRNev_pft,nocursor
+           UNDISPLAY tes:SCRNev_pft
+               
+       end if
+       
+       
+       let drv:INDscr = SCR:tes:SCRNev_pft
+       /* se hace el pase de las subespecies con importe no nulo */
+        if (tes:adt_espv_importe != 0) then 
+               loc_imp_encab  = loc_imp_encab + adt_espv_importe               
+               loc_cantidad   = adt_espv_importe/adt_espv_valor
+               adt_espv_cantidad = loc_cantidad
+               loc_cant_encab = loc_cant_encab + loc_cantidad
+               adt_espv_codtran  = 8686
+               siaf:codigo_siaf =  8686              
+               siaf:nombre_transac = "PASE FORZADO ESP VAL"
+               tlr:tran_mnemonic = "PFOREV"
+               siaf:importe = adt_espv_importe
+               clearfield es_tesoro
+               DISPLAY tes:SCRNev_pft
+               UNGETKEY 0x190
+
+               CALL tlr:JNLtran
+       
+               //grabar en TesEspVMov
+               loc_cod  = adt_espv_cod
+               espv_cod = adt_espv_cod
+               CALL CDSgraba_TesEspVMov(adt_espv_subcod,adt_espv_importe,adt_espv_cantidad)
+               call post:MISCumev_asig_datos(op:op_branch_id,adt_espv_cod,adt_espv_subcod,tes:tes_operator_id_orig,"N",0,tes:adt_espv_importe)
+               cutscreen tes:SCRNev_pft,nocursor
+               UNDISPLAY tes:SCRNev_pft
+               
+                /*
+               if (muestra_una_vez == "N")
+	           DISPLAY tes:SCRNev_pft
+	           muestra_una_vez = "S"
+               end if
+               */ 
+               
+               //refrescar campos de pantalla
+               refresh tes:adt_espv_cod
+               refresh tes:adt_espv_subcod
+               refresh tes:adt_espv_importe
+               refresh tes:adt_espv_cantidad
+       
+               adt_espv_cod = loc_cod
+               let espv_cod = adt_espv_cod
+               let espv_subcod = adt_espv_subcod
+
+               loc_evcod_ante = adt_espv_cod
+               //poner en cero el registro de TesEspV
+               loc_imp_aux = adt_espv_importe
+               CALL CDSinit_TesEspV 
+               ;call CDSmodif_TesEspV("resta",op:op_branch_id,"N",tes:tes_operator_id_orig,tes:adt_espv_importe)
+
+               adt_espv_importe = loc_imp_aux  //si es el ultimo lo necesito para el encabezado
+               adt_espv_importe = loc_imp_encab
+               refresh adt_espv_importe
+               call CDSupdate_TesEspVMov  /* actualiza el importe del encabezado */
+           end if
+       
+           /* 
+           if (loc_imp_encab > 0) then    
+                adt_espv_importe = loc_imp_encab
+                refresh adt_espv_importe
+                call CDSupdate_TesEspVMov  actualiza el importe del encabezado 
+           end if    
+           */
+
+
+           CDS FINDNEXT DSC:TesEspV_ctx LOCK
+
+       LET lib:err_retval = CDSRETVAL
+       if (lib:err_retval != 0)
+	  break
+       end if
+       CDS EXTRACT DSC:TesEspV_ctx ALL
+       end if
+    LOOP
+    CDS UNLOCK DSC:TesEspV_ctx
+    CDS ENDSELECT DSC:TesEspV_ctx
+    /*
+    if (muestra_una_vez == "S")
+       cutscreen tes:SCRNev_pft,nocursor
+       UNDISPLAY tes:SCRNev_pft
+    end if
+    */
+    clearfield FLD:drv:INDjnl_rtn
+
+END SUB         
+
+/*******/

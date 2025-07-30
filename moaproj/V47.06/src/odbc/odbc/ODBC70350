@@ -1,0 +1,214 @@
+/****o* Pendientes de agrupación/OFB:odbc:ODBC70350
+* NOMBRE
+*   OFB:odbc:ODBC70350
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "odbcodbc.h"
+
+;#define PL_GETITEM	              0x8000
+#define SQL_AUTOCOMMIT                 102
+#define SQL_AUTOCOMMIT_OFF           0 //UL
+#define SQL_AUTOCOMMIT_ON            1 //UL
+#define SQL_AUTOCOMMIT_DEFAULT          SQL_AUTOCOMMIT_ON
+
+SUB odbc:ODBC70350
+// Consulta de GIROS PENDIENTES DE PAGO, para AUTOMATIZADAS
+
+LOCAL clave             LIKE giros:clave_hdr_giros
+LOCAL serie             LIKE giros:Serie_fld
+LOCAL nro_cheque        LIKE giros:NroGiro_fld
+LOCAL digito            LIKE giros:digito_fld
+LOCAL suc_emisora       LIKE giros:CodSucPag_fld
+LOCAL importe           LIKE giros:Importe_fld
+LOCAL estado_giro       LIKE giros:asciide2_fld
+LOCAL fecha_min_caduco  LIKE common:system_date
+LOCAL tipo_giro         LIKE giros:asciide2_fld
+LOCAL tipo_giroANT      LIKE giros:asciide2_fld
+LOCAL tipo_giro_desc    LIKE common:csr_string
+LOCAL canttot_parcial   LIKE giros:gir_cantidad
+LOCAL cant_items_pick   LIKE giros:gir_cantidad
+LOCAL retval_query      LIKE lib:err_retval
+LOCAL retval_fetch      LIKE lib:err_retval
+LOCAL cuenta            LIKE common:local_int
+LOCAL path_name         LIKE admin:msg_dir_name
+LOCAL CDSRETVALANT      LIKE common:local_int
+DECLARE DBfetch LIB "odb.dll" ( BYVAL ) 
+DECLARE DBdefineQuery LIB "odb.dll" ( BYOBJ BYVAL DATAREF BYVAL DATAREF  \
+BYOBJ ... ) 
+  
+cuenta = 0    
+	LET FLD:giros:INDrutina = OFB:siaf:MISCencab_70350
+
+	fyimsg common:fyimsg_list,DSC:odbc:MSGbuscando
+        
+        ;HERNAN- Abro el archivo listado.lis
+        CALL siaf:MISCopen_lis
+        call siaf:MISCvi_70350
+	estado_giro = "EM"  
+	common:local_int = SUBSTR(common:system_date,0,4) - 2
+	FPRINT fecha_min_caduco "%s%s%s" common:local_int,SUBSTR(common:system_date,4,2),SUBSTR(common:system_date,6,2)
+									
+   // armo la linea de query
+	fprint odbc:ODBCwhere "%s" DSC:odbc:query_70350
+
+   // ejecuta el query y arma el Dynaset
+	DLL  DBdefineQuery(db_dynaset, db_handle_giros, DSC:ODBCdynaset_name, 1, \
+		ODBCwhere,common:sucursal_activa,estado_giro,giros:gir_fec_desde,giros:gir_fec_hasta,0,\
+		serie,nro_cheque,digito,suc_emisora,tipo_giro,clave,importe,0)
+		
+// si m	e devuelve retval = -1, quiere decir que es un error de odbc/sql, no de mosaic. 
+//(los de mosaic tienen errores con valores de 5600 para arriba. hay que averiguar que es.
+
+retval_query = retval
+tipo_giroANT = "&"	// (valor imposible)
+
+IF (retval_query >= 0 )
+   /* creo el picklist */
+   	clearfield cant_items_pick
+    cuenta = 0
+	giros:gir_total = 0
+   	call csr:f_sadroppl DSC:pick
+   	call csr:f_sanewpl DSC:pick,PIC:giros:giros
+   if (retval < 0) then
+		msgbox "ERROR AL CREAR PICKLIST",OFB_OK,"Error"
+		return -2
+   end if
+      /* armo las lineas del picklist 	     */
+
+	init 23,46
+	DLL DBfetch(db_dynaset) // obtiene fila del dynaset
+	init 23,44
+       	retval_fetch = retval
+	
+	WHILE (retval != DB_NO_DATA)
+	cuenta = cuenta + 1
+		IF (tipo_giro != tipo_giroANT)
+			SELECT (tipo_giro)
+				CASE "P"	//postal
+					tipo_giro_desc = "GIROS POSTALES:"
+					BREAK
+				CASE "O"	//postal oficio
+					tipo_giro_desc = "GIROS POSTALES OFICIO:"
+					BREAK
+				CASE "T"	//telegrafico
+					tipo_giro_desc = "GIROS TELEGRAFICOS:"
+					BREAK
+				CASE "F"	//telegrafico oficio
+					tipo_giro_desc = "GIROS TELEGRAFICOS OFICIO:"
+					BREAK
+				CASE "N"	//telegrafico oficio
+					tipo_giro_desc = "TRANSFERENCIA WU:"
+					BREAK
+			END SELECT
+			if (siaf:pantalla_impreso == "P" )
+			// imprimo subtotales, si corresponde
+				fprint siaf:nota_1 "%-50s",tipo_giro_desc
+				CALL giros:MISCpantalla_impres2
+			else
+				fprint siaf:nota_1 "%-50s",tipo_giro_desc
+				CALL giros:MISCpantalla_impres2
+			end if
+			tipo_giroANT = tipo_giro
+			canttot_parcial = 0
+		END IF
+
+		if (siaf:pantalla_impreso == "P" )
+			if (tipo_giro == "N" )
+				fprint siaf:nota_1 	"         %12s                              %5s       %12e        " \
+								clave, suc_emisora,importe
+			else					
+				fprint siaf:nota_1 	"         %1s         %6s            %1s             %5s       %12e        " \
+								serie, nro_cheque, digito, suc_emisora,importe
+			endif					
+			
+			CALL giros:MISCpantalla_impres2
+			
+		ELSE
+		// Es por impresora
+			if (tipo_giro == "N" )
+				fprint siaf:nota_1 	"         %12s                   %5s       %12e        " \
+								clave, suc_emisora, importe
+			else				
+				fprint siaf:nota_1 	"         %1s        %6s      %1s         %5s       %12e        " \
+								serie, nro_cheque, digito, suc_emisora, importe
+			endif				
+			
+			CALL giros:MISCpantalla_impres2
+			
+		END IF
+		let cant_items_pick = cant_items_pick + 1
+		giros:gir_total = giros:gir_total + importe
+		canttot_parcial = canttot_parcial + 1
+		
+		;Acá  calculo los totales por Sucursal
+		
+		init 23,46
+		DLL DBfetch(db_dynaset) // obtiene fila del dynaset
+		init 23,44
+		
+		;Pregunto por la Sucursal
+	
+	END WHILE
+
+	IF (siaf:pantalla_impreso == "I" )
+		fprint siaf:nota_1 \
+		"===================================================================================="
+        CALL giros:MISCpantalla_impres2
+        fprint siaf:nota_1 \
+		" TOTAL DE GIROS PENDIENTES: %-10e " \
+		cant_items_pick 
+		    CALL giros:MISCpantalla_impres2
+		fprint siaf:nota_1 \
+		" TOTAL GIROS PEND. A PAGAR: %-10e " \
+		giros:gir_total
+	    CALL giros:MISCpantalla_impres2
+	ELSE
+		fprint siaf:nota_1 \
+		"==================================================================================="
+		CALL giros:MISCpantalla_impres2
+		fprint siaf:nota_1 \
+		" TOTAL DE GIROS PENDIENTES: %-10e " \
+		cant_items_pick 
+		CALL giros:MISCpantalla_impres2
+		fprint siaf:nota_1 \
+		" TOTAL GIROS PEND. A PAGAR: %-10e " \
+		giros:gir_total
+		CALL giros:MISCpantalla_impres2
+	END IF
+END IF
+		
+DLL DBqclose(db_dynaset)
+IF (retval_query != 0)
+	CALL odbc:MISCconexion_ora
+    if (retval <= -2)
+      	return -2
+	end if
+ELSE
+	IF (retval_fetch == DB_NO_DATA || cant_items_pick == 0)
+    	msgbox "NO EXISTEN GIROS PENDIENTES DE PAGOS EN ESTA SUCURSAL",OFB_OK,""
+		CALL siaf:MISCclose_lis
+		return -2
+	END IF
+endif
+
+CALL giros:MISCpantalla_viewer (cuenta)
+if (cuenta > 70) then
+  	return (-1)
+else	
+      RETURN (0)
+end if   
+END SUB
+
+/*******/

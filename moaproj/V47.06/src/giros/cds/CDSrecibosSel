@@ -1,0 +1,97 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSrecibosSel
+* NOMBRE
+*   OFB:giros:CDSrecibosSel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSrecibosSel()
+
+;    [PAW - 30/03/99]      Esta rutina se encarga de generar el Combo de remitos y actualizar la lista.
+;    Salidas:
+;     - retval:   Devuelve (-1),(-2) en caso de errores.
+
+	local varl_YESorNO like lib:err_retval 
+
+Inicio:
+
+	CDS SELECT FROM DSC:remitTmpTAB BECOMES DSC:remitTmpCON \
+	WHERE op:op_operator_id == op:op_operator_id && adt_girChqtmp_rem != 0
+
+	let siaf:last_key = LASTKEY
+
+	CDS MULTIDISPLAY DSC:remitTmpCON LISTadt_recibos
+
+	IF (CDSRETVAL == 0x01FD) THEN
+		GOTO Inicio
+	END IF
+	LET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == 0) THEN
+		RETURN (-2)
+	END IF
+	LET lib:err_retval = CDSRETVAL
+	CALL lib:MISCcds_find_err
+	IF (RETVAL != 0) THEN
+	  RETURN (-1)
+	END IF
+	// FGB 28.12.2001: extraigo la cantidad de giros que se iban a emitir con este remito. Si es mayor que 1, deberian
+	// utilizar la trx. de giros masivos.
+	CDS EXTRACT DSC:remitTmpCON adt_girChqtmp_rem, siaf:importe, estadoChr, adt_girChqtmp_cantg
+	if (estadoChr == "(OK)")
+		call MISCborraSiExiste
+		if (retval != 0) // ----------------------------------  [1] 			
+			// [PAW] --> NO existe...
+			call CDSchk_inuse_remit(adt_girChqtmp_rem)
+			if (retval == 0) then // -------------------------  [5] 
+				fprint common:csr_string_aux "El Remito %s fue seleccionado por otro operador.\n" adt_girChqtmp_rem
+				fprint common:csr_string_aux "%sNo podrá ser utilizado para este presupuesto" common:csr_string_aux
+				msgbox common:csr_string_aux, OFB_OK,"Aviso"
+				let varl_YESorNO = OFB_IDNO
+			else // -----------------------------------------  (5) 
+				if (adt_girChqtmp_cantg > 1) then // --------  [2] 
+					fprint common:csr_string_aux "En la confección de este remito se declararon %d giros a emitir.\n%s\n%s" \
+							adt_girChqtmp_cantg, \
+							"Si utiliza esta transacción debera emitir un solo giro por el total acreditado.", \
+							"Para emitir mas de un giro, utilice Giros Masivos."
+					msgbox common:csr_string_aux,OFB_OK,"Aviso"
+					msgbox "Desea continuar?",OFB_YESNO2,"Confirmación"
+					let varl_YESorNO = retval 
+				else // ------------------------------------  [2] 
+					let varl_YESorNO = OFB_IDYES
+				endif // -----------------------------------  [2] 
+			endif // ---------------------------------------  [5] 
+			if (varl_YESorNO == OFB_IDYES) then // ---------  [3] 
+				if (cantidad < LINEASMAX) // ---------------  [4] 
+					cantidad = cantidad + 1
+					refresh cantidad
+					fprint listaRecibosSel,"%s[%13.13s] --> ACEPTADO: $%7.7e\r\n",listaRecibosSel,adt_girChqtmp_rem, \
+																			  	siaf:importe
+					totalAcreditado = totalAcreditado + siaf:importe
+					totalRestante = totalRestante + siaf:importe
+					refresh totalAcreditado
+					refresh listaRecibosSel
+				else // -----------------------------------  [4] 
+		  			msgbox "Usted ha alcanzado el máximo de Recibos.", OFB_OK ,"Aviso"
+				endif // ----------------------------------  [4] 
+			endif // --------------------------------------  [3] 
+		endif // ------------------------------------------  [1] 
+	else
+		msgbox "Usted no puede utilizar este Recibo.", OFB_OK ,"Aviso"
+	endif
+	CDS unlock  DSC:remitTmpCON
+	CDS ENDSELECT DSC:remitTmpCON
+END SUB
+
+/*******/

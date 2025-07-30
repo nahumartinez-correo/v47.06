@@ -1,0 +1,135 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRegistro_Excep
+* NOMBRE
+*   OFB:post:MISCRegistro_Excep
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRegistro_Excep
+
+LOCAL caratula LIKE post:CaratulaSaca
+LOCAL grabo LIKE post:SacaSucursal
+
+	IF ((tipo_excepcion != "SACA") || \
+	(tipo_excepcion == "SACA" && existe_fisicamente == "S") || \
+	(tipo_excepcion == "SACA" && existe_fisicamente == "N" && adt_excep_tipo == "SACAT")) THEN
+  		IF (adt_excep_tipo != "SACAT") THEN
+  			adt_excep_tipo = tipo_excepcion
+  		END IF
+  		
+  		//adt_excep_saca = 0
+  		adt_excep_saca = post:adt_codseq_nro
+  		CALL CDSGrabo_Excep (id_excepcion)
+  		IF (RETVAL < 0) THEN
+  			RETURN -2
+		ELSE
+			RETURN 0
+		END IF
+  	END IF
+	
+	/*El siguiente tratamiento es para una saca robada cerrada en la sucursal*/
+	CDS SELECT FROM DSC:tlr:TABjnl  BECOMES DSC:tlr:jnl_context WHERE \
+	(tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_sequence_corr == "" && \
+	post:adt_codseq_nro == post:adt_codseq_nro && \
+	(siaf:codigo_siaf == 99046 || siaf:codigo_siaf == 99066 || \
+	siaf:codigo_siaf == 99068))
+	/*tlr:jnl_date == common:system_date && \*/
+	
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	post:err_retval = CDSRETVAL
+	/*Si no encuentra detalles es porque es una saca simple cerrada en sucursal*/
+	IF (CDSRETVAL == -801) THEN
+		CDS ENDSELECT DSC:tlr:jnl_context
+		adt_excep_saca = post:adt_codseq_nro
+		adt_excep_tipo = "SACAT"
+  		CALL CDSGrabo_Excep (id_excepcion)
+  		RETURN 0
+	END IF
+	
+	DO
+		IF (post:err_retval == -801) THEN
+			BREAK
+		END IF
+		CLEARFIELD Pieza_id
+		CLEARFIELD Pieza
+		CDS EXTRACT DSC:tlr:jnl_context Pieza_id Pieza
+		CALL MISCes_TT(Pieza_id)
+		IF (RETVAL < 0) THEN
+			CALL MISCes_TT(Pieza)
+		END IF
+		IF (RETVAL == 0) THEN
+			adt_excep_tipo = "PIEZA"
+			adt_excep_saca = post:adt_codseq_nro
+			IF (Pieza_id.numchars == 0) THEN
+				Pieza_id = Pieza
+			END IF
+			CALL CDSGrabo_Excep(Pieza_id)
+			IF (RETVAL == 0) THEN
+				grabo = true
+				/*Actualizo scaneos 15 - 16!!!*/
+				CALL MISCAct_Scaneos("E",1)
+			ELSE
+				RETURN -2
+			END IF
+		ELSE
+			/*Puede ser un contenedor => busco en el journal los registros en donde 
+			adt_codseq_nro == Pieza_id  && siaf:codigo_siaf == 99036*/
+			CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context2 \
+			WHERE tlr:jnl_branch == op:op_branch_id && \
+			tlr:jnl_sequence_corr == "" && \
+			post:adt_codseq_nro == post:Pieza_id && \
+			siaf:codigo_siaf == 99036
+			CDS FINDFIRST DSC:tlr:jnl_context2 NOLOCK
+			DO
+				IF (CDSRETVAL == -801) THEN
+					BREAK
+				END IF
+				CLEARFIELD post:Pieza_id
+				CDS EXTRACT DSC:tlr:jnl_context2 post:Pieza_id
+				CALL MISCes_TT(Pieza_id)
+				IF (RETVAL == 0) THEN
+					adt_excep_tipo = "PIEZA"
+					adt_excep_saca = post:adt_codseq_nro
+					CALL CDSGrabo_Excep (Pieza_id)
+					IF (RETVAL == 0) THEN
+						grabo = true
+						/*Actualizo scaneos 15 - 16!!!*/
+						CALL MISCAct_Scaneos("E",1)
+					ELSE
+						RETURN -2
+					END IF
+				END IF
+				CDS FINDNEXT DSC:tlr:jnl_context2 NOLOCK
+			LOOP
+			CDS ENDSELECT DSC:tlr:jnl_context2 
+		END IF
+		
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+		post:err_retval = CDSRETVAL
+	
+	LOOP
+	
+	CDS ENDSELECT DSC:tlr:jnl_context
+	
+	if (!grabo) then
+		/*Es una saca cerrada en sucursal con todas piezas de grandes clientes*/
+		adt_excep_saca = post:adt_codseq_nro
+		adt_excep_tipo = "SACAT"
+  		CALL CDSGrabo_Excep (id_excepcion)
+  	end if
+END SUB
+
+/*******/

@@ -1,0 +1,356 @@
+/****o* Pendientes de agrupación/OFB:tele:SVALgral_tele
+* NOMBRE
+*   OFB:tele:SVALgral_tele
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telesval.h"
+
+SUB tele:SVALgral_tele
+LOCAL NroTrn_aux LIKE post:PreDNroTrn
+LOCAL mensaje LIKE common:csr_string
+LOCAL cli_tipo_tmp LIKE post:cli_tipo
+local imp_total_sesion like siaf:importe
+
+	IF (post:estado_presu != 4)
+		/*Control sobre la tabla tarifas. Se puso aca porque sino
+		hay inconsistencia con las validaciones anteriores
+		y con la tabla Servicios*/
+		cli_tipo_tmp = post:cli_tipo
+		IF (TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+			/*Seteo el post:adt_tarif_desde para controlar el canar de Tarifa*/
+			Call post:MISCseteo_canal
+			Call post:CDSbasico(post:adt_serv_serv,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+			post:cli_tipo = CLI_INT
+		END IF
+		Call post:MISCtarifa_canal
+		lib:err_retval = RETVAL
+		post:cli_tipo = cli_tipo_tmp
+		IF (lib:err_retval < 0)
+			RETURN (-2)
+		END IF
+	END IF
+
+	/*Verifico que todos los opcionales cargados tengan una familia asociada*/
+	CALL post:MISCverifOpcFlia
+	IF (RETVAL < 0)
+	    RETURN (-2)
+	END IF
+
+	/*Carina - Cliente Interno - 15/03/1999*/
+	IF (TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+		CALL post:SVALgral_usoInt
+		IF (RETVAL < 0)
+	    		RETURN (-2)
+		END IF
+	ELSE
+		LET post:cliente_interno = "N"
+	END IF
+	/*Fin Carina - Cliente Interno*/
+
+	IF (post:NroCompPago == "")
+		post:NroCompPago = 0
+	END IF
+
+	//Se comenta a partir de la V26
+	/***************************************************************************/
+	/*#ifdef COMPILA_SAP
+	    // FGB: Si es cliente de Cuentas Corrientes, hay que validar si esta en
+	    // condiciones para SAP de realizar esta transaccion.
+	    if (post:estado_presu == 2 || post:estado_presu == 3) then
+	        if (post:cli_tipo == 1 && !testflag(tlr:tran_flags,correction)) then
+	            call post:sap_valida_postal
+	            if (retval < 0) then
+	                return (-2)
+	            end if
+	        end if
+	    end if
+	#endif*/
+	/*****************************************************************************/
+
+	//Reingeniería
+	IF (post:estado_presu < 4)
+		IF (!TESTFLAG(post:uso_int_flag,uso_interno))
+			CALL siaf:SVALnivel_sup
+			IF (RETVAL < 0) THEN
+				IF (RETVAL != -3) THEN
+					RETURN (RETVAL)
+				ELSE
+					CALL post:MISCrechazo_transac
+					RETURN (-3)
+				END IF
+			END IF
+		END IF
+	END IF
+
+    IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+    	/*Obtiene el grupo de corte operativo*/
+       	CALL post:MISCgru_corteop
+
+       	/* Esta parte no debo hacerla si estoy en una reversa */
+       	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+			IF (post:cant_opc > 0) THEN
+            	/*Llamo a una rutina que hace el tratamiento de los opcionales*/
+               	CALL post:SVALgral_opc
+               	IF (RETVAL < 0)
+                	IF (post:adt_serv_piezacont == "T" && post:cantidad > 1 && post:cli_tipo != 1)
+                    	CALL post:CDSborro_tt_canc
+                   	END IF
+                   	RETURN (-2)
+               	END IF
+           	END IF
+       	END IF
+    END IF
+
+    IF (post:estado_presu != 4)
+     	SELECT (post:adt_serv_umstd)
+    		CASE "PAG"
+    		CASE "PAL"
+        		post:hasta_fac = post:cantidad
+            	BREAK
+        	CASE "GMS"
+            	post:hasta_fac = post:peso_en_grs
+            	BREAK
+        	CASE "KGS"
+        		post:hasta_fac = post:peso_en_kgs
+            	BREAK
+        END SELECT
+        post:unidad_fac = post:unidad_fac_aux
+    END IF
+
+  	/*****************************************************************************/
+	/* Si tiene descuento entonces solicita autorización del supervisor */
+    /*****************************************************************************/
+    //Reingenierìa
+    //IF (post:descuento > 0 && (estado_presu == 1 || estado_presu == 4)) THEN
+    IF (post:descuento > 0 && post:estado_presu < 1)
+       	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+	    	/*MFM - Si ya se pidió supervisión una vez entonces no se vuelve a pedir!*/
+	    	IF (siaf:ovr_sup_siaf_id.NUMCHARS == 0) THEN
+	    		CLEARFIELD siaf:cartel
+            	SETFLAG tlr:tran_flags, supovr_request
+	      		SETFLAG siaf:siaf_flags, req_tes
+	      		SETFLAG siaf:siaf_flags, req_sup1
+	      		CALL siaf:MISCovr_process
+	      		IF (RETVAL < 0)THEN
+			       	RETURN (-2)
+		      	END IF
+	  		END IF
+	  	END IF
+        INIT 33,0
+    END IF
+
+	//OJO... despues de este llamado no se puede salir de la SVAL
+	post:cant_aux = post:cantidad
+
+    /* Maria Laura Duek. Agrego el calculo del nro de ticket
+    para la impresion del ticket de estas transacciones */
+    CLEARFIELD post:nro_impre
+	; PJM 27-10-98 modificado para que se obtenga el nro de Recibo para todas la postales
+    IF (siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CSP") && (!TESTFLAG(tlr:tran_flags,correction)) THEN
+       	IF (post:estado_presu == 1) THEN
+       		/* Puede tener transacciones asociadas, el importe queda es siaf:importe_tot_serv */
+       		if (siaf:importe_tot_serv != "") then
+       			CALL post:CDSobtiene_secuen("TICKE")
+       			post:nro_impre = post:adt_codseq_nro
+       		END IF
+       	END IF
+    END IF
+
+    //IF (post:estado_presu == 1 || post:estado_presu == 2)
+    //PS 9336
+    IF (post:estado_presu < 4)
+    	post:PreDForFis = post:adt_serv_formfiscal
+    END IF
+
+    /*Se guarda el Nro transaccion en 0 para el caso de teclas rapidas para n track_trace*/
+    LET NroTrn_aux = post:PreDNroTrn
+
+	/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+	call post:MISCSinIva_CSP
+
+	/*Calculo el importe del Iva*/
+	post:ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+
+	/* Campos Necesarios Para el reverso de operaciones */
+	post:ImporteConIvaNeto = siaf:ImporteConIva
+    post:ImporteSinIvaNeto = siaf:ImporteSinIva
+
+	/*Cargo los vectores correspondientes para calcular Ingresos Brutos*/
+	;CALL post:MISCgen_vec_iva
+	call tele:MISCgen_vec_iva_tele
+
+	/* Aseguro que el campo post:ImporteSinIva post:ImporteConIva e post:ImporteIva
+	tenga un importe sin descueno de bonificaciones locales ya que el descuento se ve
+	reflejado en la transaccion 99007 */
+	post:ImporteSinIva = post:ImporteFinalSinIva
+	post:ImporteConIva = siaf:importe
+	post:ImporteIva = post:ImporteConIva - post:ImporteSinIva
+
+    //alicuota del servicio
+    post:AliServUP = post:adt_serv_aliciva
+    //importe con iva del servicio menos los opcionales(porque tienen iva propio)
+    post:ImpServUP = post:tarifa + post:imp_bloques - post:descuento - post:promo_imp_blq_tot - post:promo_imp_srv_tot
+
+	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago - Gabriel Falciola*/
+	CALL post:MISCAcumTotalesSes
+
+    /*CSZ - Pedido por Maria Laura Duek*/
+    IF (post:estado_presu == 1)
+       	LET post:TotalSinIva = siaf:importe
+    ELSE
+      	CLEARFIELD post:TotalSinIva
+    END IF
+
+    /*Devuelve la formula de calculo usada para determinar la tarifa del producto*/
+    CALL post:SVALgral_formuCalc
+
+    CLEARFIELD post:detalle_cant
+
+	IF (post:costo_opc == 0 && !TESTFLAG(post:uso_int_flag,uso_interno) && post:cli_tipo != 1)
+    	/*Esto se hace para evitar que los siguientes campos queden sucios en caso de que
+    	no exista el opcional AVRB*/
+       	post:tiene_ar = ""
+       	post:valor_ar = 0
+    END IF
+
+	/* No tengo Cajas Ni cintas */
+	/* Blanqueo el registro */
+	if (post:estado_presu == 1 || post:estado_presu == 2) then
+		post:cod_agrupacion = 0
+	end if
+
+	/*CSZ - Guardo el modelo de la sucursal para tenerlo journalizado si hay problemas*/
+    post:modelo_suc = common:br_modelo
+
+	/* MLD Controlo Restricciones para Vta UP diferido */
+	call post:MISCRestFlia
+
+ 	//Tratamiento Cliente Medio
+    if (post:cli_tipo == CLIMED && post:estado_presu != 4) then
+		if (post:Dcto_CliMed > 0) then
+			INIT 22,1
+			post:Imp_DctoCliMed = (post:tarifa * post:Dcto_CliMed) / 100
+			INIT 22,0
+		else
+			post:Imp_DctoCliMed = 0
+		endif
+	endif
+	;limpio las transacciones de bonificaciones locales porque se vuelven a generar
+	if (post:estado_presu == 3) then
+		call post:CDSborroTr99007Tele
+	end if
+	
+	if (!post:OperacionCob && !post:OperacionAut) then
+		//Si el telegrama es multiple calcula en nro de telegrama una unica vez
+		if (post:estado_presu == 4 && tele:adt_cattel_serv_sm == "M")
+			Call post:CDSobtiene_secuen(post:adt_serv_codseq)
+    		tele:tele_nro_telegrama = post:adt_codseq_nro
+			fprint tele:tele_nro_telegrama,"%5.5s-%4.4s-%06.6s",common:sucursal_activa,substr(common:system_date,0,4),tele:tele_nro_telegrama
+			//CALL CDSupd_predet_tele
+		end if
+	end if	
+	
+	//Grabo tabla PresuDet
+	CALL post:MISCGrabaDetalleTrn
+
+	/*IF (post:cantidad == 1 && (post:estado_presu == 2 || post:estado_presu == 3))
+		CALL post:SVALgral_tt_cctrl
+	END IF*/
+
+    /*Hernán - LLamo a la rutina que acumula en la Total Transac*/
+    call post:MISCTotalTransac(siaf:adt_tran_codigo)
+
+  	IF (post:estado_presu == 1)
+          LET post:PreDNroTrn = NroTrn_aux
+  	END IF
+
+ 	/*MFM -  Deshabilito el botón de Menu Principal y Menu de Actividades*/
+	if (post:estado_presu == 1 && post:Modo == "R")
+    	let drv:button = TFB2
+    	CALL  drv:but_disable
+    	let drv:button = TFB3
+    	CALL  drv:but_disable
+    end if
+
+  	/*Captura la pantalla para calcular el vuelto a entregar al cliente de acuerdo
+  	con lo abonado por el mismo - Gabriel Falciola*/
+  	/* Resguardo siaf:importe y le muevo el total */
+  	post:imp_aux = tele:importe_tot_serv_tel
+  	imp_total_sesion = siaf:importe_tot_serv
+  	post:importe_acum = siaf:importe_tot_serv
+  	siaf:importe = siaf:importe_tot_serv
+  	CALL post:MISCvuelto_sin_ses("")
+  	tele:importe_tot_serv_tel = post:imp_aux
+ 	
+
+/*	if (!post:OperacionCob && !post:OperacionAut) then
+		//Si el telegrama es multiple calcula en nro de telegrama una unica vez
+		if (post:estado_presu == 4 && tele:adt_cattel_serv_sm == "M")
+			Call post:CDSobtiene_secuen(post:adt_serv_codseq)
+    		tele:tele_nro_telegrama = post:adt_codseq_nro
+			fprint tele:tele_nro_telegrama,"%5.5s-%4.4s-%06.6s",common:sucursal_activa,substr(common:system_date,0,4),tele:tele_nro_telegrama
+			//CALL CDSupd_predet_tele
+		end if
+	end if*/
+
+  	/*Carina - Esto se hace para journalizar la transaccion si cantidad es > 1 y es
+  	pieza de ctrol  o si es cuenta correntista*/
+    
+    post:cont_jnl = 0
+    
+    CALL post:MISCjnl_gral
+   	/*Fin - Carina*/
+
+	Call post:MISCcap_teclas_rap(imp_total_sesion)
+
+	//Tratamiento Cliente Medio
+    if (post:cli_tipo == CLIMED && post:estado_presu != 4) then
+    	post:PreDNroTrnAsoc = post:PreDNroTrn
+    	if (post:Dcto_CliMed > 0) then
+    		siaf:importe = post:Imp_DctoCliMed
+    		post:prod_DescuentoCM = siaf:nombre_transac
+    		CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,post:adt_serv_aliciva,siaf:importe)
+    	else
+    		//puede que ponga el descuento en cero...
+    		if (post:estado_presu == 3) then
+    			siaf:importe = post:Imp_DctoCliMed
+    			CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,post:adt_serv_aliciva,siaf:importe)
+    		endif
+    	endif
+    end if
+
+	if (!post:OperacionCob && !post:OperacionAut) then
+     	/*Si tiene asociado TICKO lo imprimo !*/
+    	if (post:adt_serv_formu == "TICKO" && post:estado_presu == 4 && !testflag(tlr:tran_flags,correction)) then
+        	//No quieren que aparezca el nro de control
+        	//call post:CDSobtiene_secuen("TICKO")
+        	//let siaf:nro_impre = post:adt_codseq_nro
+			PRINTDOC OFB:tele:PRT_tel_ticko,docprt,"Imprimiendo el Ticko para el Telegrama..."
+    	endif
+    end if
+
+
+	//Reingeniería:
+	//Este RT_SEND se está usando para que si accedo a la tx por el menu, cuando salgo
+	//de la misma no se quede el control en la tx de Vta Postal
+   /* IF (TESTFLAG(post:flag_vtaPostal,by_menu))
+    	RESETFLAG post:flag_vtaPostal,by_menu
+    	UNGETKEY RT_SEND
+    END IF*/
+
+  	RETURN (RETVAL)
+END SUB
+
+/*******/

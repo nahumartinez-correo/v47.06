@@ -1,0 +1,136 @@
+/****o* Recepción de Piezas/OFB:post:MISCpresento_pieza
+* NOMBRE
+*   OFB:post:MISCpresento_pieza
+* DESCRIPCION
+*   Esta rutina muestra en un picklist las piezas que han sido cargadas en la Recepcion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCstockp_pieza
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCpresento_pieza
+	/*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+	/*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl "PIEZAS" common:csr_string
+	/*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+	/*Si el usuario no selecciona ninguna opciòn del picklist entonces se llama */
+	/* a una rutina csr que borra de memoria los datos del picklist*/
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	ELSE
+		/*Si el usuario selecciona una opción del picklist entonces se borran los datos
+		de memoria y luego se mueve la selección al campo correspondiente*/
+		CALL csr:f_sadroppl "PIEZAS"
+		LET  common:csr_string_130 = substr(common:csr_string,6,32)
+		CALL csr:trimfield common:csr_string_130
+		CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx \
+		WHERE (stockp_pieza == common:csr_string_130)
+		CDS FINDFIRST DSC:stockp_temp_ctx NOLOCK
+		IF (CDSRETVAL == -801) THEN
+			CDS ENDSELECT DSC:stockp_temp_ctx
+			RETURN -2
+		END IF
+		clearfield Leyenda_aux
+		CALL CSR:proc_list(F_CLEAR,LST:LISTstockp_CM_elifld)
+		CDS EXTRACT DSC:stockp_temp_ctx ALL
+		CDS ENDSELECT DSC:stockp_temp_ctx
+		REFRESH stockp_pieza
+		CALL CSR:proc_list(F_REFRESH,LST:LISTstockp_CM_elifld)
+		IF (AsignaDestino == "S") THEN
+			tipo_operacionRP = "ASIGNA DESTINO"
+			CALL CSR:proc_list(F_UNPROTECT,LST:LISTstockp_CM_flds)
+			PROTFIELD stockp_rend_cent
+			PROTFIELD stockp_rct
+			PROTFIELD ord_guarda_pieza
+			IF (stockp_destino == DSC:post:PED_desc) THEN
+				PROTFIELD stockp_crem_imp
+			ELSE
+				UNPROTFIELD stockp_crem_imp
+			END IF
+			call MISCes_TT(stockp_pieza)
+			if (retval == 0) then
+				protfield stockp_plazoguarda
+			endif
+		ENDIF
+		IF (AsignaDestino == "E") THEN
+			tipo_operacionRP = "OPERATIVOS ESPECIALES"
+			CALL CSR:proc_list(F_PROTECT,LST:LISTstockp_CM_flds)
+			showfield Leyenda_vto
+			Leyenda_vto = DSC:fecha_vto 
+			refresh Leyenda_vto
+			unprotfield stockp_vtofecha_oe
+			//SC 50185 - CD LABORAL - Habilito el campo para su modificacion.
+			call MISCes_TT(stockp_pieza)
+			if (retval == 0 && (substr(stockp_pieza,0,2) == "CD" || substr(stockp_pieza,0,2) == "MD")) then
+				unprotfield stockp_laboral
+			else
+				protfield stockp_laboral
+			endif
+		ELSE
+			hidefield  Leyenda_vto
+			clearfield stockp_vtofecha_oe
+			refresh    stockp_vtofecha_oe
+			protfield  stockp_vtofecha_oe
+			hidefield  stockp_vtofecha_oe
+		ENDIF
+		IF (AsignaDestino == "N") THEN
+			tipo_operacionRP = "NO ASIGNA DESTINO"
+		ENDIF
+		IF (AsignaDestino == "X") THEN
+			tipo_operacionRP = "RECIBE SACAS SIMPLES"
+		ENDIF
+		//NI 50552 - IMPOSICION Y ENTREGA MISMA SUC
+		IF (AsignaDestino == "M") THEN
+			tipo_operacionRP = "ENTREGA MISMA SUC."
+			CALL CSR:proc_list(F_UNPROTECT,LST:LISTstockp_CM_flds)
+			PROTFIELD stockp_rend_cent
+			PROTFIELD stockp_rct
+			PROTFIELD ord_guarda_pieza
+			IF (stockp_destino == DSC:post:PED_desc) THEN
+				PROTFIELD stockp_crem_imp
+			ELSE
+				UNPROTFIELD stockp_crem_imp
+			END IF
+			call MISCes_TT(stockp_pieza)
+			if (retval == 0) then
+				protfield stockp_plazoguarda
+			endif
+		ENDIF
+		IF (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M")
+			IF (ord_guarda_pieza != "")
+				protfield post:stockp_destino
+				protfield post:stockp_pieza
+				disablecontrol drv:PBcb2
+				//disablecontrol drv:PBcb7
+				nextfield post:stockp_en_devol
+			ELSE
+				unprotfield post:stockp_destino
+				unprotfield post:stockp_pieza
+				enablecontrol drv:PBcb2
+				//enablecontrol drv:PBcb7
+			END IF
+		END IF
+		
+		//Este campo quedaba desprotegido y no debería ser asi,
+		//solo habria que desproteger el plazo de guarda en el caso que la pieza
+		//no fuera un T&T valido.
+		PROTFIELD stockp_vtofecha
+	END IF
+	ENABLECONTROL drv:PBcb4 //Habilito el boton de Eliminar
+	ENABLECONTROL drv:PBcb6 //Habilito el boton de Modificar
+	DISABLECONTROL drv:PBcb3 //Deshabilito el boton de Agregar
+	
+END SUB
+
+/*******/

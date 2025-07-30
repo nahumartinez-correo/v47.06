@@ -1,0 +1,357 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISCval_cb_CCT
+* NOMBRE
+*   OFB:post:MISCval_cb_CCT
+* DESCRIPCION
+*   Esta rutina valida el código de barra ingresado con la DLL y si devuelve que
+*		es un código de barra estandar, hace el desglose de los datos.
+* ENTRADAS
+*   1) Código de Barra a validar
+*		2) Tipo de validación: CCT, CREM o BUSCADOR
+* SALIDAS
+* 	Para validación CCT/CREM
+*   	RETVAL  0: Código de Barra Estándar
+*   	RETVAL  1: Código de Barra No Estándar
+*   	RETVAL -2: Comitente o Servicio inexistente
+*   Para validación BUSCADOR (Código Estandar)
+*   	RETVAL  0: Encontró código en ParamCCT y encontró TX CCT en browser
+*   	RETVAL -2: No encontró código en ParamCCT o no encontró TX CCT en browser
+*   Para validación BUSCADOR (Código NO Estandar)
+*			RETVAL  0: El operador seleccionó ingresar a Pago Facil o CCT
+*   	RETVAL -2: No seleccionó ninguna opción
+*   	RETVAL -3: No obtuvo coincidencias intentará acceder por pago facil
+* IMPACTOS
+*		post:CDSBuscoCuponCCT
+*		post:MISCdesgloseCB_CCT
+*		plataf:MISCpick_barcode
+* REFERENCIADO POR
+*		post:FVALcod_barra_CCT,OFB:plataf:MISCpick_barcode,post:FVALcod_barra_CREM
+* DOCUMENTACION
+*   50361 - https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCval_cb_CCT(CodBarra, TipoVal)
+	LOCAL resultDLL LIKE post:adt_cct_cta_cupon
+	LOCAL Longitud LIKE lib:err_retval
+	LOCAL cb_temp LIKE post:cod_barra_CCT
+	LOCAL l_last_button LIKE drv:last_button
+
+	DLL ValidarCB(CodBarra)
+	IF (RETVAL > 0) THEN
+		/*Es un código de barra estándar
+		Lo paso a un campo del mismo tipo para matchear correctamente*/
+		resultDLL = retval
+		SELECT (TipoVal)
+			CASE "CCT"
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+				CALL CDSBuscoCuponCCT(resultDLL, "CCT")
+				IF (RETVAL == 0) THEN
+					//Existe el registro en la tabla ParamCCT, desgloso el código de barra
+					comitente_CCT = adt_cct_comit_desc
+					servicio_CCT = adt_cct_desc_serv
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+					SETVALDONE comitente_CCT
+					SETVALDONE servicio_CCT
+					SETVALDONE post:cod_barra_CCT
+					CALL MISCdesgloseCB_CCT(CodBarra)
+					IF (RETVAL < 0) THEN
+						CALL post:PBNuevo_cupon_CCT
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+						RETURN -2
+					ELSE
+						RETURN (0)
+					END IF
+				ELSE
+					//No existe el registro en la tabla ParamCCT
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+					RETURN (-2)
+				END IF
+			BREAK
+			CASE "BUSCADOR"
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+
+				//DPRINT ".... Entro por codigo Estandar\n"
+				//DPRINT ".... post:adt_cct_cta_cupon = %s\n",resultDLL
+					  
+				//gpb:NI50435
+				//Evaluo si para la cuenta cupon existe conflicto con CB de Pago Facil 
+				CALL post:CDSBuscoCuponCCT_PF(resultDLL)
+				IF (RETVAL == -2) THEN
+					//armar picklist con opciones cct puro y pago facil
+					CALL CDSsel_CCT_PF
+					IF (RETVAL == 0)
+						RETURN 0
+					ELSE
+						//debo borrar el codigo de barra para que no me lleve a pago facil
+						CLEARFIELD plataf:barcode_search
+						REFRESH plataf:barcode_search
+						RETURN (-2)
+					ENDIF
+				END IF
+
+				CALL CDSBuscoCuponCCT(resultDLL, "CCT")
+				IF (RETVAL == 0) THEN
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)  
+					post:cod_barra_CCT  = CodBarra
+					CALL plataf:set_chosen_flds("6670","post:TRAN6670")
+					IF (RETVAL == 0) THEN
+						RETURN 0
+					ELSE
+						RETURN (-2)
+					END IF
+				ELSE					
+					//debo borrar el codigo de barra para que no me lleve a pago facil
+					CLEARFIELD plataf:barcode_search
+					REFRESH plataf:barcode_search
+					RETURN (-2)
+				END IF
+			BREAK
+			CASE "CREM"
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+				CALL CDSBuscoCuponCCT(resultDLL, "CREM")
+				IF (RETVAL == 0) THEN
+					//Existe el registro en la tabla CliMay_crem, desgloso el código de barra
+					//comitente_CCT = adt_climay_razon
+					//servicio_CCT = adt_cct_desc_serv
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTclimay_flds)
+					//SETVALDONE comitente_CCT
+					//SETVALDONE servicio_CCT
+					SETVALDONE post:cod_barra_CREM
+					CALL MISCdesgloseCB_CCT(CodBarra)
+					IF (RETVAL < 0) THEN
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTclimay_flds)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCREM_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+						RETURN -2
+					ENDIF
+					IF (siaf:codigo_siaf == 99003 && es_CDD == "S") THEN
+						//Si es pieza CDD Emitir mensaje de alerta y no refrescar el importe crem de pantalla
+						MSGBOX "NO SE MODIFICARA EL IMPORTE CREM POR SER UNA PIEZA CDD.",0X00,"AVISO"
+					ELSE
+						//Campo de importe crem de TX de Recepcion Piezas y Modificacion de Pieza
+						post:stockp_crem_imp = post:importe_CCT
+						REFRESH post:stockp_crem_imp
+						//Campo de importe crem de TX de Rendición CDD
+						post:CDD_crem_imp = post:importe_CCT
+						REFRESH post:CDD_crem_imp
+					ENDIF
+					RETURN (0)
+				ELSE
+					//No existe el registro en la tabla CliMay_crem
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTclimay_flds)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCREM_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+					RETURN (-2)
+				END IF
+			BREAK
+		END SELECT
+	ELSE
+		//Es un código de barra NO estándar
+		SELECT (TipoVal)
+			CASE "BUSCADOR"
+				//DPRINT ".... Entro por codigo NO Estandar \n"
+				//DPRINT ".... post:adt_cct_cta_cupon = %s\n",resultDLL
+
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+				Longitud = plataf:barcode_search.numchars
+				CALL post:CDSBuscoCodNoStd(Longitud,"TODO")
+				IF (RETVAL == -2) THEN
+					/*Por alguna razón no llegamos al registro*/
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+					//OBS Testing Usuario - Se pide Eliminar este mensaje.
+					//MSGBOX "NO SE PUDO OBTENER EL COMITENTE O SERVICIO (CCT).",OFB_OK,"AVISO"
+					//intentará con pago facil
+					RETURN -3
+				END IF
+				//Si devuelve 1 o más coincidencias el operador deberá seleccionar entre las TX de CCT y Pago fácil en el Buscador
+				IF (RETVAL == 0 || RETVAL == 1) THEN
+					//armar picklist con opciones cct puro y pago facil
+					CALL CDSsel_CCT_PF
+					IF (RETVAL == 0)
+						RETURN 0
+					ELSE
+						//debo borrar el codigo de barra para que no me lleve a pago facil
+						CLEARFIELD plataf:barcode_search
+						REFRESH plataf:barcode_search
+						RETURN (-2)
+					ENDIF
+				ENDIF
+			BREAK
+			CASE "CCT"
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+				cb_temp = post:cod_barra_CCT
+				post:cod_barra_CCT = CodBarra
+				Longitud = post:cod_barra_CCT.numchars
+				post:cod_barra_CCT = cb_temp
+				CALL post:CDSBuscoCodNoStd(Longitud,"TODO")
+				IF (RETVAL == -2) THEN
+					/*Por alguna razón no llegamos al registro*/
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+					MSGBOX "No se pudo obtener el Comitente o Servicio",OFB_OK,"Error"
+					RETURN (-2)
+				END IF
+				IF (RETVAL == 1) THEN
+					/*Hay más de un registro, tengo que mostrar las opciones*/
+					
+					/*Deshabilito los botones de la pantalla*/
+					l_last_button = drv:last_button 
+					drv:button = drv:last_button    
+					CALL drv:but_down_disable
+					CALL drv:all_but_disable
+					
+					CALL post:CDSBuscoCodNoStd(Longitud,"COMITENTE")
+					IF (RETVAL == -2)
+						/*Por alguna razón no llegamos al registro*/
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+						MSGBOX "No se pudo obtener el Comitente o Servicio",OFB_OK,"Error"
+						CALL drv:back_but_status
+						drv:button = l_last_button
+						CALL drv:but_up_enable
+						RETURN (-2)
+					END IF
+					/*Asigno el valor del comitente en el campo de pantalla para que
+					se vaya viendo la selección a medida que se va cargando*/
+					comitente_CCT = adt_cct_comit_desc
+					REFRESH comitente_CCT
+					CALL post:CDSBuscoCodNoStd(Longitud,"SERVICIO")
+					IF (RETVAL == -2)
+						CALL drv:back_but_status
+						drv:button = l_last_button
+						CALL drv:but_up_enable
+						/*Por alguna razón no llegamos al registro*/
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+						MSGBOX "No se pudo obtener el Comitente o Servicio",OFB_OK,"Error"
+						RETURN (-2)
+					END IF
+					CALL drv:back_but_status
+					drv:button = l_last_button
+					CALL drv:but_up_enable
+				END IF
+				/*Si llega hasta acá quiere decir que ya tengo un registro seleccionado
+				Hago el desglose*/
+				comitente_CCT = adt_cct_comit_desc
+				servicio_CCT = adt_cct_desc_serv
+				CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+				SETVALDONE comitente_CCT
+				SETVALDONE servicio_CCT
+				SETVALDONE post:cod_barra_CCT
+				CALL MISCdesgloseCB_CCT(CodBarra)
+				IF (RETVAL < 0) THEN
+					CALL post:PBNuevo_cupon_CCT
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+					RETURN -2
+				ELSE
+					RETURN (1)
+				ENDIF
+			BREAK
+			CASE "CREM"
+				CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+				cb_temp = post:cod_barra_CREM
+				post:cod_barra_CREM = CodBarra
+				Longitud = post:cod_barra_CREM.numchars
+				post:cod_barra_CREM = cb_temp
+				CALL post:CDSBuscoCodNoStdCREM(Longitud,"TODO")
+				IF (RETVAL == -2) THEN
+					/*Por alguna razón no llegamos al registro*/
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCREM_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)              
+					MSGBOX "No se pudo obtener el Comitente",OFB_OK,"Error"
+					UNPROTFIELD post:id_cupon_CCT
+					UNPROTFIELD post:adt_climay_razon
+					drv:button = 0
+					CALL drv:but_up_enable
+					RETURN (-2)
+				END IF
+				IF (RETVAL == 1) THEN
+					/*Hay más de un registro, tengo que mostrar las opciones*/
+					
+					/*Deshabilito los botones de la pantalla*/
+					l_last_button = drv:last_button 
+					drv:button = drv:last_button    
+					CALL drv:but_down_disable
+					CALL drv:all_but_disable
+					
+					CALL post:CDSBuscoCodNoStdCREM(Longitud,"COMITENTE")
+					IF (RETVAL == -2) THEN
+						/*Por alguna razón no llegamos al registro*/
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCREM_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+						MSGBOX "No se pudo obtener el Comitente",OFB_OK,"Error"
+						CALL drv:back_but_status
+						drv:button = l_last_button
+						CALL drv:but_up_enable
+						RETURN (-2)
+					END IF
+					/*Asigno el valor del comitente en el campo de pantalla para que
+					se vaya viendo la selección a medida que se va cargando*/
+					comitente_CCT = adt_climay_razon
+					REFRESH comitente_CCT
+					/*CALL post:CDSBuscoCodNoStdCREM(Longitud,"SERVICIO")
+					IF (RETVAL == -2) THEN
+						CALL drv:back_but_status
+						drv:button = l_last_button
+						CALL drv:but_up_enable
+						//Por alguna razón no llegamos al registro
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_REFRESH,LST:post:LISTCCT_fldshdr)
+						CALL CSR:proc_list(F_CLEAR,LST:post:LISTParamCCT_flds)
+						MSGBOX "No se pudo obtener el Comitente o Servicio",OFB_OK,"Error"
+						RETURN (-2)
+					END IF*/
+					CALL drv:back_but_status
+					drv:button = l_last_button
+					CALL drv:but_up_enable
+				END IF
+				/*Si llega hasta acá quiere decir que ya tengo un registro seleccionado
+				Hago el desglose*/
+				comitente_CCT = adt_climay_razon
+				//servicio_CCT = adt_cct_desc_serv
+				CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+				SETVALDONE comitente_CCT
+				//SETVALDONE servicio_CCT
+				SETVALDONE post:cod_barra_CREM
+				CALL MISCdesgloseCB_CCT(CodBarra)
+				IF (RETVAL < 0) THEN
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTclimay_flds)
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTCREM_fldshdr)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTCREM_fldshdr)
+					RETURN (-2)
+				END IF
+				IF (siaf:codigo_siaf == 99003 && es_CDD == "S") THEN
+					//Si es pieza CDD Emitir mensaje de alerta y no refrescar el importe crem de pantalla
+					MSGBOX "NO SE MODIFICARA EL IMPORTE CREM POR SER UNA PIEZA CDD.",0X00,"AVISO"
+				ELSE
+					//Campo de importe crem de TX de Recepcion Piezas y Modificacion de Pieza
+					post:stockp_crem_imp = post:importe_CCT
+					REFRESH post:stockp_crem_imp
+					//Campo de importe crem de TX de Rendición CDD
+					post:CDD_crem_imp = post:importe_CCT
+					REFRESH post:CDD_crem_imp
+				END IF
+				RETURN (1)
+			BREAK
+		END SELECT                      
+	END IF
+END SUB
+
+/*******/

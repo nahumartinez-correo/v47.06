@@ -1,0 +1,165 @@
+/****o* Especies Valorizadas/OFB:tes:PBauxesp_modif_vta
+* NOMBRE
+*   OFB:tes:PBauxesp_modif_vta
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:BUTdep_ev_buzon,LST:tes:BUTventa_ev
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBauxesp_modif_vta
+    local loc_importe like siaf:importe
+    local loc_importe_evaux like tes:importe_evaux
+    local loc_imp_promo_epvs like post:imp_promo_epvs
+    local loc_mensaje like common:csr_string
+    
+    /* Modifica registros de la tabla AuxEspV */
+    if (adt_evaux_subcod.numchars == 0 || adt_evaux_cantidad == 0 || \
+	    adt_evaux_importe == 0) then
+	     errmsg lst:common:errmsg_list,"Falta ingresar algún campo"
+	     drv:button = drv:last_button
+         call drv:but_up_enable
+         return (-1)
+    endif
+    /*if (!(tes:adt_evaux_subcod.valdone)) then
+        nextfield tes:adt_evaux_subcod
+        ungetkey RT_TAB
+        drv:button = drv:last_button
+         call drv:but_up_enable
+        return -1
+    end if */
+	; Con las restricciones de especies, esto de abajo no va mas...
+    /*CSZ - En el caso de pagar con cheque diferido No se permiten seleccionar
+    especies que no admitan dicho medio de pago*/
+/*    CALL MISCchequeo_esp_up
+    IF (RETVAL < 0)
+        drv:button = drv:last_button
+        call drv:but_up_enable
+      	RETURN (-2)
+	END IF*/
+
+    call FVALsubesp_mov_pb
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)
+    end if
+    call FVALcant_venta_ev_pb
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        drv:button = 5
+        call drv:but_disable
+        return (-2)
+    end if
+    call FVALimporte_ev_pb
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        drv:button = 5
+        call drv:but_disable
+        return (-2)
+    end if
+    call MISCespv_ctrl_stock
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)
+    end if
+
+    drv:button = drv:last_button
+    call drv:but_disable
+
+    // Por tesoro
+    if (drv:dt_app == 4) then
+    	let adt_evaux_tesoro = "S"
+        let adt_evaux_op = op:op_tesoro_id
+    else
+        let adt_evaux_tesoro = "N"
+	    let adt_evaux_op = op:op_operator_id
+    endif
+    let adt_evaux_suc = op:op_branch_id
+    let adt_evaux_codigo = espv_cod
+  	if (post:cli_tipo != 1 && \
+  		post:enCombo != "S") then
+	    //cgw:si no es un producto de un combo, calcula importes.
+
+        //cgw:reservo importes antes de actualizarse por si se debe volver atras por superar minimos.
+	    loc_importe = siaf:importe
+	    loc_imp_promo_epvs = post:imp_promo_epvs
+	    loc_importe_evaux = tes:importe_evaux
+
+        let siaf:importe = siaf:importe - post:importe_aux + adt_evaux_importe
+		let post:imp_promo_epvs = post:imp_promo_epvs - post:imp_aux_promo_epvs  + post:fld_promo_imp
+        let importe_evaux = siaf:importe - post:imp_promo_epvs
+
+        IF (post:Modo == "R" && siaf:importe > post:adt_dgralsuc_impesp) THEN
+        	fprint loc_mensaje "%s\n", \
+                   "Se ha superado el importe maximo de Especies Valorizadas para "
+            fprint loc_mensaje "%s%s", \
+        	       loc_mensaje,"Consumidor Final en Teclas Rapidas. Debe iniciar una sesion."
+        	msgbox loc_mensaje,OFB_OK,"Aviso"
+        	//recupero importes antes de actualizacion
+        	siaf:importe = loc_importe
+        	post:imp_promo_epvs = loc_imp_promo_epvs
+        	tes:importe_evaux = loc_importe_evaux
+        	
+	        drv:button = drv:last_button
+            call drv:but_up_enable
+	        return (-2)
+        END IF
+
+		//Tratamiento Cliente Medio
+		if (post:cli_tipo == CLIMED && tes:adt_espv_bonifCM == "S") then
+			//acumulo el importe de las transacciones que permiten bonificar al cliente medio
+			let tes:SimporteCM = tes:SimporteCM - post:importe_aux + adt_evaux_importe
+			/*acumulo el importe de las especies bonificadas
+			if (adt_evaux_descCM > 0) then
+				let tes:PimporteCM = tes:PimporteCM - post:importe_aux + adt_evaux_importe
+			end if*/
+			let post:Dcto_CliMed = post:Dcto_CliMed - post:Dcto_CliMedAux + adt_evaux_descCM //ojo
+			post:Imp_DctoCliMed = post:Imp_DctoCliMed - ((post:importe_aux * post:Dcto_CliMedAux) / 100) + ((adt_evaux_importe * adt_evaux_descCM) / 100)
+		endif
+        // FGB muestro mensaje en el visor
+        call post:MISCmensaje_visor("D")
+    else
+  //    adt_evaux_importe = 0
+        siaf:importe = 0
+        importe_evaux = 0
+    end if
+
+    if (post:estado_presu == 3) then
+        adt_evaux_prestran = 0
+        refresh adt_evaux_prestran
+    end if
+    call CDSauxesp_save_vta
+    let siaf:cantidad = siaf:cantidad - post:cantidad  + adt_evaux_cantidad
+    refresh importe_evaux
+    CALL MISCdisplay_especies
+    call ABMauxesp_clear
+    call ABMauxesp_refresh
+
+    NEXTFIELD adt_evaux_codigo
+    drv:button = drv:last_button
+    call drv:but_up_enable
+    call drv:but_disable
+    drv:button = 3
+    call drv:but_enable
+    unprotfield adt_evaux_subcod
+    drv:button = 5
+    call drv:but_disable
+    ;setvaldone adt_evaux_subcod
+    resetvaldone adt_evaux_subcod
+END SUB
+
+/*******/

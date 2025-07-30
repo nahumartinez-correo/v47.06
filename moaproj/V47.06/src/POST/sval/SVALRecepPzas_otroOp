@@ -1,0 +1,109 @@
+/****o* Expedición/OFB:post:SVALRecepPzas_otroOp
+* NOMBRE
+*   OFB:post:SVALRecepPzas_otroOp
+* DESCRIPCION
+*   SVAL de la TX De recepcion de piezas de otro contenedor
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): en caso de que no hayan registros para cargar en la DetTmp.
+*   RETURN (-2): "DEBE RECIBIR AL MENOS UNA PIEZA"
+*   RETURN (-2): "Transacción sin reversa, está seguro que desea continuar"
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANRecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALRecepPzas_otroOp
+    LOCAL rechLote LIKE lib:err_retval
+
+    if (dettmpcargada == FALSE) then
+        IF ( TESTFLAG(flagRecepPzasOtroOp, recibir_piezas_x_op) && ( FLD:post:Operador_id.NUMCHARS == 0 ) ) THEN
+            MSGBOX "Debe seleccionar un operador.", OFB_OK, "Alerta"
+            RETURN -2
+        END IF
+        
+        call MISCuprotRecepPiezas
+        PROTFIELD Operador_id
+        
+        ALTERCONTROLSET TAG:post:CHK0
+        DISABLECONTROL TAG:post:CHK0
+        ALTERCONTROLSET TAG:post:CHK1
+        ENABLECONTROL TAG:post:CHK1
+
+        let drv:button = 0 /* Operador */
+        call drv:but_disable
+        
+        /* Habilita los botones */   
+        let drv:button = 1 /* Piezas a Recibir */
+        call drv:but_up_enable
+        let drv:button = 2 /* Marca Desmarca */
+        call drv:but_up_enable
+        let drv:button = 3 /* Todos */
+        call drv:but_up_enable
+        
+        IF (FLD:post:Operador_id.numchars == 0) THEN
+            // Carga en la DetTmp las piezas correspondientes a todos los 
+            // operadores que le transfirieron piezas al op logueado.
+            SETFLAG flagRecepPzasOtroOp, ejecuta_SVAL
+            CALL CDScargaDetTmpRPzas
+            CLEARFIELD  post:Operador_id
+        ELSE
+            CALL OFB:FVALtransfOtroOp
+        ENDIF
+        if (retval < 0) then
+            return (-2)
+        endif
+        CALL MISCrefRecepPiezas
+        return -2
+    endif
+    
+    call CDSselect_DetTmp3
+    rechLote = retval
+    IF (retval < 0) THEN
+        msgbox "Ud. está rechazando todo el lote de piezas, está seguro que desea continuar?", OFB_YESNO2, "Alerta"
+        IF (!(retval == 6)) THEN
+            return -2
+        END IF
+    END IF
+       
+    msgbox "Transacción sin reversa, desea continuar?", OFB_YESNO2, "Alerta"
+    IF (!(retval == 6)) THEN
+        RETURN (-2)
+    END IF
+
+    CALL MISCprotRecepPiezas
+    ALTERCONTROLSET TAG:post:CHK0
+    DISABLECONTROL TAG:post:CHK0
+    
+    
+    //GRABO EL HEADER!! 
+    UNGETKEY 0x0191 /* RT_SEND */
+    drv:INDscr = SCR:post:SCRNRecepPzasHdr
+    siaf:adt_tran_codigo = siaf:codigo_siaf
+    call siaf:CDSadt_tran_load
+    siaf:nombre_transac = "PIEZAS RECIBIDAS DE OTRO OP."
+    tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+    siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+    siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+    siaf:posible_off = siaf:adt_tran_posoff
+    CALL tlr:JNLtran /* Journaliza el Header */
+
+    IF (rechLote >= 0) THEN
+        CALL CDSPiezasAceptadas
+    ELSE
+        CLEARFIELD drv:INDsend_rtn
+        CLEARFIELD drv:INDjnl_rtn
+        drv:INDscreen[0] = SCR:post:SCRNRecepPzas_otroOp
+    END IF
+    
+    CALL CDSPiezasRechazadas
+
+END SUB
+
+/*******/

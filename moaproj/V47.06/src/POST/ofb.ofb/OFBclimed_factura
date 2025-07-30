@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:post:OFBclimed_factura
+* NOMBRE
+*   OFB:post:OFBclimed_factura
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBclimed_factura
+
+	local tipo_factura     like post:Tipo_Formulario
+	local aux_nro_factura  like common:csr_string	
+
+	giros:codigo_procesamiento = 997042
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	call post:CDSobtiene_secuen("STAN")
+
+	hcomm:INDhost_sndrt = OFB:SENDclimed_factura
+	hcomm:INDhost_rcvrt = OFB:RCVEclimed_factura
+	call hcomm:COMM_stat_init
+
+	call siaf:CDSchk_trxs_caidas
+    	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+    			clearfield hcomm:INDhost_sndrt 
+    			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    	elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    		clearfield hcomm:INDhost_sndrt
+    		clearfield hcomm:INDhost_rcvrt
+    	end if
+
+    	call giros:OFBdisable_bt_msg
+
+	post:cm_msg_update = 1
+	
+	select (post:Tipo_Formulario)
+		case 1
+			tipo_factura = "A"
+			break
+		case 2
+			tipo_factura = "B"
+			break
+	end select
+
+	call post:CDSpresu_climed_load
+
+	fprint post:datos_msg108,"%015.15s%1.1s%015.15s%-3.3s",\
+	post:SeqIdentFact,tipo_factura,post:NroFact_Inic,post:TipoIdentFact
+	move post:datos_msg108 to aux_nro_factura
+
+        call hcomm:COMM_host_tran
+
+	clearfield post:cm_msg_update
+
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    	call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh    lib:stat_message
+	refresh    statusline
+
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+
+		if (hcomm:tran_status == HOST_REJECTED )
+			return 1
+		end if
+		move aux_nro_factura to post:datos_msg108
+		return -2
+	else
+		return 0
+	end if
+
+END SUB
+
+/*******/

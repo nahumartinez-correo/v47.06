@@ -1,0 +1,197 @@
+/****o* Pendientes de agrupación/OFB:post:MISCenv_NovTT
+* NOMBRE
+*   OFB:post:MISCenv_NovTT
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCenv_NovTT(Instancia)
+	LOCAL Proyecto Like common:csr_string
+	LOCAL Parametros Like common:csr_string
+
+	FYIMSG LST:common:fyimsg_list,"ENVIANDO NOVEDADES TT. POR FAVOR AGUARDE UN MOMENTO..."
+	; Los scripts se ejecután ahora en forma remota a traves de un segundo host (host2)
+	; y será encargado este servidor de ejecutar los mismos. *** MDG
+	CALL csr:moacurproj(Proyecto)
+	;CALL csr:get_profile_string("project","description",Proyecto) //Nombre del Proyecto
+	CLEARFIELD common:csr_string_4096
+	FPRINT Parametros "%s;NO;NO", Proyecto
+	CALL post:MISCmsgProcessHost2 ("NOVTT", Parametros, common:csr_string_4096)
+	
+	;gbp:Falto comentar al llamado a "EXCEP", que dejo de ser utilizado desde el 2010...
+	/*IF (Instancia != "RetiroPiezas") THEN
+		CALL post:MISCmsgProcessHost2 ("EXCEP", Proyecto, common:csr_string_4096)
+		;CALL post:MISCmsgScriptHost2 ("NovTT.pl", "false", "NO;SI;EXCEP.pl", common:csr_string_4096)
+	END IF*/
+	CALL post:MISCmsgScriptHost2 ("false", common:csr_string_4096)
+	hcomm:INDhost_sndrt = OFB:post:MISCputMsgBufferhst2
+	hcomm:INDhost_rcvrt = OFB:post:MISCgetresponseHost2
+	CALL hcomm:COMM_send_HOST2
+	IF (RETVAL != 0) THEN
+		CALL post:MISCresponseMsgHost2("false")
+		CALL post:MISCerrorMsgHost2(retval,"ENVIO DE NOVEDADES TT")
+		IF (RETVAL == -2) THEN
+			RETURN -2
+		END IF
+	ELSE
+		CALL post:MISCerrorMsgHost2(SIN_RESPUESTA_DEL_HOST,"")
+		RETURN -2
+	END IF
+	FYIMSG CLEAR
+	
+	/*
+	LOCAL MosaicServer LIKE common:ExecString
+	LOCAL CdsDir LIKE common:ExecString
+	LOCAL Indice like post:tipo_produc
+	LOCAL Indice2 like post:tipo_produc
+	LOCAL Archivo_Lockeo LIKE common:csr_string
+	LOCAL DumpFileName LIKE common:ExecString
+	LOCAL DumpName LIKE common:ExecString
+	LOCAL NTServer LIKE common:ExecString
+	LOCAL AuxFileName LIKE common:ExecString
+	LOCAL Proyecto Like common:csr_string
+	LOCAL ServerIP LIKE common:ExecString
+	LOCAL Account LIKE common:csr_string
+	LOCAL Password LIKE common:csr_string
+	LOCAL Dominio LIKE common:ExecString
+	LOCAL DominioID LIKE common:ExecString
+	LOCAL ComandoNovTT LIKE common:ExecString
+	LOCAL ComandoExcep LIKE common:ExecString
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL Testing Like common:csr_string
+
+	;Obtengo informacion del archivo DDPROJ.INI
+	CALL csr:get_profile_string("cdsmain","CDS_PRIMARY_NP",MosaicServer) //Nombre del SERVIDOR
+	CALL csr:get_profile_string("cdsmain","CDS_DIRECTORY",CdsDir) //Directorio
+    
+  CALL csr:get_profile_string("project","description",Proyecto) //Nombre del Proyecto
+  CALL CSR:get_profile_string("cdsmain","SERVER_IP",ServerIP) //Direccion IP del Servidor
+  CALL csr:get_profile_string("project","Dominio",Dominio) //Nombre del Dominio para la conexión rclient
+  CALL csr:get_profile_string("project","Account",Account) //Cuenta para la conexión rclient
+  CALL csr:get_profile_string("project","Password",Password) //Password para la conexión rclient
+  CALL csr:get_profile_string("project","ScriptNovTT",ComandoNovTT) //Comando a Ejecutar con el rclient
+    
+	//Dependiendo de donde lo esté ejecutando debo enviar luego las Excepciones o no Gabriel Falciola
+	if (Instancia != "RetiroPiezas")
+		CALL csr:get_profile_string("project","ScriptExcep",ComandoExcep) //Comando a Ejecutar las Excepciones
+	end if
+	CALL csr:variable_environment("DESARROLLO",Testing) //Variable de testeo
+	
+	IF (ComandoNovTT.numchars == 0) THEN
+		ERRMSG common:errmsg_list,"FALTA PARAMETRIA PARA EL ENVIO DE NOVEDADES T&T\n( ITEM ScriptNovTT DEL ARCHIVO DDPROJ.INI )\n"
+		CALL post:MISCen_cond_RetPie
+		RETURN -2
+	END IF
+
+	IF (Instancia != "RetiroPiezas" && ComandoExcep.numchars == 0) THEN
+		MSGBOX "FALTA PARAMETRIA PARA EL ENVIO DE EXCEPCIONES T&T\n( ITEM ScriptExcep DEL ARCHIVO DDPROJ.INI )\n",OFB_OK,"Aviso"
+	END IF
+	
+	CALL csr:str_search (Proyecto, " ", Indice)
+	Proyecto = substr(Proyecto,0,Indice)
+	
+	//Obtengo el path para buscar el archivo del Lockeo
+	Archivo_Lockeo = CdsDir
+	CALL CSR:fld_to_upper(Archivo_Lockeo)
+	CALL CSR:str_search(Archivo_Lockeo,"MOAPROJ",Indice)
+	CALL CSR:str_search(Archivo_Lockeo,"CDSMAIN",Indice2)
+	Indice2 = Indice2 - Indice
+	Archivo_Lockeo = SUBSTR(Archivo_Lockeo,Indice,Indice2)
+	FPRINT Archivo_Lockeo,"%snovtt_lock.log",Archivo_Lockeo
+	FPRINT Archivo_Lockeo,"\\\\%s\\%s",MosaicServer,Archivo_Lockeo
+	
+	IF (Testing == "JNL") THEN
+		CALL csr:file_open(6,FLD:ComandoNovTT,"r")
+		IF (RETVAL < 0) THEN
+			FPRINT FLD:DumpName "NO SE PUEDE ABRIR EL ARCHIVO PARA ENVIO DE NOVEDADES T&T\n(%s)\n" ComandoNovTT
+			ERRMSG common:errmsg_list,FLD:DumpName
+			CALL post:MISCen_cond_RetPie
+			RETURN -2
+		END IF
+		CALL csr:file_close(6)
+
+		FPRINT NTServer "\\\\%s" FLD:MosaicServer
+		
+		;Linea de comando a Ejecutar
+		IF (Instancia == "RetiroPiezas") THEN
+			FPRINT LineaComando "perl %s %s NO NO",FLD:ComandoNovTT,FLD:Proyecto
+		ELSE
+			FPRINT LineaComando "perl %s %s NO SI perl %s",FLD:ComandoNovTT,FLD:Proyecto,FLD:ComandoExcep
+		END IF
+	ELSE
+	  ;Checkeo para ver si la parametria esta cargada.
+	  ;Si no esta, aborto
+	  ;IF (FLD:ServerIP.numchars == 0) THEN
+	 	;	ERRMSG common:errmsg_list,"FALTA PARAMETRIA PARA EL ENVIO DE NOVEDADES T&T\n( ITEM SERVER_IP DEL ARCHIVO DDPROJ.INI )\n"
+	  ; RETURN -2
+	  ;END IF
+	  ;IF (FLD:Account.numchars == 0) THEN
+	 	;	ERRMSG common:errmsg_list,"FALTA PARAMETRIA PARA EL ENVIO DE NOVEDADES T&T\n( ITEM Account DEL ARCHIVO DDPROJ.INI )\n"
+	  ; RETURN -2
+	  ;END IF
+	  ;IF (FLD:Password.numchars == 0) THEN
+	  ;	ERRMSG common:errmsg_list,"FALTA PARAMETRIA PARA EL ENVIO DE NOVEDADES T&T\n( ITEM Password DEL ARCHIVO DDPROJ.INI )\n"
+	  ; RETURN -2
+	  ;END IF
+		
+		IF (Dominio == "") THEN
+			FPRINT FLD:DominioID "%s %s" FLD:Account, FLD:Password
+		ELSE
+			FPRINT FLD:DominioID "%s\\%s %s" FLD:Dominio, FLD:Account, FLD:Password
+		END IF
+
+		;Linea de comando a Ejecutar
+		IF (Instancia == "RetiroPiezas") THEN
+			FPRINT LineaComando,"rclient %s /logon:%s /r \"%s %s NO NO\"", \
+				FLD:ServerIP,\
+				FLD:DominioID,\
+				FLD:ComandoNovTT,\
+				FLD:Proyecto
+		ELSE
+			FPRINT LineaComando,"rclient %s /logon:%s /r \"%s %s NO SI %s\"", \
+				FLD:ServerIP,\
+				FLD:DominioID,\
+				FLD:ComandoNovTT,\
+				FLD:Proyecto,\
+				FLD:ComandoExcep
+		END IF	        
+	END IF
+	
+  FYIMSG LST:common:fyimsg_list,"ENVIANDO NOVEDADES TT. POR FAVOR AGUARDE UN MOMENTO..."
+  CALL csr:create_process LineaComando,SW_HIDE ,CSR_NOWAIT
+	
+	//Espero para que alcance a generar el LOG si está lockeado el proceso
+	NAP 5000
+	CALL CSR:file_open(2,Archivo_Lockeo,"r")
+	IF (RETVAL == 0) THEN
+		ERRMSG LST:common:errmsg_list,"YA EXISTE UN PROCESO DE ENVIO DE NOVEDADES TT CORRIENDO EN ESTE MOMENTO"
+		CALL CSR:file_close(2)
+		CALL post:MISCen_cond_RetPie
+		RETURN (-2)
+	END IF 
+	CALL CSR:file_close(2)
+	
+	IF (Testing.numchars > 0) THEN
+		FPRINT AuxFileName "%s\\temp\\NovedadesTT.log",NTServer
+		CALL csr:file_open(1,AuxFileName,"w")
+		CALL csr:file_write(1,LineaComando)
+		CALL csr:file_close(1)
+	END IF
+	
+	FYIMSG CLEAR
+	*/
+END SUB
+
+/*******/

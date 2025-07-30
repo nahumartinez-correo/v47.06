@@ -1,0 +1,152 @@
+/****o* Giros Masivos/OFB:giros:SVALgm_CEC
+* NOMBRE
+*   OFB:giros:SVALgm_CEC
+* DESCRIPCION
+*   Esta rutina valida que los campos obligatorios de un giro CEC estén cargados.
+*   Valida que no se haya ingresado CEC para el beneficiario.
+*   Calcula la tarifa y sellados.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+
+SUB giros:SVALgm_CEC
+      
+      
+      //??????????????
+   //   setflag camara_flags,emis2 //????????????
+      //??????????????
+        if (Importegm_cec.numchars == 0) then
+        	msgbox "Debe seleccionar un Importe.",0x00,"ERROR"
+		return -2
+	endif
+	if (Cantgm_cec.numchars == 0) then
+        	msgbox "Debe ingresar la Cantidad de Giros.",0x00,"ERROR"
+		return -2
+	endif
+        
+        // sba 20030922
+        // Si es Persona Juridica se completa Razon Social si no Nombre y Apellido
+        if (!testflag(pjurid_benef_flag,persona_juridica))
+                if (NombreBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD NombreBenef_fld
+                        return (-2)
+                end if
+                if (ApellidoBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD ApellidoBenef_fld
+                        return (-2)
+                end if
+        else
+                if (RazonSocBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD RazonSocBenef_fld
+                        return (-2)
+                end if
+        end if
+    
+     	IF (TipoDocBenef_fld.NUMCHARS == 0) THEN
+              ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+              NEXTFIELD TipoDocBenef_fld
+              RETURN (-2)
+        END IF
+        IF (NroDocBenef_fld.NUMCHARS == 0) THEN
+              ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+              NEXTFIELD NroDocBenef_fld
+              RETURN (-2)
+        END IF
+        /*SC-V27.01 Se pidió que los campos de calle, nro y Localidad no sean obligatorios
+                if (CalleBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD CalleBenef_fld
+                        return (-2)
+                end if
+                if (NroCalleBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD NroCalleBenef_fld
+                        return (-2)
+                end if*/
+       /*ACP-V27.02 Se pidió que el campo codigo postal no sea obligatorio
+                if (CodPostBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD CodPostBenef_fld
+                        return (-2)
+                end if */
+                if (CodProvBenef_fld.numchars == 0) then
+                        ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD CodProvBenef_fld
+                        return (-2)
+                end if
+                
+                if (LocBenef_WU.numchars == 0) then
+                       /*SC-V27.01 Se pidió que los campos de calle, nro y Localidad no sean obligatorios
+                       /* ERRMSG LST:common:errmsg_list,gali:ERRcampo_requerido
+                        NEXTFIELD LocBenef_WU
+                        return (-2)*/
+                else
+        	        tele:tele_nombre = LocBenef_WU
+            		CALL CDSadt_locali_prov(CodProvBenef_fld)
+            		if (retval != 0)
+                    		msgbox "Localidad y Provincia no coinciden" OFB_OK "Error"  
+                    		return (-2)     
+            		end if
+                end if
+                
+        //estos campos estaban quedando vacios en el journal
+       	ProvBenef_fld = ProvSucBenef_fld
+        CodSucBenef_fld = CodProvBenef_fld
+	
+	//Validar que no se hayan ingresado CEC para el beneficiario!!!!
+      	CALL CDSverif_CEC_sesion
+      	IF (RETVAL < 0) THEN
+      	    MSGBOX "Ya existe un CEC ingresado para dicho beneficiario.",0x00,"ERROR"
+      	    RETURN -2
+      	END IF
+      
+        //Calcular Tarifa
+        post:adt_tarif_desde = Importegm_cec * Cantgm_cec
+        post:adt_tarif_dest = "BASICO NACIONAL"
+      
+    	CALL post:MISCactualizo_tarifa
+    	if (retval < 0) then
+    	    msgbox "No existe tarifa asociada para ese importe.",OFB_OK,"Aviso"
+    	    return (-2)
+        end if
+       
+       //Se divide el precio por la cantidad de giros
+        giros:Comision_fld = post:adt_tarif_precio / Cantgm_cec
+        call post:MISCdesglosaIva(giros:Comision_fld,post:adt_serv_aliciva,1,0)
+        giros:ComisionSinIva_fld = post:ImporteSinIva
+	giros:IvaComision_fld = post:ImporteIva
+        giros:ImporteNeto = giros:Importegm_cec
+
+
+	call post:MISCdesglosaIva(Comision_fld,post:adt_serv_aliciva,1,0)
+        giros:ComisionSinIva4_fld = post:ImporteSinIva_bis
+        
+        post:AliServUP = post:adt_serv_aliciva
+
+      	//Calcular Sellados... 
+	if (CodProvBenef_fld.NUMCHARS > 0) then
+		post:adt_serv_serv = post:tipo_produc2
+        	giros:SucSel2_fld = CodProvBenef_fld //cgw: instancia para grabar en sesion_gm, la pvcia del Benef. para generar el sellado en AuxImpp.
+		CALL MISCcalculo_sellados(CodProvBenef_fld)
+	end if
+	//EL CEC no tiene TASAS
+	giros:ImporteTotal_fld = giros:ImporteNeto + ImporteSelloPag + ImporteSelloEmis + giros:Comision_fld 
+	
+      
+END SUB
+
+/*******/

@@ -1,0 +1,94 @@
+/****o* Franqueadoras/OFB:post:CDSgenFalloCrem
+* NOMBRE
+*   OFB:post:CDSgenFalloCrem
+* DESCRIPCION
+*   Genera Fallo de Contrareembolso.
+*   Si Fallo Crem Negativo, graba en tabla control_franq.
+*   Si Fallo Crem Positivo, genera transaccion (6860).
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:SVAL70030
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+    
+SUB post:CDSgenFalloCrem
+local x like siaf:i
+LOCAL NroTrn_aux LIKE post:PreDNroTrn
+    x = 0
+    while (x < 10)
+        if (post:track[x].numchars > 0) then
+            if (post:importe_crem_orig[x] > 0) then
+                select (post:estado_presu)
+                	case 4
+                		if (post:importe_crem_orig[x] < post:importe_crem[x]) then
+                		    while (1)
+                		    	Call post:CDSobtiene_secuen("FCREM")
+		        		    	cds endselect "FallosCrem_ctx"  
+		        		    	cds select from "FallosCrem" becomes "FallosCrem_ctx" \
+                		    	where FalloCrem_pieza == post:track[x]
+		        		    	
+		        		    	cds findfirst "FallosCrem_ctx" lock
+		        		    	if (cdsretval == -801) then
+		        		    	    CDS CLEARBUFFER "FallosCrem_ctx"
+		        		    	    FalloCrem_seq = post:adt_codseq_nro
+                		    	    FalloCrem_fecha = common:system_date
+                		    	    FalloCrem_op = op:op_operator_id
+                		    	    FalloCrem_pieza = post:track[x]
+                		    	    FalloCrem_estado = "N"
+                		    	    FalloCrem_orig = post:importe_crem_orig[x]
+                		    	    FalloCrem_ingr = post:importe_crem[x]
+                		    	    FalloCrem_imp = post:importe_crem_orig[x] - post:importe_crem[x]
+                		    	    FalloCrem_hora = common:time_of_day
+                		    	    clearfield FalloCrem_opdes
+                		    	    
+                		    	    CDS APPEND "FallosCrem_ctx" \
+                		    	    FalloCrem_seq \
+                		    	    FalloCrem_fecha \
+                		    	    FalloCrem_op \
+                		    	    FalloCrem_pieza \
+                		    	    FalloCrem_estado \
+                		    	    FalloCrem_orig \
+                		    	    FalloCrem_ingr \
+                		    	    FalloCrem_imp \
+                		    	    FalloCrem_opdes \
+                		    	    FalloCrem_hora
+                		    	    
+                		    	    cds insert "FallosCrem_ctx" lock
+                		    	    if (cdsretval == -836) then
+                		    	    	CDS UNLOCK "FallosCrem_ctx"
+                		    			cds endselect "FallosCrem_ctx"
+                		    			continue
+                		    		end if
+                		    	end if
+                		    	CDS UNLOCK "FallosCrem_ctx"
+                		    	cds endselect "FallosCrem_ctx"
+                		    	break
+                		    end while    
+                		end if    
+					break
+					case 2
+					case 3
+						if (post:importe_crem_orig[x] > post:importe_crem[x]) then
+							NroTrn_aux = post:PreDNroTrn
+							call post:CDSgenTrn6860(x, NroTrn_aux)
+						end if
+					break
+				end select                	
+            end if
+        else
+            break
+        end if
+        x = x + 1
+    end while      
+
+end sub  
+/*******/
+          

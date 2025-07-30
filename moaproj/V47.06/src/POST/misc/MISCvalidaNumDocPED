@@ -1,0 +1,63 @@
+/****o* Pago en Destino/OFB:post:MISCvalidaNumDocPED
+* NOMBRE
+*   MISCvalidaNumDocPED
+* DESCRIPCION
+*   Validacion Numero de Documento
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:MISCvalReg3_4PED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalidaNumDocPED
+
+	CLEARFIELD post:adt_TipoDoc_digver
+	IF (post:CloCuit.NUMCHARS > 0) THEN
+		IF (post:CloCuit == "99999999999" || post:CloCuit == "99999999995") THEN
+			FPRINT post:msje_err_log_PED  "Cliente no permitido como Destinatario con Pago en Destino, Nro de Doc.[%s]" post:CloCuit
+			RETURN -2	
+		ELSE	
+			CDS SELECT FROM DSC:post:TABTipoDoc BECOMES DSC:post:CONTipoDoc \
+				WHERE post:adt_TipoDoc_tipo == post:CloTipDoc
+				
+			CDS FINDFIRST DSC:post:CONTipoDoc NOLOCK
+			IF (CDSRETVAL == 0) THEN
+				CDS EXTRACT DSC:post:CONTipoDoc post:adt_TipoDoc_digver
+			END IF
+			CDS UNLOCK DSC:post:CONTipoDoc
+			
+			IF (post:adt_TipoDoc_digver == "S") THEN
+				/* si es cuit valido el digito verificador */
+				FPRINT common:csr_string,"%11.11s",post:CloCuit
+				CALL post:MISCvalLongTipoCuit(common:csr_string)
+				IF (RETVAL == -2) THEN
+					FPRINT post:msje_err_log_PED  "El CUIT [%s] ingresado es erroneo" post:CloCuit
+					RETURN -2	
+				END IF
+				FPRINT common:csr_string_dig_ver,"%010.10s",SUBSTR(post:CloCuit,0,10)
+				CALL CSR:siaf:cal_dig_mod_11 common:csr_string_dig_ver DSC:siaf:peso_cuit
+				IF ((RETVAL < 0) || (RETVAL != SUBSTR(post:CloCuit,10,1))) THEN
+					FPRINT post:msje_err_log_PED  "Digito verificador del CUIT [%s] es invalido" post:CloCuit
+					RETURN -2	
+				END IF
+			END IF
+		END IF
+	ELSE
+		FPRINT post:msje_err_log_PED  "Falta Numero de Documento del cliente"
+		RETURN -2		
+	END IF
+	RETURN 0
+	
+END SUB
+
+/*******/

@@ -1,0 +1,95 @@
+/****o* Tratamiento de Cheques/OFB:post:MISCsolicPago_UP
+* NOMBRE
+*   OFB:post:MISCsolicPago_UP
+* DESCRIPCION
+*   Cuando es una Venta UP y el medio de pago elegido es Cheque Diferido (02) 
+*   se hace una consulta al switch para verificar los datos
+*   correspondientes a la UP y al límite disponible de la misma. 
+*   En el caso de haber seleccionado Cheque Diferido con Vto al dia, si el limite es 0 
+*   el sistema permite pagar igual con cheque.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCUPpago_dif
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsolicPago_UP
+    /*CSZ-Si estoy en una Venta UP y el medio de pago elegido es Cheque Diferido (02) 
+      entonces tengo que hacer una consulta al switch para veirifcar los datos
+      correspondientes a la UP y al límite disponible de la misma*/
+
+    RESETFLAG giros:tran_send_mode,cancelacion
+
+    /*RUTINA DE RECUPERACION DE TRAN CAIDAS EN VUELO*/
+    /*CSZ - 2002-01-30 */
+    CALL MISCrec_caidas_UP
+    IF (RETVAL == TRAN_CAIDA_VUELO)
+	//No pongo ningun mensaje puesto que si no puede recuperar la caída de una tx, el operador
+	//no tiene por que enterarse
+	//MSGBOX "Problemas de Comunicación. Inténtelo nuevamente o seleccione otro medio de pago",0x00,"Atencion"
+	CLEARFIELD hcomm:INDhost_sndrt
+	CLEARFIELD hcomm:INDhost_rcvrt
+	CLEARFIELD lib:stat_message
+	REFRESH lib:stat_message		
+	RETURN (-2)
+    END IF	
+
+   /*Acá se llama a la rutina que setea los campos, envía mensaje y recibe
+     respuesta del switch. Dependiendo de esto se verá cuales son las medidas
+     a tomar*/
+    CALL MISCenvSolicPago
+    ResetFlag giros:tran_send_mode,consulta_simple
+    if (hcomm:tran_status != HOST_ACCEPTED)
+	
+	IF ((giros:CodRespuesta_comm == "21" || post:climed_inhibido == "S") && siaf:codigo_siaf == 99021) THEN
+	     //cgw:Cliente Inhibido - Limpia y deshabilita checkbox de cheques.
+	     CLEARFIELD post:MPcheque
+	     RESETFLAG MPcheque,MPpago_cheque
+	     ALTERCONTROLSET TAG:post:CHK6
+	     DISABLECONTROL post:CHK6
+	     CLEARFIELD post:cheque_dif
+	     RESETFLAG cheque_dif,UPpago_dif
+	     ALTERCONTROLSET TAG:post:CHK9
+	     DISABLECONTROL TAG:post:CHK9
+	      ;SC50200
+  	     RESETFLAG cheque_dif,chq_dif_al_dia
+	     ALTERCONTROLSET TAG:post:CHK2
+	     DISABLECONTROL TAG:post:CHK2
+	END IF
+	
+	IF (post:limite_up == 0 && siaf:codigo_siaf == 99021) THEN //cgw:limite up es 0.
+	  ;SC50200
+	  if (!TESTFLAG (cheque_dif, chq_dif_al_dia))
+	    CLEARFIELD post:cheque_dif
+	    RESETFLAG cheque_dif,UPpago_dif
+	    ALTERCONTROLSET TAG:post:CHK9
+	    DISABLECONTROL TAG:post:CHK9
+	   endif
+	END IF
+
+	pago_diferido = "N"
+	CALL CDSUP_PagoDif_save
+	/*Journalizo solicitud de pago rechazada*/	
+	CALL MISCjnl_solicRech
+        //ResetFlag giros:tran_send_mode,consulta_simple
+        init 33,0
+        return -2
+    End if	
+    pago_diferido = "S"
+    CALL CDSUP_PagoDif_save
+    /*Se borran los campos que linkean la transaccion y se indica que 
+    no hay próxima pantalla para que aparezca así el menú del cajero*/
+    CLEARFIELD drv:INDspc_rtn[3]
+    CLEARFIELD drv:INDspc_rtn[4]
+    drv:next_screen = -1
+END SUB
+
+/*******/

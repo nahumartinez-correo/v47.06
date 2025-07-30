@@ -1,0 +1,124 @@
+/***o* Tratamiento de Cheques/OFB:post:FVALfecha_vto_CC
+* NOMBRE
+*   OFB:post:FVALfecha_vto_CC
+* DESCRIPCION
+*   Rutina que valida la fecha de vencimiento de un cheque diferido:
+*	Las validaciones que se hacen son las siguientes:
+*		Fecha de Vencimiento no vacia
+*		Fecha de vencimiento > fecha de emision
+*		Dias entre Fecha de Emision y Fecha de Vencimiento no mayor a la parametrizada.(Tabla Medios de Pago)
+*		Si Fecha de Venicmiento es < a Fecha de Proceso, la diferencia entre ambas no debe
+*		superar los 25 dias.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:FVALfecha_venc
+* REFERENCIADO POR
+*   OFB:post:MISCcc_mpag_inflds, SCR:post:SCRNcli_cheq_otrasuc, SCR:post:SCRNctacte_cobranza3,
+*	SCR:post:SCRNreemp_chqrech_up, SCR:post:SCRNreemp_chqrob
+* DOCUMENTACION
+*   NI50219.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=620039&
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALfecha_vto_CC
+    Local fecha_aux like fec_d
+    Local l_fecha like fec_d
+    LOCAL imp_desc LIKE common:csr_string
+    
+    /*MFM - ENTRADA DE CHEQUE A CAJA DE OTRA SUCURSAL*/
+    IF (siaf:codigo_siaf == 9340 || siaf:codigo_siaf == 9350) THEN
+    	post:tipo_mpago = siaf:moneda
+    ENDIF
+    
+    //cgw:si tiene cheque diferido debe tener fecha de vto.
+    if (currentfield.numchars == 0 && post:tipo_mpago != 2) then    	
+        return
+    end if
+
+    adt_mp_cod = tipo_mpago
+    CALL post:CDSadt_MedPago_load        
+    IF (adt_mp_diferido == "S")
+    
+		/*Se comenta a partir del PS 9632
+	    call csr:date_compare(fec_d,common:system_date)
+        If (retval == 2 || retval == 0)  //fecha vto es menor o igual a fecha proceso
+	        MSGBOX "Fecha de Vencimiento invalida",0x00,"ERROR"
+	        nextfield fec_d
+	        return (-2)
+        End IF*/
+		
+    	IF (fec_e.numchars == 0)
+			IF (fec_d.numchars != 0)
+				MSGBOX "Ingrese primero la fecha de emisión",0x00,"ERROR"
+				nextfield fec_e
+				clearfield fec_d
+				refresh fec_d
+			END IF
+		    return 0
+		end if
+    	
+		IF (currentfield.numchars == 0)
+			MSGBOX "Fecha de vencimiento Invalida",0x00,"ERROR"
+		    return -2
+		end if
+    	
+    	
+    	//AUT-1134
+		call csr:date_compare(fec_e,fec_e)
+        if (retval < 0) then
+            errmsg LST:common:errmsg_list,"Fecha de emision inválida"
+            nextfield fec_e
+            return -2
+        end if
+ 		
+ 		call csr:date_compare(fec_d,fec_d)
+        if (retval < 0) then
+            errmsg LST:common:errmsg_list,"Fecha de vencimiento inválida"
+            nextfield fec_e
+            return -2
+        end if
+        
+		call csr:date_compare(fec_e,fec_d)
+		If (Retval == 1 || Retval == 0)
+			MSGBOX "La fecha de vencimiento debe ser mayor a la fecha de emisión.",0x00,"ERROR"
+			return (-2)
+		End if
+      
+         //SC 50219 - Se pidió que esta validacion tenga prioridad sobre las que siguen.
+        call csr:date_add(fec_e,post:adt_mp_max_venc,"d",l_fecha)
+        ; comparo la nueva fecha obtenida contra la fecha de vencimiento
+	call csr:date_compare(fec_d,l_fecha)
+	; Si el retval es 2 la fecha de venc. es más vieja que la fecha actual. 
+        if (retval != 2 && retval != 0) then
+		FPRINT imp_desc,"%s%s%s","La diferencia entre la fecha de venc. y la fecha de emisión\n no puede superar los ",post:adt_mp_max_venc," días."
+		MSGBOX imp_desc,0x00,"ERROR"
+		return (-2)
+	End if
+	
+        ; Comparo la fecha de venc. p/ ver que sea menor o igual a la fecha del sistema
+    	; Si el retval es 2 la fecha de venc. es más vieja que la fecha actual. *** MDG
+    	call csr:date_compare(fec_d,common:system_date)
+    	if (retval == 2) then
+    		; Le sumo 25 días a la fecha de venc. p/ ver que la fecha de proceso
+    		; no supere 25 días la fecha de venc. 
+    		call csr:date_add(fec_d,25,"d",fecha_aux)
+		; comparo la nueva fecha obtenida contra common:system_date.
+		call csr:date_compare(fecha_aux ,common:system_date)
+		; si la fecha de fecha_aux es más vieja que la fecha actual entonces hay un error.
+		If (RetVal == 2)
+			MSGBOX " La diferencia entre la fecha de venc. y la actual\n no puede superar los 25 días.",0x00,"ERROR"
+			return (-2)
+		End if
+	end if        
+	
+        
+        //call siaf:FVALfecha_vto
+    END IF
+    return (retval)
+END SUB
+
+/*******/

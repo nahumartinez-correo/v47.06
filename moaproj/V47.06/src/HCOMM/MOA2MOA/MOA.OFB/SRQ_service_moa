@@ -1,0 +1,384 @@
+/****o* Pendientes de agrupación/OFB:hcomm:SRQ_service_moa
+* NOMBRE
+*   OFB:hcomm:SRQ_service_moa
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MOA2MOAMOA.OFB.h"
+
+/*  NAME: hcomm:SRQ_service_moa                                          */
+/*                                                                         */
+/*   This event script handles all incoming requests (service requests)    */
+/*   which come in through the moa resource channel.                     */
+/*                                                                         */
+/*   Current requests on this resource are:                                */
+/*                                                                         */
+/*   set host mode all           - service code (100)                      */
+/*   set nohost mode all         - service code (101)                      */
+/*   set host mode workstation   - service code (102)                      */
+/*   set nohost mode workstation - service code (103)                      */
+/*   message broadcast           - service code (104), message data        */
+/*   message to operator         - service code (105), operator id,        */
+/*                                 message data                            */
+/*   override request            - service code (106), req oper, req ws,   */
+/*                                 req message 1, req message 2            */
+/*   override request response   - service code (107), override resp,      */
+/*                                 info message 1, info message 2          */
+/*   override request cancel     - service code (108), req oper, req ws,   */
+/*   override acknowledged       - service code (109)                      */
+/*   message to workstation      - service code (110), req oper, msg data  */
+/*   config message to operator  - service code (111)                      */
+/*   credit bureau request       - service code (200)                      */
+/*   credit bureau que           - service code (201)                      */
+/*   credit bureau status        - service code (203)                      */
+/*   credit bureau status recv   - service code (204)                      */
+/*   batch reentry in progress   - service code (300)                      */
+/*   batch reentry completed     - service code (301)                      */
+/*   start reentry request       - service code (302)                      */
+/*   update reentry flags signal - service code (303)                      */
+/*   kill batch rt request       - service code (304)                      */
+/*                                                                         */
+	SUB hcomm:SRQ_service_moa
+
+	LOCAL OperatorID like op:adt_login_id
+	LOCAL OperatorReply like common:csr_string
+#ifdef DEBUG
+	dprint "\n In hcomm:SRQ_service_moa script \n"
+#endif
+
+	if (commhdr(CSH_VERB) != CS_DATA)
+	/* receive error verb received from the aci instead of data message */
+		setflag hcomm:event_flags,primary
+		setflag hcomm:event_flags,pp_rcv_notok
+		move MOA_ERR to hcomm:host_srv_resp
+/*              if (COMMHDR(CSH_VERB) == CS_ERROR)
+		CALL  OFB:hcomm:COMM_show_aci_error
+	END IF */
+	return
+END IF
+
+	/* Save off resource name of sender and receiver */
+move commhdr(CSH_SOURCE) to hcomm:pp_src_resrc_ev /* sender */
+
+	/* GET THE SERVICE REQUEST CODE
+(length based on length of define field) */
+let hcomm:host_len = hcomm:host_pp_srv_code.length
+comm get hcomm:host_pp_srv_code from msg length hcomm:host_len
+
+if (hcomm:host_pp_srv_code == MOA_RSP)
+	setflag hcomm:event_flags,primary
+	setflag hcomm:event_flags,pp_rcv_ok
+	move MOA_RSP to hcomm:host_srv_resp
+	return
+END IF
+
+#if BASE_CFIG_BATCH == 1
+	if (testflag(common:rt_flags,batch_mode))
+		if (batch:not_run == 1)
+			return
+		END IF
+	END IF
+#endif
+SELECT (hcomm:host_pp_srv_code)
+		/* SET HOST MODE ALL WORKSTATIONS */
+	case SET_HOSTMODE_ALL
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:SRQ_show_mode_host
+		break
+
+		/* SET NOHOST MODE ALL WORKSTATIONS */
+	case SET_NOHOSTMODE_ALL
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:SRQ_show_mode_nohost
+		break
+
+		/* SET HOST MODE ONE WORKSTATION */
+	case SET_HOSTMODE_WS
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:SRQ_show_mode_host
+
+			/* return a response */
+		comm setresource hcomm:host_moa init_send
+		comm put MOA_RSP msg
+		comm senddata hcomm:pp_src_resrc_ev
+		break
+
+		/* SET NOHOST MODE ONE WORKSTATION */
+	case SET_NOHOSTMODE_WS
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:SRQ_show_mode_nohost
+
+			/* return a response */
+		comm setresource hcomm:host_moa init_send
+		comm put MOA_RSP msg
+		comm senddata hcomm:pp_src_resrc_ev
+		break
+
+		/* MESSAGE BROADCAST */
+	case MSG_BROADCAST
+		setflag hcomm:event_flags,secondary
+		comm get lib:stat_msg_line from msg
+		CALL  OFB:lib:STATshow_msg_line
+		break
+
+		/* MESSAGE TO OPERATOR */
+	case MSG_OPERATOR
+		setflag hcomm:event_flags,secondary
+		move "OP"  to lib:stat_msg_line
+		let hcomm:host_len = op:op_operator_id.length
+		comm get hcomm:host_workarea from msg length hcomm:host_len
+		fprint lib:stat_msg_line,"%s%s ",lib:stat_msg_line,\
+			hcomm:host_workarea
+		let hcomm:host_len = admin:msg_operator_id.length
+		comm get admin:msg_operator_id from msg length hcomm:host_len
+		comm get hcomm:host_workarea from msg
+		fprint lib:stat_msg_line,"%s %s",lib:stat_msg_line,\
+			hcomm:host_workarea
+
+		if (admin:msg_operator_id == op:op_operator_id)
+			CALL  OFB:lib:STATshow_msg_line
+				/* Return a response */
+			comm setresource hcomm:host_moa init_send
+			comm put MOA_RSP msg
+			comm senddata hcomm:pp_src_resrc_ev
+			break
+	else /* Return an Error */
+		clearfield lib:stat_msg_line
+		comm setresource hcomm:host_moa init_send
+		comm put MOA_ERR msg
+		comm senddata hcomm:pp_src_resrc_ev
+		break
+	END IF
+
+#if BASE_CFIG_OVR == 1
+		/* OVERRIDE REQUEST */
+	case REM_OVR_REQ
+		setflag hcomm:event_flags,secondary
+		let hcomm:host_len = op:op_login_id.length
+		comm get ovr:ro_req_oper_wrk msg length hcomm:host_len trimright " "
+		let hcomm:host_len = op:op_node_id.length
+		comm get ovr:ro_req_ws_wrk msg length hcomm:host_len trimright " "
+		let hcomm:host_len = ovr:ro_req_msg1.length
+		comm get ovr:ro_req_msg1_wrk msg length hcomm:host_len trimright " "
+		let hcomm:host_len = ovr:ro_req_msg2.length
+		comm get ovr:ro_req_msg2_wrk msg length hcomm:host_len trimright " "
+
+			/* move time but insert colons so it stores in stucture correctly */
+		move substr(common:time_of_day,0,2) to ovr:ro_req_time_wrk
+		fprint ovr:ro_req_time_wrk,"%s%s",ovr:ro_req_time_wrk,":"
+		move substr(common:time_of_day,2,2) to ovr:ro_time_split
+		fprint ovr:ro_req_time_wrk,"%s%s:",ovr:ro_req_time_wrk,\
+			ovr:ro_time_split
+		move substr(common:time_of_day,4,2) to ovr:ro_time_split
+		fprint ovr:ro_req_time_wrk,"%s%s",ovr:ro_req_time_wrk,\
+			ovr:ro_time_split
+
+		move op:op_operator_id to ovr:ro_rcv_oper_wrk
+		move op:op_node_id to ovr:ro_rcv_ws_wrk
+
+			/* store date as MMMMMMMMM dd, yyyy format in override structure */
+		move common:system_date to ovr:ro_req_date_wrk
+
+			/* Specify type of override request */
+		move "PP"  to ovr:ro_req_product_wrk
+
+			/* Now put the override into the override list structure */
+		CALL  CSR:saovreq_insert ovr:ro_req_oper_wrk ovr:ro_req_ws_wrk \
+			ovr:ro_req_date_wrk,ovr:ro_req_time_wrk,ovr:ro_req_msg1_wrk,\
+			ovr:ro_req_msg2_wrk,ovr:ro_rcv_oper_wrk,ovr:ro_rcv_ws_wrk,\
+			ovr:ro_req_product_wrk
+
+		if (Retval == 0)
+				/* override request successfully added to structure */
+			setflag ovr:event_flags,ovr_request
+			CALL  OFB:ovr:OVRro_show_ovr_pend
+			comm setresource hcomm:host_moa init_send
+			comm put MOA_RSP msg
+			comm senddata hcomm:pp_src_resrc_ev
+			break
+		else /* Return an Error */
+			comm setresource hcomm:host_moa init_send
+			comm put MOA_ERR msg
+			comm senddata hcomm:pp_src_resrc_ev
+		END IF
+		break
+
+		/* OVERRIDE REQUEST RESPONSE */
+	case REM_OVR_RESP
+		setflag hcomm:event_flags,primary
+		setflag ovr:event_flags,ovr_response
+
+		let hcomm:host_len = ovr:ro_reason_desc.length
+		comm get ovr:ro_resp msg length hcomm:host_len trimright " "
+		let hcomm:host_len = ovr:ro_reason_msg1.length
+		comm get ovr:ro_info_msg1 msg length hcomm:host_len trimright " "
+		let hcomm:host_len = ovr:ro_reason_msg2.length
+		comm get ovr:ro_info_msg2 msg length hcomm:host_len trimright " "
+		break
+
+		/* OVERRIDE REQUEST CS_SNA_CANCEL */
+	case REM_OVR_CANCEL
+		setflag hcomm:event_flags,secondary
+		let hcomm:host_len = op:op_login_id.length
+		comm get ovr:ro_req_oper_wrk msg length hcomm:host_len trimright " "
+		let hcomm:host_len = op:op_node_id.length
+		comm get ovr:ro_req_ws_wrk msg length hcomm:host_len trimright " "
+
+			/* Now delete the override from the override list structure */
+		CALL  CSR:saovreq_delete ovr:ro_req_oper_wrk ovr:ro_req_ws_wrk
+
+		if (Retval == 0) /* override successfully deleted from structure */
+				/* Inform supervisor by displaying a message */
+			fprint lib:stat_msg_line,\
+				"El Operador %s ha Cancelado Su Pedido de Supervision",\
+				ovr:ro_req_oper_wrk
+			CALL  OFB:lib:STATshow_msg_line
+
+				/* Clearing ovr_request flag before call to saovreq_count */
+				/* routine allows you to determine if an override request */
+				/* arrived before indicator is cleared.                   */
+			resetflag ovr:event_flags,ovr_request
+			CALL  csr:saovreq_count
+			if (retval == 0)
+				CALL  OFB:ovr:OVRro_clr_ovr_pend
+			END IF
+		END IF
+		break
+
+		/* OVERRIDE ACKNOWLEDGE */
+	case REM_OVR_ACKN
+		setflag hcomm:event_flags,primary
+		setflag ovr:event_flags,ovr_acknowledge
+		break
+#endif
+
+		/* MESSAGE TO WORKSTATION */
+	case MSG_WORKSTATION
+		setflag hcomm:event_flags,secondary
+		comm get hcomm:host_workarea from msg
+		comm setresource hcomm:host_moa init_send
+		comm put hcomm:pp_src_resrc_ev msg
+		let msg = msgbegin
+		if (@msg == '$')
+			let msg = msgbegin + 1
+		END IF
+		comm get lib:stat_msg_line delimiter ':' length 8 trimright " "
+		fprint lib:stat_msg_line,"%s%s%s",lib:stat_msg_line,":" \
+			hcomm:host_workarea
+		CALL  OFB:lib:STATshow_msg_line
+
+			/* Return a response */
+		comm setresource hcomm:host_moa init_send
+		comm put MOA_RSP msg
+		comm senddata hcomm:pp_src_resrc_ev
+		break
+
+		/* CONFIG MESSAGE TO OPERATOR */
+	case MSG_CONFIG
+		setflag hcomm:event_flags,secondary
+			/* Set INIT to 0 to reset the logical-to-physical printer path.
+		Forces rt to look-up new config_file information.*/
+		init 29 0
+
+			/* Return a response */
+		comm setresource hcomm:host_moa init_send
+		comm put MOA_RSP msg
+		comm senddata hcomm:pp_src_resrc_ev
+		break
+
+#if BASE_CFIG_BATCH == 1
+#if REN_INFORM == 1
+		/* REENTRY BEGUN */
+	case REENTRY_BEG
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:RENinf_show_beg
+		break
+
+		/* REENTRY COMPLETED */
+	case REENTRY_CMPL
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:hcomm:RENinf_show_cmpl
+		break
+#endif
+
+#if OPERATOR_REN_INIT == 1
+		/* START REENTRY REQUEST */
+	case START_REENTRY_REQ
+		if (testflag(batch:function_flags,reentry))
+			setflag hcomm:event_flags,secondary
+			setflag batch:state_flags,reentry_req
+
+				/* return a response */
+			comm setresource hcomm:host_moa init_send
+			comm put MOA_RSP msg
+			comm senddata hcomm:pp_src_resrc_ev
+		END IF
+		break
+
+		/* UPDATE REENTRY REQUIRED FLAGS REQUEST */
+	case REN_UPT_FLAGS
+		setflag hcomm:event_flags,secondary
+		CALL  OFB:op:MISCinit_flags
+		break
+#endif
+
+		/* HALT REENTRY REQUEST */
+	case HALT_REENTRY
+		if (testflag(batch:function_flags,reentry))
+			setflag hcomm:event_flags,secondary
+				/* return a response */
+			comm setresource hcomm:host_moa init_send
+			comm put MOA_RSP msg
+			comm senddata hcomm:pp_src_resrc_ev
+			if (testflag(common:rt_flags,reentry_active))
+				setflag hcomm:state_flags,reentry_reset
+			END IF
+		END IF
+		break
+#endif
+
+		case OP_STATUS
+			let hcomm:host_len = op:adt_login_id.length
+			comm get OperatorID from msg length hcomm:host_len trimright " "
+			if (op:op_login_id == OperatorID)
+					/* Return a response */
+				comm setresource hcomm:host_moa init_send
+				comm put OP_STATUS_REP msg
+				comm put "YES" msg
+				comm senddata hcomm:pp_src_resrc_ev
+				break
+			else /* Return an Error */
+				comm setresource hcomm:host_moa init_send
+				comm put OP_STATUS_REP msg
+				comm put "NO" msg
+				comm senddata hcomm:pp_src_resrc_ev
+				break
+			END IF
+		break
+		case OP_STATUS_REP
+			comm get OperatorReply from msg length 2
+			if ( OperatorReply == "NO" )
+				setflag hcomm:event_flags,op_status_off
+			else
+				setflag hcomm:event_flags,op_status_on
+			end if		
+		break
+	END SELECT
+
+	/* Refresco el campo de mensajes para que quede el mismo hasta 
+           que el operador lo saque */
+	refresh lib:stat_msg_line
+END SUB
+
+/*******/

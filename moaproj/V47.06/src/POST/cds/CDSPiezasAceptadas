@@ -1,0 +1,226 @@
+/****o* Expedición/OFB:post:CDSPiezasAceptadas
+* NOMBRE
+*   OFB:post:CDSPiezasAceptadas
+* DESCRIPCION
+*   Toma las piezas aceptadas (post:MarcaBorrado == " ") y las guarda en la tabla TranCont y en el Journal,
+*   y actualiza los campos post:adt_novtt_op2, post:adt_novtt_guia_cont y post:adt_novtt_est_pieza de la 
+*   NovTT.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   sale con un RETURN (-2) en caso que no encuentre piezas aceptadas.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALRecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSPiezasAceptadas
+    LOCAL op LIKE op:op_login_id
+
+    op = op:op_login_id 
+    
+    //GRABO EL DETALLE
+    siaf:codigo_siaf     = 99105
+    siaf:adt_tran_codigo = siaf:codigo_siaf
+    call siaf:CDSadt_tran_load 
+	siaf:nombre_transac  = siaf:adt_tran_desc
+	tlr:tran_mnemonic    = siaf:adt_tran_mnemonic
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	siaf:tiene_reverso   = siaf:adt_tran_tiene_rev
+    siaf:posible_off     = siaf:adt_tran_posoff
+    		
+    drv:INDcur_tran      = LST:post:TRANJnlDetRecepPzas
+    drv:INDscreen[0]     = SCR:post:SCRNRecepPzasDet
+    drv:INDscr           = SCR:post:SCRNRecepPzasDet
+    //drv:flags          = "00000000000000000000000000C00000000000000000000000000"
+    drv:INDjnl_rtn       = OFB:post:JNLRecepPzasDet
+
+    CLEARFIELD drv:INDspc_rtn[2]
+    CLEARFIELD drv:INDspc_rtn[3]
+    CLEARFIELD drv:INDspc_rtn[4]
+    CLEARFIELD drv:INDspc_rtn[5]
+    CLEARFIELD drv:INDbut_list[0]
+
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+        WHERE   op:op_operator_id  == op:op_operator_id      && \
+                post:MarcaBorrado == " "
+    
+    CDS FINDFIRST   DSC:post:DetTmp_ctx LOCK
+    
+    lib:err_retval = CDSRETVAL
+    IF (CDSRETVAL != 0) THEN
+       CDS UNLOCK DSC:post:DetTmp_ctx
+       CDS ENDSELECT DSC:post:DetTmp_ctx
+       RETURN (-2)
+    END IF
+
+    DO
+        lib:err_retval = CDSRETVAL
+        IF (lib:err_retval != 0) THEN
+            BREAK
+        END IF
+
+        // Extraigo los campos que necesito de la DetTmp para poder compararlos con los de la TranPend en el 
+        // Select de abajo.
+        CDS EXTRACT DSC:post:DetTmp_ctx     \
+                    post:jnl_branch_ori     \
+                    post:jnl_operator_ori   \
+                    tlr:jnl_date            \
+                    post:jnl_time_ori       \
+                    post:jnl_bus_date_ori   \
+                    tlr:jnl_sequence        \
+                    post:NroTranf
+
+        // Hago el select por la clave de la TranPend, copio el contexto al contexto de la TranCont y hago un 
+        // insert en la TranCont
+        CDS SELECT FROM DSC:post:TranPend_tbl BECOMES DSC:post:TranPend_ctx  \
+            WHERE   post:jnl_branch_ori   == post:jnl_branch_ori          && \
+                    post:jnl_operator_ori == post:jnl_operator_ori        && \
+                    post:jnl_date_ori     == tlr:jnl_date                 && \
+                    post:jnl_time_ori     == post:jnl_time_ori            && \
+                    post:jnl_bus_date_ori == post:jnl_bus_date_ori        && \
+                    post:jnl_sequence_ori == tlr:jnl_sequence             && \
+                    post:NroTranf         == post:NroTranf
+
+        CDS FINDFIRST   DSC:post:TranPend_ctx LOCK
+        
+        lib:err_retval = CDSRETVAL
+        IF (CDSRETVAL != 0) THEN
+           CDS UNLOCK DSC:post:TranPend_ctx
+           CDS ENDSELECT DSC:post:TranPend_ctx
+           
+           CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+           CONTINUE
+        END IF
+        
+        MOVE " " TO post:MarcaBorrado
+        CDS APPEND DSC:post:TranPend_ctx post:MarcaBorrado
+        CDS UPDATE DSC:post:TranPend_ctx LOCK
+        CDS UNLOCK DSC:post:TranPend_ctx
+        
+        CDS SELECT FROM DSC:TranCont BECOMES DSC:TranCont_ctx
+        CDS FINDFIRST   DSC:TranCont_ctx LOCK
+        CDS CLEARBUFFER DSC:TranCont_ctx
+        
+        CDS FINDAGAIN   DSC:post:TranPend_ctx LOCK
+        CALL CSR:copy_record(DSC:TranPend_ctx,DSC:TranCont_ctx)
+
+        CDS INSERT      DSC:TranCont_ctx NOLOCK
+        CDS ENDSELECT   DSC:TranCont_ctx
+
+
+        // Hago un extract de algunos campos de la TranPend para llenar el fld post:DetalleContenidoGC2
+        // para luego poder Journalizarla.
+        CDS FINDAGAIN   DSC:post:TranPend_ctx LOCK
+        CDS EXTRACT DSC:post:TranPend_ctx \
+                        op:op_login_id, \
+                        post:jnl_date_ori,\
+                        post:jnl_grucorte_cod \
+                        post:jnl_apertura_cod \
+                        post:jnl_sequence_ori \
+                        post:Pieza_id \
+                        post:MarcaBorrado
+
+
+        fprint post:DetalleContenidoGC2, "%-14.14s %-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+               op:op_login_id, \
+               post:jnl_date_ori,\
+               post:jnl_grucorte_cod \
+               post:jnl_apertura_cod \
+               post:Pieza_id \
+               post:MarcaBorrado
+
+        op:op_login_id = op
+
+        UNGETKEY 0x0191 /* RT_SEND */
+        CALL tlr:JNLtran /* Journaliza el detalle */
+
+
+        // Actualizo los campos post:adt_novtt_op2, post:adt_novtt_guia_cont, post:adt_novtt_est_pieza
+        // de la NovTT
+        CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx            \
+            WHERE ((post:adt_novtt_op       == post:jnl_operator_ori) && \
+                   (post:adt_novtt_sequence == post:jnl_sequence_ori) && \
+                   (post:adt_novtt_pieza    == post:Pieza_id)         && \
+                   (post:adt_novtt_tipo == 15 || post:adt_novtt_tipo == 16 || post:adt_novtt_tipo == 99))
+            
+        CDS FINDFIRST DSC:NovTT_ctx LOCK
+        IF (CDSRETVAL == -801) THEN
+            CDS UNLOCK DSC:NovTT_ctx
+            CDS ENDSELECT DSC:NovTT_ctx
+            
+           // CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+           // CONTINUE
+        ELSE
+	        post:adt_novtt_op2 = op:op_operator_id //operador logueado variable que siempre esta en memoria
+	        post:adt_novtt_guia_cont = ""
+	        post:adt_novtt_est_pieza = "R"
+	        CDS CLEARBUFFER DSC:NovTT_ctx
+	        CDS APPEND DSC:NovTT_ctx post:adt_novtt_op2 \
+	                                 post:adt_novtt_guia_cont \
+	                                 post:adt_novtt_est_pieza
+	        CDS UPDATE DSC:NovTT_ctx LOCK
+	        CDS UNLOCK DSC:NovTT_ctx 
+	        CDS ENDSELECT DSC:NovTT_ctx
+
+			 ENDIF
+        // Actualizo el campo jnl_pieza_recibida del journal en el registro de la pieza
+        // para marcarla para que no se pueda volver a transferir.
+        
+        /* Select según clave completa del Journal */
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+                        (tlr:jnl_branch   == post:jnl_branch_ori      && \
+                         tlr:jnl_operator == post:jnl_operator_ori    && \
+                         tlr:jnl_date     == post:jnl_date_ori        && \
+                         tlr:jnl_time     == post:jnl_time_ori        && \
+                         tlr:jnl_bus_date == post:jnl_bus_date_ori    && \
+                         tlr:jnl_sequence == post:jnl_sequence_ori       )
+
+        CDS FINDFIRST DSC:tlr:jnl_context LOCK
+        lib:err_retval = CDSRETVAL
+        IF (CDSRETVAL != 0) THEN
+            CDS UNLOCK    DSC:tlr:jnl_context
+            CDS ENDSELECT DSC:tlr:jnl_context
+            
+            //CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+            //CONTINUE
+        else
+		        
+		        FLD:post:jnl_pieza_recibida = "S"
+		        CDS APPEND    DSC:tlr:jnl_context \
+		                      FLD:post:jnl_pieza_recibida
+		
+		        CDS UPDATE    DSC:tlr:jnl_context LOCK
+		        CDS UNLOCK    DSC:tlr:jnl_context
+		        CDS ENDSELECT DSC:tlr:jnl_context
+		    endif
+		
+
+        // Borro el registro de la TranPend.
+        CDS FINDAGAIN DSC:post:TranPend_ctx LOCK
+        IF (CDSRETVAL == 0) THEN
+            CDS DELETE DSC:post:TranPend_ctx
+            CDS UNLOCK DSC:post:TranPend_ctx
+        END IF
+        CDS ENDSELECT   DSC:TranPend_ctx
+        
+        CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+    LOOP
+    
+    CDS UNLOCK      DSC:post:DetTmp_ctx
+    CDS ENDSELECT   DSC:post:DetTmp_ctx
+
+    CLEARFIELD drv:INDsend_rtn
+    CLEARFIELD drv:INDjnl_rtn
+    drv:INDscreen[0] = SCR:post:SCRNRecepPzas_otroOp
+
+    op:op_login_id = op
+
+END SUB
+
+/*******/

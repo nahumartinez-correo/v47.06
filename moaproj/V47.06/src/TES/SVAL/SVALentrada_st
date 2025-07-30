@@ -1,0 +1,107 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALentrada_st
+* NOMBRE
+*   OFB:tes:SVALentrada_st
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrada_st
+	local idx like siaf:i
+    
+    if (!(testflag(tlr:tran_flags,correction))) THEN
+        tes:es_reenvio = "N"       
+
+		idx = 0
+        do
+        	if (idx >= cant_mp) then
+          		break
+          	end if
+          	if (tes:importes_pase[idx] != 0) then
+          		break
+          	end if
+          	idx = idx + 1
+     	loop
+        
+        /* La cantidad de medios de pago cero es igual a la cant de Medios de Pago */
+        if (idx == cant_mp) then
+        	errmsg lst:common:errmsg_list "Debe cargar algun importe"
+        	return (-2)
+        end if
+
+		/*if (tes:tmov_es_rechazo == "S") 
+		//el pase fue enviado nuevamente por el op. destino al op. origen*/
+    	popup tes:SCRNconfirma  
+    	if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+        	return (-2)
+    	end if
+
+	    call siaf:SVALnivel_sup
+	    if (retval < 0)
+	       return (-2)
+	    end if        	
+
+        idx = 0	
+        do
+        	if (idx >= cant_mp) then
+        		break
+        	end if	   
+        	if (tes:importes_pase[idx] != 0) then   
+				post:importe_origen = tes:importes_pase[idx]
+				siaf:moneda = tes:mp_codigo[idx]
+				post:adt_mp_cod = siaf:moneda
+				call post:CDSadt_MedPago_load
+				siaf:desc_moneda = post:adt_mp_desc
+				post:medio_pago_desc = post:adt_mp_desc
+		    	// Convierto a moneda base.
+		    	call post:MISCconvierto_coti(post:importe_origen)
+		   
+		   		let drv:INDscr = SCR:tes:SCRNimp_dep
+		   		tes:es_tesoro = "S"
+				ungetkey RT_SEND		 	
+		   		call tlr:JNLtran
+		   	end if
+			
+			idx = idx + 1
+	    loop
+		CLEARFIELD drv:INDjnl_rtn
+	    clearfield tlr:INDtots_append
+    	clearfield drv:INDspc_rtn[0]
+    else 
+    	call siaf:SVALnivel_sup
+	    if (retval < 0)
+	       return (-2)
+	    end if        	
+
+    	 // IF (reversa)
+		/* Verfico que el subtesoro no se quede en negativo ni por debajo del limite */
+		let tes:subtes_moneda = siaf:moneda
+		call tes:CDScons_subtes
+		if (retval < 0) then
+			/* No existe el registro asumo que hay 0*/
+			clearfield tes:subtes_total 
+		end if
+		if (tes:subtes_total - post:importe_origen < 0) then
+			errmsg lst:common:errmsg_list "No se Puede Reversar, Supera al Fondo de Habilitación"
+			return (-2)
+		end if
+    
+    end if
+
+    
+    unprotfield siaf:moneda
+    unprotfield post:importe_origen
+END SUB
+
+/*******/

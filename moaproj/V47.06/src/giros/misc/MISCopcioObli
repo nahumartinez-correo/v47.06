@@ -1,0 +1,177 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCopcioObli
+* NOMBRE
+*   OFB:giros:MISCopcioObli
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCopcioObli(opcional)
+/*****************************************************************************
+ESTA RUTINA AGREGA LOS OPCIONALES OBLIGATORIOS PARA LA TRAN 70033 (GIRO PLUS)
+******************************************************************************/
+LOCAL cont LIKE post:cant_opc
+LOCAL desc_temp LIKE post:adt_opc_desc
+
+	/*Inserto el opcional obligatorio para giro postal plus (norma)*/	
+	common:csr_string = opcional
+    
+	/*****************************************************************************/
+	/* En modo Confirmación no se deben abrir los Combos 	                     */
+	/*Y esto es porque se llama mas de una vez a PRES =>(post:tipo_produc2 == "")*/                             
+	/*****************************************************************************/
+	IF (post:estado_presu == 4) || (post:tipo_produc2 == "") THEN
+    	GOTO FIN
+	END IF
+
+    /* Veo si es necesario agregarlo*/
+   	WHILE (cont < post:cant_opc)
+       	IF (post:cod_opc[cont] == SUBSTR(common:csr_string,0,4)) THEN
+       	    GOTO FIN
+       	END IF
+       	cont = cont + 1
+   	END WHILE
+   		
+   	/*****************************************************************/
+   	/* Veo si el Opcional elegido requiere del ingreso de algun valor*/
+   	/* como el de Valor Declarado o Contrarembolso.	       	         */
+   	/*****************************************************************/
+	IF (post:cant_opc == 6) THEN
+		MSGBOX "NO SE PUEDE INCLUIR MAS OPCIONALES",0x0190,"ERROR"
+		GOTO FIN
+	END IF
+			
+    CALL giros:MISCcontrolOpcio
+    IF ( RETVAL != 0 )
+        GOTO FIN_ERROR
+    ENDIF
+    
+    desc_temp = SUBSTR(common:csr_string,0,4)
+       
+    /***********************************************************/
+    /* A partir del Req. 600 todos los opcionales influyen 	   */
+    /* Creo que no tiene más sentido este campo salvo	       */
+    /* que en el futuro vuelvan a existir opcionales cuyo	   */
+    /* costo no influya en el costo total de opcionales.	   */
+    /***********************************************************/
+    post:inf_opc[post:cant_opc] = "S"
+        
+   	/*****************************************************************************/
+    /* Extraigo el Código de Opcional , el campo que determina si el opc. combina*/
+   	/* y la Al¡cuota del IVA del mismo	                                         */
+   	/*****************************************************************************/
+   	CLEARFIELD post:adt_opc_combina
+    CDS SELECT FROM post:OPC_TAB BECOMES post:OPC_CTX WHERE \
+    post:adt_opc_opci == desc_temp
+    CDS FINDFIRST post:OPC_CTX NOLOCK
+    IF (CDSRETVAL == 0)
+        CDS EXTRACT post:OPC_CTX post:adt_opc_opci \
+            post:adt_opc_aliciva \
+   	        post:adt_opc_cortepropio \
+       	    post:adt_opc_disccp \
+       	    post:adt_opc_combina
+    ENDIF       	
+    CDS ENDSELECT post:OPC_CTX
+       	
+   	post:cod_opc[post:cant_opc] = post:adt_opc_opci
+   	post:ali_opc[post:cant_opc] = post:adt_opc_aliciva
+   	post:comb_opc[post:cant_opc] = post:adt_opc_combina
+    FPRINT post:cor_opc[post:cant_opc], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+    cont = 0
+       	
+#ifdef COMPILA_SAP
+			// FGB: para cuentas corrientes, si el opcional no combina 
+			//      tengo que validarlo como un producto aparte ante SAP.
+			if (post:cli_tipo == 1) then
+			    // si el opcional no combina, lo valido
+			    if (post:comb_opc[post:cant_opc] == "N") then
+			       //call post:sap_valida_opc
+			       CALL post:MISCbuscar_prod_sap("OPC")
+			       if (retval < 0) then
+			          goto FIN
+			       end if
+			    end if
+			end if
+#endif		           		
+
+    /*tratamiento embarazosa*/
+    IF (post:cod_opc[post:cant_opc] == "EMBA")
+        post:vec_opc2[post:cant_opc] = post:tarifa
+        post:posicion_emba = post:cant_opc
+        post:tiene_emba = "S"
+    END IF
+        		
+    REFRESH post:cod_opc[post:cant_opc]
+    REFRESH post:vec_opc2[post:cant_opc]
+       	
+   	/********************************************************************/
+    /* Extraigo el Modo de Cálculo y el porcentaje que fue aplicado 	*/
+    /********************************************************************/
+    CDS SELECT FROM post:OPC_SERV_TAB BECOMES post:OPC_SERV_CTX WHERE \
+        post:adt_opcserv_serv == post:tipo_produc2 && \
+        post:adt_opcserv_opci == desc_temp
+    CDS FINDFIRST post:OPC_SERV_CTX NOLOCK
+    IF (CDSRETVAL == 0)
+            CDS EXTRACT post:OPC_SERV_CTX \
+		        post:adt_opcserv_valor INTO post:val_opc[post:cant_opc] \
+	      	    post:adt_opcserv_tipo INTO post:cal_opc[post:cant_opc]
+            CDS EXTRACT post:OPC_SERV_CTX \
+     		    post:adt_opcserv_uneg INTO post:flia_opc[post:cant_opc] 
+ 		    /*Se agrega un vector que indica si el opcional BonificaCM*/
+            CDS EXTRACT post:OPC_SERV_CTX \
+     		    post:adt_opcserv_bonifCM INTO post:bonifCM_opc[post:cant_opc] 
+    ENDIF
+    CDS ENDSELECT post:OPC_SERV_CTX
+    
+    post:cant_opc = post:cant_opc + 1            
+    
+	IF (!TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+    	    /* Actualizo el Costo Total de los Opcionales */
+    	   	CALL post:MISCactualizo_opc
+            /* giros */
+       	    IF (siaf:adt_tran_fliatran == "CSM")
+         		IF (testflag(giros:opcionales_wu,palabra_adicional))
+           			CALL giros:MISCopc_pala_wu
+           		END IF
+            END IF
+            /* fin giros */
+	END IF 
+	   	
+	/****************************************************************/
+    /* Actualizo el costo de cada uno de los opcionales   		*/
+    /* por separado. Quizás parezca sin sentido hacer esto	*/
+    /* para cada opcional pero si el valor declarado actual 		*/
+    /* es mayor al anterior, cambia el costo de algunos de  	*/
+    /* los opcionales que ya estaban seleccionados.         		*/
+    /****************************************************************/
+    CALL post:MISCactualizo_1opc
+    	
+FIN:
+    common:csr_string = ""
+	INIT 33,0
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+	CLEARFIELD post:sel_opc
+	RETURN (0)
+	
+FIN_ERROR:
+    common:csr_string = ""
+	INIT 33,0
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+	CLEARFIELD post:sel_opc
+	RETURN (-2)
+END SUB
+
+/*******/

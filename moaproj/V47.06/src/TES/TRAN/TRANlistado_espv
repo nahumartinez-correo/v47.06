@@ -1,0 +1,121 @@
+/****o* Reportes/OFB:tes:TRANlistado_espv
+* NOMBRE
+*   OFB:tes:TRANlistado_espv
+* DESCRIPCION
+*   Rutina principal que genera el Reporte de Total Consolidado de Especies Valorizadas de Sucursal.
+*   Este reporte se genera desde:
+*   1- Jefe Oficina - Consulta Estado Sucursal - Especies Valorizadas - Consolidado de Especies Valorizadas.
+*   2- Tesorero - Consulta Estado Sucursal - Consultas Varias de Especies Valorizadas - Consolidado de Especies Valorizadas.
+*   3- Cierre de Sucursal.
+*   4- Cierre Forzado de Sucursal.
+*   5- Apertura de Sucursal - Reclasificacion Especies (Script configurado para ser activado) 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRANconsolidado_espv
+*   OFB:tes:MISCLanzaProceso
+*   OFB:tes:MISClist_cieforsuc
+*   OFB:tes:MISClist_cierre_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesTRAN.h"
+
+SUB tes:TRANlistado_espv
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	LOCAL listado_totmot_aux LIKE siaf:listado_totmot //para reservar tipo letra del listado anterior, de exixtir.
+	
+	LET copias_aux = 1
+	/* Veo si tengo que crear el picklist de tesoro */
+	LET siaf:lineas_cl = 0
+	LET siaf:pick_titulo = "tesoro"
+	
+	IF (siaf:pantalla_impreso ==  "P") THEN
+		CALL csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	ELSE
+		;LMB - PS 9780 - 13.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal, "totev.lis"
+		CALL MISCopen_file(common:tmpDirTemporal,5)
+	END IF
+	CLEARFIELD espv_cod
+	CLEARFIELD adt_espv_cod
+ 
+	listado_totmot_aux = siaf:listado_totmot //cgw:reservo tipo de letra del listado anterior.
+	siaf:listado_totmot = 0 //cgw:instancio tipo de letra, para no arrastrar valores de otros listados.
+	
+	/* Genero el listado*/
+	IF (siaf:fecha_proceso == common:system_date) THEN
+		CALL CDSlistado_espv(op:op_branch_id,DSC:TesEspV)
+	ELSE
+		CALL MISCesp_val_fecha
+		CALL CDSlistado_espv(op:op_branch_id,DSC:post:espval_aux)
+		CDS COMPRESS DSC:post:espval_aux where tes:adt_espv_suc != op:op_branch_id
+	END IF
+	IF (RETVAL < 0) THEN
+		LET common:csr_string = "(L) Error realizando listado"
+		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+	  
+		;LMB - PS 9780 - 13.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal, "totev.lis"
+		CALL MISCclose_file(common:tmpDirTemporal,5)
+		
+		siaf:listado_totmot = listado_totmot_aux //cgw:recupero tipo de letra del listado anterior.  
+		RETURN (-2)
+	END IF
+
+	//Inicio agrego German
+	//Descomentar cuando soliciten que no se imprima el reporte cuando no traiga resultados
+	//Descomentar rutinas tes:CDSlist_espv_saldo,tes:CDSlist_espv_todas,tes:CDSlistado_espv
+	//Si no trae datos el reporte salgo
+	//IF (retval == 1) THEN
+	//    siaf:listado_totmot = listado_totmot_aux //cgw:recupero tipo de letra del listado anterior.  
+	//    UNDISPLAY SCRNconsolidado_espv
+	//    RETURN 0
+	//END IF
+	//Fin agrego German
+	
+	/* Salida segun opcion del usuario */
+	IF (siaf:pantalla_impreso == "P") THEN
+		CALL csr:f_sadopl(siaf:pick_titulo,common:csr_string)
+	ELSE
+		;LMB - PS 9780 - 13.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal, "totev.lis"
+		CALL MISCclose_file(common:tmpDirTemporal,5)
+
+		//gpb:NI50752
+		CALL tes:MISCflowPDF("totev.lis")
+  	//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;	IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN		
+		IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+			//Genero el PDF y lo imprimo
+			CALL tes:MISCcrearPDF("totev.lis")
+
+;;			/*Esta rutina se encarga de imprimir tantas copias como se elijan, luego borra el archivo. 
+;;			Diego Priore 16/02/2000*/
+;;			WHILE (copias_aux <= siaf:nro_copias)
+;;				;LMB - PS 9780 - 13.06.2008
+;;				FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal, "totev.lis"
+;;				CALL  siaf:MISCfile_print2(common:tmpDirTemporal,"predeterminada")
+;;				LET copias_aux = copias_aux + 1
+;;			END WHILE	
+		END IF	 	
+			
+		CALL post:MISCfile_exists(common:tmpDirTemporal)
+		IF (RETVAL == 0)  THEN
+			CLEARFIELD common:csr_string	
+	    FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "totev.lis"
+	    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+	    EXEC common:csr_string
+		END IF      
+  END IF
+  siaf:listado_totmot = listado_totmot_aux //cgw:recupero tipo de letra del listado anterior.  
+  UNDISPLAY SCRNconsolidado_espv
+  
+END SUB
+
+/*******/

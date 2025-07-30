@@ -1,0 +1,188 @@
+/****o* Pendientes de agrupación/OFB:post:CDSbusco_Comprom
+* NOMBRE
+*   OFB:post:CDSbusco_Comprom
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSbusco_Comprom
+	local concepto_aux like conc_comprom
+	local item_aux like item_comprom
+	local total_concepto_aux like imp_tot_comp
+	local total_item_aux like imp_tot_comp
+	local grabo_subitem like siaf:i
+	
+	grabo_subitem = 0
+	
+	cds select from dsc:Compromisos_tbl becomes dsc:Compromisos_ctx where \
+		post:nis_comprom == common:sucursal_activa && \
+		post:date_comprom == fechaux
+	cds findfirst dsc:Compromisos_ctx nolock
+	if (cdsretval == 0)
+		cds extract dsc:Compromisos_ctx all
+		concepto_aux = conc_comprom
+		item_aux = item_comprom
+		total_item_aux = total_item_aux + importe_comprom
+		total_concepto_aux = total_concepto_aux + importe_comprom
+		
+		// Grabo registro en Tabla Auxiliar (AuxComp) - Subitem
+		if (subitem_comprom.numchars != 0) then
+			// Busco descripcion del subitem
+			call CDSsubitem_desc
+			
+			fld:aux_comp_desc = subitem_desc
+			fld:aux_concepto_cod = conc_comprom
+			fld:aux_item_cod = item_comprom
+			fld:aux_subitem_cod = subitem_comprom
+			fld:aux_comp_imp = importe_comprom
+			call CDSAuxComp_save
+		end if
+	        
+		cds findnext dsc:Compromisos_ctx nolock
+	else
+		cds endselect dsc:Compromisos_ctx		
+	end if
+	while (cdsretval == 0)
+		grabo_subitem = 0
+		cds extract dsc:Compromisos_ctx all
+		if (concepto_aux == conc_comprom && item_aux == item_comprom) then
+			// Acumulo totales
+			total_concepto_aux = total_concepto_aux + importe_comprom
+			total_item_aux = total_item_aux + importe_comprom
+			// Grabo registro en Tabla Auxiliar (AuxComp) - Subitem
+			if (subitem_comprom.numchars != 0) then
+				// Busco descripcion del subitem
+				call CDSsubitem_desc
+		
+				fld:aux_comp_desc = subitem_desc
+				fld:aux_concepto_cod = conc_comprom
+				fld:aux_item_cod = item_comprom
+				fld:aux_subitem_cod = subitem_comprom
+				fld:aux_comp_imp = importe_comprom
+				call CDSAuxComp_save
+			end if
+		end if
+
+		// Si no cambio el concepto sumo en el acumulador
+		if (concepto_aux == conc_comprom && item_aux != item_comprom) then
+			total_concepto_aux = total_concepto_aux + importe_comprom
+		end if
+
+		// Verifico si cambio el item			
+		if (item_aux != item_comprom) then
+			// Cambio el item, grabo un registro con el total acumulado del item
+			// Busco la descripcion del Item en la tabla de Items
+			call CDSbusco_item_desc(concepto_aux,item_aux)
+			aux_concepto_cod = concepto_aux
+			aux_comp_desc = item_desc
+			aux_item_cod = item_aux
+			fld:aux_comp_imp = total_item_aux
+			clearfield aux_subitem_cod
+			// Grabo un registro en la Tabla Auxiliar (AuxComp)
+			// con el acumulado del item
+			call CDSAuxComp_save
+
+			// Asigno nuevo item
+			item_aux = item_comprom
+			clearfield total_item_aux
+			total_item_aux = total_item_aux + importe_comprom
+
+			// Verifico si tengo pendiente uno con subitem
+			if (subitem_comprom.numchars != 0 && grabo_subitem == 0) then
+				// Busco descripcion del subitem
+				call CDSsubitem_desc
+		
+				fld:aux_comp_desc = subitem_desc
+				fld:aux_concepto_cod = conc_comprom
+				fld:aux_item_cod = item_comprom
+				fld:aux_subitem_cod = subitem_comprom
+				fld:aux_comp_imp = importe_comprom
+				// Grabo subitem en la tabla
+				call CDSAuxComp_save
+				grabo_subitem = 1
+			end if
+
+		end if
+		
+
+		// Verifico si cambio el Concepto			
+		if (concepto_aux != conc_comprom) then
+			// Cambio el concepto, grabo un registro con el total acumulado
+			// del concepto
+			// Busco la descripcion del COncepto en la tabla de conceptos
+			call CDSbusco_conc_desc(concepto_aux)
+			aux_comp_desc = concepto_desc
+			aux_concepto_cod = concepto_aux
+			fld:aux_comp_imp = total_concepto_aux
+			clearfield aux_item_cod
+			clearfield aux_subitem_cod
+			// Grabo un registro en la Tabla Auxiliar (AuxComp)
+			// con el acumulado del concepto
+			call CDSAuxComp_save
+
+			// Asigno nuevo concepto
+			clearfield total_concepto_aux
+			concepto_aux = conc_comprom
+			total_concepto_aux = total_concepto_aux + importe_comprom
+			
+			// Verifico si tengo pendiente uno con subitem
+			if (subitem_comprom.numchars != 0 && grabo_subitem == 0) then
+				// Busco descripcion del subitem
+				call CDSsubitem_desc
+		
+				fld:aux_comp_desc = subitem_desc
+				fld:aux_concepto_cod = conc_comprom
+				fld:aux_item_cod = item_comprom
+				fld:aux_subitem_cod = subitem_comprom
+				fld:aux_comp_imp = importe_comprom
+				// Grabo subitem en la tabla
+				call CDSAuxComp_save
+				grabo_subitem = 1
+			end if
+		end if
+
+		cds findnext dsc:Compromisos_ctx nolock
+	end while
+	
+	// Grabo el ultimo registro con el total acumulado de concepto e item
+	// CONCEPTO
+	// Busco la descripcion del COncepto en la tabla de conceptos
+	call CDSbusco_conc_desc(concepto_aux)
+	aux_comp_desc = concepto_desc
+	aux_concepto_cod = concepto_aux
+	fld:aux_comp_imp = total_concepto_aux
+	clearfield aux_item_cod
+	clearfield aux_subitem_cod
+	// Grabo un registro en la Tabla Auxiliar (AuxComp)
+	// con el acumulado del concepto
+	call CDSAuxComp_save
+	
+	// ITEM
+	// Busco la descripcion del Item en la tabla de Items
+	call CDSbusco_item_desc(aux_concepto_cod,item_aux)
+	aux_comp_desc = item_desc
+	aux_concepto_cod = concepto_aux
+	aux_item_cod = item_aux
+	fld:aux_comp_imp = total_item_aux
+	clearfield aux_subitem_cod
+	// Grabo un registro en la Tabla Auxiliar (AuxComp)
+	// con el acumulado del item
+	call CDSAuxComp_save
+	
+	cds endselect dsc:Compromisos_ctx		
+		
+END SUB
+
+/*******/

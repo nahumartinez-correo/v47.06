@@ -1,0 +1,159 @@
+/****o* SiMon/OFB:post:MISCtotales_Rep_DPCT
+* NOMBRE
+*   OFB:post:MISCtotales_Rep_DPCT
+* DESCRIPCION
+*   Genera picklist dinamico con los datos a utilizar en el Reporte Diario PCT.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETVAL (-2): No hay pagos por cuenta y orden para listar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TOTSrep_diario_PCT
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCtotales_Rep_DPCT
+    LOCAL LRetval       LIKE lib:err_retval
+    LOCAL Lstring       LIKE common:csr_string_200
+    LOCAL Lcliente      LIKE post:adt_benTmp_cli
+    LOCAL Lcliente_desc LIKE post:adt_benTmp_cli_desc
+    LOCAL Loperativo    LIKE post:adt_benTmp_operativo
+    LOCAL Loper_pag     LIKE post:asign_falloBe_NomPag
+    LOCAL Lcomprobante  LIKE post:adt_benTmp_benef
+    LOCAL Limporte      LIKE siaf:importe
+    LOCAL Lfecha_pago   LIKE common:system_date
+
+    /*cgw Impresion del listado Totales de Pago por Cuenta y Orden */
+    //6630 - PAGO ON SITE.
+    //6652 - RENDICION BENEFICIO DE UN PAGO MASIVOS DE OPERATIVOS.
+
+    //Armo Picklist a listar.
+    CALL csr:f_sanewpl("rep_diarioPCT",PIC:pic_rep_diario_pct)
+
+    CDS SELECT from DSC:tlr:TABjnl becomes journal_ctx WHERE \
+    tlr:jnl_branch == common:sucursal_activa && \
+    tlr:jnl_bus_date == tlr:set_bus_date && \
+    tlr:jnl_sequence_corr == "" && \
+    tlr:jnl_status < 100 && \
+    siaf:cancelacion == "" && \
+    (siaf:codigo_siaf == 6630 || siaf:codigo_siaf == 6652)
+    CDS FINDFIRST DSC:journal_ctx NOLOCK
+    LRetval = CDSRETVAL
+    IF (LRetval < 0) THEN
+       //IF (drv:descrip == "CONSPGO") THEN
+       MOVE "No hay pagos por cuenta y orden para listar" TO common:csr_string
+    	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+       		MSGBOX common:csr_string,OFB_OK,"Aviso"
+       	END IF
+       //END IF
+       CDS ENDSELECT dsc:journal_ctx
+       RETURN (-2)
+    ELSE
+       DO
+	     IF (CDSRETVAL < 0) THEN
+	         BREAK
+	     END IF
+
+         //limpio campos locales.
+         CLEARFIELD Lcliente
+         CLEARFIELD Lcliente_desc
+         CLEARFIELD Loperativo
+         CLEARFIELD Loper_pag
+         CLEARFIELD Lcomprobante
+         CLEARFIELD Limporte
+         CLEARFIELD Lfecha_pago
+
+         //limpio campos no comunes que se van a extraer.
+	     CLEARFIELD post:cliente_on_site
+	     CLEARFIELD post:cli_desc_on_site
+	     CLEARFIELD post:operativo_on_site
+	     CLEARFIELD post:benef_on_site
+
+         CLEARFIELD post:adt_benTmp_cli
+         CLEARFIELD post:adt_benTmp_cli_desc
+         CLEARFIELD post:adt_benTmp_operativo
+         CLEARFIELD post:adt_benTmp_pag_tipoD
+         CLEARFIELD post:adt_benTmp_pag_NroD
+         CLEARFIELD post:adt_benTmp_benef
+         CLEARFIELD post:adt_benTmp_importe
+         CLEARFIELD post:adt_benTmp_fecha_pag
+
+	     //campos comunes.
+         CDS EXTRACT DSC:journal_ctx \
+             tlr:jnl_branch \
+             tlr:jnl_bus_date \
+             tlr:jnl_operator \
+             siaf:codigo_siaf \
+             siaf:importe
+
+        //6630 - PAGO ON SITE.
+         IF (siaf:codigo_siaf == 6630) THEN
+             CDS EXTRACT DSC:journal_ctx \
+                 post:cliente_on_site \
+                 post:cli_desc_on_site \
+                 post:operativo_on_site \
+                 post:benef_on_site
+
+             //campos que conforman el FPRINT que se va a agregar al picklist dinamico.
+             Lcliente = post:cliente_on_site
+             Lcliente_desc = post:cli_desc_on_site
+             Loperativo = post:operativo_on_site
+             Loper_pag = tlr:jnl_operator
+             Lcomprobante = post:benef_on_site
+             Limporte = siaf:importe
+             //Lfecha_pago = common:system_date
+             Lfecha_pago = tlr:jnl_bus_date
+         END IF
+
+         //6652 - RENDICION BENEFICIO DE UN PAGO MASIVOS DE OPERATIVOS.
+         IF (siaf:codigo_siaf == 6652) THEN
+             CDS EXTRACT DSC:journal_ctx \
+                 post:adt_benTmp_cli \
+                 post:adt_benTmp_cli_desc \
+                 post:adt_benTmp_operativo \
+                 post:adt_benTmp_pag_tipoD \
+                 post:adt_benTmp_pag_NroD \
+                 post:adt_benTmp_benef \
+                 post:adt_benTmp_importe \
+                 post:adt_benTmp_fecha_pag
+
+             //campos que conforman el FPRINT que se va a agregar al picklist dinamico.
+             Lcliente = post:adt_benTmp_cli
+             Lcliente_desc = post:adt_benTmp_cli_desc
+             Loperativo = post:adt_benTmp_operativo
+             //buscar en tabla pagadores.
+             post:FalloBenef_PagTipoD = post:adt_benTmp_pag_tipoD
+             post:FalloBenef_PagNroD = post:adt_benTmp_pag_NroD
+             CLEARFIELD post:asign_falloBe_NomPag ;extrae nombre y apellido del pagador.
+             CALL post:CDSpagador_ApeNom
+             IF (RETVAL == 0) THEN
+    	         FPRINT Loper_pag "%-s %-s", post:adt_pagador_apellido, post:adt_pagador_nombre
+             END IF
+             Lcomprobante = post:adt_benTmp_benef
+             Limporte = post:adt_benTmp_importe
+             Lfecha_pago = post:adt_benTmp_fecha_pag
+         END IF
+
+         //cadena string que se agrega al picklist
+         FPRINT Lstring "%-40.40s %-10.10s %-20.20s %-41.41s %20.20s", \
+                Lcliente_desc, Lcliente, Loperativo, Loper_pag, Lcomprobante
+         FPRINT Lstring "%s %8.8s %16.16e %05.5s", \
+                Lstring, Lfecha_pago, Limporte, siaf:codigo_siaf
+
+	     CALL CSR:f_saaddpl "rep_diarioPCT" Lstring //Armo picklist
+	     CDS FINDNEXT dsc:journal_ctx nolock
+       LOOP
+       CDS ENDSELECT dsc:journal_ctx
+       //Ordeno el picklist por codigo de cliente,operativo,operador/pagador.
+       CALL csr:PickOp PICKOP_SORT "rep_diarioPCT" "41,73"
+    END IF
+
+END SUB
+
+/*******/

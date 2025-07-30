@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRepConsFDV
+* NOMBRE
+*   OFB:post:MISCRepConsFDV
+* DESCRIPCION
+*   Reporte Consolidado Fe de Vida)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALreportes_fdv
+* DOCUMENTACION
+*   NI 50508 - Fe de Vida
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRepConsFDV(p_fec_d,p_fec_a)
+	LOCAL link_num LIKE siaf:i             //canal de comunicacion del archivo
+	LOCAL file_name LIKE common:csr_string  //nombre del archivo
+	LOCAL f_rep LIKE siaf:i             //si es > 0 entonces se imprimio por lo menos un reporte
+	LOCAL l_out LIKE common:csr_string  //tipo de salida
+	LOCAL caracter LIKE common:csr_string
+	LOCAL caracter2 LIKE common:csr_string
+	LOCAL l_fec_d LIKE post:fec_d
+	LOCAL l_fec_a LIKE post:fec_a
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	
+	LET copias_aux = 1
+
+	LET l_fec_d = p_fec_d
+	LET l_fec_a = p_fec_a
+	
+	f_rep = 0 
+	l_out = siaf:pantalla_impreso
+	siaf:listado_totmot = 1
+	
+	link_num = 4
+	file_name = "FeDeVida.lis"	
+	
+	CDS SELECT post:fdv_operacion FROM DSC:post:fe_de_vida_tbl BECOMES DSC:post:fe_de_vida_ctx \
+		WHERE post:fdv_fecha >= l_fec_d && post:fdv_fecha <= l_fec_a \
+		SORT "Estado"
+
+	IF (CDSRETVAL < 0) THEN
+  		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+  		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "No se encontraron datos para listar",0x00,"AVISO"
+		END IF
+		RETURN (-2)
+	END IF
+
+	//abro el archivo
+	CALL post:MISCRepConsFDV_open (file_name,link_num)
+
+	//si no pudo abrir el archivo
+	IF (RETVAL == -2) THEN
+		RETURN RETVAL
+	END IF
+	
+	FYIMSG LST:common:fyimsg_list, "(L) PROCESANDO LISTADO..."
+	common:csr_string_tmp = "REPORTE CONSOLIDADO FE DE VIDA"
+
+	//rutina que arma el encabezado del reporte
+	CALL post:MISCRepConsFDV_enc
+
+	CALL post:MISClst_RepConsFDV(link_num)
+	IF (RETVAL == 0) THEN 
+		f_rep = f_rep + 1
+	END IF 
+
+	IF (f_rep > 0) THEN
+		IF (siaf:pantalla_impreso == "P" || siaf:pantalla_impreso == "A") THEN
+			CALL giros:MISCImpVisorEditor(file_name,siaf:pantalla_impreso,link_num) 
+		ELSE
+			;LMB - PS 9780 - 17.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "FeDeVida.lis"
+			CALL tes:MISCclose_file(common:tmpDirTemporal, 4)
+
+			//gpb:NI50572 - Digitalizacion de Reportes
+			CALL tes:MISCflowPDF("FeDeVida.lis")
+				//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;			IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("FeDeVida.lis")
+
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;					IF (RETVAL < 0) THEN
+;;						MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;						RETURN 
+;;					END IF 
+;;					PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;					IF (PRTRETVAL != 0) THEN
+;;						FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;						MSGBOX siaf:mensaje,0x00000000,"Error"
+;;					END IF
+;;					CALL CSR:file_close(7) 
+;;					LET copias_aux = copias_aux + 1 			
+;;				END WHILE	
+			END IF
+			CALL giros:MISCdeleteFile(file_name)
+		END IF
+	ELSE 
+    //si es cierre suc o cierre forzado suc NO debe emitir mesaje
+		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550) THEN
+			MSGBOX "No se encontraron datos para listar",0x00,"AVISO"
+		END IF
+		CALL giros:MISCdeleteFile(file_name)
+		RETURN 
+	END IF
+
+END SUB
+
+/*******/

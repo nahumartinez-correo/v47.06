@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcalcBonifLocal
+* NOMBRE
+*   OFB:post:MISCcalcBonifLocal
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcalcBonifLocal(conJournal, soloFaltantes, soloJournalizadas)
+	local fliatran like siaf:adt_tran_fliatran
+	local l_PreDNroTrn like post:PreDNroTrn
+	local l_jourOk like post:BonifLocalOk
+	local l_promo_cod like post:promo_cod
+	local l_promo_desc like post:promo_desc
+	local l_codigo_siaf like siaf:codigo_siaf
+	local l_adt_evaux_prestran like tes:adt_evaux_prestran
+
+	bInhibirUP = false
+
+	if (!soloFaltantes)
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta 	\
+			WHERE post:fecha == FLD:common:system_date && 			\
+			post:op_operator_id == FLD:op:op_operator_id && 		\
+			post:PresNro == post:PresNro && 						\
+			post:promo_aplica == "S"
+	else
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta 	\
+			WHERE post:fecha == FLD:common:system_date && 			\
+			post:op_operator_id == FLD:op:op_operator_id && 		\
+			post:PresNro == post:PresNro && 						\
+			post:promo_aplica == "S" &&								\
+			post:BonifLocalOk != "S"
+	endif
+
+	CDS FINDFIRST DSC:CONPresuDeta LOCK
+	lib:err_retval = CDSRETVAL
+
+	DO
+		IF (lib:err_retval == 0)
+			call csr:cleararray(docfis_importe)
+			call csr:cleararray(docfis_tasa_por)
+			call csr:cleararray(docfis_imp_siva)
+
+			CDS EXTRACT DSC:CONPresuDeta 						\
+				siaf:adt_tran_fliatran 	into 	fliatran		\
+				post:PreDNroTrn 		into 	l_PreDNroTrn 	\
+				post:promo_cod 			into 	l_promo_cod		\
+				post:promo_desc			into 	l_promo_desc	\
+				siaf:codigo_siaf		into 	l_codigo_siaf	\
+				tes:adt_evaux_prestran		into 	l_adt_evaux_prestran
+
+			SELECT (fliatran)
+   				 CASE "CME"			// Productos varios
+						call post:MISCprocBonifPVs(l_PreDNroTrn, conJournal)
+						BREAK
+				 CASE "CSP"			// Postales
+				 CASE "CST"			// Telegrafía
+				 CASE "CSE"			// Encomiendas
+						call post:MISCprocBonifPostTel(l_promo_cod, l_promo_desc, l_PreDNroTrn, conJournal)
+						BREAK
+				 CASE "TES"			// Especies
+				 		if (post:enAnulacion == "S")
+				 			call post:MISCprocBonifEspecie(l_adt_evaux_prestran, conJournal, soloFaltantes, soloJournalizadas)
+				 		else
+							call post:MISCprocBonifEspecie(l_PreDNroTrn, conJournal, soloFaltantes, soloJournalizadas)
+						endif
+						BREAK
+   				 CASE "SVC"			// Listas y gestiones varias
+   				 		if (l_codigo_siaf == 18301 || l_codigo_siaf == 18501)
+							call post:MISCprocBonifSrvVs(l_codigo_siaf, l_promo_cod, l_promo_desc, l_PreDNroTrn, conJournal)
+						endif
+						BREAK
+				 CASE "TAV"			// Entrega de piezas
+   				 		if (l_codigo_siaf == 99020)
+							call post:MISCprocBonifEntPzas(l_PreDNroTrn, conJournal, soloFaltantes)
+						endif
+						BREAK
+			END SELECT
+
+			l_jourOk = "S"
+			CDS APPEND DSC:CONPresuDeta \
+				l_jourOk as post:BonifLocalOk
+			CDS UPDATE DSC:CONPresuDeta LOCK
+			CDS UNLOCK DSC:CONPresuDeta
+
+			CDS FINDNEXT DSC:CONPresuDeta LOCK
+			lib:err_retval = CDSRETVAL
+		ELSE
+	    	BREAK
+	    END IF
+	LOOP
+	CDS ENDSELECT DSC:CONPresuDeta
+END SUB
+
+/*******/

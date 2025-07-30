@@ -1,0 +1,144 @@
+/****o* SiMon/OFB:tes:CDSSave_RFallPCT_mov
+* NOMBRE
+*   OFB:tes:CDSSave_RFallPCT_mov
+* DESCRIPCION
+*   Realiza la Recepcion obligatoria de los Fallos de Pago por Cuenta de Terceros pendientes, luego de una Apertura de Caja.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCsave_mov_pend
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSSave_RFallPCT_mov
+	LOCAL hubo_asignacion LIKE siaf:i
+	LOCAL loc_jnl_rtn     LIKE drv:INDjnl_rtn
+	LOCAL loc_tran_name   LIKE tlr:jnl_tran_name
+	LOCAL loc_mnemonic    LIKE tlr:tran_mnemonic
+	LOCAL loc_nom_tran    LIKE siaf:nombre_transac
+	LOCAL mone            LIKE siaf:cant
+	LOCAL loc_scr         LIKE drv:INDscr
+	local loc_cur_tran    LIKE drv:INDcur_tran
+
+	loc_jnl_rtn   = drv:INDjnl_rtn
+	loc_tran_name = tlr:jnl_tran_name
+	loc_mnemonic  = tlr:tran_mnemonic
+	loc_nom_tran  = siaf:nombre_transac
+	loc_scr       = drv:INDscr 
+	loc_cur_tran  = drv:INDcur_tran   
+
+	hubo_asignacion = 0
+	siaf:codigo_siaf = 97097
+    siaf:nombre_transac = "RECEPCION DE FALLO PAGO CUENTA TERCEROS"
+    drv:descrip = "RECFAPCT"
+    siaf:restr_otra_casa = "N"
+    siaf:linea_validacion = "S"
+    siaf:exhibe_pantalla = "S"
+    siaf:imprime_comprobante = "S"
+
+	CALL siaf:PRESfecha_hora
+
+	/* Busco en la tabla FallosBenef si ese operador tiene un
+	   Fallo de Pago por Cuenta de Terceros de Recepcion */
+	CDS SELECT FROM DSC:post:FallosBenef_tbl BECOMES DSC:post:FallosBenef_ctx \
+	    WHERE post:FalloBenef_estado == "S" && post:FalloBenef_opdes == op:op_operator_id
+
+	CDS FINDFIRST DSC:post:FallosBenef_ctx LOCK
+	lib:err_retval = CDSRETVAL
+	DO
+		IF (lib:err_retval < 0) THEN
+			BREAK
+		END IF
+		hubo_asignacion = 1
+
+        setflag tlr:state_flags,tran_active
+
+		CDS EXTRACT DSC:post:FallosBenef_ctx ALL        
+        IF (post:FalloBenef_imp < 0) THEN
+        	post:recep_falloBe_imp = post:FalloBenef_imp * -1
+        ELSE
+            post:recep_falloBe_imp = post:FalloBenef_imp
+        END IF
+        post:importe_origen = post:recep_falloBe_imp
+		siaf:importe = post:recep_falloBe_imp
+
+	    siaf:moneda = "00"
+	    post:recep_falloBe_moneda = "00"		
+		post:recep_falloBe_mondes = "EFECTIVO PESOS"
+		siaf:desc_moneda = "EFECTIVO PESOS"
+	    siaf:continua_transaccion = "S"
+
+		let drv:INDscr = SCR:siaf:SCRNRecepFalloPCT
+		let drv:INDcur_tran = LST:siaf:TRANRecepFalloPCT
+		let siaf:tiene_reverso = "S"
+
+		/* Busco el motivo para la Recepcion de Ajuste de Fallo de pago por Cuenta de Terceros*/
+		CALL tes:MISCllena_scrFallPCT
+
+		drv:INDjnl_rtn = OFB:siaf:JNLRecepFalloPCT
+		CLEARFIELD drv:INDspc_rtn[2]
+		
+		IF (siaf:adt_mot_submodulo == 6690) THEN
+    	    siaf:codigo_siaf = 6690 //NEGATIVO.
+    	    siaf:nombre_transac = "RECEPCION DE FALLO PCT NEGATIVO"
+    	    IF (drv:dt_app != 4) THEN
+    	        drv:INDspc_rtn[0] = LST:siaf:TOTS6690 //Setea totalizacion Recepcion de Fallo PCT Negativo.
+    	        tlr:INDtots_append = LST:siaf:TOTS6690
+    	    END IF    
+    	    IF (siaf:adt_mot_tipo_rep == "ND") THEN
+    	        drv:INDspc_rtn[2] = OFB:siaf:TRANrep_nota_def //Setea para imprimir nota de deficit.
+    	    END IF
+        ELSE
+            //siaf:adt_mot_submodulo == 6890
+       	    siaf:codigo_siaf = 6890 //POSITIVO.
+       	    siaf:nombre_transac = "RECEPCION DE FALLO PCT POSITIVO"
+       	    IF (drv:dt_app != 4) THEN
+       	        drv:INDspc_rtn[0] = LST:siaf:TOTS6890 //Setea totalizacion Recepcion de Fallo PCT Positivo.
+       	        tlr:INDtots_append = LST:siaf:TOTS6890
+       	    END IF
+        END IF
+
+		CDS CLEARBUFFER DSC:post:FallosBenef_ctx
+
+        // Acepta Recepcion Fallo de Pago por Cuenta de Terceros.
+        post:FalloBenef_estado = "A"
+        post:FalloBenef_fec_recep = common:system_date  // Fecha de Recepcion Fallo de Pago por Cuenta de Terceros.
+	    CDS CLEARBUFFER DSC:post:FallosBenef_ctx
+	    CDS APPEND DSC:post:FallosBenef_ctx \
+		    post:FalloBenef_estado \
+		    post:FalloBenef_fec_recep
+
+	    CDS UPDATE DSC:post:FallosBenef_ctx LOCK
+	    CDS UNLOCK DSC:post:FallosBenef_ctx
+
+		UNGETKEY 0x191
+		CALL tlr:JNLtran
+
+        resetflag tlr:state_flags,tran_active
+
+		CDS FINDNEXT DSC:post:FallosBenef_ctx LOCK
+		lib:err_retval = CDSRETVAL
+	LOOP
+    CDS ENDSELECT DSC:post:FallosBenef_ctx
+
+	// Si no hay Fallos de Pago por Cuenta de Terceros pendientes para el operador,
+	// limpiar la marca de Fallo PCT en rend_caj.
+	CALL post:MISClimp_rendcajPCT
+
+	drv:INDjnl_rtn      = loc_jnl_rtn
+	tlr:jnl_tran_name   = loc_tran_name
+	tlr:tran_mnemonic   = loc_mnemonic
+	siaf:nombre_transac = loc_nom_tran
+	drv:INDscr          = loc_scr
+	drv:INDcur_tran     = loc_cur_tran   
+
+END SUB
+
+/*******/

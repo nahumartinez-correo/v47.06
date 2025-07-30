@@ -1,0 +1,253 @@
+/****o* Chequeras/OFB:tes:MISCpasa_chek_a_str
+* NOMBRE
+* OFB:tes:MISCpasa_chek_a_str
+* DESCRIPCION
+* Recorre picklist dinamico que contiene las chequeras postales ordenadas por Operador con sus estados, para ser listadas.
+* REFERENCIADO POR
+* OFB:tes:TRANcons_chequeras
+* DOCUMENTACION
+* http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=532140&
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCpasa_chek_a_str
+	LOCAL idx LIKE siaf:i
+	LOCAL total_cs LIKE siaf:i
+	LOCAL total_gs LIKE siaf:i
+	LOCAL total_co LIKE siaf:i
+	LOCAL total_go LIKE siaf:i
+	LOCAL estado LIKE common:csr_string 
+	LOCAL l_tipo_op LIKE common:csr_string
+	LOCAL l_string LIKE common:csr_string
+	LOCAL l_corte LIKE common:csr_string
+	LOCAL l_corte_ant LIKE common:csr_string
+	LOCAL l_titulo_op LIKE common:csr_string
+	LOCAL l_orden LIKE op:TipoEntero
+	LOCAL l_orden_ant LIKE op:TipoEntero
+	LOCAL l_estado LIKE giros:adt_chk_estado
+	LOCAL l_oper LIKE giros:adt_chk_op    
+	LOCAL l_serie LIKE giros:adt_chk_serie
+	LOCAL l_nrogiro LIKE giros:adt_chk_nrogiro
+	LOCAL l_nrofin LIKE giros:adt_chk_nrofin
+	LOCAL l_cantid LIKE giros:adt_chk_cantid
+	LOCAL l_libres LIKE siaf:i
+	LOCAL l_op_login LIKE op:op_login_id
+
+	//cgw:crea picklist chequeras que contendra las chequeras a listar.
+	CALL tes:MISCgenpic_chequeras
+	
+	LET siaf:lineas_cl = 0 // inicializo el conteo de lineas
+	LET FLD:tes:INDsheet_header = OFB:tes:MISCencab_cons_chek
+	total_cs = 0
+	total_gs = 0
+	total_co = 0
+	total_go = 0
+
+	;CALL tes:MISCencab_simple
+	
+	CALL tes:MISCencab_cons_chek
+	
+	CLEARFIELD l_corte_ant //inicializa variable de corte anterior.
+	CLEARFIELD l_orden_ant //inicializa variable de corte de titulo de totales del operador.
+
+	//cgw:recorre el picklist con las chequeras a listar.
+	idx = PL_GETITEM
+	DO
+		CLEARFIELD l_string
+		CALL csr:myPickcontrol("chequeras",l_string,idx)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF
+
+		CLEARFIELD l_corte
+		CLEARFIELD l_titulo_op
+		l_corte = SUBSTR(l_string,0,6) //corte por orden (1 - Tesorero, 2 - Cajero Habilitador, 3- Cajero) y operador.
+		l_orden = SUBSTR(l_string,0,1)
+		l_oper = SUBSTR(l_string,1,5)
+		l_serie = SUBSTR(l_string,6,1)
+		l_nrogiro = SUBSTR(l_string,7,6)
+		l_nrofin = SUBSTR(l_string,13,6)
+		l_cantid = SUBSTR(l_string,19,3)
+		l_libres = SUBSTR(l_string,22,3)
+		l_estado = SUBSTR(l_string,25,1)
+
+		SELECT (l_orden)
+			CASE 1
+				l_tipo_op = "Tesoro:"
+			BREAK
+			CASE 2
+				l_tipo_op = "Habilitador:"
+			BREAK
+			CASE 3       
+				l_tipo_op = "Operador:"
+			BREAK
+		END SELECT
+
+		IF (l_corte != l_corte_ant) THEN //cgw:controla corte.
+			IF (l_corte_ant.NUMCHARS > 0) THEN
+				//cgw:imprime totales del operador anterior.
+				IF (total_co > 0) THEN
+					//cgw: corte titulos de totales por operador.
+					SELECT (l_orden_ant)
+						CASE 1
+							l_titulo_op = "TESORO:"
+						BREAK
+						CASE 2
+							l_titulo_op = "FONDO HABILITACION:"
+						BREAK
+						CASE 3
+							l_titulo_op = "CAJA:"
+						BREAK
+					END SELECT
+
+					CLEARFIELD common:csr_string
+					FPRINT common:csr_string "-----------------------------------------------------------------------------"
+					CALL MISCwrite_file(5,FLD:common:csr_string)                   
+					CLEARFIELD common:csr_string
+					FPRINT common:csr_string "TOTAL CHEQUERAS EN %-19.19s %5.5s",l_titulo_op, total_co
+					CALL MISCwrite_file(5,FLD:common:csr_string)
+					CLEARFIELD common:csr_string
+					FPRINT common:csr_string "TOTAL GIROS:                           %5.5s",total_go
+					CALL MISCwrite_file(5,FLD:common:csr_string)
+					CLEARFIELD common:csr_string
+					FPRINT common:csr_string "-----------------------------------------------------------------------------"
+					CALL MISCwrite_file(5,FLD:common:csr_string)
+					CLEARFIELD common:csr_string
+					MOVE " " to common:csr_string
+					CALL MISCwrite_file(5,FLD:common:csr_string)
+				END IF
+				//cgw:inicializa totales operador.
+				total_co = 0
+				total_go = 0
+			END IF
+
+			//cgw:imprime titulos del operador.
+			CLEARFIELD l_op_login
+			IF (op:adt_branch_id.NUMCHARS == 0) THEN //cgw:busca nombre del operador.
+				CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+					WHERE op:op_operator_id == l_oper \
+					&& op:op_borrado_logico != "S" ASCENDING
+			ELSE
+				CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+					WHERE  op:op_branch_id == FLD:op:adt_branch_id \
+					&& op:op_operator_id == l_oper \
+					&& op:op_borrado_logico != "S" ASCENDING
+			END IF
+			
+			CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+			LET lib:err_retval = CDSRETVAL
+			IF (lib:err_retval == -801) THEN
+				CLEARFIELD l_op_login
+			END IF
+
+			CALL op:CDSadt_op_extract
+			l_op_login = op:adt_login_id
+			CDS ENDSELECT DSC:op:adt_op_context
+
+			CLEARFIELD common:csr_string
+			FPRINT common:csr_string "   Sucursal:%s          %s %05.5s - %-14.14s" op:op_branch_id, l_tipo_op, l_oper, l_op_login
+			CALL MISCwrite_file(5,FLD:common:csr_string)
+			CLEARFIELD common:csr_string
+			FPRINT common:csr_string "-----------------------------------------------------------------------------"
+			CALL MISCwrite_file(5,FLD:common:csr_string)
+			CLEARFIELD common:csr_string
+			FPRINT common:csr_string  "   SERIE   GIRO-DESDE  GIRO-HASTA   CANTIDAD   LIBRES   ESTADO"
+			CALL MISCwrite_file(5,FLD:common:csr_string)
+			CLEARFIELD common:csr_string
+			FPRINT common:csr_string "-----------------------------------------------------------------------------"
+			CALL MISCwrite_file(5,FLD:common:csr_string)
+       
+			l_corte_ant = l_corte //actualiza variable para proximo corte.
+			l_orden_ant = l_orden //actualiza variable de orden para corte de totales por operador.
+		END IF
+
+		//cgw:imprime linea de detalle.
+		SELECT (l_estado)
+			CASE 0
+				FPRINT estado "HABILITADA" //HABILITADA.
+			BREAK
+			CASE 1
+				FPRINT estado "PEND.DES/ADJUDICACION" //HABILITADA.
+			BREAK
+			CASE 2
+				FPRINT estado "RECIBIDA CAJERO" //HABILITADA.
+			BREAK
+			CASE 3
+				FPRINT estado "RECH.PENDIENTE RECEP." //HABILITADA.
+			BREAK	      
+			CASE 4
+				FPRINT estado "COMPLETADA"
+			BREAK
+			CASE 7
+				FPRINT estado "ORDEN NO PAGAR"
+			BREAK
+			CASE 8
+				FPRINT estado "ANULADA"
+			BREAK
+			CASE 9
+				FPRINT estado "RECIBIDA"
+			BREAK
+		END SELECT
+
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "     %1.1s       %06.6s      %06.6s          %3.3s      %3.3s   %-21.21s",l_serie, l_nrogiro, l_nrofin, l_cantid, l_libres, estado
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+
+		//cgw:totaliza por operador.
+		total_co = total_co + 1
+		total_go = total_go + l_libres
+		//cgw:totaliza pla sucursal.
+		total_cs = total_cs + 1
+		total_gs = total_gs + l_libres
+		
+		idx = idx + 1
+	LOOP
+
+	//cgw:imprime totales del operador anterior.
+	IF (total_co > 0) THEN
+		//cgw: corte titulos de totales por operador.
+		SELECT (l_orden_ant)
+			CASE 1
+				l_titulo_op = "TESORO:"
+			BREAK
+			CASE 2
+				l_titulo_op = "FONDO HABILITACION:"
+			BREAK
+			CASE 3
+				l_titulo_op = "CAJA:"
+			BREAK
+		END SELECT
+
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "-----------------------------------------------------------------------------"
+		CALL MISCwrite_file(5,FLD:common:csr_string)                   
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "TOTAL CHEQUERAS EN %-19.19s %5.5s",l_titulo_op, total_co
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "TOTAL GIROS:                           %5.5s",total_go
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "-----------------------------------------------------------------------------"
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+		CLEARFIELD common:csr_string
+		MOVE " " to common:csr_string
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+	END IF
+
+	//cgw:imprime totales de la sucursal.
+	IF (total_cs > 0) THEN
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "TOTAL CHEQUERAS EN SUCURSAL:           %5.5s",total_cs
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string "TOTAL GIROS:                           %5.5s",total_gs
+		CALL MISCwrite_file(5,FLD:common:csr_string)
+	END IF
+	
+	//cgw:elimina picklist chequeras que contenia las chequeras a listar.
+	CALL csr:f_sadroppl "chequeras"
+	
+END SUB
+/*******/

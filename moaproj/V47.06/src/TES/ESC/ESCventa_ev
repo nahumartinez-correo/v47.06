@@ -1,0 +1,80 @@
+/****o* Pendientes de agrupación/OFB:tes:ESCventa_ev
+* NOMBRE
+*   OFB:tes:ESCventa_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRAN8500
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesESC.h"
+
+SUB tes:ESCventa_ev
+local estado_aux like post:estado_presu
+local l_cdsretval like lib:err_retval
+	IF (post:estado_presu == 1 || post:estado_presu == 2 ) THEN
+		cds select from DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx \
+		where tes:adt_evaux_suc == fld:op:op_branch_id && \
+		tes:adt_evaux_tesoro == "N" && \
+		tes:adt_evaux_op == fld:op:op_operator_id && \
+		tes:adt_evaux_prestran == 0 
+		//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+         	/*tes:adt_evaux_codigo == espv_cod && \*/
+		cds findfirst dsc:AuxEspV_ctx LOCK 
+		l_cdsretval = CDSRETVAL
+    	IF (l_cdsretval == 0) THEN
+    		;PS9672 Se agrega la confirmación para salir de la transacción.
+        	call tes:MISCespecies_verify
+        	IF (RETVAL == 0) THEN    /* Elige "Salir" */
+    			while (l_cdsretval == 0)
+					cds extract dsc:AuxEspV_ctx post:ImpServUP post:AliServUP adt_espv_formfiscal
+					post:PreDForFis = adt_espv_formfiscal
+					if (post:PreDForFis.numchars == 0)
+						post:EstadoFormu = SIN_FORM
+					else
+						post:EstadoFormu = CON_FORM
+					end if		
+   					/*Actualizo importes para Ventas UP - Gabriel Falciola*/
+					call post:CDSAcumImpUP(post:ImpServUP,0,siaf:adt_tran_fliatran,post:AliServUP,siaf:adt_tran_afec_efvo,post:PresNro)
+        		
+					cds delete dsc:AuxEspV_ctx
+					cds findnext dsc:AuxEspV_ctx LOCK
+					l_cdsretval = CDSRETVAL
+				end while
+				cds unlock DSC:AuxEspV_ctx
+    			cds endselect DSC:AuxEspV_ctx
+    		else
+    			cds unlock dsc:AuxEspV_ctx
+            		CDS ENDSELECT DSC:AuxEspV_ctx
+            		RETURN (-1)
+    		end if
+    	end if
+	END IF 
+	if (post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 4) then
+		call post:MISCactivar_buts
+;       call post:MISCEnabl_Lock_Calc
+	end if
+
+	let EscVta = "S"
+	let tes:adt_evaux_prestran = post:PreDNroTrn
+	/*Guardo el valor del estado_presu por que cuando es 4 la post:ESCtransaccion lo
+	setea en 3 y eso no me sirva para darme cuenta en qué estado estaba inicialmente.
+	Es por eso que lo guardo y pregunto por el valor anterior - Gabriel Falciola*/
+	estado_aux = post:estado_presu
+	call post:ESCtransaccion
+	clearfield EscVta
+	if (estado_aux == 3) then
+		call CDSauxesp_pend_del(0)
+		call CDSauxesp_UP_sum(tes:adt_evaux_prestran)
+	end if
+END SUB
+
+/*******/

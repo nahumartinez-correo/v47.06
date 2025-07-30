@@ -1,0 +1,81 @@
+/****o* Uso General/OFB:post:MISCverifCaja
+* NOMBRE
+*   OFB:post:MISCverifCaja
+* DESCRIPCION
+*   Verifica antes de reversar la sesion si hay saldo positivo para el medio de pago en caja.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2) = No cuenta con saldo del medio de pago para realizar la reversa.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCverifReversar
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2466
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverifCaja
+	//cgw:AUT-2466 - PS 10523. Verifica antes de reversar la sesion si hay saldo positivo para el medio de pago en caja.
+	local efec_en_caja like siaf:importe
+	local auxImporte like siaf:importe
+	local descMon like post:adt_mp_desc
+	local Limporte_origen LIKE post:importe_origen
+
+	cds select from dsc:MEDIOS_TAB becomes dsc:MedPag_ctx
+	cds findfirst dsc:MedPag_ctx nolock
+	do
+		if (cdsretval != 0)
+			break
+		end if
+
+		cds extract dsc:MedPag_ctx post:adt_mp_cod into siaf:moneda \
+		post:adt_mp_desc into descMon
+
+		efec_en_caja = siaf:tefec_inic_vec[siaf:moneda] + siaf:tefectivo_vec[siaf:moneda]
+
+		//Reserva variables		                                                                         
+		auxImporte = siaf:importe
+		Limporte_origen = post:importe_origen
+		
+		//obtiene el importe de la captura por medio de pago de la sesion
+	    cds select from "journal" becomes "jnl_mon" where \
+	    tlr:jnl_bus_date == common:system_date && \
+	    tlr:jnl_operator == op:op_operator_id && \
+	    post:PresNro == fld:post:PresNro && \
+	    (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097) && \
+	    siaf:moneda == fld:siaf:moneda
+	    
+	    cds findfirst "jnl_mon" nolock
+		if (cdsretval == 0) then
+			cds extract "jnl_mon" siaf:importe
+			; convierto por la cotizacion.
+			adt_mp_mon = siaf:moneda
+			call post:MISCcalc_importe_ori
+						
+			if ((efec_en_caja - importe_origen) < 0)
+				fprint common:csr_string "No cuenta con el medio de pago (%s) en caja para poder realizar la reversa.", descMon
+				MSGBOX common:csr_string OFB_OK "ERROR"
+				cds endselect dsc:MedPag_ctx
+				//recupero variables
+				siaf:importe = auxImporte
+				post:importe_origen = Limporte_origen
+				return (-2)
+			endif
+		end if
+		cds endselect "jnl_mon"
+
+		//recupero variables
+		siaf:importe = auxImporte
+		post:importe_origen = Limporte_origen
+
+		cds findagain dsc:MedPag_ctx nolock //por si se perdio puntero
+		cds findnext dsc:MedPag_ctx nolock
+	loop
+	cds endselect dsc:MedPag_ctx
+
+END SUB
+
+/*******/

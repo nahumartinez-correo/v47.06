@@ -1,0 +1,175 @@
+ /****o* Caja Unificada/OFB:post:JNL6680
+* NOMBRE
+*   OFB:post:JNL6680
+* DESCRIPCION
+*   Rutina que Journaliza campos de la trx de registracion web
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN6680
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNL6680
+	LOCAL idx LIKE post:cantidad
+	
+	IF (post:adt_pweb_motivo == "SENAS")
+		post:ImporteSinIva = siaf:importe
+	END IF
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_pweb_nombre \
+		post:adt_pweb_motivo \
+		siaf:importe  \
+		post:ImporteIva \
+		post:ImporteSinIva \
+		post:ImporteSinIva_bis \
+		post:ImporteConIva	\
+		post:cantidad \
+		post:firma_web
+		
+	//gpb:PS10853- Ecommerce
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_pweb_ecommerce		
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:web_tmp_impweb \
+		post:adt_pweb_tarifa \
+		post:web_tmp_firma \
+		post:web_tmp_codbarra \
+		post:web_tmp_cod_web \
+		post:web_tmp_cantidad
+	
+	idx = 0
+	WHILE (idx < 5) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:adt_pweb_datos[idx] \
+			post:adt_pweb_dat_oblig[idx] \
+			post:web_tmp_adic[idx]
+			idx = idx + 1
+	END WHILE
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		siaf:nro_impre \
+		post:web_tmp_cant_impre \
+		post:web_tmp_fecHora_est
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_pweb_iva \
+		post:adt_pweb_ing_egr \
+		post:adt_pweb_formfisc \
+		post:adt_pweb_cod_doc \
+		post:adt_pweb_codseq \
+		post:adt_pweb_stock \
+		post:adt_pweb_prodvs \
+		post:adt_pweb_dat_oblig \
+		post:adt_pweb_mandatoria \
+		post:es_WEB \
+		post:adt_pweb_cod_cli \
+		post:track_trace
+	
+	CALL post:JNLcamp_nota_credito
+	
+	CALL post:MISCcampos_reporte(post:ImporteConIva,1,post:ImporteSinIva,NO_TARIFA)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreporte,0)	
+
+
+	IF (SucDestinoEcom == common:sucursal_activa)
+		CALL MISCclearFldExpEcom
+	END IF
+	
+	//PS 10952 Aceptacion Express
+	if (post:adt_pweb_motivo == "ACEP1")
+		CALL MISCclearFldExpEcom
+		clearfield post:track_trace
+	endif
+	
+	//Meli - Datos a journalizar para poder realizar la expedicion
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_serv_corteop AS post:jnl_corteop_cod
+		
+	clearfield jnl_guia_cont
+	clearfield jnl_guia_saca
+	clearfield jnl_guia_despacho 	
+		
+	IF (post:adt_corteop_ctrl == "S") THEN
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_guia_cont \
+			FLD:post:jnl_guia_saca \
+			FLD:post:adt_corteop_guiacont AS FLD:post:jnl_corteop_guiacont \
+			FLD:post:adt_corteop_saca AS post:jnl_corteop_saca \
+			FLD:post:adt_corteop_despacho AS post:jnl_corteop_despacho \
+			FLD:post:jnl_guia_despacho 
+	END IF
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_fecha_llencont \
+		FLD:post:jnl_hora_llencont \
+		FLD:post:jnl_fecha_llensaca \
+		FLD:post:jnl_hora_llensaca  \
+		FLD:post:jnl_fecha_despacho \
+		FLD:post:jnl_hora_despacho  
+	
+	//Este campo se agregó para poder marcar las piezas recibidas en la TX de recepción de piezas
+	//de otro op., para que en la TX de transf. de pzas no se puedan volver a transferir.
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:jnl_pieza_recibida
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_precinto \
+		FLD:post:jnl_caratula \
+		FLD:post:jnl_corteop_apert \
+		FLD:post:apertura \
+		FLD:post:adt_corteop_ctrl
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:apertura AS post:jnl_apertura_cod \
+		FLD:post:grucorte AS post:jnl_grucorte_cod
+	
+	/*MFM - Se agrega el campo del operador al que se le transfiere la pieza*/
+	jnl_op_transf = ""
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_op_transf
+	
+	IF (jnl_servicio_en_bh2 != "S") THEN
+		jnl_servicio_en_bh2 = "N"
+	END IF
+	/*MFM - Se agrega el campo que indica si una pieza se realizò en Block Horario 2*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_servicio_en_bh2
+	
+	/*MFM - Se agregan los campos de reencaminamiento para imprimir la guia de reenc.en la expedición */
+	/* y el campo que indica si una pieza se marcó como excepción*/
+	//Aca siempre estarán seteados en "N"
+	post:jnl_stockp_reenc = "N"
+	post:jnl_stockp_reenc_cul = ""
+	jnl_marca_excep = "N"
+	jnl_excep_existe = ""	
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_stockp_reenc \
+		FLD:jnl_stockp_reenc_cul \
+		FLD:jnl_marca_excep \
+		FLD:jnl_excep_existe \
+		FLD:jnl_guia_especial
+
+   //SENASA
+   CDS APPEND  DSC:tlr:CONjnl_write \
+    	cupon_cta_cupon \
+ 		fecha_vto_CCT \
+		comitente_CCT \
+		cupon_cta_sap \
+		cupon_cod_serv \
+		id_cupon_CCT    	
+   
+   
+END SUB
+
+/*******/

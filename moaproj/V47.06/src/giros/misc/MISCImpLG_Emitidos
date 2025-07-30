@@ -1,0 +1,252 @@
+/****o* Lista de Giros/OFB:giros:MISCImpLG_Emitidos
+* NOMBRE
+*   OFB:giros:MISCImpLG_Emitidos
+* DESCRIPCION
+*   Rutina de inicializacion de impresion de plancha de cheque de Emision de Lista de Giros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCtrat_post_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1204
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCImpLG_Emitidos
+    LOCAL line_csr LIKE common:csr_string
+    LOCAL l_cont LIKE siaf:i
+    LOCAL l_cont_hojas LIKE siaf:i
+    LOCAL l_retval LIKE lib:err_retval
+    LOCAl l_flag_cheques LIKE siaf:i
+    LOCAL flag_cont_hojas LIKE siaf:i
+    LOCAL l_cant_cheques LIKE siaf:i
+    LOCAL flag_popup LIKE siaf:i
+	local l_SaldoAdelMon    like post:AdelMon_CM
+	local l_cant_g			like giros:cant_g_emitir
+	
+	l_SaldoAdelMon = post:AdelMon_CM - giros:EmisAdelMon
+	
+    l_cont = 0
+    l_cont_hojas = 0
+    l_flag_cheques = 0
+    flag_cont_hojas = 0
+	giros:es_emision_postal  = "S"
+	giros:F_NroGiro_Anul_fld = giros:F_NroGiro_fld
+
+	//AUT-1204
+	l_cant_g = 0
+	
+	CDS SELECT FROM "sesion_lg" BECOMES "sesion_lg_ctx" WHERE \
+	giros:nro_sesion_lg == giros:nro_sesion_lg && \
+	giros:tipo_giro_fld == "P" && \
+	giros:estado_lg == "I" && \
+	giros:a_emitir == "S" && \
+	giros:lg_cheque != "AN" \
+	sort "primary"
+	
+	CDS FINDFIRST "sesion_lg_ctx" NOLOCK
+	l_retval = CDSRETVAL
+			
+	DO
+		IF (l_retval == -801) THEN
+			BREAK 
+		END IF
+		//AUT-1204
+		IF (l_cant_g == giros:cant_g_emitir) THEN
+			BREAK
+		END IF
+       
+        CLEARFIELD line_csr
+        CLEARFIELD giros:ImporteNeto 
+        CLEARFIELD giros:CodSucBenef_fld 
+        CLEARFIELD giros:NombreBenef_fld 
+        CLEARFIELD giros:ApellidoBenef_fld 
+
+		CDS EXTRACT "sesion_lg_ctx"  ImporteNeto CodSucBenef_fld NombreBenef_fld ApellidoBenef_fld \
+		                             nro_sesion_lg nro_trx_lg giros:ImporteTotal_fld
+        //AUT-1001
+   		if (l_SaldoAdelMon < giros:ImporteTotal_fld) then
+    		//msgbox "No hay saldo suficiente de adelanto para imprimir los cheques.",OFB_OK,"ADVERTENCIA"
+    		break
+    	endif
+       	l_SaldoAdelMon = l_SaldoAdelMon - giros:ImporteTotal_fld
+        l_cont = l_cont + 1
+		//FIN AUT-1001
+        CALL post:MISCFtrim(giros:ImporteNeto)        //longitud 12.2
+        CALL post:MISCFtrim(giros:CodSucBenef_fld)    //longitud 5
+        CALL post:MISCFtrim(giros:NombreBenef_fld)    //longitud 20
+        CALL post:MISCFtrim(giros:ApellidoBenef_fld)  //longitud 20
+        CALL post:MISCFtrim(giros:nro_sesion_lg)      //longitud 9
+        CALL post:MISCFtrim(giros:nro_trx_lg)         //longitud 5
+        
+        MOVE giros:ImporteNeto TO SUBSTR(line_csr,0,14)
+        MOVE giros:CodSucBenef_fld TO SUBSTR(line_csr,15,5)
+        MOVE giros:NombreBenef_fld TO SUBSTR(line_csr,21,20)
+        MOVE giros:ApellidoBenef_fld TO SUBSTR(line_csr,42,20)
+        MOVE giros:nro_sesion_lg TO SUBSTR(line_csr,71,9)
+        MOVE giros:nro_trx_lg TO SUBSTR(line_csr,81,5)
+        
+        IF (flag_cont_hojas == 0)
+            //Creo picklist para guardar los datos del giro a anular
+            CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+		    CALL CSR:f_sanewpl dsc:post:PICanulacion_tran PIC:post:PICanulacion_tran 605,332
+		    
+		    //Creo picklist para guardar los datos del cheque a anular
+		    CALL csr:f_sadroppl dsc:post:PICtran_sel
+		    CALL CSR:f_sanewpl dsc:post:PICtran_sel PIC:post:PICtran_sel 605,332
+		    
+		    LET flag_cont_hojas = 1
+        END IF
+        
+        IF (l_cont == 1) THEN
+            //Creo picklist para guardar los datos de los cheques a emitir
+            CALL CSR:magic_sadroppl "cheques_emitidos_LG"
+            CALL CSR:magic_sanewpl "cheques_emitidos_LG" PIC:cheques_emitidos_LG 3000 300
+        END IF
+    
+        //Cargo el picklist
+        CALL CSR:magic_saaddpl "cheques_emitidos_LG" line_csr
+        
+        //Si ya tengo cuatro giros en memoria , imprimo la plancha
+        IF (l_cont == 4) THEN
+            INIT 76,"docprt WAIT 0"	
+            PRINTDOC OFB:giros:imprime_cheque_LG,docprt,"Imprimiendo Cheque"
+            INIT 76,"docprt WAIT 1"	          
+            l_cont = 0
+            l_cont_hojas = l_cont_hojas + 1
+        END IF
+        
+    	IF (giros:cant_planchas_pause == l_cont_hojas) THEN
+    	    LET flag_cont_hojas = 0
+    	    
+    	    //Limpio el buffer del teclado
+    	    INIT 33,0
+    	    
+    	    //CRQ 6725
+      		MSGBOX \
+       		"Aguarde la impresión de las hojas indicadas para la pausa.\nLuego aceptar para continuar con otra tanda de impresión.",OFB_ICONEXCLAMATION,"ATENCION"
+    	    
+    	    //Limpio el buffer del teclado
+    	    INIT 33,0
+    	    
+            MSGBOX "Los cheques fueron impresos correctamente?",OFB_YESNO2,"Atencion"
+        	IF ( RETVAL == 7 )
+                l_flag_cheques = l_flag_cheques + 1          
+                l_cant_cheques = giros:cant_planchas_pause
+                l_cant_cheques = l_cant_cheques * 4
+                post:TranAnul_cant = l_cant_cheques
+                
+                flag_popup = 0
+                
+                WHILE (flag_popup == 0)
+                    POPUP giros:SCRNanulacionLG,-,PCOLanulacionLG,SVALanulacionLG
+                    
+                    IF (LASTKEY == RT_ESC) THEN
+                        flag_popup = 0
+                    ELSE
+                        flag_popup = 1
+                    END IF
+                END WHILE
+                 
+            ELSE    
+                CALL giros:MIScicloPICtran_sel
+        	END IF
+        	
+        	/****/
+            //Elimino los picklist en memoria
+            CALL CSR:magic_sadroppl "cheques_emitidos_LG"
+            CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+            CALL csr:f_sadroppl dsc:post:PICtran_sel
+        	/****/
+        	
+        	l_cont_hojas = 0
+		END IF
+       
+		CDS FINDNEXT "sesion_lg_ctx"  NOLOCK
+		l_retval = CDSRETVAL
+		l_cant_g = l_cant_g + 1
+	LOOP
+
+	CDS UNLOCK "sesion_lg_ctx"
+	CDS ENDSELECT "sesion_lg_ctx"
+
+    //Valido si tengo que completar la plancha con cheques anulados
+    IF (l_cont > 0 && l_cont < 4) THEN
+        WHILE (l_cont < 4)
+            l_cont = l_cont + 1
+            CLEARFIELD line_csr
+            MOVE "ANULADO" TO SUBSTR(line_csr,63,7)
+            MOVE giros:nro_sesion_lg TO SUBSTR(line_csr,71,9)
+            
+            //Cargo el picklist
+            CALL CSR:magic_saaddpl "cheques_emitidos_LG" line_csr
+        END WHILE
+        
+        INIT 76,"docprt WAIT 0"	
+        PRINTDOC OFB:giros:imprime_cheque_LG,docprt,"Imprimiendo Cheque"
+        INIT 76,"docprt WAIT 1"
+        
+    END IF
+    
+    IF ((flag_cont_hojas == 1 && l_cont_hojas < giros:cant_planchas_pause) || \
+        (giros:cant_planchas_pause == l_cont_hojas)) THEN
+        LET flag_cont_hojas = 0
+      	
+  	    //Limpio el buffer del teclado
+	    INIT 33,0
+      	
+      	//CRQ 6725
+      	MSGBOX \
+       "Aguarde la impresión de las hojas indicadas para la pausa.\nLuego aceptar para continuar con otra tanda de impresión.",OFB_ICONEXCLAMATION,"ATENCION"
+
+	    //Limpio el buffer del teclado
+	    INIT 33,0
+
+        MSGBOX "Los cheques fueron impresos correctamente?",OFB_YESNO2,"ATENCION"
+        
+        flag_popup = 0
+        
+        IF ( RETVAL == 7 ) THEN
+            l_flag_cheques = l_flag_cheques + 1
+            l_cant_cheques = giros:cant_planchas_pause
+            l_cant_cheques = l_cant_cheques * 4
+            post:TranAnul_cant = l_cant_cheques
+            
+            WHILE (flag_popup == 0)
+                POPUP giros:SCRNanulacionLG,-,PCOLanulacionLG,SVALanulacionLG
+                
+                IF (LASTKEY == RT_ESC) THEN
+                    flag_popup = 0
+                ELSE
+                    flag_popup = 1
+                END IF
+            END WHILE
+        ELSE    
+            CALL giros:MIScicloPICtran_sel
+    	END IF
+    	
+        /****/
+        //Elimino los picklist en memoria
+        CALL CSR:magic_sadroppl "cheques_emitidos_LG"
+        CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+        CALL csr:f_sadroppl dsc:post:PICtran_sel
+        /****/    
+
+        l_cont_hojas = 0
+    END IF
+        
+            
+    //Elimino los picklist en memoria
+    CALL CSR:magic_sadroppl "cheques_emitidos_LG"
+    CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+    CALL csr:f_sadroppl dsc:post:PICtran_sel
+    
+END SUB
+
+/*******/

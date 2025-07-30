@@ -1,0 +1,76 @@
+/****o* Pago en Destino/OFB:post:CDSstockp_upd_estAct
+* NOMBRE
+*   OFB:post:CDSstockp_upd_estAct
+* DESCRIPCION
+*   Actualiza el estado actual de la pieza ped dentro de la stockp y cuando es FACT
+*	actualiza la modalidad del cliente (si uso credito/adelanto o no uso nada)
+* ENTRADAS
+*   esta	= "RECI" - Pieza Recibida
+*					= "PRNC" - Pieza en proceso de nota de credito
+*					= "NTCR" - Pieza con Nota de Credito generada
+*					= "PRFA" - Pieza en proceso de refacturacion
+*					= "FACT" - Pieza con Nueva Factura generada
+*					= "ENTR" - Pieza Entregada
+*		pieza	= codigo de pieza
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCupdEstPzaPed
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSstockp_upd_estAct(esta,pieza)
+	LOCAL l_retval LIKE lib:err_retval
+	
+	//solo se necesita el campo post:emite_fact_stockp cuando se genera la refacturacion
+	//para saber si en la entrega se cobra o no el importe ped
+	IF (esta == "FACT")
+		IF (post:cli_tipo == CLIMED) //cliente medio
+			IF (post:modalidad_CM == "S")
+				IF (post:ConsumoAnticipo)
+					post:emite_fact_stockp = "N" //Sin modalidad con adelanto
+				ELSE
+					post:emite_fact_stockp = "S" //sin modalidad sin adelanto
+				END IF
+			ELSE
+				post:emite_fact_stockp = "N" //modalidad CobDif o FactDif
+			END IF
+		ELSE 
+			post:emite_fact_stockp = "S" //minorista
+		END IF
+	ELSE
+		CLEARFIELD post:emite_fact_stockp 
+	END IF	
+	
+	CDS SELECT FROM DSC:stockp_tbl BECOMES "stockp_ctx1" WHERE \
+		adt_stockp_pieza == pieza && \
+		adt_stockp_destino == DSC:PED_desc
+	CDS FINDFIRST "stockp_ctx1" LOCK
+	l_retval = CDSRETVAL	
+	IF (l_retval == 0) THEN
+		stockp_ped_estAct = esta
+		CDS CLEARBUFFER "stockp_ctx1"
+		CDS APPEND "stockp_ctx1" \
+			post:stockp_ped_estAct \
+			op:op_login_id as post:ped_op_login_id \
+			post:emite_fact_stockp
+			
+		IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped) && !TESTFLAG(post:sesion_ped_flags,esc_servicio_ped)) THEN			
+			CDS APPEND "stockp_ctx1" \
+				post:importe_sesion AS post:stockp_impCobro_ped
+		END IF
+		
+		CDS UPDATE "stockp_ctx1" LOCK
+		l_retval = CDSRETVAL
+	END IF
+	CDS UNLOCK "stockp_ctx1"
+	CDS ENDSELECT "stockp_ctx1"
+	RETURN l_retval
+END SUB
+
+/*******/

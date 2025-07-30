@@ -1,0 +1,149 @@
+/****o* Rendición Piezas CDD/OFB:post:PBModif_CDD
+* NOMBRE
+*   OFB:post:PBModif_CDD
+* DESCRIPCION
+*   Esta rutina Modifica la pieza recibida en una tabla temporal (StockpCDD_Aux).
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SCRNRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBModif_CDD
+	local datos_cli like es_mayorista
+	local Ltipo_doc like post:CDD_rtte_TipoDoc
+	local Lnum_doc  like post:CDD_rtte_NumDoc
+    
+	drv:button = drv:last_button
+	call drv:but_up_enable
+	//cgw:NI 50388 - AUT-2079.
+	/*
+	if (post:Pieza.numchars == 0 || post:CDD_crem_imp.numchars == 0)
+		MSGBOX "LOS DATOS DE PIEZA Y CREM DEBEN ESTAR CARGADOS.",0X00,"AVISO"
+		RETURN -2
+	endif
+	*/
+	IF (post:Pieza.numchars == 0) THEN
+		MSGBOX "LOS DATOS DE PIEZA DEBEN ESTAR CARGADOS.",0X00,"AVISO"
+		NEXTFIELD post:Pieza	
+		RETURN -2
+	END IF
+
+	//PS 9937
+	CALL post:MISCes_TT(Pieza)
+	if (retval == 0) then
+		CALL MISCcant_digitos_tt(Pieza,"8")
+	endif
+	
+	//cgw:Valida que no existan en las tablas StockpCDD, stockp, stockpHist, stockpHist_CDD, stockp_recep, StockpCDD_Aux.
+	CALL post:MISCExiste_Pieza_CDD
+	IF (RETVAL != 0) THEN
+		NEXTFIELD post:Pieza
+		IF (RETVAL == -801) THEN
+	    MSGBOX "LA PIEZA NO HA SIDO INGRESADA.",0X00,"AVISO"
+	    UNGETKEY RT_TAB
+		END IF
+		RETURN
+	END IF
+	
+	//cgw:NI 50388 - AUT-2079. Validaciones y Desglose del codigo de barras CCT
+	//reservo tipo y nro de documento ya que en el desglose se limpia y se necesitan para la modificacion de un cliente minorista.
+	Ltipo_doc = post:CDD_rtte_TipoDoc
+	Lnum_doc = post:CDD_rtte_NumDoc
+	CALL post:FVALcod_barra_CREM
+	IF (RETVAL < 0) THEN
+		NEXTFIELD post:cod_barra_CREM
+		RETURN (-2)
+	END IF
+	if (post:CDD_crem_imp.numchars == 0) then
+		MSGBOX "EL IMPORTE CREM DEBE ESTAR CARGADO.",0X00,"AVISO"
+		NEXTFIELD post:CDD_crem_imp
+		RETURN -2
+	endif
+
+	datos_cli = "S"
+	CALL MISCes_TT(post:Pieza)
+	IF (retval < 0)
+		//Verifico si la pieza pertenece a un cliente Mayorista Crem
+		CALL CDSesCliMay_crem(post:Pieza)
+		IF (retval == 0)
+			es_mayorista = "S"
+			//grablo tabas auxiliar de StockpCDD con los datos del cliente mayorista
+			CALL CDStbls_aux_crem
+			CALL CDSSave_StockpCDDAux
+			if (retval == -801) then
+				CDD_total_ing = CDD_total_ing + CDD_crem_imp
+				CDD_cant_piezas	= CDD_cant_piezas + 1
+			else
+				CDD_total_ing = CDD_total_ing - CDD_crem_imp_ant + CDD_crem_imp
+			endif
+			refresh CDD_total_ing
+			refresh CDD_cant_piezas			
+			datos_cli = "N"
+		ENDIF
+	ENDIF
+	
+	IF (datos_cli == "S")
+		//Llamo POPUP para el ingreso de remitente del crem
+		Modificando = TRUE
+		INIT 71 1 //Para que no se pueda clickear otro objeto
+
+		//gpb:SC 50190 - SC 50361
+		IF (cod_barra_CREM.numchars == 0 || post:id_cupon_CCT.numchars == 0 || post:adt_climay_razon.numchars == 0) then
+			IF (post:adt_climay_razon.numchars == 0) THEN
+				//cgw:Si es minorista recupero tipo y nro de documento
+				post:CDD_rtte_TipoDoc = Ltipo_doc
+				post:CDD_rtte_NumDoc = Lnum_doc
+			END IF
+			call drv:MISCpopup(scr:post:SCRNrtte_crem,ofb:post:PDISrtte_crem,ofb:post:PCOLrtte_crem,ofb:post:SVALrtte_crem,LST:post:BUTrtte_crem)			//POPUP DATOS RTTE
+			unprotfield post:cod_barra_CREM
+		ELSE
+			es_mayorista = "S"
+			CALL post:CDStbls_aux_crem
+			LASTKEY = RT_SEND
+		ENDIF
+
+		IF (LASTKEY == RT_SEND)
+			CALL CDSSave_StockpCDDAux
+			if (retval == -801) then
+				CDD_total_ing = CDD_total_ing + CDD_crem_imp
+				CDD_cant_piezas	= CDD_cant_piezas + 1
+			else
+				CDD_total_ing = CDD_total_ing - CDD_crem_imp_ant + CDD_crem_imp
+			endif
+			refresh CDD_total_ing
+			refresh CDD_cant_piezas
+		END IF
+		INIT 71 0
+	END IF
+	
+	clearfield es_mayorista
+	clearfield post:Pieza
+	clearfield post:CDD_crem_imp
+	refresh post:Pieza
+	refresh post:CDD_crem_imp
+	
+	//gpb:SC 50190 - SC 50361
+	CALL post:MISCclearRendPzasCCT
+	
+	ENABLECONTROL drv:PBcb3
+	DISABLECONTROL drv:PBcb5
+	DISABLECONTROL drv:PBcb6
+	DISABLECONTROL drv:PBcb7
+	
+	;UNPROTFIELD post:Pieza //cgw:desprotejo el campo de la pieza.
+	
+	NEXTFIELD post:Pieza
+	SETVALDONE Pieza
+	SETVALDONE CDD_crem_imp
+END SUB
+
+/*******/

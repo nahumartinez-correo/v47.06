@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:post:MISCprocClienWeb
+* NOMBRE
+*   OFB:post:MISCprocClienWeb
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprocClienWeb(nroDoc_web)
+	local jourOkAux like post:journalizacionOk
+    /* Recorro la Tabla ClientesWeb y Journalizo */
+    post:importemp_web = 0
+
+    Cds SELECT FROM Dsc:TblClienWeb BECOMES DSC:CtxCliWeb \
+               WHERE post:adt_nroDoc_web == nroDoc_web && \
+                     post:adt_fecha_web >= post:adt_fecdes_web && \
+                     post:adt_fecha_web <= post:adt_fechas_web && \
+                     post:adt_pasivo_web != "S" && \
+                     journalizacionOk != "S" && \
+		  			 ((post:adt_nro_lote_web >= NroLote_inic_aux1 && \
+					 post:adt_nro_lote_web <= NroLote_fin_aux1) || \
+		  			 (post:adt_nro_lote_web >= NroLote_inic_aux2 && \
+					 post:adt_nro_lote_web <= NroLote_fin_aux2))
+
+    Cds FINDFIRST DSC:CtxCliWeb Lock
+    IF (CdsRetval == 0) THEN
+    	CDS EXTRACT DSC:CtxCliWeb post:adt_nro_lote_web
+    	post:NroLote_inic_web = post:adt_nro_lote_web /* reservo primer nro lote */
+    ELSE
+        CDS EndSelect DSC:CtxCliWeb
+		RETURN (-2)
+   	END IF
+
+	Cds FINDLAST DSC:CtxCliWeb Lock
+	IF (CdsRetval == 0) THEN
+		CDS EXTRACT DSC:CtxCliWeb ALL
+		if (post:journalizacionOk != "S" && post:journalizacionOk != "J")
+			; Significa que estoy empezando un nuevo proceso.
+			clearfield sistCaido
+		endif
+        Call post:MISCinicLote_Web
+		if (NroLote_inic_web > NroLote_web)
+			NroLote_inic_aux1 = NroLote_inic_web
+			NroLote_fin_aux1 = 99999999
+			NroLote_inic_aux2 = 0
+			NroLote_fin_aux2 = NroLote_web
+		else
+			NroLote_inic_aux1 = NroLote_inic_web
+			NroLote_fin_aux1 = NroLote_web
+			NroLote_inic_aux2 = NroLote_inic_web
+			NroLote_fin_aux2 = NroLote_web
+		endif
+	    Call batch:MISCjnlBatch99021 /* journalizo "99021" inicio de sesion */
+		jourOkAux = post:journalizacionOk
+	    Call post:MISCNPasivoTransWeb
+	    Call post:MISCcaptura_Web /* journalizo "99099" */
+	    post:enSesion = "S"
+		Call post:MISCimprimoTransWeb
+		post:journalizacionOk = jourOkAux
+		Call post:MISCjournal99023Web
+		Call post:MISCclear_impfisWeb
+		clearfield post:enSesion
+		; Marco todos los registros de CtxCliWeb como Terminados.
+		do
+			post:journalizacionOk = "S"
+			CDS APPEND DSC:CtxCliWeb post:journalizacionOk
+			CDS UPDATE DSC:CtxCliWeb lock
+			CDS UNLOCK DSC:CtxCliWeb
+			CDS FINDPREV DSC:CtxCliWeb lock
+			if (CDSRETVAL != 0)
+				break
+			endif
+		loop
+	ELSE
+        CDS EndSelect DSC:CtxCliWeb
+		RETURN (-2)
+	END IF
+	CDS EndSelect DSC:CtxCliWeb
+	terminoProcesoAnt = "S"
+	return (0)
+END SUB
+
+/*******/

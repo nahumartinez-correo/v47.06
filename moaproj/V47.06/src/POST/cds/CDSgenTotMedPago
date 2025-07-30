@@ -1,0 +1,90 @@
+/****o* Pendientes de agrupación/OFB:post:CDSgenTotMedPago
+* NOMBRE
+*   OFB:post:CDSgenTotMedPago
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSgenTotMedPago(cual)
+	local ind like siaf:i
+	if (!(enSesion != "S" && estAnul == "DJ1"))
+		Call post:CDSdelete_TotMedPag
+		if (cual == "ANT")
+			CDS SELECT FROM NC_TAB BECOMES NC_CON \
+				where tlr:jnl_operator == op:op_operator_id && 						\
+					  tlr:jnl_status != 100 && siaf:cancelacion == "" && 			\
+					  tlr:jnl_bus_date == common:system_date && 					\
+					  (siaf:codigo_siaf == 99098 || siaf:codigo_siaf == 99099) && 	\
+					  tlr:jnl_branch == common:sucursal_activa
+
+			Cds FINDFIRST DSC:NC_CON NOLOCK
+			let lib:err_retval = cdsretval
+			while (lib:err_retval == 0)
+				Cds Extract DSC:NC_CON  siaf:moneda siaf:importe siaf:codigo_siaf \
+										post:Tipo_Adm post:NroCompPago2 post:NroTransac \
+										post:cod_banco post:cuenta post:nro_cheque		\
+										post:fec_d post:codigo_interno 					\
+										post:DescripMedPag post:importe_origen 			\
+										post:jnl_interes_diferido \
+										post:jnl_iva_int_dif \
+										post:iva_Porcentaje \
+										post:reg_up_dif
+				;NroCompPago = 0
+				fprint NroCompPago, "%03.3s%020.20s%020.20s", cod_banco, cuenta, nro_cheque
+				if (siaf:codigo_siaf == 99098)
+					siaf:importe = siaf:importe * -1
+					post:importe_origen = post:importe_origen * -1
+				endif
+
+				if (siaf:importe != 0)
+					if (post:reg_up_dif != "")
+						adt_mp_viaje = "S"
+						post:cli_tipo = CLIUP
+						SETFLAG giros:tran_send_mode,cancelacion
+					else
+						RESETFLAG giros:tran_send_mode,cancelacion
+						CLEARFIELD adt_mp_viaje
+						CLEARFIELD post:cli_tipo
+					end if
+					//Call post:CDSmedioElegido_save
+					Call post:CDSmedPagSave
+				endif
+				Cds FINDNEXT DSC:NC_CON NOLOCK
+				let lib:err_retval = cdsretval
+			End while
+			Cds EndSelect DSC:NC_CON
+		else
+			Cds SELECT FROM Dsc:MedioPagoHabTAB BECOMES DSC:MedioPagoHabCON \
+			            WHERE (Fld:post:op_operator_id == fld:post:op_operator_id )
+			Cds FINDFIRST DSC:MedioPagoHabCON NOLOCK
+			let lib:err_retval = cdsretval
+			while (lib:err_retval == 0)
+				Cds Extract DSC:MedioPagoHabCON ALL
+				siaf:moneda = post:codigo_medio_pago
+				post:adt_mp_desc = post:DescripMedPag
+				;NroCompPago = 0
+				fprint NroCompPago, "%03.3s%020.20s%020.20s", cod_banco, cuenta, nro_cheque
+				//Call post:CDSmedioElegido_save
+				Call post:CDSmedPagSave
+				Cds FINDNEXT DSC:MedioPagoHabCON NOLOCK
+				let lib:err_retval = cdsretval
+			End while
+			Cds EndSelect DSC:MedioPagoHabCON
+		endif
+
+	endif
+END SUB
+
+/*******/

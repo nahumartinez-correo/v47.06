@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:post:SVALMarca_Excepcion
+* NOMBRE
+*   OFB:post:SVALMarca_Excepcion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALMarca_Excepcion
+
+//LOCAL codigo LIKE post:adt_uneg_sitecode
+
+  IF (!testflag(tlr:tran_flags,correction)) THEN
+     
+     MOVE "S" TO siaf:continua_transaccion
+     POPUP siaf:SCRNcontinua
+	 IF (siaf:continua_transaccion == "N" || LASTKEY == 0x0190 ) THEN
+        call csr:restore_currentfield
+	    INIT 33,0
+        return -2
+     END IF
+     /*Grabando excepción....*/
+     IF (tipo_excepcion == "PIEZA") THEN
+		/*Tratamiento de las piezas: Actualizo Stockp/Journal/Scaneos 0(15)*/
+	    CALL MISCTrato_Pieza
+	    /*Si la pieza proviene de una transferencia actualizo el registro correspondiente
+	    de la TranCont para que no me apareza en Inf.Pendiente ni se cargue la pieza
+	    cuando se haga el cierre correspondiente*/
+	    IF (existe_fisicamente == "N") THEN
+	    	CALL CDSBorroRegTranCont(post:id_excepcion)
+	    END IF
+	  	/*MFM - PS 5659*/
+	  	IF (common:br_modelo != 07 && common:br_modelo != 08 && common:br_modelo != 09) THEN
+	  		/*17.01.2002 Busco el corte operativo asociado a dicha pieza en la tabla de Servicios
+			despues busco en la relmod el despacho asociado a dicho corte con apertura expedicion*/
+			CALL CDSGet_CorteOp	
+		END IF
+     END IF  
+    
+     IF (tipo_excepcion == "SACA") THEN
+    	/*Tratamiento de las sacas: Actualizo Journal/Scaneos X(24)*/
+		CALL MISCTrato_Saca   
+		/*MFM - PS 5659*/
+		IF (common:br_modelo != 07 && common:br_modelo != 08 && common:br_modelo != 09) THEN
+			/* 23.01.2002 Destino de Excepción Secundario*/
+		/*	IF (SacaPrioritaria.numchars != 0) THEN 
+				IF (common:br_ctpTT2.numchars > 0) THEN
+					//Con el CTP Prioritario de la sucursal busco la unidad de negocio  en la tabla
+					CALL CDSGet_Uneg(common:br_ctpTT2)
+				ELSE
+					//Si no existe CTP Prioriario para esa sucursal se busca la unidad 
+					//de negocios asociada con el despacho CTE
+					CALL CDSGet_Uneg("CTE")
+				END IF
+			ELSE
+				//Se trata de una Saca cerrada en sucursal o En tránsito
+				codigo = substr(id_excepcion,17,3)
+				//Obtengo la unidad de negocio (destino secundario de excepcion)
+				CALL CDSGet_Uneg(codigo)
+			END IF*/
+			/**Para Saca en Tránsito o con Destino Sucursal**/
+			if (SacaTransito || SacaDestSuc) then
+				IF (common:br_ctpTT2.numchars > 0) THEN
+					//Con el CTP Prioritario de la sucursal busco la unidad de negocio  en la tabla
+					CALL CDSGet_Uneg(common:br_ctpTT2)
+				ELSE
+					//Si no existe CTP Prioriario para esa sucursal se busca el normal 
+					CALL CDSGet_Uneg(common:br_ctpnormal)
+				END IF
+			end if
+			
+			if (SacaSucursal) then
+				/**Para Saca confeccionada en Sucursal (cierre de saca)**/
+				/*BUSCAR EN LA RELMOD CON el common:br_modelo, adt_novtt_saca_tipo, adt_novtt_grupo, adt_novtt_corte y apertura expedicion*/
+				CALL CDSGet_SacaSucursal
+			end if
+			
+			if (SacaDevol) then
+				/*Buscar una pieza de la saca*/
+				CALL CDSGet_SacaDevol
+			end if
+		END IF
+     END IF
+    
+     IF (tipo_excepcion == "TRANSPORTE") THEN
+		existe_fisicamente = "S"
+		REFRESH existe_fisicamente
+		/*Busco un corte operativo PRIORITARIO y a partir de allí calculo el destino secundario*/
+		CALL post:MISCDest_Secundario ("S")
+     END IF
+     
+     /*Genero el registro de excepcion*/        
+     CALL MISCRegistro_Excep 
+     IF (RETVAL < 0) THEN
+     	RETURN -2
+     END IF
+     
+     /*Fuerzo un Enter*/
+     UNGETKEY RT_SEND
+     
+  ELSE
+  	 /*Actualizar tabla de excepciones, borrando la novedad*/
+  	 CALL CDSAct_Excepciones
+  	 IF (RETVAL > 0) THEN
+  	 	RETURN -2
+  	 END IF
+  	 IF (tipo_excepcion == "PIEZA") THEN
+  	 	/*Sacar la marca de excepcion de los scaneos O, del journal y de stockp!!!*/
+  	 	CALL MISCAct_Scaneos("E",0)
+  	 	CALL MISCAct_Jnl_Excep("P")
+  	 	CALL MISCAct_Stockp_Excep
+  	 	/*Si la pieza está transferida actualizo la marca de Excepción de TranCont*/
+  	 	CALL CDSBorroRegTranCont(id_excepcion)
+  	 END IF
+  	 IF (tipo_excepcion == "SACA" ) THEN
+  	 	/*Sacar la marca de excepcion de los scaneos X y del journal*/
+  	 	CALL MISCAct_Scaneos("E",2)
+  	 	CALL MISCAct_Jnl_Excep("S")
+  	 END IF
+  	 IF (tipo_excepcion == "SACA" && existe_fisicamente == "N") THEN
+  	 	/*Sacar la marca de excepcion de los scaneos O y P*/
+  	 	CALL MISCAct_Scaneos("E",3)
+  	 END IF
+  
+  END IF
+  
+END SUB
+
+/*******/

@@ -1,0 +1,118 @@
+/****o* Recepción de Piezas/OFB:post:FVALplazo_guarda_CM
+* NOMBRE
+*   OFB:post:FVALplazo_guarda_CM
+* DESCRIPCION
+*   Esta rutina calcula el Plazo de Guarda de las piezas ingresadas con la opcion Asigna Destino.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:CDSrecalculo_guarda
+* REFERENCIADO POR
+*   OFB:post:CDSverif_recep_endas,OFB:post:FVALcamposrequeridos,OFB:post:FVALstockp_pieza
+* DOCUMENTACION
+*   CD LaboralCC01.doc: http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=569016&
+*   CD LaboralCC03.doc: http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=569219&
+*   SC50211.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619898&
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALplazo_guarda_CM
+
+Local cod_ttrace like stockp_pieza
+LOCAL plazo LIKE post:cantidad
+
+    if (AsignaDestino == "E") then
+    	if (stockp_vtofecha_oe.numchars != 0) then
+    		RETURN 0
+    	else
+    		call MISCes_TT(stockp_pieza)
+    		if (RETVAL != 0) then
+    			//borro la pieza porque la carga automatica no se hace desde el campo fecha
+    			//entonces lo tengo que obligar a volver a ingresar la pieza!!
+    			CLEARFIELD stockp_pieza
+    			MSGBOX "DEBE INGRESAR LA FECHA DE VENCIMIENTO.",0X00,"ERROR"
+    			RETURN -2
+    		endif
+    	endif
+    endif
+    
+    call MISCes_TT(stockp_pieza)
+    if (RETVAL == 0) then
+    	cod_ttrace = substr(stockp_pieza,0,2)
+    	CDS SELECT FROM DSC:adt_plagua_tbl BECOMES DSC:adt_plagua_ctx \
+    	WHERE (adt_plagua_ttcod == cod_ttrace && \
+    	adt_plagua_dest == stockp_destino && \
+    	adt_plagua_laboral == stockp_laboral)
+    	
+    	CDS FINDFIRST DSC:adt_plagua_ctx NOLOCK
+    	
+    	IF (CDSRETVAL == -801) THEN
+       	   	CDS ENDSELECT DSC:adt_plagua_ctx
+       		MSGBOX "NO SE PUEDE CALCULAR EL PLAZO DE GUARDA PARA EL DESTINO Y CODIGO INGRESADO.",0X00,"ERROR"
+       		clearfield  post:stockp_plazoguarda
+       		clearfield  post:stockp_vtofecha
+       		refresh  post:stockp_plazoguarda
+       		refresh  post:stockp_vtofecha
+       		RETURN -2
+    	END IF
+    	clearfield adt_plagua_mes
+    	clearfield adt_plagua_dias
+    	clearfield adt_plagua_habil
+    	CDS EXTRACT DSC:adt_plagua_ctx adt_plagua_mes adt_plagua_dias adt_plagua_habil
+    	
+    	/*Determino si hay que calcular el plazo de guarda a partir del mes siguiente*/
+    	If (adt_plagua_mes == "S") Then
+	        /*Calcular el mes siguiente*/
+    	    CALL MISCCalculo_mes_sgte(common:system_date)
+    	Else
+	        stockp_vtofecha = common:system_date
+	    End If
+
+    	/* JPM - Si es a partir del mes siguiente es un dia menos */
+	    plazo = adt_plagua_dias
+	    IF (post:adt_plagua_mes == "S") THEN
+		    plazo = plazo - 1
+    	END IF
+
+	    If (adt_plagua_habil == "S") Then
+        	plazo = plazo * 24//paso de dias a horas
+        	/*Calculo la fecha de vencimiento teniendo en cuenta dias no habiles y feriados*/
+        	/*Cambio el campo donde recibo el resultado por uno de tipo DATE en vez de un IND, esto lo hago porque
+        	en RTJava nos trae problemas! - Gabriel Falciola*/
+        	CALL siaf:MISCcontrol_feriado(stockp_vtofecha,plazo, "O", siaf:fecha_acred)
+        	stockp_vtofecha = siaf:fecha_acred
+    	Else
+	        /*Calculo la fecha de vencimiento con dias corridos*/
+    	    CALL  csr:date_add (stockp_vtofecha,  plazo,  "d", stockp_vtofecha)
+    	End If
+
+
+	    CDS ENDSELECT DSC:adt_plagua_ctx
+    	stockp_plazoguarda = adt_plagua_dias
+    	REFRESH stockp_vtofecha
+    	REFRESH stockp_plazoguarda
+		protfield  stockp_plazoguarda  	
+		
+		/*if (AsignaDestino == "E") then
+			stockp_vtofecha_oe = stockp_vtofecha
+			refresh stockp_vtofecha_oe
+		endif*/
+    Else
+    	
+    	call post:FVALplazo_guarda_GC
+	    If (RETVAL < 0) Then
+    	   NEXTFIELD stockp_plazoguarda
+      		If (currentfield.ID != post:stockp_plazoguarda.ID) Then
+        		UNGETKEY RT_TAB
+      		End If
+      		RETURN -2
+    	End If
+    	unprotfield  stockp_plazoguarda  	
+	End If
+
+End Sub
+
+/*******/

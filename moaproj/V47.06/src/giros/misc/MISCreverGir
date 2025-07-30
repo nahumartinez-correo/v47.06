@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCreverGir
+* NOMBRE
+*   OFB:giros:MISCreverGir
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCreverGir
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 15/03/99]      Esta rutina se encarga de reversar las transacciones relacionadas al número    */
+   /*                       de recibo actual.                                                              */
+   /********************************************************************************************************/
+	local loc_nombre_transac like siaf:nombre_transac
+
+	; Primero pide supervisión.
+	Call siaf:SVALnivel_sup
+	If (RETVAL < 0) THEN
+		Return (-2)
+	End If
+
+	; Saca los datos de la girosChqTmp (para no acceder al journal)
+	CDS SELECT FROM DSC:girosChqTmpTAB BECOMES DSC:girosChqTmpCON 	\
+		WHERE adt_girChqtmp_op == op:op_operator_id && 				\
+				adt_girChqtmp_rem == adt_girChqtmp_rem
+	CDS FINDFIRST DSC:girosChqTmpCON LOCK
+	IF (CDSRETVAL != 0) THEN
+		RETURN (-1)
+	END IF
+	CDS EXTRACT DSC:girosChqTmpCON all
+
+	; Necesito validar que se pueda reversar el cheque en cuestión.
+	tes:teso_cheq_moneda = adt_girChqtmp_moneda
+	tes:teso_cheq_nro = adt_girChqtmp_cheque
+	tes:teso_cheq_cuenta = adt_girChqtmp_cuenta
+	tes:teso_cheq_banco = adt_girChqtmp_banco
+	call tes:MISCbusco_cheque_rev
+	if (retval != 0) then
+		CDS UNLOCK DSC:girosChqTmpCON
+		CDS ENDSELECT DSC:girosChqTmpCON
+		return (-2)
+	endif
+
+	; Si todo esta ok, ya empieza la reversa. (se borra el cheque de la girosChqTmp)
+	CDS DELETE DSC:girosChqTmpCON
+	CDS UNLOCK DSC:girosChqTmpCON
+	CDS ENDSELECT DSC:girosChqTmpCON
+
+	; Ahora tengo que reversar todas las transacciones involucradas. (la TesoCheq se actualiza automaticamente.)
+	post:ovr_sup_id_aux  = ovr:ovr_sup_id
+	post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+	ovr:ovr_sup_id = post:ovr_sup_id_aux
+	siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+	post:siaf_flags_aux = siaf:siaf_flags
+
+	Call giros:CDSinic_tabla_jou("journal",dsc:giros:Journal_anul_Ctx)
+	Call siaf:MISClleno_modalidad
+	Call post:CDSbusca_tabla(dsc:giros:Journal_anul_Ctx )
+
+	While (Retval >= 0)
+		CALL csr:trimfield post:jnl_flia_tran
+		siaf:adt_tran_codigo = siaf:codigo_siaf
+		ovr:ovr_sup_id = post:ovr_sup_id_aux
+		siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+		if (siaf:codigo_siaf == 99099)
+			let drv:INDspc_rtn[0] = LST:TOTS70320chq
+			let tlr:INDtots_append = LST:TOTS70320chq
+		else
+			clearfield tlr:INDtots_append
+		endif
+		Call post:MISCreversa_transac
+		Call post:CDSbusca_tabla(dsc:giros:Journal_anul_Ctx)
+	End While
+	Call post:CDSfin_tabla(dsc:giros:Journal_anul_Ctx)
+	Call post:MISCclear_campos_jou
+	Resetflag lib:state_flags,scan_mode
+	; sino quedaba con 99099 y entraba a la rutina de maria laura de la TesoCheq
+	clearfield siaf:codigo_siaf
+END SUB
+
+/*******/

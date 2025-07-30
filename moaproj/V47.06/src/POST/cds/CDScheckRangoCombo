@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:post:CDScheckRangoCombo
+* NOMBRE
+*   OFB:post:CDScheckRangoCombo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScheckRangoCombo(p_cantidad)
+/*Esta rutina verifica si la cifra esta comprendida en el rango habilitado por la 
+configuracion de combos.(RanProdCombo.adt_rpdcb_desde y RanProdCombo.adt_rpdcb_hasta)
+IN: Busca a partir del post:adt_concb_cod, post:adt_concb_cod,
+OUT: Retorna 0 en caso validarse el rango
+     Retorna -2 en caso de no validar el rango
+     Retorna -3 en caso de Error en la ejecucion 
+NBA*/
+
+clearfield  FLD:post:adt_rpdcb_desde
+clearfield  FLD:post:adt_rpdcb_hasta
+clearfield  FLD:post:adt_rpdcb_uni_med
+
+IF (post:enCombo == "S")
+
+    CDS SELECT FROM DSC:post:RanProdCombo_tbl BECOMES DSC:post:RanProdCombo_ctx \
+    WHERE adt_rpdcb_cod == FLD:post:adt_concb_cod && \
+          adt_rpdcb_jerarquia == FLD:post:adt_concb_jerarquia
+    CDS FINDFIRST DSC:post:RanProdCombo_ctx NOLOCK
+    IF (CDSRETVAL == 0) THEN
+        CDS EXTRACT DSC:post:RanProdCombo_ctx \
+            FLD:post:adt_rpdcb_desde \
+            FLD:post:adt_rpdcb_hasta \
+            FLD:post:adt_rpdcb_uni_med
+        CDS ENDSELECT DSC:RanProdCombo_ctx
+        
+        // para postales...
+        if (adt_concb_tipo == "PO" || adt_concb_tipo == "EN") then
+        	// siempre comparan el peso en gramos... asi que tengo que llevar los 
+        	// parametros a esa unidad de medida
+        	if (adt_rpdcb_uni_med == "KGS" || adt_rpdcb_uni_med == "CMS" || adt_rpdcb_uni_med == "UNI") then
+        		adt_rpdcb_desde = adt_rpdcb_desde * 1000
+        		adt_rpdcb_hasta = adt_rpdcb_hasta * 1000
+        	endif
+        endif
+        
+        IF (post:adt_rpdcb_desde > 0) THEN
+            IF (p_cantidad < post:adt_rpdcb_desde) THEN 
+                IF (post:adt_rpdcb_hasta > 0) THEN
+                    FPRINT common:csr_string,"El rango permitido es de %e - %e", FLD:post:adt_rpdcb_desde, FLD:post:adt_rpdcb_hasta
+                ELSE
+                	FPRINT common:csr_string,"El rango permitido es desde %e", FLD:post:adt_rpdcb_desde
+                END IF	    
+	            MSGBOX common:csr_string,0x00,"ERROR"
+                RETURN (-2)
+            ENDIF
+        ENDIF
+        IF (post:adt_rpdcb_hasta > 0) THEN
+            IF (p_cantidad > post:adt_rpdcb_hasta) THEN
+                IF (post:adt_rpdcb_desde > 0) THEN
+                    FPRINT common:csr_string,"El rango permitido es de %e - %e", FLD:post:adt_rpdcb_desde, FLD:post:adt_rpdcb_hasta
+                ELSE
+                	FPRINT common:csr_string,"El rango permitido es hasta %e", FLD:post:adt_rpdcb_hasta
+                END IF    
+                MSGBOX common:csr_string,0x00,"ERROR"
+                RETURN (-2)
+            ENDIF
+        ENDIF
+        RETURN (0)
+    ELSE 
+        CDS ENDSELECT DSC:RanProdCombo_ctx
+        IF (CDSRETVAL == -801) THEN /*Si no habia registros todo OK, sino => Auchh!*/
+            RETURN (0)
+        ELSE
+            MSGBOX "Error al validar los rangos del combo.",0x00,"ERROR"
+            RETURN (-3)
+        ENDIF
+	END IF
+ELSE
+    RETURN (0)
+ENDIF
+
+END SUB
+
+/*******/

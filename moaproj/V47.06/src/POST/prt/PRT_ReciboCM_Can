@@ -1,0 +1,266 @@
+/****o* Transferencias Bancarias/OFB:post:PRT_ReciboCM_Can
+* NOMBRE
+*   OFB:post:PRT_ReciboCM_Can
+* DESCRIPCION
+*   Rutina que imprime el acuse de recibo de las facturas vencidas canceladas con transferencias bancarias
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:DOCS99461
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-350
+*    NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_ReciboCM_Can
+
+    local varl_descripcion	like post:archivo
+    local varl_descripcion2	like post:archivo
+    local varl_moneda_bak	like siaf:moneda
+    local varl_importe      like siaf:importe
+    local varl_impaux		like siaf:importe
+    local l_err_retval      like lib:err_retval
+    local l_cadena          like common:csr_string
+    local l_importe         like post:importe_sesion
+    local ind like siaf:i
+    local l_siaf like  siaf:importe
+    
+    varl_importe = 0
+
+   //Composición de Pago
+    PRT  TEXTFONTNAME "Courier New" 
+    PRT  POSITIONABS *3042 *288 
+    PRT  PRINT "Composición del pago"
+    let siaf:NRO_ITEM = 0 - 3198
+    PRT  TEXTSIZE *110 
+   
+  	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+    	WHERE post:fecha == common:system_date &&                 \
+    	post:op_operator_id == op:op_operator_id &&               \
+    	post:PresNro == post:PresNro  &&                          \
+    	siaf:codigo_siaf == 99461
+    	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	LET l_err_retval = CDSRETVAL
+	ind = 0
+	CDS EXTRACT DSC:CONPresuDeta array post:vec_fectb \
+   	array post:vec_nrotb \
+   	array post:vec_imptb \
+   	array post:vec_tipofact \
+    array post:vec_facturas \
+    array post:vec_impfact \
+    array post:vec_saldofact \
+    array vec_fact_fecha \
+    array vec_nc_tipo \
+    array vec_nc_nro \
+    array vec_nc_imp \
+    array vec_nc_fecha \
+    post:imp_nc_consumida
+    CDS ENDSELECT DSC:CONPresuDeta
+   	//Aplicacion TB
+   	do
+   		varl_importe = varl_importe + post:vec_imptb[ind]
+   		PRT  POSITIONABS siaf:NRO_ITEM *315 
+			FPRINT l_cadena "APLICACION DE TRANSF.BANCARIA %-e %-s",post:vec_fectb[ind],post:vec_nrotb[ind]
+			PRT  PRINT l_cadena
+			PRT  POSITIONABS - *4653 
+			PRT  PRINT EDIT LEFT post:vec_imptb[ind]
+			let siaf:NRO_ITEM = siaf:NRO_ITEM - 110  
+			ind = ind + 1
+    	if (ind > 100 || post:vec_fectb[ind] == "")
+    			break
+    	end if        	
+    loop
+	//Aplicacion NC
+	 if (post:imp_nc_consumida > 0) then
+	 	siaf:i = 0
+		varl_impaux = 0
+		Do
+			if (siaf:i > 9)
+				break
+			end if
+			if (vec_nc_nro[siaf:i].numchars == 0 || vec_nc_nro[siaf:i] == "")
+				break
+			end if
+			fprint common:csr_string,"N/C    %-1.1s  %015.15s   %e",vec_nc_tipo[siaf:i],vec_nc_nro[siaf:i],vec_nc_fecha[siaf:i]
+    		PRT  POSITIONABS siaf:NRO_ITEM *315 
+			PRT  PRINT common:csr_string
+			PRT  POSITIONABS - *4653 
+			PRT  PRINT EDIT LEFT vec_nc_imp[siaf:i]
+			varl_impaux = varl_impaux + vec_nc_imp[siaf:i]
+			//varl_importe -> tiene la suma total de los medios de pago
+			varl_importe = varl_importe + vec_nc_imp[siaf:i]
+			let siaf:NRO_ITEM = siaf:NRO_ITEM - 110
+			siaf:i = siaf:i + 1
+		Loop
+	endif
+	
+// Pago Efectivo
+//resguardo el siaf:importe de la 99451 porque se pisa.
+	l_siaf = siaf:importe
+
+   Call post:MISCinic_TotMedPag
+	Do
+		Call post:MISCbusca_TotMedPag
+		If ( lib:err_retval != 0 )
+			Break
+		Endif
+		
+		let post:adt_mp_cod = siaf:moneda
+		call post:CDSadt_MedPago_load
+		varl_importe = varl_importe + siaf:importe
+		
+		PRT  POSITIONABS siaf:NRO_ITEM *315 
+	  
+	    PRT  PRINT EDIT siaf:moneda
+	    PRT  POSITIONABS - *594 
+	    
+	  	PRT  PRINT EDIT cod_banco
+        
+        // saco la descripcion del banco...
+        let siaf:adt_banco_codigo = cod_banco
+        clearfield siaf:adt_banco_desccorta // p' q' no arrastre basura
+        call siaf:CDSadt_banco_load
+        if (retval == 0) then
+            if (siaf:adt_banco_desccorta.NUMCHARS == 0 && \
+                siaf:adt_banco_desc.NUMCHARS > 0) then
+                siaf:adt_banco_desccorta = substr(siaf:adt_banco_desc,0,10)
+             end if
+         end if
+	   	 PRT  POSITIONABS - *891 
+         if (siaf:adt_banco_desccorta.NUMCHARS > 0) then
+	       	 PRT  PRINT EDIT siaf:adt_banco_desccorta
+         else
+             // FGB 19.12.2000: modifico codigo para poner la descripcion 
+             // de los medios de pago (a partir de la carpeta de Med.
+             // de Pago)
+             // FGB 17.1.2001: (Req.385) Cuando el medio de pago tiene
+             // codigo interno, se imprimira la descripcion del mismo
+             // y no la del medio de pago.
+             if (post:adt_mp_int != "S") then
+             	let varl_descripcion = substr(DescripMedPag,0,20)
+                PRT PRINT EDIT varl_descripcion
+             end if
+          end if
+
+	    PRT  POSITIONABS - *2187 
+	    //PRT  PRINT EDIT Bco_Cuenta[varl_contador]
+	    if (post:adt_mp_int != "S")
+	    	PRT  PRINT EDIT cuenta
+	    else
+	    	PRT  PRINT EDIT codigo_interno
+		end if	    
+        // FGB 19.12.2000: modifico codigo para poner la descripcion 
+        // de los codigos internos de los medios de pago (esto aparece
+        // a partir de la carpeta de Medios de Pagos)
+        if (adt_mp_int == "S") then // si tiene codigo interno
+	        // imprimo la descripcion
+	        clearfield adt_codint_desc
+	        call tes:CDSexiste_codint(codigo_interno)
+	        if (retval == 0) then
+	            let varl_descripcion2 = substr(adt_codint_desc,0,20)
+	            PRT  POSITIONABS - *891 
+	            PRT  PRINT EDIT varl_descripcion2
+	        else
+	            PRT  POSITIONABS - *3519 
+	            PRT  PRINT EDIT nro_cheque
+	        end if
+        elseif (nro_cheque.NUMCHARS > 0) then
+	        PRT  PRINT EDIT nro_cheque
+        end if
+
+	    PRT  POSITIONABS - *4653 
+	    PRT  PRINT EDIT LEFT siaf:importe
+	    let siaf:NRO_ITEM = siaf:NRO_ITEM - 110 
+    Loop
+    
+	
+	Call post:MISCclose_TotMedPag
+	
+	//restaura el siaf:importe
+   siaf:importe = l_siaf
+   clearfield siaf:moneda
+
+
+
+	let siaf:NRO_ITEM = siaf:NRO_ITEM - 110    
+	
+	//NI 50052 - COMENTO PORQUE A VECES QUEDA SUCIO EN EL FIN DE SESION Y ME DEJA REVERSAR UNA SESION POR JOURNAL CUANDO NO DEBERIA
+	//post:importe = varl_importe
+	
+	// Se pasa como parametro a csr:nro_a_letras, variable del importe con 2 decimales.
+	l_importe = varl_importe
+	call csr:nro_a_letras l_importe,desc_moneda,linea_letras1,linea_letras2,linea_letras3
+
+	call PRT_ReciboCMBody
+	call PRT_FirmaCob
+	PRT  TEXTFONTNAME "Courier New" 
+	
+	// Analisis de Salto de Pagina
+    	if (siaf:NRO_ITEM > -4464) then
+        	PRT  POSITIONABS *4464 *297 
+        	PRT  PRINT "** TOTAL"
+        	PRT  POSITIONABS *4464 *4653 
+        	PRT  PRINT EDIT LEFT varl_importe
+                PRT  TEXTFONTNAME "Arial"
+        	PRT  POSITIONABS *4689 *297 
+        	PRT  PRINT "Aplicacion del pago"
+    	        PRT  POSITIONABS *4554 *189 
+    		PRT  LINETO *4554 *5670 
+        	PRT  POSITIONABS *4734 *189 
+        	PRT  LINETO *4734 *5670 
+	        let siaf:NRO_ITEM = 0 - 4854
+    	else
+        	PRT  POSITIONABS *6583 *297 
+        	PRT  PRINT "** TOTAL"
+        	PRT  POSITIONABS *6583 *4653 
+        	PRT  PRINT EDIT LEFT varl_importe
+	        PRT  POSITIONABS *1440 *4950 
+        	PRT  PRINT "Hoja 1 de 2"
+	        // hago salto de pagina
+        	PRT  FORMFEED
+        	call PRT_ReciboCMBody
+        	call PRT_FirmaCob
+	        PRT  POSITIONABS *3042 *288 
+        	PRT  PRINT "Aplicación del pago"
+	        let siaf:NRO_ITEM = 0 - 3198
+	        PRT  POSITIONABS *1440 *4950 
+	        PRT  PRINT "Hoja 2 de 2"
+    	end if
+
+
+    PRT  TEXTFONTNAME "Courier New"
+
+    //Aplicaciones de Pago.
+    siaf:i = 0
+    varl_impaux = 0
+    Do
+	if (siaf:i > 9)
+		break
+	end if
+	if (vec_facturas[siaf:i].numchars == 0 || vec_facturas[siaf:i] == "")
+		break
+	end if
+	fprint common:csr_string,"FACT  FACTURA  %-1.1s  %015.15s   %e",vec_tipofact[siaf:i],vec_facturas[siaf:i],vec_fact_fecha[siaf:i]
+  	  PRT  POSITIONABS siaf:NRO_ITEM *315 
+	PRT  PRINT common:csr_string
+	PRT  POSITIONABS - *4653 
+	PRT  PRINT EDIT LEFT vec_saldofact[siaf:i]
+	varl_impaux = varl_impaux + vec_saldofact[siaf:i]
+		
+	let siaf:NRO_ITEM = siaf:NRO_ITEM - 110
+	siaf:i = siaf:i + 1
+    Loop
+    PRT  POSITIONABS *6565 *351 
+    PRT  PRINT "** TOTAL"
+    PRT  POSITIONABS *6565 *4653 
+    PRT  PRINT EDIT LEFT varl_impaux
+
+END SUB
+
+/*******/

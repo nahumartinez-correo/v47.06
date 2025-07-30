@@ -1,0 +1,102 @@
+/****o* Pendientes de agrupación/OFB:giros:SVALconsulta_multi
+* NOMBRE
+*   OFB:giros:SVALconsulta_multi
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVALconsulta_multi
+
+	LOCAL tipo_giro LIKE tipo_giro_comm
+	
+	call post:CDSobtiene_secuen("IDWUI")
+	fprint id_wui_comm "%5.5s%07.07e",common:sucursal_activa,post:adt_codseq_nro	
+	
+	If (!TestFlag(tran_send_mode,consulta_simple))
+		hcomm:INDhost_sndrt = OFB:giros:SENDconsulta_multi
+	Else
+		hcomm:INDhost_sndrt = OFB:giros:SENDingreso_cons
+	Endif		
+	hcomm:INDhost_rcvrt = OFB:giros:RCVEconsulta_multi
+	CALL hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N")) THEN
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RETURN (-2)
+	END IF 
+	/************************************************************************/
+	/*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+	/************************************************************************/
+	/* Si el flag de TRAN caidas en Vuelo esta ON,
+	Ejecuto proceso correspondiente,para su procesamiento 	            
+	Se ejecutara el proceso de recuperacion siempre y cuando la transaccion
+	en curso tenga rutina de send y  de rcve, es decir las que viajan a
+	HOST.  Se realizo el procedimiento anterior, para que no se modifique
+	el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+	call siaf:CDSchk_trxs_caidas
+	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+			clearfield hcomm:INDhost_sndrt 
+			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+	elseif (retval == -5) then // quedaron trx's pendientes de recuperacion por el proc. batch...
+		clearfield hcomm:INDhost_sndrt
+		clearfield hcomm:INDhost_rcvrt
+	end if    
+	/************************************************************************/
+	/*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+	/************************************************************************/
+
+	call giros:OFBdisable_bt_msg
+	CALL hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	call giros:OFBenable_bt_msg
+	CLEARFIELD lib:stat_message
+	REFRESH STATUSLINE
+	If (hcomm:tran_status != HOST_ACCEPTED) THEN
+		RETURN -2
+	END IF
+	//
+	tipo_giro = SUBSTR(tipo_giro_fld,0,1)
+	if (TestFlag(tran_send_mode,consulta_simple)) then
+	  if ((siaf:codigo_siaf == 70090 || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70382) && (tipo_giro_comm == "E")) then
+			msgbox "NO HAY COINCIDENCIAS" OFB_OK "Error"
+			return -2  
+			elseif (siaf:codigo_siaf == 70120 && tipo_giro_comm != "E")
+			  msgbox "NO HAY COINCIDENCIAS" OFB_OK "Error"
+			 return -2  
+		end if  
+	end if
+
+	//
+	if (siaf:codigo_siaf != 70090 && siaf:codigo_siaf != 70110 && siaf:codigo_siaf != 70120 && \
+		siaf:codigo_siaf != 70392 && siaf:codigo_siaf != 70393 && siaf:codigo_siaf != 70398 && \
+		siaf:codigo_siaf != 70382 && siaf:codigo_siaf != 70399 && siaf:codigo_siaf != 70384 && \
+		siaf:codigo_siaf != 70550 && siaf:codigo_siaf != 70387 && siaf:codigo_siaf != 70389 && \
+		siaf:codigo_siaf != 70388) then  
+		if (TestFlag(tran_send_mode,consulta_simple) && (tipo_giro != tipo_giro_comm)) then
+			msgbox "NO CORRESPONDE EL TIPO DE GIRO SOLICITADO CON LA TRANSACCION" OFB_OK "Error"
+			return -2
+		end if	
+	else
+		if (siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70393 || siaf:codigo_siaf == 70398 )
+			giros:tipo_giro_fld = giros:tipo_giro_comm
+		end if
+	end if		
+END SUB 
+
+/*******/

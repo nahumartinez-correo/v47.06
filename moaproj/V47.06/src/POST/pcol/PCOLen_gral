@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:post:PCOLen_gral
+* NOMBRE
+*   OFB:post:PCOLen_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOLen_gral
+	/*Carina - Cliente Interno es solo para teclas rapidas*/
+	IF (post:estado_presu != 1) THEN
+		DISABLECONTROL op:chk5
+	ELSE
+		ENABLECONTROL op:chk5
+	END IF
+	/****************************************************************/
+        /* Si tiene captura de medio de pago protejo el campo Medio de  */
+        /* pago. Hernán.     17/10/2000                                 */
+        /****************************************************************/
+       if (post:estado_presu == 2 || post:estado_presu == 3) then
+           if (siaf:adt_tran_med_pago != "S") then
+             post:captura_mp = siaf:adt_tran_med_pago 	
+     	     protfield siaf:moneda
+     	     siaf:moneda = 99
+     	     clearfield post:medio_pago_desc
+     	     DISABLECONTROL drv:PBcb0
+     	  else   
+     	    ; Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0) 
+     	  end if 
+       end if
+       /* Agrego también que si estoy en teclas ráìdas y tiene curso legal protejo el 
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+       
+       if (post:estado_presu == 1) then         
+            ;Busco el medio de pago que tenga captura de CL	
+     	    call post:CDSMPago_Clegal_load
+     	    if (retval == 0) then
+     	    	siaf:moneda = post:adt_mp_cod
+     	        protfield siaf:moneda
+     	        DISABLECONTROL drv:PBcb0
+     	    else
+     	       errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+               return (-2)
+             end if    
+
+      end if   
+        
+	if (post:estado_presu == 4) then
+       	protfield siaf:moneda
+        DISABLECONTROL drv:PBcb0
+    end if 
+
+	/*Req 3247 - Control para el combo de apertura*/
+	CALL post:CDScontrol_apert
+	If (RETVAL < 0) then
+		clearfield post:apertura
+		refresh post:apertura
+		protfield post:apertura
+		DISABLECONTROL drv:PBcb6
+	end if
+	//protfield post:apertura
+
+    /*MFM - Verifico si el despacho al que corresponde la pieza está en BH2
+    y lo protejo */
+    IF (post:estado_presu != 4) THEN
+    	IF (jnl_servicio_en_bh2 == "S") THEN
+    		CALL MISCEnBlock_Horario(adt_serv_corteop,post:apertura)
+	    	IF (RETVAL == 0) THEN
+    			PROTFIELD jnl_servicio_en_bh2
+			ELSE
+				UNPROTFIELD jnl_servicio_en_bh2
+			END IF
+    	ELSE
+    		IF (post:adt_relMod_desptipos == "TR") THEN
+    			PROTFIELD jnl_servicio_en_bh2
+    		ELSE
+    			UNPROTFIELD jnl_servicio_en_bh2
+    		END IF
+    	END IF
+    ELSE
+    	PROTFIELD jnl_servicio_en_bh2
+    	protfield post:apertura
+    END IF
+    
+      
+END SUB
+
+/*******/

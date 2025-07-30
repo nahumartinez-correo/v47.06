@@ -1,0 +1,107 @@
+/****o* Pendientes de agrupación/OFB:post:MISCprocBonifEspecie
+* NOMBRE
+*   OFB:post:MISCprocBonifEspecie
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprocBonifEspecie(l_PreDNroTrn, conJournal, soloFaltantes, soloJournalizadas)
+	local l_alicuota_iva like post:adt_prodvs_aliciva
+	local l_importe_bon like post:promo_imp_tot
+	local l_cantidad like post:cantidad2
+	local l_espv_cod like tes:espv_cod
+	local l_jourOk like post:BonifLocalOk
+	local l_promo_cod like post:promo_cod
+	local l_promo_desc like post:promo_desc
+	local l_codigo like tes:adt_evaux_codigo
+	local l_subcod like tes:adt_evaux_subcod
+	local l_inhibeUp like promo_inhibeUpPdvs
+
+	CDS EXTRACT DSC:CONPresuDeta 				\
+		tes:espv_cod into l_espv_cod
+	if (!soloFaltantes)
+		if (soloJournalizadas)
+			cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+	      	tes:adt_evaux_suc      == op:op_branch_id   && \
+	        tes:adt_evaux_op       == op:op_operator_id && \
+	        tes:adt_evaux_tesoro   == "N"               && \
+	        tes:adt_evaux_es_venta == "S"               && \
+	        tes:adt_evaux_envio == "S"					&& \
+	        tes:adt_evaux_prestran == l_PreDNroTrn
+	    else
+			cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+	      	tes:adt_evaux_suc      == op:op_branch_id   && \
+	        tes:adt_evaux_op       == op:op_operator_id && \
+	        tes:adt_evaux_tesoro   == "N"               && \
+	        tes:adt_evaux_es_venta == "S"               && \
+	        tes:adt_evaux_prestran == l_PreDNroTrn
+		endif
+	else
+		if (soloJournalizadas)
+			cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+	      	tes:adt_evaux_suc      == op:op_branch_id   && \
+	        tes:adt_evaux_op       == op:op_operator_id && \
+	        tes:adt_evaux_tesoro   == "N"               && \
+	        tes:adt_evaux_es_venta == "S"               && \
+	        tes:adt_evaux_prestran == l_PreDNroTrn		&& \
+	        tes:adt_evaux_envio == "S"					&& \
+			post:BonifLocalOk != "S"					&& \
+			post:fld_promo_imp > 0
+		else
+			cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+	      	tes:adt_evaux_suc      == op:op_branch_id   && \
+	        tes:adt_evaux_op       == op:op_operator_id && \
+	        tes:adt_evaux_tesoro   == "N"               && \
+	        tes:adt_evaux_es_venta == "S"               && \
+	        tes:adt_evaux_prestran == l_PreDNroTrn		&& \
+			post:BonifLocalOk != "S"					&& \
+			post:fld_promo_imp > 0
+		endif
+	endif
+
+	CDS FINDFIRST DSC:tes:AuxEspV_ctx LOCK
+	LET lib:err_retval = CDSRETVAL
+	WHILE (lib:err_retval != -801)
+		call csr:cleararray(docfis_importe)
+		call csr:cleararray(docfis_tasa_por)
+		call csr:cleararray(docfis_imp_siva)
+		CDS EXTRACT DSC:tes:AuxEspV_ctx 			  		\
+			tes:adt_evaux_cantidad	into 	l_cantidad	  	\
+			fld_promo_imp	 		into 	l_importe_bon 	\
+			tes:adt_espv_aliciva 	into 	l_alicuota_iva 	\
+			promo_cod_esvs  		into 	l_promo_cod 	\
+			promo_desc_esvs 		into 	l_promo_desc	\
+			tes:adt_evaux_codigo 	into 	l_codigo 		\
+			tes:adt_evaux_subcod 	into 	l_subcod		\
+			promo_inhibeUpEsvs 		into	l_inhibeUp
+
+		call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, l_cantidad)
+		call post:MISCtotal_vec_bon
+		call post:CDSgeneraTrnBonLocal(l_promo_cod, l_promo_desc, ImporteTotBon, l_PreDNroTrn, conJournal, l_codigo, l_subcod, "")
+		l_jourOk = "S"
+		CDS APPEND DSC:tes:AuxEspV_ctx \
+		l_jourOk as post:BonifLocalOk
+		CDS UPDATE DSC:tes:AuxEspV_ctx LOCK
+		CDS UNLOCK DSC:tes:AuxEspV_ctx
+
+		bInhibirUP = (bInhibirUP || l_inhibeUp == "S")
+
+	    CDS FINDNEXT DSC:tes:AuxEspV_ctx LOCK
+	    LET lib:err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT DSC:tes:AuxEspV_ctx
+END SUB
+
+/*******/

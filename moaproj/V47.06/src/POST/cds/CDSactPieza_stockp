@@ -1,0 +1,118 @@
+/****o* Modificación de Piezas/OFB:post:CDSactPieza_stockp
+* NOMBRE
+*   OFB:post:CDSactPieza_stockp
+* DESCRIPCION
+*   Esta rutina actualiza los datos de la tabla stockp correspondientes a la pieza modificada.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:CDSactPieza_CDD
+* REFERENCIADO POR
+*   OFB:post:MISCModifPiezaDet
+* DOCUMENTACION
+*   SC50211.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619898&
+*   http://jira.sibs.net/jira/browse/AUT-1684
+*NI 50569-RPP
+
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSactPieza_stockp
+LOCAL l_laboral LIKE post:adt_stockp_laboral
+LOCAL l_fecha LIKE post:adt_stockp_recepfech
+LOCAL l_destino LIKE post:adt_stockp_destino
+LOCAL l_en_devol LIKE post:adt_stockp_en_devol
+
+	CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+	WHERE post:adt_stockp_pieza == post:Pieza
+		
+	CDS FINDFIRST DSC:stockp_ctx LOCK
+	lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == 0) THEN
+		//SC 50211
+		if (substr(post:Pieza,0,2) == "CD" || substr(post:Pieza,0,2) == "MD")
+			call MISCes_TT(Pieza)
+    		if (RETVAL == 0) then
+				CDS EXTRACT DSC:stockp_ctx adt_stockp_laboral INTO l_laboral \
+				adt_stockp_recepfech INTO l_fecha 
+				if (stockp_laboral != l_laboral)
+					CALL CDSrecalculo_guarda(l_fecha)
+					if (RETVAL == 0) then
+						CDS APPEND DSC:stockp_ctx post:stockp_laboral AS adt_stockp_laboral \
+						stockp_plazoguarda AS adt_stockp_plazoguar stockp_vtofecha AS adt_stockp_vtofecha
+					else
+					//si no se puede recalcular el plazo de guarda se sigue adelante realizando las 
+					//otras modificaciones.
+					stockp_laboral = l_laboral
+					refresh stockp_laboral
+					endif
+				endif
+			endif
+		endif
+		
+		//Palabra Clave : se recupera el valor del campo Devol al RTTE para tratamiento pieza con palabra clave.
+		
+		CDS EXTRACT DSC:stockp_ctx	post:adt_stockp_destino INTO l_destino  \
+		adt_stockp_en_devol INTO l_en_devol
+		
+			CDS APPEND DSC:stockp_ctx \
+			post:stockp_vd_imp AS post:adt_stockp_vd_imp \
+			post:stockp_crem_imp AS post:adt_stockp_crem_imp \
+			post:stockp_en_devol AS post:adt_stockp_en_devol \
+			post:stockp_franq_inc AS post:adt_stockp_franq_inc \
+			post:stockp_rend_cent AS post:adt_stockp_rend_cent \
+			post:stockp_rct AS post:adt_stockp_rct \
+			post:stockp_es_grancl AS adt_stockp_es_grancl \
+   			stockp_ctaOM AS adt_stockp_ctaOM \
+        	stockp_tipo_doc AS adt_stockp_tipo_doc \
+        	stockp_doc AS adt_stockp_doc
+        	
+		//SC 50361
+ 		CDS APPEND DSC:stockp_ctx \
+ 			post:id_cupon_CCT \
+		    post:adt_cct_nis_liq \
+		    post:adt_cct_comitente \
+		    post:adt_cct_cod_serv \
+		    post:adt_cct_def_cupon \
+		    post:adt_cct_cta_sap \
+		    post:adt_cct_rend_fis \
+		    post:cod_barra_CREM \
+		    post:adt_climay_razon
+
+		CDS APPEND DSC:stockp_ctx \
+			lugar_guarda_pieza AS adt_stockp_lugarGuar \
+			stockp_rpp_corp AS adt_stockp_rpp_corp  
+		
+			//Palabra Clave: SI HUBO MODIFICACION EN EL VALOR DEL CAMPO DEVOL. AL RTTE para Piezas con destino Eccomerce, Cerrada con Aviso o Entrega en Suc, se realiza tratamiento en Palabra Clave 
+		if (l_en_devol != post:stockp_en_devol)
+			if (l_destino ==  DSC:post:ECOM_desc) /*|| l_destino == "CERRADAS CON AVISO"  ||  l_destino == "ENTREGA EN SUCURSAL")*/
+						SELECT (post:stockp_en_devol)
+						case "S" //cambia de N a S ==> HAY QUE PONER QUE NO TIENE PALABRA CLAVE
+								post:adt_stockp_ecom_clav = "N"
+								clearfield adt_stockp_ecom_pal
+								clearfield adt_stockp_ecom_ship
+								clearfield adt_stockp_ecom_ent
+								break
+						case "N" //cambia de S s N ==> HAY QUE PONER QUE NO SE SABE SI TIENE PALABRA CLAVE PARA QUE VUELVA A CONSULTARLA
+								post:adt_stockp_ecom_clav = "X"
+								break
+						end select	
+						CDS APPEND DSC:stockp_ctx \
+						post:adt_stockp_ecom_clav \
+						post:adt_stockp_ecom_pal \
+						post:adt_stockp_ecom_ship  \
+						post:adt_stockp_ecom_ent 
+					
+				endif	
+		endif
+		CDS UPDATE DSC:stockp_ctx LOCK
+	ENDIF
+	CDS UNLOCK DSC:stockp_ctx 
+	CDS ENDSELECT DSC:stockp_ctx 
+
+END SUB
+
+/*******/

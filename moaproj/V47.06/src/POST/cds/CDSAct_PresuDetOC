@@ -1,0 +1,258 @@
+/****o* Clientes Medios/OFB:post:CDSAct_PresuDetOC
+* NOMBRE
+*   OFB:post:CDSAct_PresuDetOC
+* DESCRIPCION
+*   En esta rutina se actualizan los campos de importes con el descuento correspondiente a la OC
+* ENTRADAS
+*   tipo: "ITEM" (servicio) , "OPC" (opcional), "BLOQ" (bloque adicional)
+*   flia: familia de tx
+*   ind: en caso de que el tipo sea OPC, este dato indica la posicion del opcional.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCagregDctoOpcOC,post:MISCagregTrnDctoBA,post:MISCagregTrnDctoOC
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSAct_PresuDetOC(tipo,flia,ind)
+LOCAL l_cdsretval LIKE lib:err_retval
+LOCAL l_importe like siaf:importe
+LOCAL l_tarifa like post:tarifa
+LOCAL l_ImporteSinIva like siaf:ImporteSinIva
+LOCAL l_ImporteConIva like siaf:ImporteConIva
+LOCAL l_ImpServUP like post:ImpServUP
+LOCAL l_ImpSinIva_serv like post:ImpSinIva_serv
+LOCAL l_tot_serv like tele:importe_tot_serv_tel
+LOCAL l_costo_opc like post:costo_opc
+LOCAL l_siva like post:ImporteSinIva
+LOCAL l_civa like post:ImporteConIva
+LOCAL l_SinIvaOC like post:ImporteSinIvaOC
+LOCAL l_ConIvaOC like post:ImporteConIvaOC
+LOCAL l_cont LIKE post:cantidad
+LOCAL l_cos_opc LIKE post:importe_pesos
+LOCAL l_siniva_opc LIKE post:importe_pesos
+LOCAL l_imp_bloques like post:imp_bloques
+LOCAL l_imp_bloques_siva like post:imp_bloques_siva
+LOCAL l_imp_tot_serv like siaf:importe_tot_serv	
+LOCAL l_imp_bloques_siva4 like post:imp_bloques_siva4
+LOCAL l_siniva_opc4 LIKE post:ImporteSinIva_bis
+LOCAL l_siva_bis like post:ImporteSinIva_bis
+local l_serv_aliciva like post:adt_serv_aliciva
+
+	CDS SELECT FROM DSC:PresuDetOC_TBL BECOMES DSC:PresuDetOC_CTX \
+	WHERE post:fecha == common:system_date && \
+	post:op_operator_id == op:op_operator_id && \
+	post:PresNro == post:PresNro && \
+	post:item_desc_factura == post:item_desc_factura
+	
+		//siaf:codigo_siaf == post:item_codigo_trx && 
+	
+	CDS FINDFIRST DSC:PresuDetOC_CTX LOCK
+	LET l_cdsretval = CDSRETVAL
+    
+    	CDS CLEARBUFFER DSC:PresuDetOC_CTX
+	
+	if (l_cdsretval == 0) then
+		l_importe = siaf:importe
+		l_tarifa = post:tarifa
+		l_ImporteSinIva = siaf:ImporteSinIva
+		l_ImporteConIva = siaf:ImporteConIva
+		l_ImpServUP = post:ImpServUP
+		l_ImpSinIva_serv = post:ImpSinIva_serv
+		l_tot_serv = tele:importe_tot_serv_tel
+		l_SinIvaOC = post:ImporteSinIvaOC
+		l_ConIvaOC = post:ImporteConIvaOC
+		l_costo_opc = post:costo_opc
+		l_cos_opc = post:cos_opc[ind]
+		l_siniva_opc = post:siniva_opc[ind]
+		l_imp_bloques = post:imp_bloques
+		l_imp_bloques_siva = post:imp_bloques_siva
+		l_imp_tot_serv = siaf:importe_tot_serv
+		//SC 50170
+		l_imp_bloques_siva4 = post:imp_bloques_siva4
+		l_siniva_opc4 = post:siniva_opc4[ind]
+		l_serv_aliciva = post:adt_serv_aliciva
+		
+		clearfield siaf:importe
+		clearfield siaf:ImporteSinIva
+		clearfield siaf:ImporteConIva
+		clearfield post:ImpServUP
+		clearfield post:ImpSinIva_serv
+		clearfield tele:importe_tot_serv_tel
+		clearfield post:ImporteSinIvaOC
+		clearfield post:ImporteConIvaOC
+		clearfield post:costo_opc
+		clearfield post:imp_bloques	
+		clearfield post:imp_bloques_siva
+		clearfield siaf:importe_tot_serv
+		//SC 50170
+		clearfield post:imp_bloques_siva4
+		clearfield post:adt_serv_aliciva
+		
+		SELECT (tipo)
+		CASE "ITEM"
+			//preguntar por la familia para hacer el extract?
+			if (flia == "CST") then
+				CDS EXTRACT DSC:PresuDetOC_CTX tele:importe_tot_serv_tel post:adt_serv_aliciva
+				tele:importe_tot_serv_tel = tele:importe_tot_serv_tel - Imp_DctoCliMed_OC
+			end if
+			
+			if (flia == "CME") then
+				CDS EXTRACT DSC:PresuDetOC_CTX	post:ImporteSinIva into l_siva \
+				post:ImporteConIva into l_civa post:ImporteIva \
+				siaf:importe_tot_serv \
+				post:ImporteSinIva_bis into l_siva_bis
+				//SC 50170
+				//post:ImporteSinIva = l_siva - post:ImporteSinIva
+				post:ImporteConIva = l_civa - post:ImporteConIva
+				post:ImporteIva = post:ImporteIva - (post:ImporteConIva - post:ImporteSinIva)
+				siaf:importe_tot_serv = siaf:importe_tot_serv - post:Imp_DctoCliMed_OC
+				//SC 50170
+				post:ImporteSinIva_bis = l_siva_bis - post:ImporteSinIva_bis
+				init 22,1
+				post:ImporteSinIva = post:ImporteSinIva_bis
+				init 22,0
+			endif
+			//SC 50170
+			if (flia == "CSP" || flia == "CSE") then
+				CDS EXTRACT DSC:PresuDetOC_CTX post:ImporteSinIva_bis into l_siva_bis
+				post:ImporteSinIva_bis = l_siva_bis - post:ImporteSinIva_bis
+			endif
+			
+			CDS EXTRACT DSC:PresuDetOC_CTX siaf:importe siaf:ImporteSinIva \
+			siaf:ImporteConIva post:ImpServUP post:ImpSinIva_serv \
+			post:ImporteSinIvaOC post:ImporteConIvaOC \
+			post:tarifa
+
+			siaf:importe = siaf:importe - Imp_DctoCliMed_OC
+			siaf:ImporteSinIva = siaf:ImporteSinIva - post:ImporteSinIva
+			siaf:ImporteConIva = siaf:ImporteConIva - post:ImporteConIva
+			post:ImpServUP = post:ImpServUP - Imp_DctoCliMed_OC
+			post:ImpSinIva_serv = post:ImpSinIva_serv - post:ImporteSinIva
+			post:ImporteConIvaOC = post:ImporteConIvaOC - post:ImporteConIva
+			post:ImporteSinIvaOC = post:ImporteSinIvaOC - post:ImporteSinIva
+			if (flia == "CST") then
+			   //SC 50170
+			   CALL MISCdesglosaIva(post:ImporteConIvaOC,post:adt_serv_aliciva,1,0)
+			   post:ImporteSinIvaOC = post:ImporteSinIva
+			endif			
+			post:tarifa = post:tarifa - Imp_DctoCliMed_OC
+			
+			CDS CLEARBUFFER DSC:PresuDetOC_CTX
+			if (flia == "CST") then
+				CDS APPEND DSC:PresuDetOC_CTX tele:importe_tot_serv_tel 
+			endif
+			if (flia == "CME") then 
+				CDS APPEND DSC:PresuDetOC_CTX siaf:importe post:ImporteSinIva \
+				post:ImporteConIva post:ImporteIva post:ImpServUP \
+				post:ImporteSinIva as post:ImporteSinIvaOC \
+				post:ImporteConIva as post:ImporteConIvaOC \
+				siaf:importe_tot_serv \
+				post:ImporteSinIva_bis
+			endif
+			if (flia == "CSP" || flia == "CSE") then
+				CDS APPEND DSC:PresuDetOC_CTX post:ImpSinIva_serv \
+				post:ImporteSinIva_bis
+			endif
+			if (flia != "CME") then 	
+				CDS APPEND DSC:PresuDetOC_CTX siaf:importe siaf:ImporteSinIva \
+				siaf:ImporteConIva post:ImpServUP post:ImporteSinIvaOC \
+				post:ImporteConIvaOC post:tarifa
+			endif
+			
+			BREAK
+			
+		CASE "OPC"
+			if (flia == "CST") then
+				CDS EXTRACT DSC:PresuDetOC_CTX tele:importe_tot_serv_tel
+				tele:importe_tot_serv_tel = tele:importe_tot_serv_tel - Imp_DctoCliMed_OC
+			end if
+			
+			CDS EXTRACT DSC:PresuDetOC_CTX siaf:importe siaf:ImporteSinIva \
+			siaf:ImporteConIva post:costo_opc post:cos_opc[ind] \
+			post:ali_opc[ind]
+			/*
+			post:siniva_opc[ind] post:siniva_opc4[ind]*/
+			//el post:item_opc_imp_oc ya está en memoria
+			post:val_opc[ind] = post:item_opc_imp_oc[ind]
+			siaf:importe = siaf:importe - Imp_DctoCliMed_OC 
+			siaf:ImporteSinIva = siaf:ImporteSinIva - post:ImporteSinIva
+			siaf:ImporteConIva = siaf:ImporteConIva - Imp_DctoCliMed_OC 
+			post:costo_opc  = post:costo_opc - Imp_DctoCliMed_OC
+			post:cos_opc[ind] = post:cos_opc[ind] - Imp_DctoCliMed_OC
+			//post:siniva_opc[ind] = post:siniva_opc[ind] - post:ImporteSinIva
+			//SC 50170
+			CALL post:MISCdesglosaIva(post:cos_opc[ind],post:ali_opc[ind],1,0)
+			post:siniva_opc[ind] = post:ImporteSinIva
+			post:siniva_opc4[ind] = post:ImporteSinIva_bis
+			
+			CDS APPEND DSC:PresuDetOC_CTX siaf:importe siaf:ImporteSinIva \
+			siaf:ImporteConIva post:costo_opc \
+			post:val_opc[ind] post:cos_opc[ind] post:siniva_opc[ind] \
+			post:siniva_opc4[ind]
+		
+			if (flia == "CST") then
+				CDS APPEND DSC:PresuDetOC_CTX tele:importe_tot_serv_tel
+			endif
+			BREAK
+		CASE "BLOQ"
+			CDS EXTRACT DSC:PresuDetOC_CTX post:imp_bloques siaf:importe \
+			siaf:ImporteSinIva siaf:ImporteConIva post:adt_serv_aliciva
+			post:imp_bloques = post:imp_bloques - Imp_DctoCliMed_OC
+			siaf:importe = siaf:importe - Imp_DctoCliMed_OC
+			siaf:ImporteSinIva = siaf:ImporteSinIva - post:ImporteSinIva
+			siaf:ImporteConIva = siaf:ImporteConIva - Imp_DctoCliMed_OC 
+			if (flia == "CST") then
+				CDS EXTRACT DSC:PresuDetOC_CTX  tele:importe_tot_serv_tel post:imp_bloques_siva \
+				post:imp_bloques_siva4
+				tele:importe_tot_serv_tel = tele:importe_tot_serv_tel - Imp_DctoCliMed_OC
+				//post:imp_bloques_siva = post:imp_bloques_siva - post:ImporteSinIva
+				//SC 50170
+				/*post:imp_bloques_siva4 = post:imp_bloques_siva4 - post:ImporteSinIva_bis
+				init 22,1
+				post:imp_bloques_siva = post:imp_bloques_siva4
+				init 22,0*/
+				CALL post:MISCdesglosaIva(post:imp_bloques,post:adt_serv_aliciva,1,0)
+				post:imp_bloques_siva = post:ImporteSinIva
+				post:imp_bloques_siva4 = post:ImporteSinIva_bis
+			
+				CDS APPEND DSC:PresuDetOC_CTX tele:importe_tot_serv_tel post:imp_bloques_siva \
+				post:imp_bloques_siva4
+			endif
+			CDS APPEND DSC:PresuDetOC_CTX post:imp_bloques siaf:importe \
+			siaf:ImporteSinIva siaf:ImporteConIva
+			BREAK
+		END SELECT
+		
+		CDS UPDATE DSC:PresuDetOC_CTX LOCK
+		CDS ENDSELECT DSC:PresuDetOC_CTX 
+		
+		//restaurar valores
+		siaf:importe = l_importe
+		post:tarifa = l_tarifa
+		siaf:ImporteSinIva = l_ImporteSinIva
+		siaf:ImporteConIva = l_ImporteConIva
+		post:ImpServUP = l_ImpServUP
+		post:ImpSinIva_serv = l_ImpSinIva_serv
+		tele:importe_tot_serv_tel = l_tot_serv
+		l_SinIvaOC = post:ImporteSinIvaOC
+		l_ConIvaOC = post:ImporteConIvaOC
+		post:costo_opc = l_costo_opc
+		post:cos_opc[ind] = l_cos_opc 
+		post:siniva_opc[ind] = l_siniva_opc
+		post:imp_bloques = l_imp_bloques
+		post:imp_bloques_siva = l_imp_bloques_siva
+		//SC 50170
+		post:imp_bloques_siva4 = l_imp_bloques_siva4
+		post:siniva_opc4[ind] = l_siniva_opc4
+		post:adt_serv_aliciva = l_serv_aliciva
+	endif
+
+END SUB
+
+/*******/

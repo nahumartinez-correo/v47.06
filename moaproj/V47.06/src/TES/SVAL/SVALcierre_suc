@@ -1,0 +1,184 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALcierre_suc
+* NOMBRE
+*   OFB:tes:SVALcierre_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALcierre_suc
+	LOCAL Testing LIKE common:csr_string
+	
+	/*crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+	CALL siaf:MISCSuc_CapImagen   
+	if (RETVAL != -2) THEN // SI no se pudo realizar la consulta o dio un error nuevo no se continua con el proceso.
+		//crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+ 		 CALL post:CDSConsulta_Imagen("T")
+  ENDIF*/
+  
+  
+  //CONSULTA PIEZAS CON PALABRA CLAVE
+	CALL post:MISCPzas_Pal_Clave
+	/*NO SE FRENA EL CIERRE POR ESTO
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END if*/
+	
+	//gpb:Verifico mapeo unidad W:
+	CALL post:MISCcheck_MoaPDF
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	//gpb:NI50479 - Verifico si hay un proceso de EnvPED corriendo
+	CALL post:MISCverif_bloqNovPED(tlr:bus_date)
+	IF (RETVAL == 0) THEN
+		/*Se ejecuta el script que envia los datos de la tabla journal*/
+		CALL post:MISCenv_NovPED(tlr:bus_date)
+	END IF
+
+	//actualizo el picklist con los listados seleccionados por el operador
+	CALL MISCupd_pic_listado
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+
+	CALL post:OFBclimed_deudor_cie
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+  
+  //50249
+	CALL post:OFBclimed_nc_cie
+	IF (RETVAL < 0) THEN
+		/*Si estoy en desarrollo continuo con el cierre - Gabriel Falciola*/
+		CALL CSR:variable_environment("DESARROLLO",Testing)
+		IF (Testing != "JNL") THEN
+			RETURN -2
+		END IF
+	END IF
+
+	//reporte de estado clientes medios 
+	CALL post:OFBclimed_deudor_ape
+	IF (RETVAL < 0) THEN
+		CALL csr:f_sadroppl(DSC:post:facturas_cliente)
+		CALL csr:f_sadroppl(DSC:post:clientes_deuda)
+		CALL post:CDSborrar_deuda
+		CALL csr:f_sadroppl(DSC:post:adelantos)
+		CALL csr:f_sadroppl(DSC:post:remitos)
+		CALL csr:f_sadroppl(DSC:post:facturas)
+		CALL csr:f_sadroppl(DSC:post:bloqueos)
+		CALL csr:f_sadroppl(DSC:post:intereses)
+		CLEARFIELD post:modalidad_CM
+		CLEARFIELD post:climed_numero 
+		CLEARFIELD post:CloCuit
+		CLEARFIELD post:CliRaz
+		CLEARFIELD post:subcuentaDesc_CM
+		CLEARFIELD post:inicio_facturacion
+		CLEARFIELD post:facturacion_CM
+		CLEARFIELD post:bloqueo_CM
+		CLEARFIELD post:anticipo_CM
+	END IF
+   
+	giros:codigo_procesamiento = 998002
+	tes:estado_aper_cier = "CIERRE"
+    
+	UNPROTFIELD op:op_login_aux
+	UNPROTFIELD op:op_branch_id
+	UNPROTFIELD tlr:set_bus_date
+    
+	/*
+	UNPROTFIELD tes:tes_tes_id
+	UNPROTFIELD tes:importes_aux1[0]
+	UNPROTFIELD tes:importes_aux2[0]
+	*/
+    
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		CALL tes:CDSsuc_marca_cierre("")
+		/* Especies valorizadas En el cierre de Tesoro
+		CALL CDSstatus_TesEspV(" ", op:op_branch_id, "S", op:op_tesoro_id) */
+	ELSE
+		CLEARFIELD tes:suc_marca_cierre 
+		CDS SELECT FROM DSC:DiaSuc_table BECOMES DSC:DiaSuc_context \
+			WHERE tes:suc_br_id == op:op_branch_id
+		
+		CDS FINDFIRST DSC:DiaSuc_context LOCK
+		LET lib:err_retval = CDSRETVAL
+	
+		SELECT (lib:err_retval)
+			CASE 0
+				CDS EXTRACT DSC:DiaSuc_context ALL
+				IF (tes:suc_marca_cierre == "X") THEN
+					ERRMSG LST:common:errmsg_list, "Sucursal Cerrada"
+					CDS UNLOCK DSC:DiaSuc_context
+					CDS ENDSELECT DSC:DiaSuc_context
+					CALL tlr:APPLterm
+					RETURN (-2)
+				END IF  
+			BREAK
+			CASE -803
+				ERRMSG LST:common:errmsg_list, "Otro Operador se encuentra cerrando la sucursal"
+				CDS UNLOCK DSC:DiaSuc_context
+				CDS ENDSELECT DSC:DiaSuc_context
+				CALL tlr:APPLterm
+				RETURN (-2)              
+			BREAK
+		END SELECT 
+                        
+		;CDS ENDSELECT DSC:tes:DiaSuc_context
+		
+		;CALL tes:CDSsuc_marca_cierre("X") 
+		/* Por ahora no necesito los operadores que abrieron y cerraron */
+		;CALL tes:CDSoperadores_suc(op:op_operator_id,tes:segundo_id)
+		//agregado por MAD para SF1 09/09/98
+		//CALL post:CDSsf1_marca_cierre
+		
+		/* Especies valorizadas, van al Cierre de Tesoro
+		CALL CDSstatus_TesEspV("X", op:op_branch_id, "S", op:op_tesoro_id) */
+
+	  /*CALL siaf:MISCrecup_caidas_suc*/
+  END IF
+    
+	/* Esto se va a hacer al cierre del tesoro
+	CALL tes:CDSclear_teso_bak
+	CALL tes:CDSvuelco_tabla(DSC:tes:tesoro_table,DSC:tes:tesoro_context,DSC:tes:teso_bak_table,DSC:tes:teso_bak_ctx)
+	;LET drv:INDrun_funct = LST:tes:TRAN_tesoro
+	LET drv:next_screen = 2
+	RESETFLAG op:op_state_flags,tesoro_abierto
+	*/
+	/*CALL tes:CDSsave_mov_pend*/
+	CALL siaf:MISCop_sin_operar(common:system_date) //calcula monto de operadores sin operar
+	
+	/* Calculo el total en el fondo de habilitación para journalizarlo */
+	CALL tes:CDStotales_subteso
+
+	/* Setea campos indirectos para hacer SEND y RCVE */
+	drv:INDhcomm_rtn = OFB:SENDcierre_suc
+	drv:INDspc_rtn[1] = OFB:RCVEcierre_suc
+        
+	/* verifico si hace cierre manual */
+	CALL tes:MISCcierre_manual
+	IF (RETVAL < 0) THEN
+		CDS UNLOCK DSC:DiaSuc_context
+		CDS ENDSELECT DSC:DiaSuc_context	    
+		CALL tlr:APPLterm
+		RETURN (-2)
+	END IF        	    
+    
+	/* limpio tlr:jnl_status, ya que este no queda inicializado */
+	CLEARFIELD tlr:jnl_status
+
+END SUB
+
+/*******/

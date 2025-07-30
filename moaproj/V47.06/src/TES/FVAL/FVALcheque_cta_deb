@@ -1,0 +1,113 @@
+/****o* Tratamiento de Cheques/OFB:tes:FVALcheque_cta_deb
+* NOMBRE
+* OFB:tes:FVALcheque_cta_deb
+* DESCRIPCION
+* Rutina de validacion del numero del cheque.
+* ENTRADAS
+* SALIDAS
+* RETURN (-2): Cheque sin seleccionar.
+* RETURN (-2): Supera Cantidad de Dias Cheque Rechazado.
+* RETURN (-2): Cheque Rechazado.
+* RETURN (-2): Rechazo del Host de la consulta de la cuenta del cliente cuentacorrentista.
+* REFERENCIADO POR
+* SCR:tes:SCRNreg_deb
+* SOURCE
+*/
+#include "tesFVAL.h"
+#include "hcommstd.h"
+
+SUB tes:FVALcheque_cta_deb
+
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+    	clearfield post:CliCod //cgw:limpia la cuenta para poder obtener desde el Host.
+
+        let tes:teso_cheq_suc = op:op_branch_id
+        let tes:teso_cheq_id = banco_codigo
+        let tes:teso_cheq_tipocta = tipo_cuenta
+        let tes:teso_cheq_nrocta  = nro_cuenta
+        let tes:teso_cheq_estado  = "P"
+        let tes:teso_cheq_nro     = siaf:nro_cheque
+        let tes:teso_cheq_cuenta  = siaf:cheqcuenta
+        let tes:teso_cheq_banco   = siaf:cod_banco
+
+        call CDScheque_cta_load
+        if (retval < 0) then
+            call CDScheq_cta_seldeb
+            if (LASTKEY == 0x0190) || (retval < 0) then
+                //drv:button = 3
+                //call drv:but_disable
+	        return (-2)
+            END IF
+        endif
+        if (teso_cheq_fdep < fecha_tope)
+    	    Errmsg lst:common:errmsg_list,\
+    	    "Supera Cantidad de Dias Cheque Rechazado"
+    	    return (-2)
+        end if
+        if (teso_cheq_acred == "R")
+    	    Errmsg lst:common:errmsg_list,\
+    	    "Cheque Rechazado"
+    	    return (-2)
+        end if
+        let siaf:nro_cheque = teso_cheq_nro
+        let siaf:cheqcuenta = teso_cheq_cuenta
+        let siaf:cod_banco  = teso_cheq_banco
+        refresh siaf:nro_cheque
+        refresh siaf:cheqcuenta
+        refresh siaf:cod_banco
+        //let siaf:importe = teso_cheq_importe
+        //refresh siaf:importe
+        let post:importe_origen = teso_cheq_importe
+        refresh post:importe_origen
+    	let post:cli_tipo_aux = teso_cheq_tipo
+
+    	clearfield post:NisUP //cgw:limpia para que no arrastre valores.
+
+    	select (teso_cheq_tipo)
+    	        case 1
+    	            //cgw:protege nro de cuenta.
+    	            protfield post:CliCod
+    		    clearfield post:CliCod
+    		    break
+    		case 4
+    		    let post:NisUP = teso_cheq_NisUP
+    		case else
+    		    protfield post:CliCod
+    		    clearfield post:CliCod
+    		    refresh post:CliCod
+    	end select
+    	let post:CliUP = tes:teso_cheq_rsoc
+    	refresh post:CliUP
+    	refresh post:NisUP
+    	refresh post:cli_tipo_aux
+    	
+    	;refresh post:Recep_CliTipo        
+    	refresh post:CliRaz
+
+    	//cgw:realiza viaje para buscar numero de cuenta del cliente cuentacorrentista.
+        if (teso_cheq_tipo == 1) then
+            if (post:CliCod.numchars == 0) then
+            	//cgw: se instancia para la consulta al Host de la cuenta del cliente corporativo.
+            	post:climed_tipo = 3
+                post:climed_numero = tes:teso_cheq_Cuit
+                call tes:MISCconsulta_CtaCorp
+                if (retval < 0) then
+                    clearfield post:climed_tipo
+	            clearfield post:climed_numero
+                    ungetkey RT_ESC
+	            return -2
+	        end if
+	        clearfield post:climed_tipo
+	        clearfield post:climed_numero
+	        if (post:CliCod.numchars == 0) then
+	            //cgw:hubo uba caida en vuelo, carga manualmente la cuenta.
+	            unprotfield post:CliCod
+	        else
+	            protfield post:CliCod    
+	        end if
+	    end if
+	end if
+	nextfield tes:tipo_responsable //cgw:se posiciona.
+    END IF
+END SUB
+/*******/

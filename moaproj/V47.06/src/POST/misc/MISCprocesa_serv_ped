@@ -1,0 +1,265 @@
+/****o* Pago en Destino/OFB:post:MISCprocesa_serv_ped
+* NOMBRE
+*   OFB:post:MISCprocesa_serv_ped
+* DESCRIPCION
+*   Procesa los datos del Servicio a cargar en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVAL30050,post:PCOLgral
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprocesa_serv_ped
+	LOCAL x LIKE post:cantidad
+	LOCAL l_TotImpSinIvaOpc LIKE post:ImporteSinIva
+	LOCAL l_opcserv_montomin LIKE post:adt_opcserv_montomin
+
+	siaf:moneda = 99
+	siaf:adt_tran_afec_efvo = "+"
+	siaf:afecta_efectivo = "+"
+
+//[01] - Proceso Opcionales (Inicio)         
+	x = 0
+	WHILE (x < cant_opc)
+		//cargo el importe de los opcionales
+		post:cos_opc[x] = post:item_opc_importe[x] 
+	
+		//esta hardcode
+		post:inf_opc[x] =  "S" 
+		
+		/* Inicio consulta tabla [OpcServ] */
+		CDS SELECT FROM DSC:post:OPC_SERV_TAB BECOMES DSC:post:OPC_SERV_CTX \
+			WHERE post:adt_opcserv_serv == post:adt_serv_serv && \
+			post:adt_opcserv_opci == post:cod_opc[x]
+		
+		CDS FINDFIRST DSC:post:OPC_SERV_CTX NOLOCK
+		CDS EXTRACT DSC:post:OPC_SERV_CTX \
+			post:adt_opcserv_tipo INTO post:cal_opc[x] \
+			post:adt_opcserv_valor INTO post:val_opc[x] \
+			post:adt_opcserv_uneg INTO post:flia_opc[x] \
+			post:adt_opcserv_bonifCM INTO post:bonifCM_opc[x] \
+			post:adt_opcserv_montomin INTO l_opcserv_montomin
+
+		CDS ENDSELECT DSC:post:OPC_SERV_CTX
+		/* Fin consulta tabla [OpcServ] */
+		
+		/* Inicio consulta tabla [Opcional] */
+		CDS SELECT FROM DSC:post:OPC_TAB BECOMES OPC_CTX \
+			WHERE post:adt_opc_opci == post:cod_opc[x]
+		
+		CDS FINDFIRST DSC:post:OPC_CTX NOLOCK	
+		CDS EXTRACT DSC:post:OPC_CTX \
+			post:adt_opc_label INTO post:label_opc[x] \
+			post:adt_opc_combina INTO post:comb_opc[x] \
+			post:adt_opc_cortepropio \
+			post:adt_opc_disccp
+			
+		CDS ENDSELECT DSC:post:OPC_CTX
+
+		FPRINT post:cor_opc[x], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+		/* Fin consulta tabla [Opcional] */
+		
+		//desgloso el iva           
+		CALL MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],post:cantidad,0)
+		post:siniva_opc[x] = post:ImporteSinIva
+		post:siniva_opc4[x] = post:ImporteSinIva_bis
+		
+		//genero los datos de los Opcionales del Servicio para grabar en la AuxIva
+		//SC 50170-FACTURACION
+		CALL CDSUpdate_ImpreIva(post:ali_opc[x], post:ImporteSinIva_bis, post:ImporteIva_bis ,post:SobreTasaIva)
+		
+		//acumulo el importe sin iva de los opcionales
+		l_TotImpSinIvaOpc = l_TotImpSinIvaOpc + post:ImporteSinIva
+		
+		IF (post:IvaCod == "RNI") THEN 
+			post:tas_opc[x] = post:SobreTasaIva
+		END IF
+
+		x = x + 1
+	END WHILE    
+//[01] - Proceso Opcionales (Fin)	
+	
+//[02] - Proceso Servicio (Inicio)      
+	/* Inicio consulta tabla [TipoCaja] */
+	IF (post:tipo_caja != "CAJA PROPIA") THEN
+		post:caja_propia = FALSE
+	ELSE
+		post:caja_propia = TRUE
+	END IF	
+	IF (post:tipo_caja.NUMCHARS > 0 && !caja_propia) THEN
+		CDS SELECT FROM DSC:post:TipoCaja_tbl BECOMES DSC:post:TipoCaja_ctx \
+			WHERE post:adt_tipocaja_caja == post:tipo_caja
+		
+		CDS FINDFIRST DSC:post:TipoCaja_ctx NOLOCK
+		CDS EXTRACT DSC:post:TipoCaja_ctx \
+			post:adt_tipocaja_L1 INTO post:rel_vol_l1 \
+			post:adt_tipocaja_L2 INTO post:rel_vol_l2 \
+			post:adt_tipocaja_L3 INTO post:rel_vol_l3
+		
+		CDS ENDSELECT DSC:post:TipoCaja_ctx
+	END IF
+	IF (post:tipo_caja != "CAJA PROPIA") THEN
+		post:caja_propia = FALSE
+	ELSE
+		post:caja_propia = TRUE
+	END IF	
+	/* Fin consulta tabla [TipoCaja] */
+                                                            
+	//Cargo el campo post:tarifa con el importe bonificado del bien de cambio 
+	//correspondiente y calculo el importe del descuento
+	IF (post:Dcto_CliMed > 0) THEN
+		INIT 22,1
+		post:Imp_DctoCliMed = (post:tarifa * post:Dcto_CliMed) / 100
+		INIT 22,0
+		post:bonificaCM = "S"
+	ELSE
+		CLEARFIELD post:Imp_DctoCliMed
+		CLEARFIELD post:Dcto_CliMed
+	END IF 	
+
+	/* Inicio consulta tabla ProdVs*/
+	IF (post:prod_serv.NUMCHARS > 0) THEN
+		CDS SELECT FROM DSC:post:adt_prodvs_table BECOMES DSC:post:adt_prodvs_context \
+			WHERE post:adt_prodvs_cod == post:prod_serv
+		
+		CDS FINDFIRST DSC:post:adt_prodvs_context NOLOCK
+		CDS EXTRACT DSC:post:adt_prodvs_context \
+			post:adt_prodvs_desc
+		
+		CDS ENDSELECT DSC:post:adt_prodvs_context		
+	END IF
+	/* Fin consulta tabla ProdVs */
+
+	/* Inicio consulta tabla transac */	
+	CDS SELECT FROM DSC:post:TRAN_TAB BECOMES DSC:post:TRAN_CTX \
+		WHERE siaf:adt_tran_codigo == post:adt_serv_serv
+	
+	CDS FINDFIRST DSC:post:TRAN_CTX NOLOCK
+	CDS EXTRACT DSC:post:TRAN_CTX \
+		siaf:adt_tran_codprod INTO post:tipo_produc \
+		siaf:adt_tran_fliatran 
+	
+	CDS ENDSELECT DSC:post:TRAN_CTX		
+	/* Fin consulta tabla transac */
+	
+	post:tipo_produc2 = post:adt_serv_serv
+	siaf:importe = post:tarifa + post:costo_opc
+	siaf:ImporteConIva = siaf:importe
+		
+	//desgloso el importe sin iva del servicio (tarifa)
+	CALL MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+	
+	//genero los datos del Servicio para grabar en la AuxIva
+	//SC 50170-FACTURACION
+	CALL CDSUpdate_ImpreIva(post:adt_serv_aliciva, post:ImporteSinIva_bis, post:ImporteIva_bis, post:SobreTasaIva)
+	
+	post:ImpSinIva_serv = post:ImporteSinIva
+	//calculo el total sin iva (servicio s/iva + opcionalis s/iva)
+	siaf:ImporteSinIva = post:ImporteSinIva + l_TotImpSinIvaOpc
+
+	IF (post:adt_serv_umstd == "GMS") THEN
+    post:adt_tarif_desde = post:peso_en_grs
+  ELSE
+  	IF (post:peso_en_kgs > post:rel_vol) THEN
+      post:adt_tarif_desde = post:peso_en_kgs
+		ELSE
+		 post:adt_tarif_desde = post:rel_vol
+		END IF
+  END IF	
+	
+	//Verfico en el CDSbasico que los datos cargados puedan ser tarifados.
+	CALL post:CDSbasico(post:adt_serv_serv,post:adt_tarif_desde,post:adt_serv_umstd,post:destino)	
+	IF (RETVAL < 0)
+		MSGBOX "No encontro registro en la tabla Tarifa",0x00, "Error"
+		RETURN (-2)
+	END IF	
+		 
+	post:adt_tarif_precio = post:tarifa
+	
+	SELECT (post:adt_serv_umstd)
+		CASE "PAG"
+			post:hasta_fac = post:cantidad
+		BREAK
+		CASE "GMS"
+			post:hasta_fac = post:peso_en_grs
+		BREAK
+		CASE "KGS"
+			post:hasta_fac = post:peso_en_kgs
+		BREAK
+	END SELECT
+	post:unidad_fac = post:adt_tarif_um
+	post:adt_opcserv_montomin = l_opcserv_montomin
+	
+  IF (post:adt_serv_umstd == "KGS" || post:adt_serv_umstd == "CMS" || \
+    post:adt_serv_umstd == "UNI") THEN
+    /*************************************************/
+    /* Si la Unidad de Medida del Servicio es Kilos  */
+    /* paso el peso de la pieza a Gramos.            */
+    /*************************************************/
+    post:peso_en_grs = post:peso_en_kgs * 1000
+	END IF
+
+	IF (post:adt_serv_tipo == "PO" || post:adt_serv_tipo == "EN") THEN
+		;Habilito restricción de bonificación de bienes de cambios
+		post:adt_promo_tipoRest = "SRV"
+		FPRINT post:adt_promo_clavRest "%s", post:adt_serv_serv
+		post:adt_promo_RestBC = "S"
+	END IF
+	
+	post:adt_corteop_cod = post:adt_serv_corteop
+	CALL post:PRESapert_gral
+	post:tipo_produc = post:adt_serv_serv
+	CALL post:PRESserv_gral
+	CALL post:MISCgru_corteop
+
+	CALL post:MISCverif_prior(post:track_trace)
+	
+	/*MFM -  jnl_servicio_en_bh2 */
+	IF (post:jnl_servicio_en_bh2 == "") THEN
+		post:apert_aux = post:apertura
+		CALL MISCEnBlock_Horario(post:adt_serv_corteop,post:apertura)
+		IF (RETVAL == 0) THEN
+			post:jnl_servicio_en_bh2 = "S"
+		ELSE
+			post:jnl_servicio_en_bh2 = "N"
+		END IF
+	END IF
+	
+	//Si tiene una 8500 o una 40002 entonces cargo el codigo de agrupacion
+	IF (post:prod_serv.NUMCHARS > 0 || post:codesp_serv.NUMCHARS > 0) THEN
+		CALL post:CDSobtiene_secuen("CABEC")
+		post:cod_agrupacion = post:adt_codseq_nro
+	ELSE
+		post:cod_agrupacion = 0
+	END IF
+	
+	//default
+	post:TTcargado = true
+	post:prod_cli = "0000000000"
+	post:estado_franq = 0
+	
+	post:modelo_suc = common:br_modelo
+	post:AliServUP = post:adt_serv_aliciva
+	post:ImpServUP = post:tarifa
+	
+	CALL post:MISCgen_vec_iva
+
+	post:PreDForFis = post:adt_serv_formfiscal
+
+	IF (post:PreDForFis.NUMCHARS == 0) THEN
+		post:EstadoFormu = SIN_FORM
+	ELSE
+		post:EstadoFormu = CON_FORM
+	END IF
+
+END SUB
+
+/*******/

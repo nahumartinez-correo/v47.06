@@ -1,0 +1,128 @@
+/****o* Transferencias Bancarias/OFB:post:MISClst_TB
+* NOMBRE
+*   OFB:post:MISClst_TB
+* DESCRIPCION
+*   Rutina que escribe en el archivo los datos del Reporte de Transferencias Bancarias Sin Aplicar
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISClst_estCM_cli,post:OFBrep_transf_banc
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_TB
+    
+    LOCAL idx_item LIKE siaf:i
+    LOCAL Ltipo    LIKE post:bck_corap_apert
+    LOCAL Lcli_nro LIKE post:climed_numero
+    LOCAL Lcuit    LIKE post:CloCuit
+    LOCAL LRaz     LIKE post:CliRaz
+    LOCAL Lsub     LIKE post:subcuentaDesc_CM
+    LOCAL Lmonto   LIKE post:monto_TB 
+    LOCAL cont       LIKE post:cantidad
+    LOCAL sub_header LIKE common:csr_string
+    LOCAL columns    LIKE common:csr_string 
+    LOCAL split      LIKE common:csr_string_aux
+    LOCAL line_csr   LIKE common:csr_string 
+	
+    IF (tes:estado_aper_cier == "APERTURA") THEN
+     	//seteo las variables del subencabezado
+    	sub_header = "<st>1</st>TRANSFERENCIAS BANCARIAS SIN APLICAR"
+    	columns = " TIPO     CLIENTE RAZON SOCIAL                                       SUBCUENTA                      CUIT          IMP.TOT.TB"
+    	split = "--------------------------------------------------------------------------------------------------------------------------------------------------------------"
+    	idx_item = PL_GETITEM
+    	cont = 0
+    	line_csr = ""
+    	
+    	//Ordeno el picklist por tipo de cliente (Medio/UP) y nro de cliente
+    	 CALL csr:PickOp 4  DSC:transf_banc "0,1" "1,11"
+    	
+        DO
+           //Leer picklist transferencias bancarias
+            CALL csr:myPickcontrol(DSC:transf_banc,line_csr,idx_item)
+            IF (RETVAL < 0)
+                BREAK
+            END IF
+        
+            IF (SUBSTR(line_csr,0,1) == CLIMED) THEN
+        		Ltipo = "Medio"
+        	ELSE
+        		Ltipo = "UP"
+        	END IF
+    	
+        	Lcli_nro = substr(line_csr,1,11)
+        	LRaz   = substr(line_csr,12,50)
+        	Lsub   = substr(line_csr,62,30)
+        	Lcuit  = substr(line_csr,92,11)
+        	Lmonto = substr(line_csr,103,12)
+    	
+            FPRINT line_csr,"%5.5s %11.11s %50.50s %30.30s %11.11s %12.12e",Ltipo,Lcli_nro,LRaz,Lsub,Lcuit,Lmonto
+            //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+            CALL post:MISClst_estCM_pie(4,sub_header,columns,split,cont)
+             
+            CALL tes:MISCwrite_file_Land2(4,line_csr)    
+            
+            idx_item = idx_item + 1
+            cont = cont + 1
+        LOOP  
+        
+      	IF (cont == 0) THEN 
+    		MSGBOX "No se realizaron Transferencias Bancarias.",0x00,"Aviso"   
+    		RETURN -2
+    	END IF
+    	
+    	//Valido que tenga lugar para marcar el fin del reporte en la hoja
+    	IF (siaf:lineas_cl < 42)
+        	CALL post:MISClst_fin_repo(4,split)
+        END IF
+      	
+    ELSE
+    
+    	LET siaf:indica_calcu = 0 //inicializa cant. de hojas
+    	CALL MISClst_TB_enc
+    	
+    	idx_item = PL_GETITEM
+    	
+    	//Ordeno el picklist por tipo de cliente (Medio/UP) y nro de cliente
+    	CALL csr:PickOp 4  DSC:transf_banc "0,1" "1,11"
+    	
+        DO
+            //Leer picklist
+            CALL csr:myPickcontrol(DSC:transf_banc,common:csr_string,idx_item)
+            
+            IF (RETVAL < 0)
+                BREAK
+            END IF
+            
+            IF (SUBSTR(common:csr_string,0,1) == CLIMED) THEN
+        		Ltipo = "Medio"
+        	ELSE
+        		Ltipo = "UP"
+        	END IF
+    	
+        	Lcli_nro = SUBSTR(common:csr_string,1,11)
+        	LRaz   = SUBSTR(common:csr_string,12,50)
+        	Lsub   = SUBSTR(common:csr_string,62,30)
+        	Lcuit  = SUBSTR(common:csr_string,92,11)
+        	Lmonto = SUBSTR(common:csr_string,103,12)
+    	
+            FPRINT common:csr_string,"%5.5s %11.11s %50.50s %30.30s %11.11s %12.12e",Ltipo,Lcli_nro,LRaz,Lsub,Lcuit,Lmonto
+            CALL post:MISCimprime_linea(common:csr_string)   
+            
+            idx_item = idx_item + 1
+            
+        LOOP  
+      	
+    END IF
+
+    
+END SUB
+
+/*******/

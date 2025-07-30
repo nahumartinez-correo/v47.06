@@ -1,0 +1,114 @@
+/****o* Pago en Destino/OFB:post:JNLped
+* NOMBRE
+*   OFB:post:JNLped
+* DESCRIPCION
+*   Rutina de journalizacion de las transacciones PED
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:JNLimpre_fiscal
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLped 
+	LOCAL l_estado LIKE post:stockp_ped_estAct
+
+	//1 - Es una Imposicion PED
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && !TESTFLAG(post:sesion_ped_flags,genera_nc_ped) && !TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		//Journalizo post:es_PED y post:DocFisPed
+		CALL post:JNLes_PED		
+
+		//si no hubo una caida
+		IF (!TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+			CLEARFIELD post:CantLineasFactPed
+			CALL CSR:cleararray (post:LinaFactPed)
+		
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:CantLineasFactPed
+			
+			idx = 0
+			WHILE (idx < 100)
+				CDS APPEND DSC:tlr:CONjnl_write \
+					post:LinaFactPed[idx] 
+				idx = idx + 1
+			END WHILE	
+		END IF
+		
+		IF (TESTFLAG(post:sesion_ped_flags,esc_servicio_ped) || TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+			//reseteo flags
+			CALL post:MISCresetFlagsPED
+		END IF
+	END IF
+	
+	//2 - Es una Nota de Credito PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+		//Journalizo post:es_PED y post:DocFisPed
+		CALL post:JNLes_PED
+
+		LET post:ReimpDocFisPed = 0
+		CDS APPEND DSC:tlr:CONjnl_write \
+			FLD:post:ReimpDocFisPed \
+			FLD:post:pieza_ped
+		
+		IF (!TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+			CLEARFIELD post:CantLineasFactPed
+			CALL CSR:cleararray (post:LinaFactPed)
+		
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:CantLineasFactPed
+			
+			idx = 0
+			WHILE (idx < 100)
+				CDS APPEND DSC:tlr:CONjnl_write \
+					post:LinaFactPed[idx] 
+				idx = idx + 1
+			END WHILE
+		ELSE
+			//dejo la pieza disponible para que pueda ser usada por otro operador
+			l_estado = "RECI"
+			//Si existe en la stockp,actualiza estado
+			CALL post:CDSstockp_upd_estAct(l_estado,post:pieza_ped)
+			IF (RETVAL < 0) THEN
+				post:Pieza = post:pieza_ped
+				//Si existe en la PEDpend,actualiza estado
+				l_estado = "PEND"
+				CALL post:CDSupd_PEDpend(l_estado)
+				CLEARFIELD post:Pieza
+			END IF	
+			//"RECI" - Pieza Recibida
+			l_estado = "RECI"
+			CALL post:CDSupd_est_NCped(l_estado)				
+		END IF
+		
+		IF (TESTFLAG(post:sesion_ped_flags,esc_servicio_ped) || TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+			//reseteo flags
+			CALL post:MISCresetFlagsPED
+		END IF
+	END IF
+	
+	//3 - Es una Refacturacion PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		//Journalizo post:es_PED y post:DocFisPed
+		CALL post:JNLes_PED		
+	
+		IF (TESTFLAG(post:sesion_ped_flags,esc_servicio_ped) || TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+			IF (TESTFLAG(post:sesion_ped_flags,caida_sesion_ped)) THEN
+				//vuelvo a dejar la pieza disponible para refacturar
+				//actualizo estado de la pieza en la tabla stockp\PEDpend y NCpedEnOrigen
+				CALL post:MISCupdEstPzaPed("NTCR")			
+			END IF
+			//reseteo flags
+			CALL post:MISCresetFlagsPED
+		END IF
+	END IF
+	
+END SUB
+
+/*******/

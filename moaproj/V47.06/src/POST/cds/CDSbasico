@@ -1,0 +1,357 @@
+/****o* Pendientes de agrupación/OFB:post:CDSbasico
+* NOMBRE
+*   OFB:post:CDSbasico
+* DESCRIPCION
+*   Rutina que obtiene el taraifario de un servicio de la tabla de Tarifas
+* ENTRADAS
+*   tarif_servicio: codigo del servicio
+*	taraif_cantidad: cantidad de productos
+*	tarif_uni_medida: unidad de medida del servicio
+*	tarif_destino: destino del servicio
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:PRESgm_post; OFB:giros:PRESgm_tele; OFB:giros:PRESgral_giro; OFB:post:CDSsuma_opcionales;
+*	OFB:post:FVALfalta_franq; OFB:post:FVALfalta_franqueo; OFB:post:FVALpieza_a_entr; OFB:post:FVALpresAd_imp
+*	OFB:post:FVALpromoTarifDesde; OFB:post:MISCactualizo_tarifa; OFB:post:MISCcalc_almac_imp(dias);
+*	OFB:post:MISCcambio_serv; OFB:post:MISCtarifa_TransWeb; OFB:post:PBpromoSrvRangoSel; OFB:post:PRES_GestionesVs
+*	OFB:post:PRES_Lista; OFB:post:PRESgral; OFB:post:SVALcombo_header; OFB:post:SVALgral
+*	OFB:tele:MISCrecalc_importe; OFB:tele:SVALgral_tele
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSbasico (tarif_servicio,tarif_cantidad,tarif_uni_medida,tarif_destino)
+	LOCAL cantidad1 like post:adt_tarif_hasta
+	LOCAL cantidad2 like post:adt_tarif_hasta
+	LOCAL tarif_cantidad2 like post:adt_tarif_hasta
+	LOCAL descontar like post:adt_tarif_hasta
+	LOCAL valor like post:adt_tarif_precio 
+	LOCAL uni_med LIKE adt_serv_umstd
+	LOCAL contador like siaf:i
+	LET imp_bloques = 0
+	LET contador = 0
+	LET cant_bloq = 0
+	LET leyencor_bloq = ""
+	LET leyenlar_bloq = ""
+	REFRESH imp_bloques
+	IF (adt_serv_umstd == "CMS") THEN
+		uni_med = "KGS"
+	ELSE
+		uni_med = adt_serv_umstd
+	END IF
+	
+	IF (peso_en_kgs > 0 || rel_vol > 0)
+	    ; PS9771 se incorpora la tolerancia al peso, para poder calcular la tarifa con esta incluida
+		INIT 22,1
+		
+		//se agrega el peso volumetrico a la tolerancia
+		IF (rel_vol > peso_en_kgs)
+			tarif_cantidad = rel_vol * 100 / (100 + adt_serv_tole)
+		ELSE
+			tarif_cantidad = peso_en_kgs * 100 / (100 + adt_serv_tole)
+		END IF
+		INIT 22,0
+        
+        ;Resguardo el peso sin la tolerancia *** MDG
+		IF (rel_vol > peso_en_kgs)
+			tarif_cantidad2 = rel_vol
+		ELSE
+			tarif_cantidad2 = peso_en_kgs
+		END IF
+
+        IF (tarif_uni_medida != adt_serv_umstd) THEN
+	    	CALL CDSconver(tarif_cantidad2,tarif_uni_medida,adt_serv_umstd)
+	    	IF (RETVAL == 0) THEN
+	    		LET cantidad2 = tarif_peso
+	    	ELSE
+	    		LET cantidad2 = RETVAL
+	    	ENDIF
+	    ELSE
+	    	LET cantidad2 = tarif_cantidad2
+	    ENDIF
+	END IF
+	
+	
+	CALL CDSstdume(tarif_servicio) 
+    
+	IF (tarif_uni_medida != adt_serv_umstd) THEN
+		CALL CDSconver(tarif_cantidad,tarif_uni_medida,adt_serv_umstd)
+		IF (RETVAL == 0) THEN	
+			LET cantidad1 = tarif_peso
+		ELSE
+			LET cantidad1 = RETVAL
+		ENDIF
+	ELSE
+		LET cantidad1 = tarif_cantidad
+	ENDIF
+    
+    
+	CALL csr:trimfield(tarif_servicio)
+	CALL csr:trimfield(tarif_destino)
+
+	/*Esta seccion se encarga de obtener el precio de acuerdo al tipo de caja normalizada que se 
+	elija.En el caso de que por primera vez se entre a la tx, el destino va a estar vacio, por eso 
+	se pregunta por el contenido del campo, luego puede llegar el caso de que habiendose elegido el
+	destino, se cambie la caja y esto deberia entrar a tarifas y traer el importe por tipo de caja 
+	y por el destino seleccionado. Diego Priore 22/02/2000*/
+
+	//IF (post:adt_serv_usa_caja == "S" && siaf:codigo_siaf != 21701 && siaf:codigo_siaf != 21801 && \
+	//	siaf:codigo_siaf != 21401 && siaf:codigo_siaf != 21501)
+	//Iniciativa: 
+
+	/***************************************************************************/
+	//Nueva tarifacion para productos que usan caja y relacion volumetrica
+	IF (post:adt_serv_usa_caja == "S") //Usa caja
+		IF (post:adt_serv_calc_rv == "N") //No calcula relacion volumetrica
+			IF (tipo_caja == "CAJA PROPIA")
+				IF (aforo1 != 0 && aforo2 != 0 && aforo3 != 0 && tarif_destino != "")
+					//Usa caja propia y ya cargo el aforo tarifa por aforo
+					CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						adt_tarif_serv == tarif_servicio && \
+						adt_tarif_desde <= post:aforo && \
+						adt_tarif_hasta >= post:aforo && \
+						adt_tarif_dest == tarif_destino && \
+						adt_tarif_um == "CMS"
+				ELSE
+					IF (cantidad1 != 0 && tarif_destino != "")
+						CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+							adt_tarif_serv == tarif_servicio && \
+							adt_tarif_desde <= cantidad1 && \
+							adt_tarif_hasta >= cantidad1 && \
+							adt_tarif_dest == tarif_destino && \
+							adt_tarif_um == uni_med
+					ELSE
+						CDS ENDSELECT dsc:Tarifas_ctx
+						RETURN (0)
+					END IF
+				END IF			
+			ELSE //No usa caja propia   
+				//Si no calcula relacion volumetrica  y NO es caja propia tarifa por tipo de caja
+				IF (tarif_destino == "")
+					//tarifa por caja sin destino
+					CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						post:adt_tarif_serv == tarif_servicio && \
+						post:adt_tarif_tipo_caja == post:tipo_caja 
+				ELSE
+					//tarifa por caja con destino
+					CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						post:adt_tarif_serv == tarif_servicio && \
+						post:adt_tarif_tipo_caja == post:tipo_caja && \
+						post:adt_tarif_dest == tarif_destino
+				END IF
+			END IF
+		ELSE //Calcula relacion volumetrica
+			IF (rel_vol > 0)
+				//Si calcula relacion volumetrica tarifa por relacion volumetrica
+				IF (tarif_destino == "")
+					//tarifa por rlacion volumetrica sin destino (uso cantidad1 en vez de rel_vol por la tolerancia)
+					CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						adt_tarif_serv == tarif_servicio && \
+						adt_tarif_desde <= cantidad1		&& \
+						adt_tarif_hasta >= cantidad1		&& \
+						adt_tarif_um == uni_med						 
+				ELSE
+					//tarifa por rlacion volumetrica con destino (uso cantidad1 en vez de rel_vol por la tolerancia)
+					CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						adt_tarif_serv == tarif_servicio && \
+						adt_tarif_desde <= cantidad1		&& \
+						adt_tarif_hasta >= cantidad1		&& \
+						adt_tarif_um == uni_med			&& \
+						adt_tarif_dest == tarif_destino						
+				END IF 
+			ELSE
+				IF (cantidad1 == 0) //aun no cargo el peso
+					CDS ENDSELECT dsc:Tarifas_ctx
+					RETURN (0)
+				ELSE
+					//tarifa por peso
+					CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						adt_tarif_serv == tarif_servicio	&& \
+						adt_tarif_desde <= cantidad1 		&& \
+						adt_tarif_hasta >= cantidad1 		&& \
+						adt_tarif_dest == tarif_destino 	&& \
+						adt_tarif_um == uni_med 				
+				END IF
+			END IF
+		END IF
+		CDS FINDFIRST dsc:Tarifas_ctx NOLOCK            
+		LET lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0) THEN
+			RETURN (-2)
+		END IF
+		CDS EXTRACT dsc:Tarifas_ctx all
+		/* Agregado por JPM para optimizar CDSbasico - 14/07/2000 */
+		CALL post:MISCestablece_precio
+		CDS ENDSELECT dsc:Tarifas_ctx
+	END IF
+	//FIN Usa caja
+	/***************************************************************************/
+
+	; Comienzo!! Modificación del tarifario, agregando bloques adicionales, Mariano Gecik.-
+	CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx \
+		WHERE (adt_tarif_serv == tarif_servicio) \
+		&& (adt_tarif_desde <= cantidad1) && (adt_tarif_hasta >= cantidad1) && \
+		(adt_tarif_dest == tarif_destino) && (adt_tarif_um == uni_med) 
+	CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+	 
+	IF (peso_en_kgs > 0)
+	    cantidad1 = cantidad2
+	end if
+	
+	; selecciono la tabla de tarifas si el valor ingresado en gramos esta dentro
+	; de un rango asigno el precio de la tarifa sino continuo.... Mariano Gecik.-   
+	
+	IF (cdsretval == 0)
+		CDS EXTRACT dsc:Tarifas_ctx all
+		/* Agregado por JPM para optimizar CDSbasico - 14/07/2000 */
+		IF (post:adt_serv_usa_caja == "S") //&& post:adt_serv_calc_rv == "S")/*IF (post:adt_serv_usa_caja == "S" && siaf:codigo_siaf != 21401 && siaf:codigo_siaf != 21501 && siaf:codigo_siaf != 21701 && siaf:codigo_siaf != 21801) THEN*/   
+			CALL post:MISCcompara_precios
+		ELSE
+			CALL post:MISCestablece_precio
+		END IF
+		CDS ENDSELECT dsc:Tarifas_ctx
+	ELSE 
+		
+		;No encontró nada para la unidad de medida, entonces busco por caja o por aforo
+
+		; PS9721 - Se agregó post:adt_serv_usa_caja == "S" *** MDG
+		//esto quiere decir si usa caja y aun no cargo el peso que siga de largo
+		IF (cantidad1 == 0 && post:adt_serv_usa_caja == "S")
+			CDS ENDSELECT dsc:Tarifas_ctx
+			RETURN (0)
+		ELSE
+			CDS ENDSELECT dsc:Tarifas_ctx
+			; este select lo tengo que hacer porque sino pierdo el campo adt_tarif_hasta y 
+			; lo voy a tener que utilizar despues...Mariano Gecik.-
+			CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx where (adt_tarif_serv == tarif_servicio) && \
+				(adt_tarif_dest == tarif_destino) && (adt_tarif_um == uni_med) 
+			CDS FINDLAST dsc:Tarifas_ctx NOLOCK
+			IF (cdsretval < 0)
+				RETURN (-2)
+			END IF
+			CDS EXTRACT dsc:Tarifas_ctx all
+			LET adt_tarif_hasta = adt_tarif_hasta   
+			CDS SELECT from dsc:adt_serv_table BECOMES dsc:adt_serv_context where \
+				(adt_serv_serv == tarif_servicio)
+			CDS FINDFIRST dsc:adt_serv_context NOLOCK
+			IF (cdsretval == 0)   
+				CDS EXTRACT dsc:adt_serv_context all
+				; controlo que el campo de bloques en la tabla de servicios este en "S"
+				; sino, no puedo calcular los bloques adicionales, por lo tanto se pone
+				; por default el importe sin los bloques Mariano Gecik.-
+				IF (adt_serv_bloques == "S")
+					//se agrega campo destino para el select de bloques. 06/06/2000
+					CDS SELECT from dsc:adt_bloques_tbl BECOMES DSC:adt_bloques_ctx \
+						where adt_bloque_serv == tarif_servicio && adt_bloque_dest == post:destino
+					CDS FINDFIRST dsc:adt_bloques_ctx NOLOCK         
+					IF (cdsretval == 0)   
+						CDS EXTRACT dsc:adt_bloques_ctx all     
+						; en "descontar" va a estar lo ingresado en el campo del peso
+						; menos la cantidad de gramos maxima, ejemplo: 800-500 = 300
+						; esos 300 hay que calcularlos en bloques adicionales, Mariano Gecik.- 
+						descontar = cantidad1 - adt_tarif_hasta
+						;descontar = cantidad1 - (adt_tarif_hasta + ((adt_tarif_hasta * adt_serv_tole) / 100))
+						/* Agregado por JPM para optimizar CDSbasico - 14/07/2000 */
+						CALL post:MISCestablece_precio
+						WHILE (descontar > 0)
+							descontar = descontar - post:adt_bloque_palabras
+							imp_bloques = imp_bloques + adt_bloque_precio
+							contador = contador + 1
+						END WHILE
+						//Esto se hace para que cuando el cliente es c/c no aparezca en pantalla el valor de los
+						//bloques adicionales. No se si se deberia hacer aca o en otro lado. DP. 24/5/2000
+						IF (post:cli_tipo != 1 && post:enCombo != "S") THEN
+							//cgw:si no es producto de un combo, calcula importes bloques.
+							imp_bloques = imp_bloques * post:cantidad //para que aparezca el precio de los bloques por cantidad del servicio. 
+							REFRESH imp_bloques           
+						ELSE
+							imp_bloques = 0
+							REFRESH imp_bloques
+						END IF
+						cant_bloq = contador   
+					ELSE
+						;sino esta cargado el registro en la tabla de bloques adicionales
+						;correspondiente al servicio, no va a poder realizar dicho calculo
+						;por lo tanto se displaya en pantalla el siguiente mensaje... 
+						MSGBOX "NO SE CARGO EL REGISTRO DE BLOQUES ADICIONALES PARA ESTE SERVICIO",0x00, "Error"
+						return (-2)
+					END IF  
+				ELSE
+					/*No pudo calcular la tarifa ni siquiera con bloques adicionales*/
+					return -2
+				ENDIF  
+			ENDIF
+		END IF    
+	ENDIF
+	CDS ENDSELECT dsc:adt_bloques_ctx
+	CDS ENDSELECT dsc:adt_serv_context
+	CDS ENDSELECT dsc:Tarifas_ctx
+	; Fin!! Modificación del tarifario, agregando bloques adicionales, Mariano Gecik.-
+	IF (precio_tmp < 0) THEN
+		CDS ENDSELECT dsc:Tarifas_ctx
+		RETURN (precio_tmp)
+	ENDIF
+	SELECT (adt_tarif_modo)
+		CASE "P"
+			LET precio_tmp = (precio_tmp * cantidad1 / 100) + adt_tarif_fijo
+			BREAK
+		CASE "U"
+			LET precio_tmp = (precio_tmp * (cantidad1)) + adt_tarif_fijo
+			BREAK
+		CASE "D"
+			LET precio_tmp = precio_tmp + adt_tarif_fijo
+			BREAK
+	END SELECT
+
+	//PS 10931 - Se agrega este IF para el caso de aquellos productos en que tienen en la tabla Tarifas registro con CMS pero que calculan el valor 
+	//mediante calculo volumetrico. Entonces si tienen calculo Volumetrico NO deberian comparar los importes entre peso y medida
+    IF (adt_serv_calc_rv == "N") THEN	
+	
+		CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+			(adt_tarif_serv == tarif_servicio) && ((adt_tarif_desde <= post:aforo) && \
+			(adt_tarif_hasta >= post:aforo)) && (adt_tarif_dest == tarif_destino) && \
+			(adt_tarif_um == "CMS")
+		IF (CDSRETVAL == 0) THEN
+			CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+			LET lib:err_retval = CDSRETVAL
+			SELECT (lib:err_retval)
+				CASE 0
+					/* Se hace un extract all para que se journalicen los campo nuevos de Tarifas*/
+					CDS EXTRACT dsc:Tarifas_ctx all
+					/* Agregado por JPM para optimizar CDSbasico - 14/07/2000 */
+					CALL post:MISCcompara_precios
+					CDS ENDSELECT dsc:Tarifas_ctx
+					BREAK
+				CASE ELSE
+					CDS ENDSELECT dsc:Tarifas_ctx
+					BREAK
+			END SELECT
+			/*Este campo es usado para las transacciones asociadas a Entrega de 
+			Piezas (para imprimir la formula de calculo)*/
+			tarif_aux = adt_tarif_precio    
+			/* Agregado por JPM para optimizar CDSbasico - 14/07/2000 */
+			LET post:adt_tarif_precio = precio_tmp
+			LET post:adt_tarif_desde = desde_tmp
+			LET post:adt_tarif_hasta = hasta_tmp
+			LET post:adt_tarif_um = um_tmp
+			LET post:adt_tarif_hasta_eq = hasta_eq_tmp
+			LET post:adt_tarif_um_eq = um_eq_tmp
+			LET post:adt_tarif_canal = post:tarif_canal_tmp
+			LET post:adt_tarif_imp_nemo = post:imp_nemo_tmp
+			LET post:adt_tarif_imp_dest = post:imp_dest_tmp
+			LET post:adt_tarif_imp_peso = post:imp_peso_tmp
+			RETURN (0)
+		ELSE
+			RETURN (-2)
+		ENDIF
+
+	END IF
+
+END SUB
+
+/*******/

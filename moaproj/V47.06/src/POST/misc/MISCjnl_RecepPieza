@@ -1,0 +1,84 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_RecepPieza
+* NOMBRE
+*   OFB:post:MISCjnl_RecepPieza
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCjnl_RecepPieza
+
+    CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx \
+    WHERE (stockp_operador == op:op_operator_id && stockp_fecha == common:system_date)
+    CDS FINDFIRST DSC:stockp_temp_ctx LOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS UNLOCK DSC:stockp_temp_ctx
+        CDS ENDSELECT DSC:stockp_temp_ctx
+        RETURN -2
+    END IF
+	/*MFM - Grabo Hora de Scaneos*/
+	CALL MISCHora_Scaneos
+    DO
+        CDS EXTRACT DSC:stockp_temp_ctx ALL
+        /*CSZ - Verifico que sean un tt valido y verifico si tiene simplle especial 
+        para journalizar*/
+        CLEARFIELD jnl_simp_esp
+        CALL MISCes_TT(stockp_pieza)
+        IF (RETVAL == 0)
+            /*Obtengo si es simple especial de la tabla de Servicio*/
+            Reencaminamiento = stockp_pieza
+            CALL MISCobt_simp_esp
+        END IF
+        SELECT (stockp_es_grancl)
+            CASE "S"/*GRAN CLIENTE*/
+                siaf:adt_tran_codigo = 99005
+                siaf:codigo_siaf = 99005
+                tlr:tran_mnemonic = "SVTTRP"
+                siaf:nombre_transac = "RECEPCION DE PIEZAS GRANDES CLIENTES"
+                drv:INDcur_tran = LST:TRANgran_cliente
+                drv:INDscr = SCR:SCRNpiezas_GC
+                drv:INDjnl_rtn = OFB:JNLgran_cliente
+                BREAK
+            CASE "N"/*CLIENTE MINORISTA*/
+                siaf:adt_tran_codigo = 99010
+                siaf:codigo_siaf = 99010
+                tlr:tran_mnemonic = "SVTTRP"
+                siaf:nombre_transac = "RECEPCION DE PIEZAS CLIENTES MINORISTAS"
+                drv:INDcur_tran = LST:TRANclte_minorista
+                drv:INDscr = SCR:SCRNpiezas_CM
+                drv:INDjnl_rtn = OFB:JNLclte_minorista
+                BREAK
+        END SELECT
+        MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+        siaf:secuencia_aux = tlr:sequence + 1
+        siaf:hora = common:time_of_day //Linea Nueva
+        CALL tlr:JNLtran
+        /*MFM - Grabo los Scaneos correspondientes a Recepción de Piezas*/
+        CALL MISCGrabo_Scaneos_RP
+        UNGETKEY RT_SEND
+        CDS FINDNEXT DSC:stockp_temp_ctx LOCK
+        IF (CDSRETVAL == -801) THEN
+            BREAK
+        END IF
+    LOOP
+    CDS UNLOCK DSC:stockp_temp_ctx
+    CDS ENDSELECT DSC:stockp_temp_ctx
+    CLEARFIELD drv:INDscr
+    CLEARFIELD drv:INDjnl_rtn
+    CLEARFIELD drv:INDspc_rtn[0]
+    CLEARFIELD drv:INDspc_rtn[2]
+
+END SUB
+
+/*******/

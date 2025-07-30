@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALreg_cred
+* NOMBRE
+*   OFB:tes:SVALreg_cred
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALreg_cred
+    local saldo_cuenta like siaf:importe
+
+    /* Si es una reversa igual lockeo la cuenta */
+    if (testflag(tlr:tran_flags,correction))
+	    call tes:CDSctasbanc_lock	
+	    /* Esta lockeado */
+        if (retval < 0)
+        	return (-2)
+        end if
+  		  tes:estado_cheque = tes:teso_cheq_acred
+        if (siaf:adt_motvarios_ctrl == "S")
+        	teso_cheq_suc     = common:sucursal_activa
+        	teso_cheq_banco   = siaf:cod_banco
+        	teso_cheq_cuenta  = siaf:cheqcuenta
+		    teso_cheq_nro     = siaf:nro_cheque
+		    teso_cheq_estado  = "P"
+		    teso_cheq_id      = banco_codigo
+		    teso_cheq_tipocta = tipo_cuenta
+		    teso_cheq_nrocta  = nro_cuenta
+ 			siaf:nro_cheque = tes:teso_cheq_nro
+  		   siaf:cod_banco = tes:teso_cheq_banco
+    		call CDScheque_cta_load
+    		if (retval < 0)
+    			errmsg lst:common:errmsg_list "El deposito ya fue anulado"
+    			return (-1)
+    		end if
+    		if (teso_cheq_acred == "R")
+    			errmsg lst:common:errmsg_list "Cheque Rechazado"
+    			return (-1)
+    		end if
+	    end if
+    end if    
+
+    call tes:CDSSaldo_cta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,saldo_cuenta)
+    if (retval < 0) 
+       return (-2)
+    end if
+
+    call siaf:SVALnivel_sup
+    if (retval < 0)
+    	return (-2)
+    end if
+
+    if (!testflag(tlr:tran_flags,correction))
+        tes:adt_tipo_cod = tipo_cuenta
+        call tes:CDSadt_tipo_load
+        siaf:moneda = tes:adt_tipo_medio
+        
+        if (tes:adt_tipo_medio.numchars == 0)
+            errmsg lst:common:errmsg_list, "Falta Medio de Pago en tabla de Productos"
+            return (-2)
+        end if
+
+        //let moneda_dep  = tes:adt_tipo_medio
+        clearfield tes:clearing
+        let post:adt_mp_cod = siaf:moneda
+        call post:CDSadt_MedPago_load
+        post:medio_pago_desc = post:adt_mp_desc
+    	
+    	
+        call post:MISCconvierto_coti(post:importe_origen)
+
+    	if (siaf:adt_motvarios_ctrl == "S")
+	        if (teso_cheq_fdep > fecha_valor)
+    		    errmsg lst:common:errmsg_list, "La fecha valor es menor a la fecha de depósito"
+    		    return (-2)
+    	    end if
+            let mov_facred = fecha_valor
+            let tes:clearing = teso_cheq_clearing
+            let tes:fecha_actual = teso_cheq_facred
+        end if
+        popup tes:SCRNconfirma
+        if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+            return (-2)
+        END IF
+    end if 
+    cds unlock tes:adt_cta_ctx
+    cds endselect dsc:adt_cta_ctx
+END SUB
+
+/*******/

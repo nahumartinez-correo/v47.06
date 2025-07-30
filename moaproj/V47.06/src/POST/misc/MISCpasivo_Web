@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:post:MISCpasivo_Web
+* NOMBRE
+*   OFB:post:MISCpasivo_Web
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCpasivo_Web
+	local jourOkAux like post:journalizacionOk
+	local cabeceraPasivos like siaf:i
+	local cabeceraEncomiendas like siaf:i
+    post:estado_pasivo = "S"
+
+    CDS SELECT FROM Dsc:TblClienWeb BECOMES DSC:CtxCliWeb \
+               WHERE post:adt_fecha_web == post:adt_fecpro_web && \
+                     post:adt_pasivo_web == "S" && journalizacionOk != "S"
+
+    CDS FINDFIRST DSC:CtxCliWeb  LOCK
+    IF (CDSRETVAL == -801) THEN
+		CALL batch:MISCgeneraLog("\n... Sin proceso de pasivos/encomiendas pendiente ...\n","INFO","N")
+		CDS ENDSELECT DSC:CtxCliWeb
+        RETURN (-2)
+    END IF
+    let lib:err_retval = cdsretval
+	cabeceraPasivos = false
+	cabeceraEncomiendas = false
+    While ( lib:err_retval == 0 )
+        clearfield post:adt_Tipo_Sistema_web
+        CDS EXTRACT DSC:CtxCliWeb ALL
+        select (post:adt_Tipo_Sistema_web)
+	    	case SISTEMAGIR
+	    		if (!cabeceraEncomiendas) then
+					CALL batch:MISCgeneraLog("\n[JOURNALIZANDO - ENCOMIENDA INTERNACIONAL]\n","INFO","N")
+					cabeceraEncomiendas = true
+				endif
+				break
+    		case else
+	    		if (!cabeceraPasivos) then
+					CALL batch:MISCgeneraLog("\n[JOURNALIZANDO - PASIVOS]\n","INFO","N")
+					cabeceraPasivos = true
+				endif
+				break
+		end select
+
+		if (post:journalizacionOk != "S" && post:journalizacionOk != "J")
+			; Significa que estoy empezando un nuevo proceso.
+			clearfield sistCaido
+		endif
+        Call post:MISCinicLote_Web
+	    Call batch:MISCjnlBatch99021 /* journalizo "99021" inicio de sesion */
+		jourOkAux = post:journalizacionOk
+	    select (post:adt_Tipo_Sistema_web)
+	    	case SISTEMAGIR
+		        Call post:MISCEncTransWeb
+				break
+	    	case else
+	    	    Call post:MISCPasivoTransWeb
+				break
+		end select
+
+        Call post:MISCcaptura_Web /* journalizo "99099" */
+
+	    if (post:adt_Tipo_Sistema_web == SISTEMAGIR)
+		    post:enSesion = "S"
+		    adt_fecfact_web = fecha_virtual
+			Call post:MISCimprimoTransWeb
+		endif
+
+		post:journalizacionOk = jourOkAux
+	    call post:MISCjournal99023Web
+	    Call post:MISCclear_impfisWeb
+		clearfield post:enSesion
+
+		; Marco el registro actual de CtxCliWeb como Terminado.
+		post:journalizacionOk = "S"
+		CDS APPEND DSC:CtxCliWeb post:journalizacionOk
+		CDS UPDATE DSC:CtxCliWeb lock
+		CDS UNLOCK DSC:CtxCliWeb
+		CDS FINDNEXT DSC:CtxCliWeb  LOCK
+		let lib:err_retval = cdsretval
+		clearfield sistCaido
+	End While
+	Cds ENDSELECT DSC:CtxCliWeb
+End Sub
+
+/*******/

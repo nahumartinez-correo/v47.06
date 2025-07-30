@@ -1,0 +1,221 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBreporte_emitidos
+* NOMBRE
+*   OFB:giros:OFBreporte_emitidos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBreporte_emitidos
+	LOCAL lcodigo_siaf LIKE siaf:codigo_siaf
+	LOCAL ltran_flags LIKE tlr:jnl_tran_flags
+	LOCAL LAutoN LIKE post:nro_autorizac
+	LOCAL lretval LIKE lib:err_retval
+	LOCAL lretval2 LIKE lib:err_retval    
+	
+	siaf:indica_calcu = 0
+	CLEARFIELD siaf:listado_totmot
+	CALL siaf:MISCclose_lis
+	CALL CSR:f_sadroppl(DSC:pick_listado)
+	CALL CSR:f_sanewpl(DSC:pick_listado,PIC:giros:giros_listado)
+	IF (RETVAL < 0) THEN
+		MSGBOX "ERROR AL CREAR EL PICKLIST.",OFB_OK,"Error"
+		RETURN -2
+	END IF
+	IF (siaf:pantalla_impreso != "P") THEN
+		CALL siaf:MISCopen_lis
+		IF (RETVAL < 0)
+			RETURN -2
+		END IF
+		CALL giros:MISCencab_emitidos
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+	END IF
+
+	// ACUMULAR EN PICKLIST AUX LAS REVERSAS
+	CALL giros:OFBtrx_cancel_giros(DSC_EMI)
+	IF (RETVAL < 0) THEN
+		CALL CSR:f_sadroppl(DSC:pick_aux)
+		RETURN -2
+	END IF
+ 
+	//cgw:ACUMULAR EN PICKLIST AUX EMISION GIROS POSTALES DUPLICADOS
+	CALL giros:OFBtrx_dupli_giros
+	IF (RETVAL < 0) THEN
+		CALL CSR:f_sadroppl(DSC:pick_dup)
+		RETURN -2
+	END IF
+
+	IF (CodCajero_fld.NUMCHARS == 0) THEN
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+			WHERE tlr:jnl_date >= gir_fec_desde \
+			&& tlr:jnl_date <= gir_fec_hasta \
+			&& tlr:jnl_status <= HOST_REJECTED \
+			&& ((siaf:codigo_siaf >= 70030 && siaf:codigo_siaf <= 70060) \
+			|| siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323 \
+			|| siaf:codigo_siaf == 70391 || siaf:codigo_siaf == 70383)
+	ELSE
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+			WHERE tlr:jnl_date >= gir_fec_desde && tlr:jnl_date <= gir_fec_hasta \
+			&& tlr:jnl_status <= HOST_REJECTED \
+			&& ((siaf:codigo_siaf >= 70030 && siaf:codigo_siaf <= 70060) \
+			|| siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323 \
+			|| siaf:codigo_siaf == 70391 || siaf:codigo_siaf == 70383) \
+			&& tlr:jnl_op_login_id == FLD:CodCajero_fld
+	END IF
+
+  CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+  lretval = CDSRETVAL
+  lretval2 = CDSRETVAL
+  IF (CDSRETVAL  == -CDS_RECORD_NOT_FOUND) THEN
+		CDS ENDSELECT DSC:tlr:jnl_context
+		IF (siaf:modo == "CLOSESUC") THEN
+			//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+			IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+				MSGBOX "NO EXISTEN GIROS/TRANSFERENCIAS EMITIDOS",OFB_OK,"Atencion"
+			END IF
+			CALL siaf:MISCclose_lis
+			IF (siaf:pantalla_impreso != "P") THEN
+				FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal , "listado.lis"
+				FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+				CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+				EXEC post:linea_spvCM                 
+			END IF        
+  		CALL CSR:f_sadroppl(DSC:pick_listado)
+	    CALL CSR:f_sadroppl(DSC:pick_aux)
+	    CALL CSR:f_sadroppl(DSC:pick_dup)
+     	RETURN -8
+		END IF
+	ELSE
+		IF (CDSRETVAL != 0) THEN
+			CALL lib:MISCcds_find_err
+			CDS ENDSELECT DSC:tlr:jnl_context 
+			CALL siaf:MISCclose_lis
+			RETURN -2
+		END IF
+	END IF
+	FYIMSG LST:common:fyimsg_list,MSGbucar_trx_giros
+
+	WHILE (lretval == 0)
+		CALL csr:proc_list(F_CLEAR,LST:LISTreporte_giros)
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+			FLD:tlr:jnl_op_login_id \
+			FLD:tlr:jnl_branch \
+			FLD:tlr:jnl_operator \
+			FLD:tlr:jnl_date \
+			FLD:tlr:jnl_time \
+			FLD:giros:Serie_fld \
+			FLD:giros:NroGiro_fld \
+			FLD:giros:digito_fld \
+			FLD:giros:clave_hdr_giros \
+			FLD:giros:cons_nro_ctrol \
+			FLD:giros:ImporteTotal_fld \
+			FLD:giros:ApellidoEmis_fld \
+			FLD:giros:NombreEmi_fld \
+			FLD:giros:ApellidoEmis_inter \
+			FLD:giros:NombreEmi_inter \
+			FLD:giros:ImporteNeto \
+			FLD:giros:ImporteEmis_fld \
+			FLD:tlr:jnl_status \
+			FLD:giros:flia_giro_fld \
+			FLD:siaf:cancelacion \
+			FLD:tlr:jnl_sequence_corr \
+			FLD:tlr:jnl_sequence \
+			FLD:siaf:codigo_siaf INTO lcodigo_siaf \
+			FLD:tlr:jnl_tran_flags INTO ltran_flags \
+			FLD:post:nro_autorizac INTO LAutoN
+
+		IF ((tlr:jnl_branch == common:sucursal_activa && \
+			(siaf:cancelacion == "" || siaf:cancelacion == DSCERR_PRT_CHQ)) && \
+			(tlr:jnl_status == HOST_ACCEPTED || tlr:jnl_status == UNPOSTED ||\
+			tlr:jnl_status == HOST_REJECTED)) THEN
+
+			// POR LIMITACION DEL SELECT. - 
+			// Trx.Caidas en vuelo estado MEMO (No incluir) -	
+			// segun OFB anterior ( odbc:ODBCget_info_emi)
+			IF (TESTFLAG(ltran_flags,correction) && LAutoN.NUMCHARS == 0)
+				// Buscar transaccion de cancelacion 70530 para reversas
+				// y que no se hayan realizado por el journal
+				// y reversas por defectos fisicos en la impresion del
+				// cheque
+				CALL giros:OFBbusc_cancel_giros(DSC_EMI)
+			ELSE
+				IF (LAutoN.NUMCHARS != 0 && (testflag(ltran_flags,correction))) THEN
+					// Trx.de Reversas realizadas por el journal
+					giros:EstadoGiro_fld = "CA"
+				END IF
+			END IF
+			
+			//cgw: voy a buscar la observacion con el nuevo nro.giro que fue duplicado,
+			//     si es emision giro postal o emision giro postal oficio y en el caso
+			//     que no ha sido cancelada o rechazada.
+			CLEARFIELD giros:observ_dupli_gir  //observacion duplicacion
+			IF (giros:EstadoGiro_fld != "CA" && tlr:jnl_status != HOST_REJECTED && (lcodigo_siaf == 70030 || lcodigo_siaf == 70040)) THEN
+				CALL giros:OFBbusc_duplic_giros
+			END IF
+		   	
+			CALL giros:OFBtrx_rep_giros(lcodigo_siaf,DSC_EMI)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+		END IF
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+		lretval = CDSRETVAL
+  END WHILE
+  CDS ENDSELECT DSC:tlr:jnl_context 
+
+	//cgw:Se tiene en cuenta la emision de giros duplicados.
+	CALL giros:OFBtrx_giros_dupli
+	IF (lretval2 != 0 && RETVAL != 0) THEN
+		MSGBOX "NO EXISTEN GIROS/TRANSFERENCIAS EMITIDOS",OFB_OK,"Atencion"
+		CALL siaf:MISCclose_lis
+		RETURN -2
+	END IF
+
+	CALL csr:PickOp 4 DSC:giros:pick_listado "1,5" "94,12" "146,10" "157,8"
+	
+	// FGB
+	CALL giros:OFBarmar_ult_estado("E")
+	// fin FGB
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+
+	CALL csr:PickOp 4 DSC:giros:pick_listado "10,1" "6,4" "1,5" "94,12" "146,10" "157,8"
+	
+	CALL giros:OFBarmar_pick_giros(DSC_EMI)
+	IF (RETVAL < 0) THEN
+		CALL CSR:f_sadroppl(DSC:pick_aux)
+		CALL CSR:f_sadroppl(DSC:pick_dup)
+		RETURN -2
+	END IF
+		
+	IF (siaf:pantalla_impreso != "P") THEN
+		CALL siaf:MISCclose_lis
+		IF (RETVAL < 0)
+			CALL CSR:f_sadroppl(DSC:pick_aux)
+			CALL CSR:f_sadroppl(DSC:pick_dup)
+			RETURN -2
+		END IF
+	END IF
+	FYIMSG CLEAR
+
+	CALL CSR:f_sadroppl(DSC:pick_aux)
+	CALL CSR:f_sadroppl(DSC:pick_dup)
+
+END SUB
+
+/*******/

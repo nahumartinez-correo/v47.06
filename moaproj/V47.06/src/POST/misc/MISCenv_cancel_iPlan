@@ -1,0 +1,176 @@
+/****o* Pendientes de agrupación/OFB:post:MISCenv_cancel_iPlan
+* NOMBRE
+*   OFB:post:MISCenv_cancel_iPlan
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCenv_cancel_iPlan
+	local prelog_retval like lib:err_retval
+	local cdswait_retval like lib:err_retval
+	local l_fliatran like siaf:adt_tran_fliatran
+	local l_cod_siaf	like siaf:codigo_siaf
+	local l_flg_corr_ON	like siaf:i
+	
+
+	cdswait_retval = 0
+	prelog_retval = 0
+
+    CALL giros:CDSupd_flag_Presu
+    IF (RETVAL < 0)
+        MSGBOX "No se puede realizar la cancelación por problemas en las tablas",0x00,"ERROR"
+        RETURN (-2)
+    END IF
+
+	/*Chequeo que haya línea para enviar la Cancelación al Host*/
+	/*Lo comento para probar porque no tengo host
+	call hcomm:COMM_stat_init */
+	if (!TESTFLAG(hcomm:state_flags,on_line))
+		MSGBOX "HOST fuera de Linea, imposible realizar la Anulacion por el momento, intente en unos instantes",0x00,"ERROR"
+		return (-2)
+	end if
+
+	call post:CDScancel_iplan_flds
+	if ( retval != 0 )
+		return retval
+	end if
+
+	joinscreen post:SCRNpfacil_snd_corr,NOCURSOR
+	
+	l_fliatran = siaf:adt_tran_fliatran
+	siaf:adt_tran_fliatran = "PF "
+	l_cod_siaf = siaf:codigo_siaf
+	siaf:codigo_siaf = 6820
+	if (testflag(tlr:tran_flags,correction)) then
+		l_flg_corr_ON = 1
+	else
+		l_flg_corr_ON = 0
+	endif
+	setflag tlr:tran_flags,correction
+	
+	hcomm:MessageId = "R"
+	;hcomm:INDhost_sndrt = FLD:drv:INDhcomm_rtn
+	;hcomm:INDhost_rcvrt = FLD:drv:INDspc_rtn[1]
+
+	clearfield tlr:INDtots_append
+	clearfield tlr:INDdocs_list
+	clearfield tlr:INDtots_append
+	clearfield tlr:INDjnl_append
+
+	call post:MISCmuevo_campos_jou
+;	call siaf:MISClleno_modalidad
+	ungetkey RT_SEND
+
+	/* agregado por martin para que no grabe el mensaje de rechazada en
+	una transaccion aceptada */
+	clearfield siaf:mensaje
+	CALL  hcomm:COMM_stat_init
+	/************************************************************************/
+	/*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+	/************************************************************************/
+
+	/* Respaldo la secuencia de la transaccion actual porque el mismo campo se usa para actualizar el secuenciador*/
+	/* de la tabla de totales */
+	tlr:aux_sequence = tlr:jnl_sequence // SECUENCIA DE LA TRANSACCION EN CURSO
+
+	/* Si el flag de TRAN caidas en Vuelo esta ON: Ejecuto proceso correspondiente,para su procesamiento
+	   Se ejecutara el proceso de recuperacion siempre y cuando la transaccion en curso tenga rutina de 
+	   send y  de rcve, es decir las que viajan a HOST.  Se realizo el procedimiento anterior, para que 
+	   no se modifique el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+
+	if (drv:INDhcomm_rtn != 0 && drv:INDspc_rtn[1] != 0)
+		call siaf:CDSchk_trxs_caidas
+		if (retval == 0 && testflag(hcomm:state_flags,on_line))
+       	    FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+
+		    call siaf:CDSjnl_mayor_cien
+		    if ( retval == TRAN_CAIDA_VUELO )
+   			    CLEARFIELD lib:stat_message
+   			    let lib:stat_message.highlite = 0
+   			    REFRESH STATUSLINE
+
+				// Blanquear Campos Indirectos para que no envie Tran en Curso.
+				/*Cuando se esta recuperando una caída y se pierde la comunicacion
+				 con el host, la transaccion de cancelación por comprobante no debe
+				 seguir en curso para evitar inconsistencias en el switch*/
+	   			clearfield hcomm:INDhost_sndrt
+    			clearfield hcomm:INDhost_rcvrt
+    			siaf:mensaje = "TRANSACCION RECHAZADA POR PROBLEMAS DE COMUNICACION"
+
+		    end if
+		    FYIMSG CLEAR
+		elseif (retval == -5) then // hay trx's pendientes de recuperacion por el proceso batch...
+			clearfield hcomm:INDhost_sndrt
+			clearfield hcomm:INDhost_rcvrt
+			siaf:mensaje = "TRANSACCION RECHAZADA - RECUPERACIONES PENDIENTES"
+	    end if
+
+	End if
+	/************************************************************************/
+	/*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+	/************************************************************************/
+
+//   	setflag common:rt_flags,reentry_active
+	/*Se manda la cancelacion al switch*/
+	CALL  hcomm:COMM_host_tran
+
+	if (hcomm:tran_status != 3) then
+		call hcomm:COMM_host_msg
+	else
+		clearfield lib:stat_message
+		REFRESH lib:stat_message
+	endif
+
+//	let siaf:compra_venta = "N"
+
+	CLEARFIELD lib:stat_message
+	let lib:stat_message.highlite = 0
+	REFRESH STATUSLINE
+	;CALL  tlr:MISCendtran_nowait
+	;CLEARFIELD tlr:link_y_n
+	LET common:trap_reset = ofb:drv:KEYSreset_esc
+	resetflag tlr:state_flags,end_tran
+	setflag drv:mode_flags,no_stack_list
+
+	/*Limpio los campos indirectos para que no quede basura y haga lío
+	cuando se llama a la JNLtran por primera vez para hacer las reversas de
+	la Sesión.*/
+	clearfield tlr:INDdcol_scrn[0]
+	clearfield hcomm:INDhost_sndrt
+	clearfield hcomm:INDhost_rcvrt
+	clearfield tlr:INDtran_name
+	clearfield tlr:INDjnl_append
+	clearfield tlr:INDtots_append
+	clearfield tlr:INDdocs_list
+	clearfield tlr:INDtots_append
+	clearfield drv:INDcur_tran
+	clearfield drv:INDjnl_rtn
+
+	//(lo limpio porque se setea en la JNLtran: LET hcomm:INDhost_sndrt = drv:INDhcomm_rtn)
+	clearfield drv:INDhcomm_rtn
+    //(lo limpio porque se setea en la JNLtran :LET hcomm:INDhost_rcvrt = drv:INDspc_rtn[1])
+    clearfield drv:INDspc_rtn[1]
+    
+	siaf:adt_tran_fliatran = l_fliatran
+	siaf:codigo_siaf = l_cod_siaf
+	if (l_flg_corr_ON == 0) then
+		resetflag tlr:tran_flags,correction	
+	endif
+	
+	cutscreen post:SCRNpfacil_snd_corr,NOCURSOR
+	
+END SUB
+
+/*******/

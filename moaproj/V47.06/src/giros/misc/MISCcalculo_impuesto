@@ -1,0 +1,136 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCcalculo_impuesto
+* NOMBRE
+*   OFB:giros:MISCcalculo_impuesto
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCcalculo_impuesto(Provincia,Monto,Tipo_Giro,Servicio,SucDestino)
+/*Se realizaron cambios con respecto al Impuesto de Sellados tanto en la parametría como
+en el cálculo - Gabriel Falciola*/
+
+   /*Busco el registro correspondiente primero por Tipificación Indistinta*/
+    CDS SELECT FROM DSC:TablaImpuesto BECOMES DSC:ContexoImpuesto WHERE  \
+adt_impp_prov == Provincia && adt_impp_serv == Servicio && \
+adt_giro_tipo == Tipo_Giro && adt_impp_tipifica == "I"
+    CDS FINDFIRST DSC:ContexoImpuesto NOLOCK 
+    IF (CDSRETVAL != -801) THEN
+		CDS EXTRACT DSC:ContexoImpuesto ALL 
+    ELSE 
+		CDS ENDSELECT DSC:ContexoImpuesto 
+		/*Si no existe chequeo la Tipificación (Misma Provincia o Distinta)*/
+		if (SUBSTR(common:sucursal_activa,0,1) == SUBSTR(SucDestino,0,1))
+			/*Misma Provincia*/
+    		CDS SELECT FROM DSC:TablaImpuesto BECOMES DSC:ContexoImpuesto WHERE  \
+			adt_impp_prov == Provincia && adt_impp_serv == Servicio && \
+			adt_giro_tipo == Tipo_Giro && adt_impp_tipifica == "1"
+    		CDS FINDFIRST DSC:ContexoImpuesto NOLOCK 
+    		IF (CDSRETVAL != -801) THEN
+				CDS EXTRACT DSC:ContexoImpuesto ALL 
+    		ELSE 
+    			/*Si no existe no se cobra ningún Impuesto*/
+				CDS ENDSELECT DSC:ContexoImpuesto 
+      			RETURN (-2)
+      		END IF
+      	else
+      		/*Distinta Provincia*/
+    		CDS SELECT FROM DSC:TablaImpuesto BECOMES DSC:ContexoImpuesto WHERE  \
+			adt_impp_prov == Provincia && adt_impp_serv == Servicio && \
+			adt_giro_tipo == Tipo_Giro && adt_impp_tipifica == "2"
+    		CDS FINDFIRST DSC:ContexoImpuesto NOLOCK 
+    		IF (CDSRETVAL != -801) THEN
+				CDS EXTRACT DSC:ContexoImpuesto ALL 
+    		ELSE 
+    			/*Si no existe no se cobra ningún Impuesto*/
+				CDS ENDSELECT DSC:ContexoImpuesto 
+      			RETURN (-2)
+      		END IF
+		end if      	
+    END IF 
+
+	/*Seteo los campos correspondientes a la descripción de la Provincia y del Impuesto
+	dependiendo del Tipo de Giro - Gabriel Falciola*/
+	if (Tipo_Giro == "E")
+		Impp_pdesc_emi = adt_impp_pdesc
+		Impp_impdesc_emi = adt_impp_impdesc
+	end if
+	if (Tipo_Giro == "A")
+		Impp_pdesc_pag = adt_impp_pdesc
+		Impp_impdesc_pag = adt_impp_impdesc
+	end if
+
+    /*Antes que nada me fijo si esta exento*/
+    if (adt_impp_exento == "T")
+    	CDS ENDSELECT DSC:ContexoImpuesto 
+    	return (-2)
+    end if
+    
+    /*Chequeo el campo Condicionado en realción al Tipo de Giro que estoy calculando*/
+    if (Tipo_Giro == "E" && adt_impp_condiciona == "T" && \
+    SUBSTR(common:sucursal_activa,0,1) == SUBSTR(SucDestino,0,1))
+    	CDS ENDSELECT DSC:ContexoImpuesto 
+    	return (-2)
+	end if
+	    
+    /*Chequeo el campo Condicionado en realción al Tipo de Giro que estoy calculando*/
+    if (Tipo_Giro == "A" && adt_impp_condiciona == "T" && \
+    Impuesto > 0)
+    	CDS ENDSELECT DSC:ContexoImpuesto 
+    	return (-2)
+	end if
+
+    /*Si el monto es menor al minimo no imponible, no se cobra impuesto*/
+    if (Monto <= adt_impp_min_noimp)
+    	CDS ENDSELECT DSC:ContexoImpuesto 
+    	return (-2)
+    end if
+    
+    /*Si tiene Tramos debo ir a buscarlo, sino calculo directamente*/
+    if (adt_impp_tramos == "T")
+    	call CDSbusco_tramo(Provincia,Monto,Tipo_Giro,Servicio)
+    else
+    	init 22,1
+    	if (Tipo_Giro == "A")
+    		Impuesto_abonado = adt_impp_montofijo + (Monto * adt_impp_por_milaje) / 1000
+    	else
+    		Impuesto = adt_impp_montofijo + (Monto * adt_impp_por_milaje) / 1000
+    	end if
+    	init 22,0
+    end if
+    
+    /*Chequeo como quedo el impuesto: Si es menor al monto minimo de cobro, cobro el minimo.
+    Si es mayor, se cobra el mayor. Si esta dentro del rango se cobra tal cual quedó.*/
+    /*Ahora se utilizan dos campos para diferenciar el Impuesto Emitido del Abonado*/
+    if (Tipo_Giro == "A")
+    	if (Impuesto_abonado >= adt_impp_min)
+    		if (Impuesto_abonado >= adt_impp_max)
+    			Impuesto_abonado = adt_impp_max
+    		end if
+    	else
+    		Impuesto_abonado = adt_impp_min
+    	end if
+    else
+    	if (Impuesto >= adt_impp_min)
+    		if (Impuesto >= adt_impp_max)
+    			Impuesto = adt_impp_max
+    		end if
+    	else
+    		Impuesto = adt_impp_min
+    	end if
+	end if    
+    CDS ENDSELECT DSC:ContexoImpuesto 
+END SUB
+
+/*******/

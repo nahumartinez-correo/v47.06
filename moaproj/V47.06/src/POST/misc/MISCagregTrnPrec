@@ -1,0 +1,84 @@
+/****o* Pendientes de agrupación/OFB:post:MISCagregTrnPrec
+* NOMBRE
+*   OFB:post:MISCagregTrnPrec
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCagregTrnPrec
+   //local calc like post:importe
+   local OPE like post:op_operator_id
+   local IMP like post:ImporteNeto
+   local HAYACREPERC like siaf:i
+   
+   //cgw:SC 50170
+   local calc         like post:importe_sesion
+   local l_importe    like post:importe_sesion
+   local l_IvaBasCalc like post:reimpre_unitario
+   
+   HAYACREPERC = 0
+	/*Acumulo en este campo el total de todos los Acrecentamientos y
+	Percepciones de la Sesión. Luego es unsado para el Cálculo de Ingresos
+	Brutos - Gabriel Falciola*/
+	ImpTotAcrePerc = 0
+;   PreDNroTrn = PreAUltTrn
+
+   CDS JOIN post:IvaPor, post:op_operator_id, post:IvaBasCalc, post:importe, post:SobreTasaIva, post:adt_acreperc_cativa, \
+                    post:adt_acreperc_aliciva,post:adt_acreperc_aliacre, post:adt_acreperc_mtomin, post:adt_acreperc_calculo, \
+                    post:adt_acreperc_leyenda FROM post:TblImpreIva as "aux" post:adt_acreperc_tbl \
+                    as "perc" SORT post:SRT_leyenda BECOMES post:adt_acreperc_ctx WHERE ("aux".post:IvaPor == "perc".post:adt_acreperc_aliciva)
+   CDS FINDFIRST post:adt_acreperc_ctx NOLOCK
+   while (cdsretval == 0)
+   CDS EXTRACT post:adt_acreperc_ctx post:op_operator_id into OPE, post:importe, post:IvaBasCalc, post:adt_acreperc_cativa, post:adt_acreperc_aliciva, post:adt_acreperc_cativa, post:adt_acreperc_mtomin, post:adt_acreperc_calculo, post:adt_acreperc_leyenda,post:adt_acreperc_aliacre
+   if ((OPE == op:op_operator_id) && (post:IvaCod == post:adt_acreperc_cativa))
+     calc = 0
+     
+     //cgw:SC 50170 (Redondea a dos decimales)
+     INIT 22,1
+     l_IvaBasCalc = post:IvaBasCalc
+     l_importe = post:importe
+     INIT 22,0
+
+     INIT 22,1
+     If ( post:adt_acreperc_calculo == "MSI")
+           calc = (l_IvaBasCalc * post:adt_acreperc_aliacre / 100)
+           IMP = l_IvaBasCalc
+     Else
+           calc = ((l_IvaBasCalc + l_importe) * post:adt_acreperc_aliacre / 100)
+           IMP = l_IvaBasCalc + l_importe
+     Endif
+     INIT 22,0
+     if ((calc > 0) && (calc >= adt_acreperc_mtomin))
+			ImpTotAcrePerc = ImpTotAcrePerc + calc
+			// Graba la transaccion en la PresuDet
+			CALL post:CDSsumoTransacPerc(calc, post:adt_acreperc_leyenda, IMP, post:adt_acreperc_aliciva,post:adt_acreperc_aliacre)
+			//CALL post:CDSsumoTransacPerc(calc, post:adt_acreperc_leyenda, IMP, post:adt_acreperc_aliacre)
+			call jnlAcrePerc
+			HAYACREPERC = retval
+     else
+		   CALL post:CDSBorrarTransac(post:adt_acreperc_leyenda, post:adt_acreperc_aliciva)
+     endif
+   end if
+   CDS FINDNEXT post:adt_acreperc_ctx NOLOCK
+   end while
+   CDS ENDSELECT post:adt_acreperc_ctx
+
+   // Ahora agrego RG3377
+   call post:MISCagregTrnRG3377
+
+   return (HAYACREPERC )
+END SUB
+
+/*******/

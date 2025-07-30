@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrecup_cap_multi
+* NOMBRE
+*   OFB:post:MISCrecup_cap_multi
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrecup_cap_multi
+
+local loc_HUBO_CAPTURA	like siaf:i
+
+// FGB 6.9.2001: 
+// verifico que haya sido una transaccion por teclas rapidas y captura multiple...
+// hasta ahora, es la unica de teclas rapidas que graba en la Presu, no? 
+clearfield loc_HUBO_CAPTURA 
+
+CDS SELECT FROM DSC:TABPresu BECOMES DSC:CONPresu \
+	WHERE 	(FLD:post:fecha   		 == FLD:common:system_date )  && \
+			(Fld:post:op_operator_id == fld:post:op_operator_id ) && \
+			(fld:post:PresNro        == fld:post:PresNro)         && \
+			(fld:post:adt_Modo		 == post:Modo)
+Cds FINDFIRST DSC:CONPresu NOLOCK
+if (cdsretval == 0)
+	Cds EXTRACT DSC:CONPresu post:importe_pesos post:importe_bonos post:importe_dolares
+	if (cdsretval == 0) then
+		if (importe_pesos > 0 || importe_bonos > 0 || importe_dolares > 0) then
+			CDS SELECT FROM DSC:post:TblImpreMedio BECOMES "CONtotmediopago" \
+				WHERE 	post:op_operator_id == post:op_operator_id && \
+						post:journalizacionOk == "N"
+			if (cdsretval == 0) then
+				CDS FINDFIRST "CONtotmediopago" NOLOCK
+				while (cdsretval == 0) then
+					let loc_HUBO_CAPTURA = 1 // al menos encontre una!  
+					clearfield siaf:moneda
+					clearfield siaf:importe
+					clearfield post:journalizacionOk
+					CDS EXTRACT "CONtotmediopago" siaf:moneda siaf:importe
+
+/** por ahora esto no se va a usar... pero lo dejo para tenerlo en cuenta despues (que se yo)
+ *					IF (giros:flia_tran_aux == "CSM") THEN
+ *						IF (giros:afec_efvo_aux == "-")
+ *      						siaf:importe = \
+ *     							 (siaf:importe * (-1)) - giros:importe2_aux + giros:imp_rev_aux
+ *						ELSE
+ *							siaf:importe = \
+ *								 siaf:importe - giros:importe2_aux + giros:imp_rev_aux
+ *						END IF
+ *					END IF
+**/
+					tlr:INDdcol_scrn[0] = SCR:post:SCRNcaptura_adiciona
+					ungetkey RT_SEND
+					Call post:MISCcap_teclas_rap(siaf:importe)
+				    let journalizacionOk = "S"
+				    call CDSmedioElegid_estad
+					CDS FINDNEXT "CONtotmediopago" NOLOCK
+				end while
+				CDS ENDSELECT "CONtotmediopago" 
+			end if
+		end if
+	end if
+end if
+Cds ENDSELECT DSC:CONPresu
+
+if (loc_HUBO_CAPTURA) then
+	return (0)
+else
+	return (-2)
+endif
+END SUB
+
+/*******/

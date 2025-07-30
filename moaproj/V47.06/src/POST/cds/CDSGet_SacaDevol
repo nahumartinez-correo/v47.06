@@ -1,0 +1,65 @@
+/****o* Pendientes de agrupación/OFB:post:CDSGet_SacaDevol
+* NOMBRE
+*   OFB:post:CDSGet_SacaDevol
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGet_SacaDevol
+
+LOCAL excep LIKE post:id_excepcion
+LOCAL es_tt LIKE post:SacaDevol
+	
+	/*Busco los detalles de la saca*/
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+	WHERE (tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_sequence_corr == "" && \
+	post:CaratulaSaca == id_excepcion && \
+	(siaf:codigo_siaf == 99066 || siaf:codigo_siaf == 99068))
+	/*post:jnl_marca_excep != "S" && \
+	post:jnl_guia_despacho == "" && \*/
+	CDS FINDFIRST DSC:journal_ctx1 NOLOCK
+	clearfield es_tt
+	DO
+		IF (CDSRETVAL == -801) THEN
+			CDS ENDSELECT DSC:journal_ctx1
+			BREAK
+		ELSE
+			CDS EXTRACT DSC:journal_ctx1 post:Pieza
+			/*Valido si es T&T */
+			call post:MISCes_TT(post:Pieza)
+			if (RETVAL == 0) then
+				es_tt = true
+				//resguardo el valor de la excepción
+				excep = post:id_excepcion 
+				post:id_excepcion = post:Pieza
+				clearfield adt_novtt_corte
+				/*Según el corte de esa pieza buscar el despacho y luego la unidad de negocio asociada*/
+				CALL CDSGet_CorteOp
+				//restauro el valor de la excepcion
+				post:id_excepcion = excep
+			endif
+		END IF
+		CDS FINDNEXT DSC:journal_ctx1 NOLOCK
+	LOOP
+	/*Si son todas piezas de grandes clientes se manda la copia al ctp normal, segun
+	mail de A.Palacios*/
+	if (!es_tt) then
+		CALL CDSGet_Uneg(common:br_ctpnormal)
+	end if
+	
+END SUB
+
+/*******/

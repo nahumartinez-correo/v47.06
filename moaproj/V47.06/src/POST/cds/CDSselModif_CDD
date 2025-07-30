@@ -1,0 +1,113 @@
+/****o* Modificación de Piezas/OFB:post:CDSselModif_CDD
+* NOMBRE
+*   OFB:post:CDSselModif_CDD
+* DESCRIPCION
+*   Esta rutina recupera datos de la pieza de la tabla StockpCDD y realiza diferentes validaciones
+*   para saber si la pieza puede ser modificada (TX 99003) o si puede modificarse su plazo de 
+*   guarda (TX 99075)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSselPiezaActiva
+* DOCUMENTACION
+*   
+* SOURCE
+*/
+#include "postcds.h"
+
+
+SUB post:CDSselModif_CDD
+    LOCAL baja      LIKE post:adt_stockp_Baja
+	LOCAL cliente LIKE post:adt_CDD_es_grancl
+	
+	CDS SELECT FROM DSC:StockpCDD_tbl BECOMES DSC:StockpCDD_ctx \
+	WHERE post:adt_CDD_pieza == post:Pieza 
+
+	CDS FINDFIRST DSC:StockpCDD_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == -801) THEN
+		CDS ENDSELECT DSC:StockpCDD_ctx
+		//msgbox "Pieza Inexistente.",0x00,"Error"
+		RETURN -1
+	END IF
+	CLEARFIELD adt_CDD_Baja
+	CLEARFIELD post:adt_CDD_crem_imp
+	
+	/*CLEARFIELD AsignaDestino
+	CLEARFIELD post:adt_stockp_laboral
+	CLEARFIELD post:adt_stockp_crem_imp
+	CLEARFIELD post:adt_stockp_entrega_f*/
+
+
+	CDS EXTRACT DSC:StockpCDD_ctx post:adt_CDD_Baja INTO baja \
+	post:adt_CDD_es_grancl INTO cliente
+
+	if (baja == "S") then
+		if (cliente == "N") then
+			msgbox "Pieza de Cliente Minorista rendida en CDD no liquidable. No podrá modificarse.",0x00,"Error"
+		else
+			msgbox "Pieza de Cliente Mayorista rendida en CDD. No podrá modificarse.",0x00,"Error"
+		endif
+		CDS ENDSELECT DSC:StockpCDD_ctx
+		RETURN -2
+	end if
+
+
+	LET drv:button = CB9 //CB4
+	
+	CALL drv:but_status
+     //Si el boton de AGREGAR esta deshabilitado....hago el EXTRACT
+
+	if (drv:disabled != 0) then
+		CALL CSR:proc_list(F_CLEAR,LST:LISTnew_ModifPieza) 
+		CDS EXTRACT DSC:StockpCDD_ctx \
+		post:adt_CDD_pieza INTO Pieza \
+		post:adt_CDD_crem_imp INTO stockp_crem_imp \
+		post:adt_CDD_rend_cent INTO stockp_rend_cent \
+		post:adt_CDD_rct INTO stockp_rct \
+		post:adt_CDD_CtaOM INTO stockp_ctaOM \
+		post:adt_CDD_TipoDoc INTO stockp_tipo_doc \
+		post:adt_CDD_NumDoc INTO stockp_doc \
+		post:es_CDD 
+		//SC50361
+        CLEARFIELD post:adt_climay_razon
+        CLEARFIELD post:id_cupon_CCT
+        CLEARFIELD post:adt_cct_nis_liq
+        CLEARFIELD post:adt_cct_comitente
+        CLEARFIELD post:adt_cct_cod_serv
+        CLEARFIELD post:adt_cct_def_cupon
+        CLEARFIELD post:adt_cct_cta_sap
+        CLEARFIELD post:adt_cct_rend_fis
+        CLEARFIELD post:cod_barra_CREM
+		
+		CDS EXTRACT DSC:StockpCDD_ctx \
+		post:adt_climay_razon \
+		post:id_cupon_CCT \
+		post:adt_cct_nis_liq \
+		post:adt_cct_comitente \
+		post:adt_cct_cod_serv \
+		post:adt_cct_def_cupon \
+		post:adt_cct_cta_sap \
+		post:adt_cct_rend_fis \
+	    post:cod_barra_CREM
+	    
+		CALL CSR:trimfield(stockp_ctaOM,stockp_ctaOM)
+	
+		IF (stockp_ctaOM.numchars == 0)
+			es_mayorista = "N"
+		ELSE
+			es_mayorista = "S"
+		END IF
+	
+		CALL CSR:proc_list(F_REFRESH,LST:LISTnew_ModifPieza) 
+	endif
+
+	CDS ENDSELECT DSC:StockpCDD_ctx
+
+END SUB
+
+/*******/

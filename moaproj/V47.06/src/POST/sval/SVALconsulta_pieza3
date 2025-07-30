@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:post:SVALconsulta_pieza3
+* NOMBRE
+*   OFB:post:SVALconsulta_pieza3
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALconsulta_pieza3
+    
+    LOCAL stock_ctx_aux LIKE adt_tabla_context1
+    LOCAL  devol_fec_aux LIKE  adt_stockp_devol_fec
+    
+    IF (TESTFLAG(screen_consulta,cancelar))
+        RESETFLAG screen_consulta,cancelar
+        RETURN (0)
+    END IF
+    IF (TESTFLAG(screen_consulta,actualizar))
+        IF (pieza_stockp.numchars == 0) THEN
+            MSGBOX "POR FAVOR, INGRESE EL NRO DE PIEZA",0X00,"ERROR"
+            drv:button = drv:last_button
+            CALL drv:but_up_enable
+            ALTERBUTTON drv:PBcb2,UP
+            RETURN -2
+        END IF
+  
+        CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+        WHERE (adt_stockp_pieza == pieza_stockp)  
+        CDS FINDFIRST DSC:stockp_ctx LOCK
+        If (CDSRETVAL < 0) Then
+            CDS ENDSELECT DSC:stockp_ctx
+            CALL CDSstockpHist_cons("S")
+            IF (RETVAL < 0)
+                MSGBOX "PIEZA INEXISTENTE EN TABLA DE STOCK",0X00,"ERROR"
+                drv:button = drv:last_button
+                CALL drv:but_up_enable
+                ALTERBUTTON drv:PBcb2,UP
+                RETURN -2
+            ELSE
+                LET stock_ctx_aux = "stockpHist_ctx"
+            END IF
+        ELSE
+            LET stock_ctx_aux = "stockp_ctx" 
+        End If  
+
+
+        CDS EXTRACT FLD:stock_ctx_aux adt_stockp_Observ,adt_stockp_devol_fec INTO devol_fec_aux
+        /*Rendicion de Valores*/
+        IF (TESTFLAG(post:screen_consulta,transac1)) THEN
+            drv:button = drv:last_button
+            CALL drv:but_up_enable
+            ALTERBUTTON drv:PBcb2,UP
+            
+        END IF
+        CALL csr:trimfield Observacion_stockp
+        CALL csr:trimfield Observ_nueva_stockp
+        IF (Observacion_stockp.NUMCHARS != 0) THEN
+            FPRINT post:campo_observ_new "%-s %-s",Observacion_stockp,Observ_nueva_stockp
+        ELSE
+            FPRINT post:campo_observ_new "%-s",Observ_nueva_stockp
+        END IF
+        CALL csr:trimfield campo_observ_new
+        adt_stockp_Observ = post:campo_observ_new
+        CDS CLEARBUFFER FLD:stock_ctx_aux
+        /*Rendicion de Valores*/
+        IF (TESTFLAG(post:screen_consulta,transac1)) THEN
+            IF (devol_fec_aux != 0) THEN
+                MSGBOX "LA PIEZA YA HA SIDO RENDIDA",0X00,"ERROR"
+                CDS ENDSELECT FLD:stock_ctx_aux
+                RETURN -2
+            END IF
+            adt_stockp_devol_fec = common:system_date
+            adt_stockp_devol_hor = common:time_of_day
+            adt_stockp_devol_op = op:op_operator_id
+            adt_stockp_Baja = "S"
+            devol_fec_stockp = common:system_date
+            devol_hor_stockp = common:time_of_day
+            devol_op_stockp = op:op_operator_id
+            CDS APPEND FLD:stock_ctx_aux adt_stockp_Observ,adt_stockp_devol_fec,adt_stockp_devol_hor,adt_stockp_devol_op,adt_stockp_Baja
+        ELSE
+            CDS APPEND FLD:stock_ctx_aux adt_stockp_Observ
+        END IF
+        CDS UPDATE FLD:stock_ctx_aux LOCK 
+        CDS UNLOCK FLD:stock_ctx_aux
+        CDS ENDSELECT FLD:stock_ctx_aux  
+        IF (!TESTFLAG(post:screen_consulta,transac1)) THEN//SI NO ESTOY RINDIENDO VALORES
+            CLEARFIELD pieza_stockp
+            REFRESH pieza_stockp 
+            CLEARFIELD Observ_nueva_stockp
+            REFRESH Observ_nueva_stockp 
+            CALL csr:proc_list(F_CLEAR,LST:LISTcon_pieza_flds)
+            CALL csr:proc_list(F_REFRESH,LST:LISTcon_pieza_flds)      	
+        END IF
+        DISABLECONTROL drv:PBcb2
+        ALTERBUTTON drv:PBcb2,UP
+        UNPROTFIELD pieza_stockp
+        opcion = 4
+        IF (TESTFLAG(post:screen_consulta,transac1)) THEN//SI ESTOY RINDIENDO VALORES
+            CALL MISCjnl_RendVal
+        END IF
+    END IF
+END SUB
+
+/*******/

@@ -1,0 +1,195 @@
+/****o* Lista de Giros/OFB:post:MISCcalc_adel_lg
+* NOMBRE
+*   OFB:post:MISCcalc_adel_lg
+* DESCRIPCION
+*	Calcula el importe del adelanto monetario a consumir/acreditar segun los medios de pago 
+*	utilizados para el reemplazo de cada tipo de cheque.
+* ENTRADAS
+*  cheq  =  "G" - Indica si el cheque que se está reemplazando es un cheque asociado al adelanto de lista de giros.
+*  plazo =  "S" - Indica si el cheque que se está reemplazando es un cheque certificado en plazo.
+*  lidx	 = posicion del vector de los medios de pago por los que se esta realizando el reemplazo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:MISCacredito_adel,post:SVALreemp_chqrob,OFB:post:SVALcanc_reemp,OFB:post:SVALcancReempRob
+*	OFB:post:MISCverif_ch_acred,OFB:post:SVALreemp_chqrech_up
+* REFERENCIADO POR
+*   OFB:post:MISCpago_reemp_up
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcalc_adel_lg(cheq,plazo,lidx)
+local l_new_date like post:fec_e
+	
+select (siaf:codigo_siaf)
+case "99200"
+case "99205"
+   	if (cheq == "G") then
+       	//si el cheque es certificado en plazo
+       	if (plazo == "S") then
+       		select (post:adt_mp_cod)
+				case "00"
+					post:imp_adel_mon = imp_adel_mon + 0
+					break
+				case "15"
+				//si es certificado en plazo entonces acredito el saldo en el momento
+				/*Se debe consultar de la tabla MedPago el atributo post:adt_mp_diasatras y verificar que
+			 	la fecha de emisión del cheque + los días del campo post:adt_mp_diasatras 
+			 	sea mayor o igual a la fecha actual para saber si el cheque está en plazo.*/
+					call  csr:date_add (Emision_Fecha[lidx],  post:adt_mp_dias_plazo,  "d",  l_new_date)
+					call csr:date_compare(common:system_date ,l_new_date)
+					/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+					If (RETVAL == 0 || RETVAL == 2) Then
+						imp_adel_mon = imp_adel_mon + 0
+						post:cheq_acreditado = "S"
+					else //afecta el saldo negativamente cuando es 99200 y positivamente cuando es 99205
+						imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+						//if (siaf:codigo_siaf == "99200")
+							post:cheq_acreditado = "N"
+							post:op_adel_mon = "D"
+						/*else//afecta el saldo positivamente
+							post:cheq_acreditado = "N"
+							//post:op_adel_mon = "0"
+							//tengo que mandar una D para que sume porque como es cancelacion hace la operacion contraria
+							post:op_adel_mon = "D" 
+						endif*/
+					endif
+					break
+				case else //afecta el saldo negativamente cuando es 99200 y positivamente cuando es 99205
+					post:imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+					//if (siaf:codigo_siaf == "99200")
+						post:cheq_acreditado = "N"
+						post:op_adel_mon = "D"
+					/*else//afecta el saldo positivamente
+						post:cheq_acreditado = "N"
+						//post:op_adel_mon = "0"
+						//tengo que mandar una D para que sume porque como es cancelacion hace la operacion contraria
+						post:op_adel_mon = "D"
+					endif*/
+					break
+			end select
+		else//cheque fuera de plazo
+			select (post:adt_mp_cod)
+				case "00" //afecta el saldo positivamente cuando es 99200 y negativamente cuando es 99205
+					post:imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+					//if (siaf:codigo_siaf == "99200")
+						//post:op_adel_mon = "0"
+						post:op_adel_mon = "1"
+					/*else//afecta el saldo negativamente
+						//tengo que mandar una 0 para que reste porque como es cancelacion hace la operacion contraria
+						post:op_adel_mon = "0"
+						//post:op_adel_mon = "D"
+					endif*/
+					break
+				case "15"
+				//si es certificado en plazo entonces acredito el saldo en el momento
+				/*Se debe consultar de la tabla MedPago el atributo post:adt_mp_diasatras y verificar que
+			 	la fecha de emisión del cheque + los días del campo post:adt_mp_diasatras 
+			 	sea mayor o igual a la fecha actual para saber si el cheque está en plazo.*/
+					call  csr:date_add (Emision_Fecha[lidx],  post:adt_mp_dias_plazo,  "d",  l_new_date)
+					call csr:date_compare(common:system_date ,l_new_date)
+					/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+					If (RETVAL == 0 || RETVAL == 2) Then //afecta el saldo positivamente
+						imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+						//afecta el saldo positivamente cuando es 99200 y negativamente cuando es 99205
+						//if (siaf:codigo_siaf == "99200")
+							//post:op_adel_mon = "0"
+							post:op_adel_mon = "1"
+							post:cheq_acreditado = "S"
+						/*else//afecta el saldo negativamente
+							//tengo que mandar una 0 para que reste porque como es cancelacion hace la operacion contraria
+							post:op_adel_mon = "0"
+							//post:op_adel_mon = "D"
+							post:cheq_acreditado = "S"
+						endif*/
+					else//no afecta el saldo
+						imp_adel_mon = imp_adel_mon + 0
+						post:cheq_acreditado = "N"
+					endif
+					break
+				case else //no afecta el saldo 
+					post:imp_adel_mon = imp_adel_mon + 0
+					post:cheq_acreditado = "N"
+					break
+			end select
+		endif
+	endif 
+	break
+case "99245" //CANCELACION DE REEMPLAZO CHEQUE ROBADO
+	//transaccion no disponible, quedó fuera del alcance
+	break
+case else //REEMPLAZO DE CHEQUE ROBADO
+	if (cheq == "G") then
+       	//si el cheque es certificado en plazo
+       	if (plazo == "S") then
+       		select (post:adt_mp_cod)
+				case "00"//afecta el saldo positivamente
+					post:imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+					//post:op_adel_mon = "0"
+					post:op_adel_mon = "1"
+					break
+				case "15"
+				//si es certificado en plazo entonces acredito el saldo en el momento
+				/*Se debe consultar de la tabla MedPago el atributo post:adt_mp_diasatras y verificar que
+			 	la fecha de emisión del cheque + los días del campo post:adt_mp_diasatras 
+			 	sea mayor o igual a la fecha actual para saber si el cheque está en plazo.*/
+					call  csr:date_add (Emision_Fecha[lidx],  post:adt_mp_dias_plazo,  "d",  l_new_date)
+					call csr:date_compare(common:system_date ,l_new_date)
+					/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+					//afecta el saldo positivamente
+					If (RETVAL == 0 || RETVAL == 2) Then
+						imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+						//post:op_adel_mon = "0"
+						post:op_adel_mon = "1"
+						post:cheq_acreditado = "S"
+					else //no afecta el saldo
+						imp_adel_mon = imp_adel_mon + 0
+						post:cheq_acreditado = "N"
+					endif
+					break
+				case else //no afecta el saldo 
+					post:imp_adel_mon = imp_adel_mon + 0
+					post:cheq_acreditado = "N"
+					break
+			end select
+		else//fuera de plazo
+			select (post:adt_mp_cod)
+				case "00" //afecta el saldo positivamente
+					post:imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+					//post:op_adel_mon = "0"
+					post:op_adel_mon = "1"
+					break
+				case "15"
+				//si es certificado en plazo entonces acredito el saldo en el momento
+				/*Se debe consultar de la tabla MedPago el atributo post:adt_mp_diasatras y verificar que
+			 	la fecha de emisión del cheque + los días del campo post:adt_mp_diasatras 
+			 	sea mayor o igual a la fecha actual para saber si el cheque está en plazo.*/
+					call  csr:date_add (Emision_Fecha[lidx],  post:adt_mp_dias_plazo,  "d",  l_new_date)
+					call csr:date_compare(common:system_date ,l_new_date)
+					/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+					If (RETVAL == 0 || RETVAL == 2) Then //afecta el saldo positivamente
+						imp_adel_mon = imp_adel_mon + ImporteBanco[lidx]
+						//post:op_adel_mon = "0"
+						post:op_adel_mon = "1"
+						post:cheq_acreditado = "S"
+					else//no afecta el saldo
+						imp_adel_mon = imp_adel_mon + 0
+						post:cheq_acreditado = "N"
+					endif
+					break
+				case else //no afecta el saldo 
+					post:imp_adel_mon = imp_adel_mon + 0
+					post:cheq_acreditado = "N"
+					break
+			end select
+		endif
+	endif 
+	break
+end select
+
+END SUB
+
+/*******/

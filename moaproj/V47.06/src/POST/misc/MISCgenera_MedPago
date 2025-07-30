@@ -1,0 +1,107 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgenera_MedPago
+* NOMBRE
+*   OFB:post:MISCgenera_MedPago
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenera_MedPago
+    LOCAL agrega_reg LIKE post:SiNo
+
+    /**** Borra MedPago ****/
+    CDS SELECT FROM DSC:MEDIOS_TAB BECOMES DSC:MEDIOS_CTX
+    CDS FINDFIRST DSC:MEDIOS_CTX LOCK
+    CDS DELETE DSC:MEDIOS_CTX ALL
+    CDS UNLOCK DSC:MEDIOS_CTX
+    CDS ENDSELECT DSC:MEDIOS_CTX
+
+    /**** Tabla provincias ****/
+    CDS SELECT FROM DSC:provincias_tbl BECOMES DSC:provincias_ctx
+    CDS FINDFIRST DSC:provincias_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    DO
+       if (lib:err_retval == -801) then
+          break
+       end if
+       CDS EXTRACT DSC:provincias_ctx ALL
+
+       /**** Tabla transac ****/
+       CDS SELECT FROM DSC:transac_tbl BECOMES DSC:transac_ctx \
+       WHERE siaf:adt_tran_afec_efvo == "+" || siaf:adt_tran_afec_efvo == "-"
+       CDS FINDFIRST DSC:transac_ctx LOCK
+       LET lib:err_retval = CDSRETVAL
+       DO
+          if (lib:err_retval == -801) then
+             break
+          end if
+          CDS EXTRACT DSC:transac_ctx ALL
+
+          /**** Tabla UnNegMePag ****/
+          CDS SELECT FROM DSC:adt_UnNegMePag_table BECOMES DSC:adt_UnNegMePag_ctx \
+          WHERE post:adt_unmp_une_cod == siaf:adt_tran_fliatran
+          CDS FINDFIRST DSC:adt_UnNegMePag_ctx LOCK
+          LET lib:err_retval = CDSRETVAL
+          DO
+             if (lib:err_retval == -801) then
+                break
+             end if
+             CDS EXTRACT DSC:adt_UnNegMePag_ctx ALL
+             agrega_reg = "S"
+             if (adt_unmp_res_prv == "+" || adt_unmp_res_prv == "-")
+                CALL CDSbusca_RProvin
+                if (retval == 0 && adt_unmp_res_prv == "-")
+                   agrega_reg = "N"
+                end if
+                if (retval < 0 && adt_unmp_res_prv == "+")
+                   agrega_reg = "N"
+                end if
+             end if
+             if (adt_unmp_res_prd == "+" || adt_unmp_res_prd == "-")
+                CALL CDSbusca_RProduc
+                if (retval == 0 && adt_unmp_res_prd == "-")
+                   agrega_reg = "N"
+                end if
+                if (retval < 0 && adt_unmp_res_prd == "+")
+                   agrega_reg = "N"
+                end if
+             end if
+             if (agrega_reg == "S")
+                CALL CDSagrega_MedPago
+             end if
+
+             CDS FINDNEXT DSC:adt_UnNegMePag_ctx LOCK
+             let lib:err_retval = cdsretval
+          LOOP
+          CDS UNLOCK DSC:adt_UnNegMePag_ctx
+          CDS ENDSELECT DSC:adt_UnNegMePag_ctx
+          /*****Fin UnNegMePag******/
+
+          CDS FINDNEXT DSC:transac_ctx LOCK
+          let lib:err_retval = cdsretval
+       LOOP
+       CDS UNLOCK DSC:transac_ctx
+       CDS ENDSELECT DSC:transac_ctx
+       /******** Fin transac *********/
+
+       CDS FINDNEXT DSC:provincias_ctx LOCK
+       let lib:err_retval = cdsretval
+    LOOP
+    CDS UNLOCK DSC:provincias_ctx
+    CDS ENDSELECT DSC:provincias_ctx
+    /*** Fin provincias ***/
+END SUB
+
+
+/*******/

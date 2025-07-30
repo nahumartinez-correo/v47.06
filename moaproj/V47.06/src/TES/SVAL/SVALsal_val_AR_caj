@@ -1,0 +1,187 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALsal_val_AR_caj
+* NOMBRE
+*   OFB:tes:SVALsal_val_AR_caj
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALsal_val_AR_caj
+	LOCAL superviso LIKE tes:rend_marca_cierre
+	LOCAL total_caja LIKE siaf:importe
+	LOCAL banco_desc LIKE siaf:adt_banco_desc
+    
+	LET cant_cheques = 0
+	LET siaf:cant = 0
+	
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		LET total_caja = siaf:tefectivo_vec[siaf:moneda] + siaf:tefec_inic_vec [siaf:moneda]
+		IF (drv:dt_app == 4) THEN
+			CALL CDSverif_impcomp("S",op:op_tesoro_id)
+		ELSE
+			CALL CDSverif_impcomp("N",op:op_operator_id)
+		END IF
+		SELECT (RETVAL)
+			CASE -1
+				ERRMSG LST:common:errmsg_list,"No hay ningún Valor cargado"
+				RETURN (-1)
+		END SELECT
+	
+		POPUP tes:SCRNconfirma
+		IF (siaf:continua_transaccion == "N" || LASTKEY == RT_ESC) THEN
+			RETURN (-2)
+		END IF
+	/*
+	ELSE
+		Verificar que no fue rechazada, en ese caso no se puede reversar
+		Verifico el estado de los valores 
+		CALL tes:CDScup_dep_rechAR
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+	*/
+	END IF
+    
+	CALL siaf:SVALnivel_sup
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	// Guardo si fue supervisada para marcar las otras
+	IF (TESTFLAG(tlr:tran_flags,supovr_granted)) THEN
+		LET superviso = "S"
+	ELSE
+		LET superviso = "N"
+	END IF
+    
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		LET siaf:nro_cupcheq = 0
+		LET siaf:cheqcuenta = 0
+		LET siaf:cod_banco = 0
+		FLD:drv:INDjnl_rtn = OFB:tes:JNLsal_val_AR
+		UNGETKEY 0x190
+		CALL siaf:MISClleno_modalidad
+		LET drv:INDscr = SCR:tes:SCRNtotal_ch_tp_caj
+		CLEARFIELD post:importe_origen
+		CLEARFIELD siaf:importe
+		CALL tlr:JNLtran
+
+		// le sumo 6 al codigo de transacción porque cada uno de los pases
+		// tiene ese código de transacción
+		IF (drv:dt_app == 4) THEN
+			LET siaf:codigo_siaf = siaf:codigo_siaf + 6        
+			LET siaf:nombre_transac = "SAL VAL.TES. A ADM.REG."
+			MOVE "SVTAR" TO tlr:tran_mnemonic
+			adt_cheqaux_op = op:op_tesoro_id
+			adt_cheqaux_tesoro = "S"
+		ELSE
+			LET siaf:codigo_siaf = siaf:codigo_siaf + 6
+			LET siaf:nombre_transac = "SAL.VAL.CAJA A ADM.REG"
+			MOVE "SAVCAR" TO tlr:tran_mnemonic
+			adt_cheqaux_op = op:op_operator_id
+			adt_cheqaux_tesoro = "N"
+		END IF
+        
+		CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq2_ctx \
+			WHERE tes:adt_cheqaux_suc == op:op_branch_id \
+			&& tes:adt_cheqaux_op == tes:adt_cheqaux_op \
+			&& tes:adt_cheqaux_tesoro == adt_cheqaux_tesoro \
+			&& tes:adt_cheqaux_moneda == siaf:moneda
+
+		CDS FINDFIRST DSC:AuxCheq2_ctx LOCK
+		LET lib:err_retval = CDSRETVAL	
+
+		CALL csr:f_sadroppl DSC:Cheque
+		CALL csr:f_sanewpl DSC:Cheque pic:Cheque
+        
+		/* En post:importe voy acumulando el total */
+		LET post:importe = 0 
+		DO
+			IF (lib:err_retval != 0) THEN
+				BREAK
+			END IF
+		
+			CDS EXTRACT DSC:AuxCheq2_ctx ALL
+		
+			MOVE tes:adt_cheqaux_banco TO siaf:cod_banco
+			MOVE tes:adt_cheqaux_cuenta TO post:codigo_interno
+			MOVE tes:adt_cheqaux_nro TO siaf:nro_cupcheq
+			MOVE tes:adt_cheqaux_importe TO post:importe_origen
+			
+			/**** En algun momento interfaz va a tener que procesar post:codigo_comercio como standar para tarjeta ***************/	
+			/**** y NO post:jnl_opvpi_merchaCode (que es propio de LAPOS)!!! *****************************************************/
+			//Quitar cuando se haga el cambio en INTERFAZ!!!	
+			MOVE tes:adt_cheqaux_comerc TO post:jnl_opvpi_merchaCode
+			//Dejar cuando se haga el cambio en INTERFAZ!!!	
+			MOVE tes:adt_cheqaux_comerc TO post:codigo_comercio
+			/********************************************************************************************************************/
+			
+			MOVE tes:adt_cheqaux_termi TO tes:termi_win
+ 
+			CALL post:MISCconvierto_coti(post:importe_origen)
+			CALL ABMcheques_refresh
+    	    
+			/* Restauro la pantalla de cada uno de los movimientos y dejo
+			que le asigno los totales */
+			LET drv:INDscr = SCR:tes:SCRNsal_val_AR
+			FLD:drv:INDjnl_rtn = OFB:tes:JNLsal_val_AR
+			CLEARFIELD tlr:INDtots_append  
+			CLEARFIELD drv:INDspc_rtn[0]         
+			IF (drv:dt_app == 2 || drv:dt_app == 3) THEN
+				;LET tlr:INDtots_append = lst:siaf:TOTS8760
+				;LET drv:INDspc_rtn[0]  = lst:siaf:TOTS8760
+				LET tlr:INDtots_append = lst:siaf:TOTS8770
+				LET drv:INDspc_rtn[0]  = lst:siaf:TOTS8770
+			END IF
+            
+			LET tes:es_tesoro = "S"
+			IF (superviso == "S") THEN
+				;si la primera fue supervisada , marco todas 
+				SETFLAG tlr:tran_flags,supovr_granted
+			END IF
+
+			UNGETKEY 0x190            
+			CALL tlr:JNLtran
+            
+      CALL CDSexiste_codint(adt_cheqaux_cuenta)  
+
+
+			FPRINT common:csr_string "% 15.15e      %10.10e       %-28.28s%6.6e  %13e", \
+				adt_cheqaux_comerc,adt_cheqaux_nro,post:adt_codint_desc,adt_cheqaux_cuenta,adt_cheqaux_importe
+
+
+			CALL csr:f_saaddpl DSC:Cheque common:csr_string
+			LET post:importe = post:importe + post:importe_origen
+			CDS DELETE DSC:AuxCheq2_ctx
+			CDS UNLOCK DSC:AuxCheq2_ctx
+			CDS FINDNEXT DSC:AuxCheq2_ctx LOCK
+			LET lib:err_retval = CDSRETVAL
+		LOOP
+
+		CLEARFIELD drv:INDjnl_rtn
+		IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN
+			CALL TRANprt_sal_cheqtp
+		END IF
+		CDS UNLOCK DSC:AuxCheq2_ctx
+		CDS ENDSELECT DSC:AuxCheq2_ctx
+	ELSE
+		CALL MISCreverso_sesion
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+	END IF
+    
+END SUB
+
+/*******/

@@ -1,0 +1,105 @@
+/****o* Admision RPP/OFB:post:FVALpesoAdmRPP
+* NOMBRE
+*   OFB:post:FVALpesoAdmRPP
+* DESCRIPCION
+*   Peso Pieza RPP
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   
+* REFERENCIADO POR
+*   SCR:post:SCRNadmisionRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpesoAdmRPP
+    LOCAL peso_limi LIKE peso_en_grs
+
+
+ 		
+    IF (post:adt_serv_usa_caja == "S") THEN
+        IF (post:tipo_caja_admRPP.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL TIPO DE CAJA.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+        IF (post:destino_admRPP.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL DESTINO.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+    END IF
+
+    
+		IF ((currentfield.id == peso_admRPP_grs.id || currentfield.id == peso_admRPP_kgs.id) && currentfield == 0)
+        MSGBOX "DEBE PESAR EL ENVIO.",0x00,"ERROR"
+        RETURN (-2)
+    ELSE
+        
+        /*Antes de entrar a buscar el precio por el peso, controlo la tolerancia que
+         tiene el servicio para descontarla del peso y obtener la tarifa adecuada.
+         Solamente esto es valido para aquellos productos ENCOMIENDAS que tienen como unidad de
+         medida KGS, por eso utilizo el campo peso_en_kgs y no en grs. Diego Priore 25/02/2000*/
+
+        LET post:adt_serv_tole = 0
+        
+        CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx WHERE \
+        post:adt_serv_serv == serv_admRPP_cod
+        CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+        IF (CDSRETVAL == 0)
+             CDS EXTRACT DSC:Servicio_ctx post:adt_serv_tole adt_serv_req_ad adt_serv_max_serv adt_serv_limite post:adt_serv_umstd  adt_serv_calc_rv adt_servcaja_peso
+        END IF
+        
+        IF (adt_serv_req_ad == "S" && common:br_aduana == "N") THEN
+              peso_limi = post:adt_serv_max_serv * 1000
+        ELSE
+             peso_limi = post:adt_serv_limite * 1000
+        ENDIF
+
+        /* Calculo tolerancia - Maricel 6/7/2000 */
+        peso_limi = peso_limi + ((peso_limi * adt_serv_tole) / 100)
+
+        IF (post:adt_serv_umstd == "KGS" || post:adt_serv_umstd == "CMS" || \
+            post:adt_serv_umstd == "UNI") THEN
+            /*****************************************************/
+            /* Si la Unidad de Medida del Servicio es Kilos     */
+            /* paso el peso de la pieza a Gramos.           */
+            /*****************************************************/
+            post:peso_admRPP_grs = post:peso_admRPP_kgs * 1000
+        END IF
+
+        //determino peso máximo permitido para estos productos
+        /*********************50076************************************/
+        IF (post:adt_serv_calc_rv == "S" && adt_servcaja_peso > 0)    
+            CALL post:MISCrest_peso_cprop(peso_admRPP_kgs)
+            if (retval < 0)
+                CLEARFIELD peso_admRPP_grs
+                CLEARFIELD peso_admRPP_kgs
+                REFRESH peso_admRPP_grs
+                REFRESH peso_admRPP_kgs
+                return -2
+            end if
+        ELSE
+            IF (post:peso_admRPP_grs > peso_limi) THEN
+                MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+               /* Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009*/
+                CLEARFIELD peso_admRPP_grs
+                CLEARFIELD peso_admRPP_kgs
+                REFRESH peso_admRPP_grs
+                REFRESH peso_admRPP_kgs             
+                RETURN (-2)
+            END IF
+        END IF
+        /****************fin 50076 *************************************/
+    END IF
+    setvaldone peso_admRPP_grs
+    setvaldone peso_admRPP_kgs
+
+    RETURN (0)
+	
+END SUB
+/*******/

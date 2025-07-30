@@ -1,0 +1,109 @@
+/****o* Notas de Credito CM/OFB:post:CDSArmoCab_99515
+* NOMBRE
+*   OFB:post:CDSArmoCab_99515
+* DESCRIPCION
+*   Rutina que genera la transacción 9915 (Anulación de NC a CM)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSPasoAnulNC_CM
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSArmoCab_99515(secuencia,hora)
+	siaf:codigo_siaf = 99515
+	tlr:jnl_branch = common:sucursal_activa
+	tlr:jnl_operator = op:op_operator_id
+	tlr:jnl_date = common:system_date
+	tlr:jnl_time = hora
+	tlr:jnl_hora_ult_act = hora
+	tlr:jnl_bus_date = common:system_date
+	tlr:jnl_sequence = secuencia
+	siaf:importe = 0
+	siaf:moneda = 0
+ 	post:presNroNew = 0
+ 	clearfield post:medio_pago_desc
+ 	clearfield post:reversaCaidaEnVuelo
+ 	PreAUltTrn = 1
+ 	PreAUltPag = 1
+
+ 	// [PAW] --> Calculo Documento Fiscal
+ 	call CDStraeDocAnulManu
+ 	adt_comp_fisc_anula = substr(adt_comp_fisc_anula,0,4)
+ 	Tipo_Formulario = substr(DocInic, 0, 1)
+ 	select (adt_comp_fisc_anula)
+ 	case "NCFA"
+		if (Tipo_Formulario == FACTURA_A)
+	    	 DocFiscal = "FACTURA A"
+		else
+			Tipo_Formulario = FACTURA_B
+     		DocFiscal = "FACTURA B"
+	    end if
+	    break
+	case "NCRE"
+		Tipo_Formulario = TICKET
+     	DocFiscal = "TICKET"
+		break
+	end select
+
+	fprint tlr:jnl_sequence,"%04.04d",tlr:jnl_sequence
+	jnl_sequence_dire = "D"
+	tlr:jnl_tran_name = "ANULACION DE TRANSACCIONES"
+	tlr:tran_mnemonic = "ANTRX"
+	estAnul = "R1_"
+	CDS SELECT FROM DSC:NC_TAB BECOMES DSC:NC_CON where \
+	tlr:jnl_branch == fld:tlr:jnl_branch && \
+	tlr:jnl_operator == fld:tlr:jnl_operator && \
+	tlr:jnl_date == fld:tlr:jnl_date && \
+	tlr:jnl_time == fld:tlr:jnl_time && \
+	tlr:jnl_bus_date == fld:tlr:jnl_bus_date && \
+	tlr:jnl_sequence == fld:tlr:jnl_sequence && \
+	post:jnl_sequence_dire == fld:post:jnl_sequence_dire
+	Cds ClearBuffer DSC:NC_CON
+   	CDS APPEND DSC:NC_CON \
+   	tlr:jnl_branch 	tlr:jnl_operator tlr:jnl_date \
+	tlr:jnl_time tlr:jnl_bus_date \
+	tlr:jnl_sequence jnl_sequence_dire siaf:codigo_siaf \
+	estAnul revTotal PresNro tlr:jnl_hora_ult_act
+	CDS APPEND DSC:NC_CON \
+	TranAnul_vec[0][0] TranAnul_vec[1][0] TranAnul_vec[2][0] TranAnul_vec[3][0] \
+	TranAnul_vec[4][0] TranAnul_vec[5][0] TranAnul_vec[6][0] TranAnul_vec[7][0] \
+	TranAnul_vec[8][0] TranAnul_vec[9][0] TranAnul_vec[10][0] TranAnul_vec[11][0] \
+	TranAnul_vec[12][0] \
+	Modo as adt_Modo tlr:jnl_tran_name tlr:tran_mnemonic ovr:ovr_sup_id
+	CDS APPEND DSC:NC_CON \
+	TranAnul_check siaf:importe\
+	DocFiscal post:presNroNew siaf:moneda post:medio_pago_desc
+   	// [PAW] --> Agrego un par de campos a la cabecera.
+	clearfield cantPagRev
+	docAnulado = DocInic
+	post:contador_directas = 2
+	post:presNewObten = "N"
+	CDS APPEND NC_CON post:adt_PreDNroTrn PreAUltTrn PreAUltPag cantPagRev 	\
+					  Tipo_Formulario docAnulado entraEnUnaPag 	cantidad2	\
+					  importe_sesion cadenaErr DocInic DocFin adt_DocInic   \
+					  adt_DocFin revTicket presNewObten contador_directas	\
+					  auxFactConvAnt auxDescConvAnt auxFactConvNue 			\
+					  auxDescConvNue array totCaptNue array totCaptAnt		\
+					  array monCaptNue array monCaptAnt journal_flags		\
+					  giros:PresNro_canc giros:seq_giros_cancel \
+					  post:anula_reemp post:VentaUP_Diferida \
+					  ConvenioSesion VentaCdcto_CM
+					  
+	CDS APPEND NC_CON anula_poliza ExcepSesion ExcepProducto  post:reversaCaidaEnVuelo \
+					  ModalidadAT ModalidadCC ModalidadCD ConsumoAnticipo \
+					  OperacionCob Imp_CobroDif OperacionInt anula_pago_on_site
+					  
+	CDS APPEND NC_CON OperacionAut MPcheque
+   	CDS INSERT DSC:NC_CON NOLOCK
+	Cds endselect DSC:NC_CON
+END SUB
+
+/*******/

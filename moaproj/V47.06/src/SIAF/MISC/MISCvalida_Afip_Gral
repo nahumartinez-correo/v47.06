@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCvalida_Afip_Gral
+* NOMBRE
+*   OFB:siaf:MISCvalida_Afip_Gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCvalida_Afip_Gral
+    LOCAL LMensaje    LIKE common:csr_string
+    LOCAL LEncabeza   LIKE common:csr_string
+    LOCAL fecha_aux   LIKE common:system_date
+    LOCAL periodo_aux LIKE siaf:per_fis_afipmmaaaa
+    LOCAL LPeriodo    LIKE siaf:per_fis_afipmmaaaa
+    LOCAL LMeses      LIKE siaf:idx
+    LOCAL LFechaMax   LIKE common:system_date
+    LOCAL LPrefijo    LIKE common:local_numeric
+
+    //validaciones generales.
+
+    //encabezado para los mensajes de error de validacion.
+    FPRINT LEncabeza "La relacion impuesto-concepto-subconcepto"
+
+    //valida que exista el formulario-impuesto-concepto-subconcepto en
+    //la tabla FormICSCAfip.
+    CALL siaf:CDSFormICSCAfip_load
+    IF (RETVAL < 0) THEN
+        FPRINT LMensaje "%s es invalida." LEncabeza
+        MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+        RETURN (-2)
+    END IF
+
+    //valida fecha alta.
+    fecha_aux = siaf:adt_fecha_alta
+    CALL csr:trimfield(fecha_aux)
+    IF (fecha_aux.numchars == 0 || fecha_aux == 0) THEN
+    	FPRINT LMensaje "%s no esta vigente." LEncabeza
+    	MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+        RETURN (-2)    
+    END IF
+    CALL csr:date_compare(fecha_aux,common:system_date)
+    IF (RETVAL == 1) THEN
+    	FPRINT LMensaje "%s\ntiene fecha de alta mayor a la fecha actual." LEncabeza
+    	MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+        RETURN (-2)
+    END IF
+
+    //valida fecha baja.
+    fecha_aux = siaf:adt_fecha_baja
+    CALL csr:trimfield(fecha_aux)
+    IF (fecha_aux.numchars > 0 && fecha_aux > 0) THEN
+        CALL csr:date_compare(fecha_aux,common:system_date)
+        IF (RETVAL == 2) THEN
+    	    FPRINT LMensaje "%s\ntiene fecha de baja menor a la fecha actual." LEncabeza
+    	    MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+            RETURN (-2)
+        END IF
+    END IF
+
+    //convierte fecha periodo fiscal de pantalla a formato yyyymm.
+	FPRINT LPeriodo, "%s%s" ,SUBSTR(per_fis_afipmmaaaa,2,4) ,SUBSTR(per_fis_afipmmaaaa,0,2)
+
+    //valida periodo minimo
+    periodo_aux = siaf:adt_periodo_min
+    CALL csr:trimfield(periodo_aux)
+    IF (periodo_aux.numchars > 0 && periodo_aux > 0) THEN
+        IF (periodo_aux > LPeriodo) THEN
+    	    FPRINT LMensaje "%s tiene\nperiodo minimo mayor al periodo fiscal seleccionado." \
+    	    LEncabeza
+    	    MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+            RETURN (-2)
+        END IF    
+    END IF
+
+    //valida periodo maximo
+    periodo_aux = siaf:adt_periodo_max
+    CALL csr:trimfield(periodo_aux)
+    IF (periodo_aux.numchars > 0 && periodo_aux > 0) THEN
+        IF (periodo_aux < LPeriodo) THEN
+    	    FPRINT LMensaje "%s tiene\nperiodo maximo menor al periodo fiscal seleccionado." \
+    	    LEncabeza
+    	    MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+            RETURN (-2)
+        END IF
+    END IF
+
+    //valida periodo maximo delta (meses)
+    // LFechaMax <= CALCULO HOY + adt_periodo_delta  (yyyymmdd)
+    LMeses = siaf:adt_periodo_delta
+    CALL csr:date_add(common:system_date, LMeses, "m", LFechaMax)
+    IF (RETVAL != 0 ) THEN
+    	FPRINT LMensaje "%s\ntiene periodo maximo (delta) no valido." \
+    	LEncabeza
+    	MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+        RETURN (-2)
+    END IF
+    //convierte fecha periodo maximo delta a formato yyyymm.
+	FPRINT periodo_aux, "%s%s" ,SUBSTR(LFechaMax,0,4) ,SUBSTR(LFechaMax,4,2)
+	;LPeriodo contiene fecha periodo fiscal de pantalla a formato yyyymm.
+	IF (periodo_aux < LPeriodo) THEN
+    	FPRINT LMensaje "%s tiene periodo\nmaximo (delta) menor al periodo fical seleccionado." \
+    	LEncabeza
+    	MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+        RETURN (-2)
+    END IF
+
+    LPrefijo = SUBSTR(siaf:cuit_empresa,0,2)  //prefijo cuit
+    //valida cuit segun persona fisica
+    IF ((siaf:adt_persona_fisica == "N") && \
+        (LPrefijo == 20 || LPrefijo == 23 || \
+         LPrefijo == 24 || LPrefijo == 27)) THEN
+		 FPRINT LMensaje "%s\nno permite persona fisica. Cuit invalido." \
+    	 LEncabeza
+    	 MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+         RETURN (-2)
+	END IF
+
+    //valida cuit segun persona juridica.
+    IF ((siaf:adt_persona_juridica == "N") && \
+        (LPrefijo == 30 || LPrefijo == 33 || LPrefijo == 34)) THEN
+		 FPRINT LMensaje "%s\nno permite persona juridica. Cuit invalido." \
+    	 LEncabeza
+    	 MSGBOX LMensaje,0x00,"MOSAIC ERROR"
+         RETURN (-2)
+	END IF
+
+END SUB
+
+/*******/

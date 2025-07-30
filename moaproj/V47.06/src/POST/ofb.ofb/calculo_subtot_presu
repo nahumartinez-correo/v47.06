@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:calculo_subtot_presu
+* NOMBRE
+*   OFB:post:calculo_subtot_presu
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+//////////////////////////////////////////////////////////////////
+// Esta rutina llama a todas los OFB's que anteriormente se lla_//
+// maban en la post:PCOLconfirma_presu, y que calculas los im_  //
+// puestos, retenciones, descuentos, etc., llegando asi a con_  //
+// formar el total del presupuesto.                             //
+// Hay valores que faltan (ej: interes por financiacion, en el  //
+// caso de UP con cheque diferido), pero bue... es casi el im_  //
+// porte real, no?                                              //
+///////////////////////////////////////// FGB 11.11.2002 /////////
+SUB post:calculo_subtot_presu
+local l_fecha	like post:fecha
+local l_opera	like post:op_operator_id
+
+let l_fecha = post:fecha
+let l_opera = post:op_operator_id
+move common:system_date to post:fecha
+move op:op_operator_id to post:op_operator_id
+
+	// fgb: cuando estoy en la reversa, no debe hacer nada.
+	if (testflag(tlr:tran_flags,correction) || testflag(lib:state_flags,scan_mode)) then
+		return
+	endif
+
+    if (estado_presu == 1) then
+    	//cgw:limpia y refresca campo que es usado como subtotal en la grilla de presupuesto.
+        clearfield post:Total_importe
+	    refresh post:Total_importe
+	    //Para que no quede sucio al finalizar una sesión o una anulación de comprabantes
+	    clearfield post:PresNro
+	    refresh post:PresNro
+	endif
+
+	//if (post:estado_presu == 1 || post:estado_presu == 4)
+	if ((estado_presu == 1) || (post:estado_presu == 4 && plataf:verify_session != VALUE_CHANGED)) then
+		return
+	endif
+
+//	IF (estado_presu == 2 || estado_presu == 3)
+//		//Borro de la PresuDet las tx de impuestos para que las vuelva a generar de cero
+//		CALL CDSdel_imp_PreDet
+//	END IF
+
+	// Cálculo de bonificaciones locales a partir de los registros marcados de la PresuDet.
+	call MISCcalcBonifLocal(BONIF_SIN_JOURNAL, BONIF_TODAS, BONIF_TODAS)
+
+	if (!bInhibirUP)	// La bonificacionLocal puede inhibir la bonificacion UP
+		// calculo de importe de la bonificacion de la Venta para UP
+		// cgw:se verifica el tipo cliente por si se pierde,si es CLIUP calcula bonif.VtaUP
+		CALL post:MISCGeneroBonifUP
+	else
+		// borrar si existió la bonificación.
+		call post:MISCreversaUP
+	endif
+
+	// calculo de sellados //99029
+	call CDSImpSellPresu
+
+	;fgb: si la CatIva se pierde, no actualiza los Acrec. y Percep.
+	call post:CDSPresu_load_Iva
+	// calculo de acrecentamientos y percepciones
+	call MISCagregTrnPrec //99028
+
+	// calculo de ingresos brutos //99027
+	call MISCobt_med_pag_pres
+
+	// recalcula el total de la sesion...
+	;call CDSTotSesionPag
+	call CDStot_ses_presudet
+
+	INIT 22,1		 
+	//cgw:SC 50170 (Redondea a dos decimales)
+	let post:Total_importe = post:importe
+	INIT 22,0
+
+	refresh post:Total_importe
+
+	// avisa al operador si consumio la excepcion (Venta UP Diferida)
+	call MISCexcepConsumida
+	
+	//MSG ORDEN DE COMPRA
+	CALL MISCmsg_orden_compra
+	
+	//Actualizo la PresuAct con los importes recalculados.
+	CALL post:CDSadt_presuact_save
+
+// FGB (patch): para q' no arrastre los importes con Iva y sin Iva de las trxs.
+// MFM (parch2) : para que no quede sucio el campo que pide supervisión
+clearfield post:ImporteConIva
+swapdup post:ImporteConIva
+clearfield post:ImporteConIva
+clearfield post:ImporteSinIva
+swapdup post:ImporteSinIva
+clearfield post:ImporteSinIva
+clearfield siaf:ovr_sup_siaf_id
+swapdup siaf:ovr_sup_siaf_id
+clearfield siaf:ovr_sup_siaf_id
+// patch's end
+
+let post:fecha = l_fecha
+let post:op_operator_id = l_opera
+
+END SUB
+
+/*******/

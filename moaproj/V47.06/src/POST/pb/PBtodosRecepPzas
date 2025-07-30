@@ -1,0 +1,105 @@
+/****o* Expedicion/OFB:post:PBtodosRecepPzas
+* NOMBRE
+*   OFB:post:PBtodosRecepPzas
+* DESCRIPCION
+*   Rutina que marca/desmarca todas las piezas en la TX De recepcion de piezas de otro contenedor.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:BUTrecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBtodosRecepPzas
+    LOCAL op LIKE post:Operador_id
+    
+    let drv:button = 1 /* Combo asoc al cpo. Det. Cont. */
+    call drv:but_disable
+
+    let drv:button = 2 /* Marca - Desmarca */
+    call drv:but_disable
+    
+    let drv:button = 3 /* Todos */
+    call drv:but_disable
+      
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+        WHERE MarcaBorrado == "*"                            && \
+              op:op_operator_id  == op:op_operator_id
+
+    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+    IF (CDSRETVAL == 0) THEN
+        /*Tengo que desmarcar todos*/
+        LET MarcaBorrado = " "
+    ELSE
+        /*Tengo que marcar todos*/
+        LET MarcaBorrado = "*"
+        CDS UNLOCK DSC:post:DetTmp_ctx
+        CDS ENDSELECT DSC:post:DetTmp_ctx
+        CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+                   WHERE op:op_operator_id == op:op_operator_id
+        CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+    END IF
+    DO    
+        IF (CDSRETVAL == -801) THEN
+            CDS UNLOCK DSC:post:DetTmp_ctx
+            CDS ENDSELECT DSC:post:DetTmp_ctx
+            BREAK
+        END IF
+        CDS EXTRACT DSC:post:DetTmp_ctx \
+            post:Operador_id into op, \
+            tlr:jnl_date \
+            post:Pieza_id \
+            post:jnl_corteop_cod \
+            post:jnl_grucorte_cod \
+            post:jnl_apertura_cod \
+            post:es_transf_forzada
+        
+        IF (post:es_transf_forzada != "S") THEN
+            cds clearbuffer DSC:post:DetTmp_ctx
+            CDS APPEND DSC:post:DetTmp_ctx FLD:post:MarcaBorrado
+            CDS UPDATE DSC:post:DetTmp_ctx LOCK
+        
+        
+            //actualizo campo de detalle
+            fprint  post:DetalleContenidoGC2, "%-14.14s %-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+                    op, \
+                    tlr:jnl_date,\
+                    post:jnl_grucorte_cod \
+                    post:jnl_apertura_cod \
+                    post:Pieza_id \
+                    post:MarcaBorrado
+
+            //actualizo campo contador de piezas
+            IF (MarcaBorrado == " ") THEN
+                LET post:cant_pzas_recibidas = post:cant_pzas_recibidas + 1
+            ELSE
+                LET post:cant_pzas_recibidas = post:cant_pzas_recibidas - 1
+            END IF
+            refresh cant_pzas_recibidas
+        END IF
+        
+        CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+        
+    LOOP
+    
+    refresh DetalleContenidoGC2
+    
+    let drv:button = 1 /* Combo asoc al cpo. Det. Cont. */
+    call drv:but_up_enable
+
+    let drv:button = 2 /* Marca - Desmarca */
+    call drv:but_up_enable
+    
+    let drv:button = 3 /* tODOS */
+    call drv:but_up_enable
+
+END SUB
+
+/*******/

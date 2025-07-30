@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCmarca_corregida
+* NOMBRE
+*   OFB:siaf:MISCmarca_corregida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCmarca_corregida
+	local Interfaz_aux like post:ProcesaInterfaz
+	local varl_fecha like tlr:bus_date
+	
+	if (!post:FechaAnt) then
+		varl_fecha = tlr:bus_date
+	else
+		varl_fecha = post:fecha_factCM
+	end if
+	
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:CONjnl_write WHERE  \
+tlr:jnl_branch == FLD:op:op_branch_id && tlr:jnl_operator ==  \
+FLD:op:op_operator_id && tlr:jnl_bus_date == varl_fecha &&  \
+tlr:jnl_sequence == FLD:tlr:sequence_corr && \
+tlr:jnl_time == fld:tlr:hora_corr
+    CDS FINDFIRST DSC:CONjnl_write LOCK
+    IF (CDSRETVAL != 0) THEN
+      RETURN
+    END IF
+    FPRINT tlr:sequence,"%.*d",tlr:sequence.LENGTH,tlr:sequence
+    CDS CLEARBUFFER DSC:CONjnl_write
+
+    if ( (siaf:codigo_siaf == 99060 || testflag(giros:tran_send_mode,trat_cheques) ) && \
+	 ( hcomm:INDhost_sndrt != 0 && hcomm:INDhost_rcvrt != 0  ) )
+		if ( hcomm:tran_status < HOST_REJECTED )
+    			FPRINT tlr:aux_sequence,"%.*d",\
+			tlr:aux_sequence.LENGTH,tlr:aux_sequence
+   			CDS APPEND DSC:CONjnl_write FLD:tlr:aux_sequence AS  \
+			FLD:tlr:jnl_sequence_corr 
+		end if
+    else
+    		CDS APPEND DSC:CONjnl_write FLD:tlr:sequence AS  \
+		FLD:tlr:jnl_sequence_corr 
+    end if
+
+	if (testflag(giros:flags_back,cancelacion)) then
+		giros:cancelacion = "TRANCANCELADA"
+    		if ( post:jnl_flia_tran == "CSM" )
+			if (hcomm:tran_status == HOST_ACCEPTED)
+				siaf:mensaje = "GIRO EMITIDO ANULADO"
+			else
+		    		siaf:mensaje = "ANULACION GIRO EMITIDO CAIDA EN VUELO"
+			end if
+		end if
+
+	    	CDS APPEND DSC:CONjnl_write \
+		    FLD:siaf:mensaje \
+		    FLD:giros:cancelacion
+	endif
+	CLEARFIELD giros:cancelacion
+	
+    /*Se agrega la actualización del campo post:ProcesaInterfaz en caso de que la 
+    transacción reversada ya no sea la que queda activa para SEPSA (Sólo para transacciones
+    de Pago Fácil y AFIP!!!). Esto se realiza sólo en Reimpresiones o en 
+    Anulaciones en las que la transacción no haya sido marcada. Sólo en estos casos el 
+    campo viene con valor "N", entonces, pongo también el registro reversado en "N" para poder 
+    identificar la situación. Ver rutina post:MISCActInterfaz - Gabriel Falciola*/
+    if (post:ProcesaInterfaz == "N")
+    	Interfaz_aux = "N"
+    	CDS APPEND DSC:CONjnl_write Interfaz_aux as post:ProcesaInterfaz
+    	clearfield post:ProcesaInterfaz
+    end if
+    	
+    CDS UPDATE DSC:CONjnl_write LOCK
+    CDS UNLOCK DSC:CONjnl_write
+    CDS ENDSELECT DSC:CONjnl_write
+    
+	// MARTIN AGREGA PARA SAP..
+        If (post:NotaCredito != "S")
+		if (post:cli_tipo == 1 || (siaf:codigo_siaf == 99023 && \
+			post:Tipo_Formulario == 3) || \
+			siaf:codigo_siaf == 99150 || siaf:codigo_siaf == 99060)
+			call siaf:MISCmarca_corr_sap
+		endif
+	endif
+END SUB
+
+
+
+/*******/

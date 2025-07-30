@@ -1,0 +1,82 @@
+/****o* Oficios Judiciales/OFB:siaf:CDSoficio_DelReg
+* NOMBRE
+*   OFB:siaf:CDSoficio_DelReg
+* DESCRIPCION
+*   Elimina el registro correspondiente de la OfiJudi segun el item seleccionado de la grilla del presupuesto que esta grabado en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:PBdel_txs_sel
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2097
+*		SC50368
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSoficio_DelReg
+	LOCAL l_retval_ofijudi LIKE lib:err_retval
+	LOCAL l_retval_presudet LIKE lib:err_retval
+	LOCAL l_return LIKE lib:err_retval
+	LOCAL l_codigo_siaf LIKE siaf:codigo_siaf
+	LOCAL l_oju_fecha LIKE siaf:adt_oju_fecha
+	LOCAL l_oju_hora LIKE siaf:adt_oju_hora
+	LOCAL l_oju_operator_id LIKE siaf:adt_oju_operator_id
+	LOCAL l_oju_presnro LIKE siaf:adt_oju_presnro
+	
+	l_return = -2
+
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta  \
+						WHERE (post:fecha == FLD:common:system_date) && \
+							(post:op_operator_id == fld:op:op_operator_id) && \
+							(post:PresNro == fld:post:PresNro) && \
+							(post:PreDNroTrn == fld:post:PreDNroTrn)
+		
+	CDS FINDFIRST DSC:post:CONPresuDeta NOLOCK
+	LET l_retval_presudet = CDSRETVAL
+	
+	IF (l_retval_presudet == 0) THEN
+		//Extraigo el codigo siaf para saber si es Oficio Judicial
+		CDS EXTRACT DSC:post:CONPresuDeta siaf:codigo_siaf INTO l_codigo_siaf
+			
+		IF (CDSRETVAL == 0) THEN
+			IF (l_codigo_siaf == 7210) THEN
+				//Extraigo el resto de los campos necesarios para hacer la busqueda en la tabla OfiJudi
+				CDS EXTRACT DSC:post:CONPresuDeta \
+							post:fecha INTO l_oju_fecha \
+							siaf:adt_oju_hora INTO l_oju_hora \
+							post:op_operator_id INTO l_oju_operator_id \
+							post:PresNro INTO l_oju_presnro
+							
+				//Verifico si exite el registro en al OfiJudi
+				CDS SELECT FROM DSC:siaf:OfiJudi_tbl BECOMES DSC:siaf:OfiJudi_ctx \
+						WHERE	siaf:adt_oju_fecha == l_oju_fecha \
+						&& siaf:adt_oju_hora == l_oju_hora \
+						&& siaf:adt_oju_operator_id == l_oju_operator_id \
+						&& siaf:adt_oju_presnro == l_oju_presnro 
+						
+				CDS FINDFIRST DSC:siaf:OfiJudi_ctx LOCK
+				l_retval_ofijudi = CDSRETVAL
+				
+				IF (l_retval_ofijudi == 0) THEN		
+					CDS DELETE DSC:siaf:OfiJudi_ctx
+					l_return = 0
+				END IF	
+				
+				CDS UNLOCK DSC:siaf:OfiJudi_ctx
+				CDS ENDSELECT DSC:siaf:OfiJudi_ctx		
+		  END IF
+		END IF	
+	END IF
+		
+	CDS ENDSELECT DSC:post:CONPresuDeta
+	
+	RETURN (l_return)		
+
+END SUB   
+
+/*******/

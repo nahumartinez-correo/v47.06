@@ -1,0 +1,106 @@
+/****o* Tratamiento de Cheques/OFB:post:SVALrecepChk
+* NOMBRE
+* OFB:post:SVALrecepChk
+* DESCRIPCION
+* Rutina SVAL de Recepcion de Cheques Rechazados/Observados.
+* ENTRADAS
+* SALIDAS
+* RETURN (-2): Faltan ingresar datos del cliente.
+* RETURN (-2): Rechazo del Host de la consulta de la cuenta del cliente corporativo, o ESC del popup que muestra esta cuenta.
+* RETURN (-2): Cheque no se puede recepcionar.
+* REFERENCIADO POR
+* LST:post:TRAN99190
+* SOURCE
+*/
+#include "postSVAL.h"
+
+SUB post:SVALrecepChk
+    LOCAL retval_estado  LIKE lib:err_retval
+    LOCAL Lclimed_tipo   LIKE post:climed_tipo
+    LOCAL Lclimed_numero LIKE post:climed_numero
+
+    if (post:Recep_CliTipo != CLIUP && post:Recep_CliTipo != CLIMED && (post:adt_TipoDoc_tipo.numchars == 0 || post:CloCuit.numchars == 0)) then
+	MSGBOX "Faltan ingresar datos del cliente.",0x00,"ERROR"
+	RETURN -2
+    endif
+
+    //cgw:realiza consulta al Host del numero de cuenta para cliente corporativo.
+    clearfield post:CliCod_aux
+    if (Recep_CliTipo == 1) then
+    	//cgw: reserva variables para luego recuperar despues de ser instanciadas para la consulta al Host
+        //     de la cuenta del cliente corporativo.
+        Lclimed_tipo = post:climed_tipo
+        Lclimed_numero = post:climed_numero
+        post:climed_tipo = 3
+        post:climed_numero = post:CloCuit
+        call MISCctacte_nro_cta
+        if (retval < 0) then
+            post:climed_tipo = Lclimed_tipo
+            post:climed_numero = Lclimed_numero
+	    return (-2)
+        end if
+        post:climed_tipo = Lclimed_tipo
+        post:climed_numero = Lclimed_numero
+    else
+        // para el resto de los clientes...
+	clearfield post:CliCod_aux
+    endif
+
+    //setea campos post:climed_tipo y post:climed_numero
+    CALL MISCcliente_nro(post:Recep_CliTipo,"H") //cgw: Modo Host
+    /*Verifico que el cheque que se desea recepcionar ya no exista en la TesoCheq*/
+    CALL post:CDSobt_estado_chk(siaf:moneda,cod_banco,cuenta,nro_cheque)
+    IF (RETVAL == 0)
+	SELECT (tes:teso_cheq_estado)
+	      CASE "O"
+		      MSGBOX "Este Cheque no se puede Recepcionar porque lo tiene el Operador",0x00,"Error"
+		      BREAK
+	      CASE "T"
+		      MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en Tesoro",0x00,"Error"
+		      BREAK
+	      ;CASE "B"
+		      ;MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en Caja Buzón",0x00,"Error"
+		      ;BREAK
+	      CASE " "
+		      MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en un Pase",0x00,"Error"
+		      BREAK
+	      CASE "P"
+		      MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en Cuenta Propia",0x00,"Error"
+		      BREAK
+	      ;CASE "R"
+		      ;MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en Cuenta Recaudadora",0x00,"Error"
+		      ;BREAK
+	      CASE "F"
+		      MSGBOX "Este Cheque no se puede Recepcionar porque se encuentra en un Pase Forzado",0x00,"Error"
+		      BREAK
+	      /*CASE "S"
+		      MSGBOX "El Cheque se encuentra en Tesorería Provincial",0x00,"Error"
+		      BREAK*/
+	      /*CASE "A"
+		      MSGBOX "El Cheque se encuentra en Administración Regional",0x00,"Error"
+		      BREAK*/
+	      CASE ELSE
+		      retval_estado = 1
+		      BREAK
+	END SELECT
+	IF (retval_estado != 1)
+	    RETURN (-2)
+	END IF
+    END IF
+    //Calculo el STAN
+    IF (!testflag(tlr:controla_firma,cancelacion))
+	Call post:CDSobtiene_secuen("STAN")
+	giros:hora_viaje = siaf:hora
+	giros:dia_viaje = siaf:fecha
+    END IF
+    giros:codigo_procesamiento = 997009
+    /* MLD Esta Tx afecta totales por lo que debo afectar siaf:importe y post:importe origen */
+
+    if (!testflag(tlr:tran_flags,correction))
+	post:importe_origen = post:monto_chk_dif
+	post:CliRaz = post:CliUP
+        call post:MISCconvierto_coti(post:importe_origen)
+    end if
+
+END SUB
+/*******/

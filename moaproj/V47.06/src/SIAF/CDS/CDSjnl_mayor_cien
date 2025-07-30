@@ -1,0 +1,853 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSjnl_mayor_cien
+* NOMBRE
+*   OFB:siaf:CDSjnl_mayor_cien
+* DESCRIPCION
+* 	Buscar en el JOURNAL, estableciendo otro contexto, las TRAN que tengan
+* 	estado mayor a HOST_REJECTED (100), y menor a RECH_REV_AUTO(111).	    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSjnl_mayor_cien
+
+	// Guardar el numero de sequence de la transaccion
+	// en curso, para que no intente recuperarla.
+	local aux_codigo_proc like giros:codigo_procesamiento
+	local aux_usr_call    like giros:usr_call_center
+	local aux_codseq_nro  like post:adt_codseq_nro
+	local aux_dia_viaje   like giros:dia_viaje
+	local aux_hora_viaje  like giros:hora_viaje
+	local aux_importe     like siaf:importe
+	local aux_nro_ctrol   like giros:cons_nro_ctrol
+	local aux_hdr_giros   like giros:clave_hdr_giros
+	local aux_hdr_prev    like giros:clave_hdr_prev
+	local aux_serie       like giros:Serie_fld
+	local aux_nrogiro     like giros:NroGiro_fld
+	local aux_digito      like giros:digito_fld
+	local aux_nuevo_giro  like giros:nuevo_num_giro_fld
+	local aux_nuevo_dig   like giros:nuevo_dig_fld
+	local aux_vieja_serie like giros:vieja_serie_fld
+	local aux_viejo_giro  like giros:viejo_num_giro_fld
+	local aux_viejo_dig   like giros:viejo_dig_fld
+	local aux_flia_giro   like giros:flia_giro_fld
+	local aux_consulta    like giros:consulta
+	local aux_nro_auto    like post:nro_autorizac
+	local aux_msg095      like post:datos_msg095
+	local aux_msg096      like post:datos_msg096
+	local aux_msg097      like post:datos_msg097
+	local aux_msg098      like post:datos_msg098
+	local aux_msg099      like post:datos_msg099
+	local aux_msg105      like post:datos_msg105
+	local aux_msg106      like post:datos_msg106
+	local aux_msg107      like post:datos_msg107
+	local aux_msg108      like post:datos_msg108
+	local aux_msg110      like post:datos_msg110
+	local aux_msg111      like post:datos_msg111
+	local aux_ordcompra   like post:adt_oc_nro
+	local aux_diasfact_oc like post:adt_oc_dias_fact
+	local aux_desc_oc     like post:adt_oc_desc
+	local aux_consumo_oc  like post:consumo_OC
+	local aux_imp_dif     like post:Imp_FactDif
+	local aux_clearing    like tes:clearing
+	
+	local pay_indicator_aux like giros:pay_indicator
+	local money_key_aux     like giros:money_key
+
+	//Para cancelaciones
+	local aux_cod_canc like giros:cod_tran_canc
+	
+	//Para recuperacion de caidas por el operador
+	LOCAL jnl_status_aux LIKE tlr:jnl_status
+	
+	//Para restaurar la jnl_caidas con el status del journal en caso de una recuperacion
+	//con caída en vuelo
+	LOCAL status_orig LIKE tlr:jnl_status	
+	
+
+	//Campos locales para guardar los datos de la captura de cheque diferido
+	LOCAL reg_up_dif_aux LIKE post:reg_up_dif
+	LOCAL cod_banco_aux LIKE post:cod_banco
+	LOCAL cuenta_aux LIKE post:cuenta
+	LOCAL nro_cheque_aux LIKE post:nro_cheque
+	LOCAL cheqrech_moneda_aux like post:cheqrech_moneda
+	LOCAL fec_d_aux LIKE post:fec_d
+	LOCAL fec_e_aux LIKE post:fec_e
+	LOCAL int_dif_aux LIKE post:jnl_interes_diferido
+	LOCAL iva_int_dif_aux LIKE post:jnl_iva_int_dif		
+		
+	//Locales para Cancelacion de Reemplazo de cheques
+	LOCAL cheque LIKE siaf:nro_cheque
+	LOCAL fecha_de_emision LIKE siaf:f_emision
+	LOCAL fecha_de_vto LIKE siaf:f_vencimiento
+	LOCAL banco LIKE tes:banco_codigo
+	LOCAL cheque_cuenta LIKE siaf:cheqcuenta
+
+	LOCAL NisUP_aux LIKE post:NisUP
+	LOCAL CliUP_aux LIKE post:CliUP
+	LOCAL monto_chk_dif_aux LIKE post:monto_chk_dif
+
+	LOCAL climedtipo_aux like post:climed_tipo
+	LOCAL climednro_aux  like post:climed_numero
+	LOCAL cheques_aux    like post:Cheques
+	LOCAL excepCM_aux    like post:excepCM_id
+	LOCAL excepUP_aux    like post:id_excep_comm
+
+	LOCAL climed_oper_aux     like post:consumo_operacion
+	LOCAL climed_oper_fin     like post:financiado_operacion
+	LOCAL climed_importe_aux  like post:anticipo_CM
+	
+	LOCAL cant_valores_aux LIKE post:cant_valores
+	LOCAL ValorPago_aux[SAP_CANT_MAX_MPAG] LIKE siaf:moneda
+	LOCAL ImporteBanco_aux[SAP_CANT_MAX_MPAG] LIKE siaf:importe
+	LOCAL NumCuenta_aux[SAP_CANT_MAX_MPAG] LIKE post:cheque_mpago
+	LOCAL Emision_Fecha_aux[SAP_CANT_MAX_MPAG] LIKE post:fec_e
+	LOCAL BancoPago_aux[SAP_CANT_MAX_MPAG] LIKE post:cod_banco
+	LOCAL Bco_Cuenta_aux[SAP_CANT_MAX_MPAG] LIKE post:cuenta
+	LOCAL Valor_Fecha_aux[SAP_CANT_MAX_MPAG] LIKE post:fec_d
+	LOCAL chq_clearing_aux[SAP_CANT_MAX_MPAG] LIKE tes:clearing	
+	LOCAL imp_aux2 LIKE post:imp_aux
+
+	LOCAL limite_up_aux LIKE post:limite_up 
+	LOCAL mto_vta_neta_aux LIKE post:monto_vta_neta
+	LOCAL imp_afec_sald_aux	LIKE post:imp_afecta_saldo
+	LOCAL cliente_aux LIKE post:cliente
+	
+	// Polizas
+	local nro_poliza_aux     like post:EnPol_Poliza
+	local codigo_tt_aux      like post:EnPol_Track
+
+
+	LOCAL TrackTrace_aux LIKE giros:TrackTrace_giros
+
+	local l_sf1_nro_secuencia like post:sf1_nro_secuencia
+	local codbarras_nuevo_aux like post:sf1_codbarras_nuevo
+	local importe_origen_aux like post:importe_origen
+	local sf1_cta_nro_aux like post:sf1_cta_nro
+	local sf1_firma_aux like post:sf1_firma
+	local sf1_nro_lote_aux like post:sf1_nro_lote
+	local result_id_aux like post:result_id
+	local result_id_orig_aux like post:result_id_orig
+	local terminal_aux like post:terminal
+	local operador_tmpl_aux like post:operador_tmpl
+	local ticket_aux like post:ticket
+	local total_pesos_aux like post:total_pesos
+	local total_bonos_aux like post:total_bonos
+	local sf1_ticket_aux like post:sf1_ticket
+	local importe2_aux like siaf:importe2
+	local l_tran_sf1_cod like post:adt_tran_sf1_codigo
+	local l_cod_cliente	like post:codigo_cliente
+	local l_sf1_utility like post:sf1_utility
+	local l_tran_sf1_ver like post:adt_tran_sf1_ver
+
+	local sf1_med_pago_vec_aux like post:sf1_moneda
+	local sf1_moneda_vec_aux like post:sf1_moneda
+	local sf1_importe_vec_aux like post:importe_sesion
+	local cbanco_aux  like siaf:cod_banco
+	
+	local operativo_aux like post:operativo
+	local beneficio_aux like post:beneficio
+	local imp_aux3 like siaf:importe
+	local imp_aux4 like post:importe_benef
+	
+	//Robo de Cheque (adelanto CM monetario)
+	local l_sequence_aux like post:sequence_aux
+	
+	l_sf1_nro_secuencia = post:sf1_nro_secuencia
+	cant_valores_aux = post:cant_valores
+	ValorPago_aux = post:ValorPago
+	ImporteBanco_aux = post:ImporteBanco
+	NumCuenta_aux = post:NumCuenta
+	Emision_Fecha_aux = post:Emision_Fecha
+	BancoPago_aux = post:BancoPago
+	Bco_Cuenta_aux = post:Bco_Cuenta
+	Valor_Fecha_aux = post:Valor_Fecha
+	chq_clearing_aux = tes:clearing
+ 	imp_aux2 = post:imp_aux
+	l_tran_sf1_cod = post:adt_tran_sf1_codigo
+	l_cod_cliente = post:codigo_cliente
+	l_sf1_utility = post:sf1_utility
+	l_tran_sf1_ver = post:adt_tran_sf1_ver
+	
+
+
+	//Seteo esta vble para saber que el que esta recuperando la caida es el operador
+	jnl_status_aux = 98
+	
+	// Asigno Sucursal para que se efectue la busqueda.
+	op:op_branch_id = common:sucursal_activa 
+
+	// Asigno Fecha para que se efectue la busqueda.
+	tlr:bus_date = common:system_date 
+
+	call  csr:proc_list(F_CPTODUP, LST:tlr:JNLtran_header)
+
+	// Independientemente de codigo siaf guardo valores 
+	// de clave hdr y del mtcn.
+
+	aux_hdr_giros = giros:clave_hdr_giros 
+	aux_nro_ctrol = giros:cons_nro_ctrol 
+	aux_hdr_prev  = giros:clave_hdr_prev
+	aux_codigo_proc = giros:codigo_procesamiento
+	aux_usr_call    = giros:usr_call_center
+	aux_codseq_nro  = post:adt_codseq_nro
+	aux_dia_viaje   = giros:dia_viaje
+	aux_hora_viaje  = giros:hora_viaje
+	aux_importe     = siaf:importe
+	aux_serie       = giros:Serie_fld
+	aux_nrogiro     = giros:NroGiro_fld
+	aux_digito      = giros:digito_fld
+	aux_nuevo_giro  = giros:nuevo_num_giro_fld
+	aux_nuevo_dig   = giros:nuevo_dig_fld
+	aux_vieja_serie = giros:vieja_serie_fld
+	aux_viejo_giro  = giros:viejo_num_giro_fld
+	aux_viejo_dig   = giros:viejo_dig_fld
+	aux_flia_giro   = giros:flia_giro_fld
+	aux_consulta    = giros:consulta
+	aux_nro_auto    = post:nro_autorizac
+
+	pay_indicator_aux = giros:pay_indicator
+	money_key_aux = giros:MoneyTKey_fld
+
+	//Para cancelaciones
+	aux_cod_canc = giros:cod_tran_canc
+
+
+	//Para UP diferida
+	//cod_anul_aux = post:codigo_anulacion
+	reg_up_dif_aux = post:reg_up_dif
+	cod_banco_aux = post:cod_banco
+	cuenta_aux = post:cuenta
+	nro_cheque_aux = post:nro_cheque
+	cheqrech_moneda_aux = post:cheqrech_moneda
+	fec_d_aux = post:fec_d
+	fec_e_aux = post:fec_e
+	int_dif_aux = post:jnl_interes_diferido
+	iva_int_dif_aux = post:jnl_iva_int_dif	
+	
+	
+	//Para UP diferida para Cancelacion de Reemplazo de cheques
+	cheque = siaf:nro_cheque
+	fecha_de_emision = siaf:f_emision
+	fecha_de_vto = siaf:f_vencimiento
+	banco = tes:banco_codigo
+	cheque_cuenta = siaf:cheqcuenta
+	
+	
+	NisUP_aux = post:NisUP
+	CliUP_aux = post:CliUP
+	monto_chk_dif_aux = post:monto_chk_dif
+	
+	climedtipo_aux = post:climed_tipo
+	climednro_aux  = post:climed_numero
+	cheques_aux    = post:Cheques
+	excepCM_aux    = post:excepCM_id
+	excepUP_aux    = post:id_excep_comm
+
+	climed_oper_aux = post:consumo_operacion
+	climed_oper_fin = post:financiado_operacion
+	climed_importe_aux = post:anticipo_CM
+	
+	cant_valores_aux = post:cant_valores
+
+			
+	limite_up_aux = post:limite_up
+	mto_vta_neta_aux = post:monto_vta_neta
+ 	imp_afec_sald_aux =	post:imp_afecta_saldo
+	cliente_aux = post:cliente
+	
+	// Polizas
+	nro_poliza_aux  = post:EnPol_Poliza
+	codigo_tt_aux   = post:EnPol_Track
+
+	
+	
+	TrackTrace_aux = giros:TrackTrace_giros
+	
+	codbarras_nuevo_aux = post:sf1_codbarras_nuevo
+	importe_origen_aux = post:importe_origen
+	sf1_cta_nro_aux = post:sf1_cta_nro
+	sf1_firma_aux = post:sf1_firma
+	sf1_nro_lote_aux = post:sf1_nro_lote
+	result_id_aux = post:result_id
+	result_id_orig_aux = post:result_id_orig
+	terminal_aux = post:terminal
+	operador_tmpl_aux = post:operador_tmpl
+	ticket_aux = post:ticket
+	total_pesos_aux = post:total_pesos
+	total_bonos_aux = post:total_bonos
+	sf1_med_pago_vec_aux = post:sf1_med_pago_vec[0]
+	sf1_moneda_vec_aux = post:sf1_moneda_vec[0]
+	sf1_importe_vec_aux = post:sf1_importe_vec[0]
+	sf1_ticket_aux = post:sf1_ticket
+	importe2_aux = siaf:importe2
+	cbanco_aux = siaf:cod_banco
+
+	aux_msg095 = post:datos_msg095
+	aux_msg096 = post:datos_msg096
+	aux_msg097 = post:datos_msg097
+	aux_msg098 = post:datos_msg098
+	aux_msg099 = post:datos_msg099
+	aux_msg105 = post:datos_msg105
+	aux_msg106 = post:datos_msg106
+	aux_msg107 = post:datos_msg107
+	aux_msg108 = post:datos_msg108
+	aux_msg110 = post:datos_msg110
+	aux_msg111 = post:datos_msg111
+	aux_ordcompra = post:adt_oc_nro
+	aux_diasfact_oc = post:adt_oc_dias_fact
+	aux_desc_oc     = post:adt_oc_desc
+	aux_consumo_oc  = post:consumo_OC
+
+	aux_clearing = tes:clearing
+	aux_imp_dif = post:Imp_FactDif
+	
+	//Pago On Site
+	operativo_aux = post:operativo
+	beneficio_aux = post:beneficio
+	imp_aux3 = siaf:importe	
+	imp_aux4 = post:importe_benef
+	
+	//Robo Cheque, adelanto monetario
+	l_sequence_aux = post:sequence_aux
+	
+	
+	KEYDEF PUSH
+	KEYDEF CLEAR
+	common:trap_reset = OFB:lib:KEYSreset_lockout
+
+	// Buscar TRAN caidas en vuelo cuyo estado sea > a 100 y 
+	// < a 111. 	
+	
+	if (siaf:adt_tran_fliatran == "PF ") then
+		cds select from dsc:giros:jnl_caidas becomes dsc:giros:jnl_caidas_ctx where \
+			tlr:jnl_branch == op:op_branch_id && \
+			tlr:jnl_operator == op:op_operator_id && \
+			tlr:jnl_status > HOST_REJECTED  && \
+			tlr:jnl_status < RECH_REV_AUTO  && \
+			siaf:adt_tran_fliatran == "PF " descending
+	else
+		cds select from dsc:giros:jnl_caidas becomes dsc:giros:jnl_caidas_ctx where \
+			tlr:jnl_branch == op:op_branch_id && \
+			tlr:jnl_operator == op:op_operator_id && \
+			tlr:jnl_status > HOST_REJECTED  && \
+			tlr:jnl_status < RECH_REV_AUTO  && \
+			siaf:adt_tran_fliatran != "PF " descending
+	endif
+	
+	cds findfirst DSC:giros:jnl_caidas_ctx lock
+	while (cdsretval == 0)
+		
+		cds extract dsc:giros:jnl_caidas_ctx all
+
+		/*Aca se actualiza el jnl_status de la jnl_caidas con 98 para que el proceso
+		batch sepa que el registro esta siendo utilizado por el operador (jnl_status = 98) */
+		// FGB: se agrega la hora en que se bloquea el registro, p'q' en caso
+		// de contingencia, el proceso batch libere el registro p' intentar 
+		// recuperarlo...
+		/***************************************************************************************/
+		//Este IF se pone temporariamente hasta que este el RTbatch para UP diferida, en caso
+		// contrario el APPEND se haría para todos los registros
+		IF (post:SiNo_aux != "S")
+			CDS CLEARBUFFER DSC:giros:jnl_caidas_ctx
+        	CDS APPEND DSC:giros:jnl_caidas_ctx \
+            	FLD:jnl_status_aux AS FLD:tlr:jnl_status \
+				common:time_of_day AS FLD:siaf:adt_jnlc_locktime
+        	CDS UPDATE DSC:giros:jnl_caidas_ctx LOCK 
+		END IF
+		/******************************************************************************************/
+
+
+
+
+
+
+		cds select from DSC:tlr:TABjnl becomes DSC:tlr:jnl_context where \
+			tlr:jnl_branch == tlr:jnl_branch && \
+			tlr:jnl_operator == tlr:jnl_operator && \
+			tlr:jnl_date == tlr:jnl_date && \
+			tlr:jnl_time == tlr:jnl_time && \
+			tlr:jnl_bus_date == tlr:jnl_bus_date && \
+			tlr:jnl_sequence == tlr:jnl_sequence 
+			/*  && \
+			tlr:jnl_status == tlr:jnl_status */
+		
+		cds findfirst DSC:tlr:jnl_context nolock
+		if (cdsretval == 0)
+			/*  EXTRACT DE TRAN DIRECTA.
+			EL flag tlr:jnl_tran_flags se extrae en un flag
+			auxiliar, para saber si es una reversa manual
+			o si es una transaccion normal.		     */
+	
+			cds extract dsc:tlr:jnl_context \
+				tlr:jnl_operator_siaf \
+				tlr:jnl_state_flags \
+				tlr:jnl_tran_flags \
+				tlr:jnl_sequence_corr \
+				tlr:jnl_supervisor \
+				tlr:jnl_tenk_status \
+				tlr:jnl_tran_name into tlr:tran_mnemonic \
+				tlr:jnl_dia_ult_act \
+				tlr:jnl_hora_ult_act \
+				common:tran_appl_no \
+				common:tran_item_no \
+				tlr:jnl_payget_start into tlr:cctl_payget_start \
+				tlr:jnl_payget_end into tlr:cctl_payget_end \
+				hcomm:INDhost_sndrt \
+				hcomm:INDhost_rcvrt  \
+				hcomm:host_tran_id  \
+				hcomm:reason_code  \
+				hcomm:trancode  \
+				tlr:INDtran_name \
+				tlr:INDdcol_scrn \
+				tlr:INDjnl_append \
+				tlr:INDtots_append \
+				tlr:INDdocs_list \
+				tlr:INDlink_test \
+				tlr:INDlink_tran \
+				siaf:mensaje \
+				lib:calc_tape \
+				post:PresNro \
+				post:adt_Modo \
+				tlr:jnl_op_login_id \
+				common:VersionCorreo \
+				post:adt_PreDNroTrn into post:PreDNroTrn
+				
+			cds extract dsc:tlr:jnl_context \
+				tlr:tran_mnemonic \
+				tlr:tdrv_pret_rtn
+
+			cds extract dsc:tlr:jnl_context \
+				tlr:jnl_account_1 \
+				tlr:jnl_amount_1 into siaf:importe \
+				siaf:moneda \
+				post:medio_pago_desc \
+				siaf:jnl_codigo_siaf \
+				siaf:jnl_sucursal \
+				siaf:jnl_journal_host \
+				siaf:jnl_window_node into op:op_node_id\
+				siaf:fecha \
+				siaf:siaf_flags \
+				siaf:modalidad \
+				siaf:hora_reentry \
+				siaf:codigo_bull \
+				siaf:INDhost_snd_fv \
+				siaf:nombre_transac \
+				siaf:codigo_siaf \
+				post:jnl_flia_tran \
+				post:jnl_br_CUN \
+				post:jnl_br_ctpTT \
+				post:jnl_opTT \
+				siaf:tiene_reverso \
+				siaf:posible_off \
+				siaf:restr_otra_casa \
+				siaf:linea_validacion \
+				siaf:exhibe_pantalla \
+				siaf:imprime_comprobante \
+				siaf:multiple \
+				ovr:ovr_sup_login \
+				drv:jnl_dt_app \
+				siaf:jnl_tran_modpresu \
+				post:jnl_cli_tipo \
+				post:nro_autorizac \
+				post:jnl_fliarep \
+				post:jnl_unicod \
+				post:jnl_unicod_desc
+
+			cds extract dsc:tlr:jnl_context \
+				giros:codigo_procesamiento \
+				giros:flia_giro_fld \
+				giros:usr_call_center \
+				post:adt_codseq_nro \
+				siaf:importe \
+				giros:hora_viaje \
+				giros:dia_viaje \
+				giros:clave_hdr_prev \
+				giros:Serie_fld \
+				giros:NroGiro_fld \
+				giros:digito_fld \
+				giros:nuevo_num_giro_fld \
+				giros:nuevo_dig_fld \
+				giros:vieja_serie_fld \
+				giros:viejo_num_giro_fld \
+				giros:viejo_dig_fld \
+				giros:MoneyTKey_fld \
+				giros:pay_indicator	\
+				tlr:jnl_status INTO status_orig
+				
+
+			cds extract dsc:tlr:jnl_context \
+				giros:TrackTrace_giros
+			
+
+			if ( siaf:codigo_siaf == "72300")
+				cds extract dsc:tlr:jnl_context \
+				giros:clave_hdr_giros
+			else
+				cds extract dsc:tlr:jnl_context \
+				giros:cons_nro_ctrol
+				if (giros:flia_giro_fld == "I")
+					cds extract dsc:tlr:jnl_context \
+					giros:consulta
+				endif
+			end if
+			
+			
+			
+		    //Para cancelaciones: Extraigo el codigo siaf de la tx que se estaba
+		    //cancelando cuando se produce la Caida en Vuelo
+		    IF (siaf:codigo_siaf == 70500 || siaf:codigo_siaf == 70502 || \
+		    	siaf:codigo_siaf == 70505 || siaf:codigo_siaf == 70510 || \
+		    	siaf:codigo_siaf == 70515 || siaf:codigo_siaf == 70520 || \
+		    	siaf:codigo_siaf == 70530 || siaf:codigo_siaf == 99170 || \
+				siaf:codigo_siaf == 70540 || siaf:codigo_siaf == 99175 || \
+				siaf:codigo_siaf == 99125 || siaf:codigo_siaf == 99415 )
+
+				// 70500 - Cancelacion Pago Giro Postal	
+				// 70502 - Cancelacion Pago Giro Telegrafico
+				// 70505 - Cancelacion Transferencia Nacional
+				// 70510 - Cancelacion de Chequeras
+				// 70515 - Cancelacion de Orden de no pagar
+				// 70520 - Cancelacion de Anulaciones
+				// 70530 - Cancelacion de Tx de Giros con comprobantes
+				
+				// 99170 - Cancelacion de Ventas UP Diferida con Comp.
+				// 99175 - Cancelacion de Ventas UP Diferida sin Comp.
+				
+				// 99125 - Cancelación de Cobro de Poliza
+				// 99415 - Cancelacion Uso de Excepcion
+
+				cds extract dsc:tlr:jnl_context giros:cod_tran_canc
+			END IF
+				
+			//SI el campo que grabo en la jnl_caidas para identificar Vtas Up está cargado
+			cds extract dsc:tlr:jnl_context \
+				post:cod_banco \
+				post:cuenta \
+				post:nro_cheque \
+				post:fec_d \
+				post:fec_e \
+				post:jnl_interes_diferido \
+				post:jnl_iva_int_dif \
+				post:NisUP \
+				post:CliUP \
+				post:monto_chk_dif \
+				post:imp_aux \
+				post:climed_tipo \
+				post:climed_numero \
+				post:Cheques \
+				post:excepCM_id \
+				post:id_excep_comm \
+				post:consumo_operacion \
+				post:financiado_operacion \
+				post:anticipo_CM \
+				post:datos_msg095 \
+				post:datos_msg096 \
+				post:datos_msg097 \
+				post:datos_msg098 \
+				post:datos_msg099 \
+				post:datos_msg105 \
+				post:datos_msg106 \
+				post:datos_msg107 \
+				post:datos_msg108 \
+				post:datos_msg110 \
+				post:datos_msg111 \
+				post:adt_oc_nro \
+				post:adt_oc_dias_fact \
+				post:adt_oc_desc \
+				post:consumo_OC \
+				post:Imp_FactDif \
+				tes:clearing 
+
+			cds extract dsc:tlr:jnl_context \
+				post:limite_up \
+				post:monto_vta_neta \
+				post:imp_afecta_saldo \
+				post:cliente \
+				siaf:nro_cheque \
+				siaf:cod_banco \
+				siaf:cheqcuenta \
+				post:cheqrech_moneda
+
+				
+			//Si es PF iplan
+			IF (siaf:codigo_siaf == 6820)
+					init 67,"^^"
+				cds extract dsc:tlr:jnl_context \
+					siaf:adt_tran_fliatran 		\
+					tlr:jnl_date into post:jnl_date_ori \
+					tlr:jnl_time into post:jnl_time_ori \
+					post:sf1_nro_secuencia \
+					post:sf1_codbarras_nuevo \
+					post:importe_origen \
+					post:sf1_cta_nro \
+					post:sf1_firma \
+					post:sf1_nro_lote \
+					post:result_id \
+					post:result_id_orig \
+					post:terminal \
+					post:operador_tmpl \
+					post:ticket \
+					post:total_pesos \
+					post:total_bonos \
+					post:sf1_med_pago_vec[0] \
+					post:sf1_moneda_vec[0] \
+					post:sf1_importe_vec[0] \
+					post:sf1_ticket \
+					post:adt_tran_sf1_codigo \
+					post:codigo_cliente \
+					post:sf1_utility \
+					post:adt_tran_sf1_ver
+					
+					siaf:importe2 = post:total_pesos
+				init 67,"$$"
+
+		    	setflag common:rt_flags,reentry_active
+			endif
+			
+			//Si es cancelacion de reemplazo de cheque
+			IF (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99205 || \
+				siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242 || \
+				siaf:codigo_siaf == 99245 || siaf:codigo_siaf == 99175 \
+				|| siaf:codigo_siaf == 99170 )
+					cds extract dsc:tlr:jnl_context \
+						post:cant_valores
+					siaf:i = 0
+					WHILE (siaf:i < post:cant_valores)
+						CDS EXTRACT DSC:tlr:jnl_context post:ValorPago[siaf:i] post:NumCuenta[siaf:i] \
+							post:Emision_Fecha[siaf:i] post:BancoPago[siaf:i] post:Bco_Cuenta[siaf:i] \
+							post:Valor_Fecha[siaf:i] post:ImporteBanco[siaf:i] post:Emision_Fecha[siaf:i] \
+							post:Valor_Fecha[siaf:i] post:ValorPago[siaf:i] post:ImporteBase[siaf:i] \
+							post:chq_clearing[siaf:i]
+							siaf:i = siaf:i + 1 
+					END WHILE		
+				
+					cds extract dsc:tlr:jnl_context \
+								siaf:f_emision \
+								siaf:f_vencimiento 
+					if (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99205)
+						cds extract dsc:tlr:jnl_context \
+								siaf:nro_cheque \
+								tes:banco_codigo \
+								siaf:cheqcuenta
+					else
+						cds extract dsc:tlr:jnl_context \
+								post:nro_cheque into siaf:nro_cheque \
+								post:cod_banco into tes:banco_codigo \
+								post:cuenta into siaf:cheqcuenta
+					end if				
+
+			END IF
+			
+			IF (siaf:codigo_siaf == 6630)
+				cds extract dsc:tlr:jnl_context \
+				post:operativo \
+				post:beneficio \
+				siaf:importe \
+				post:importe_benef
+			END IF
+			IF (siaf:codigo_siaf == 6632 || siaf:codigo_siaf == 6634)
+				cds extract dsc:tlr:jnl_context \
+					post:benef_on_site into post:beneficio \
+					post:operativo_on_site into post:operativo 
+			
+			END IF
+
+			cds extract dsc:tlr:jnl_context \
+				post:EnPol_Poliza \
+				post:EnPol_Track
+			
+			CALL siaf:analiza_tran		
+	
+			IF (siaf:codigo_siaf == 6820)
+		    	resetflag common:rt_flags,reentry_active
+			endif
+			
+			if ( retval == TRAN_CAIDA_VUELO )
+				siaf:tran_retval = retval
+				//Se produjo una caída cuando estaba tratando de recuperar otra caída...
+				//Lo qe se hace es resguardar el status del journal para volverlo a
+				// grabar en la jnl_caídas y queden iguales. 
+				cds endselect dsc:tlr:jnl_context
+				cds append DSC:giros:jnl_caidas_ctx	status_orig AS tlr:jnl_status
+				cds update DSC:giros:jnl_caidas_ctx	lock				
+				cds endselect DSC:giros:jnl_caidas_ctx			
+				break
+			end if
+	
+		end if
+		cds endselect dsc:tlr:jnl_context
+		
+		FPRINT tlr:jnl_status,"%.*d",hcomm:tran_status.LENGTH,hcomm:tran_status
+		
+		cds append DSC:giros:jnl_caidas_ctx	tlr:jnl_status
+		cds update DSC:giros:jnl_caidas_ctx	lock
+	
+		cds findnext DSC:giros:jnl_caidas_ctx lock
+	end while
+	cds endselect DSC:giros:jnl_caidas_ctx			
+	
+	
+	// Restaurar Valores 
+	
+	post:sf1_nro_secuencia = l_sf1_nro_secuencia
+
+	giros:consulta       		= aux_consulta
+	giros:clave_hdr_giros		= aux_hdr_giros
+	giros:cons_nro_ctrol		= aux_nro_ctrol
+	giros:clave_hdr_prev		= aux_hdr_prev
+	giros:codigo_procesamiento	= aux_codigo_proc
+	giros:usr_call_center       = aux_usr_call
+	post:adt_codseq_nro         = aux_codseq_nro
+	giros:dia_viaje             = aux_dia_viaje
+	giros:hora_viaje            = aux_hora_viaje
+	giros:flia_giro_fld	        = aux_flia_giro
+	giros:Serie_fld	            = aux_serie
+	giros:NroGiro_fld           = aux_nrogiro
+	giros:digito_fld            = aux_digito
+	giros:nuevo_num_giro_fld    = aux_nuevo_giro
+	giros:nuevo_dig_fld         = aux_nuevo_dig
+	giros:vieja_serie_fld       = aux_vieja_serie
+	giros:viejo_num_giro_fld    = aux_viejo_giro
+	giros:viejo_dig_fld         = aux_viejo_dig
+	post:nro_autorizac			= aux_nro_auto
+	
+	giros:pay_indicator = pay_indicator_aux
+	giros:MoneyTKey_fld = money_key_aux
+
+	//Para cancelaciones
+	giros:cod_tran_canc = aux_cod_canc
+
+	//Para UP diferida
+	post:reg_up_dif = reg_up_dif_aux
+	post:cod_banco = cod_banco_aux
+	post:cuenta = cuenta_aux
+	post:nro_cheque = nro_cheque_aux
+	post:cheqrech_moneda = cheqrech_moneda_aux
+	post:fec_d = fec_d_aux
+	post:fec_e = fec_e_aux
+	post:jnl_interes_diferido = int_dif_aux
+	post:jnl_iva_int_dif = iva_int_dif_aux
+
+	//Para UP diferida para Cancelacion de Reemplazo de cheques
+	siaf:nro_cheque = cheque
+	siaf:f_emision = fecha_de_emision 
+	siaf:f_vencimiento = fecha_de_vto 
+	tes:banco_codigo = banco 
+	siaf:cheqcuenta = cheque_cuenta 
+	
+	post:NisUP = NisUP_aux
+	post:CliUP = CliUP_aux
+	post:monto_chk_dif = monto_chk_dif_aux
+
+	post:climed_tipo = climedtipo_aux
+	post:climed_numero = climednro_aux
+	post:Cheques = cheques_aux
+	post:excepCM_id = excepCM_aux
+	post:id_excep_comm = excepUP_aux
+				
+	post:consumo_operacion = climed_oper_aux
+	post:financiado_operacion = climed_oper_fin
+	post:anticipo_CM = climed_importe_aux
+
+	post:cant_valores = cant_valores_aux
+	
+	post:cant_valores = cant_valores_aux
+	post:ValorPago = ValorPago_aux 
+	post:ImporteBanco = ImporteBanco_aux
+	post:NumCuenta = NumCuenta_aux
+	post:Emision_Fecha = Emision_Fecha_aux
+	post:BancoPago = BancoPago_aux
+	post:Bco_Cuenta = Bco_Cuenta_aux
+	post:Valor_Fecha = Valor_Fecha_aux	
+	post:imp_aux = imp_aux2
+	tes:clearing = chq_clearing_aux		
+
+	post:sf1_codbarras_nuevo = codbarras_nuevo_aux
+	post:importe_origen = importe_origen_aux
+	post:sf1_cta_nro = sf1_cta_nro_aux
+	post:sf1_firma = sf1_firma_aux
+	post:sf1_nro_lote = sf1_nro_lote_aux
+	post:result_id = result_id_aux
+	post:result_id_orig = result_id_orig_aux
+	post:terminal = terminal_aux
+	post:operador_tmpl = operador_tmpl_aux
+	post:ticket = ticket_aux
+	post:total_pesos = total_pesos_aux
+	post:total_bonos = total_bonos_aux
+	post:sf1_med_pago_vec[0] = sf1_med_pago_vec_aux
+	post:sf1_moneda_vec[0] = sf1_moneda_vec_aux
+	post:sf1_importe_vec[0] = sf1_importe_vec_aux
+	post:sf1_ticket = sf1_ticket_aux
+	siaf:importe2 = importe2_aux
+	post:adt_tran_sf1_codigo = l_tran_sf1_cod
+	post:codigo_cliente = l_cod_cliente
+	post:sf1_utility = l_sf1_utility
+	post:adt_tran_sf1_ver = l_tran_sf1_ver
+	
+	
+	post:limite_up = limite_up_aux
+	post:monto_vta_neta = mto_vta_neta_aux
+ 	post:imp_afecta_saldo = imp_afec_sald_aux	
+ 	post:cliente = cliente_aux
+ 	
+	// Polizas
+	post:EnPol_Poliza = nro_poliza_aux
+	post:EnPol_Track = codigo_tt_aux
+
+ 	
+	giros:TrackTrace_giros = TrackTrace_aux
+	post:datos_msg095 = aux_msg095
+	post:datos_msg096 = aux_msg096
+	post:datos_msg097 = aux_msg097
+	post:datos_msg098 = aux_msg098
+	post:datos_msg099 = aux_msg099
+	post:datos_msg105 = aux_msg105
+	post:datos_msg106 = aux_msg106
+	post:datos_msg107 = aux_msg107
+	post:datos_msg108 = aux_msg108
+	post:datos_msg110 = aux_msg110
+	post:datos_msg111 = aux_msg111
+	post:adt_oc_nro   = aux_ordcompra
+	post:adt_oc_dias_fact = aux_diasfact_oc
+	post:adt_oc_desc      = aux_desc_oc
+	post:consumo_OC       = aux_consumo_oc
+	tes:clearing = aux_clearing	
+
+	post:Imp_FactDif  = aux_imp_dif
+	siaf:cod_banco = cbanco_aux
+
+
+	//Pago On Site
+	post:operativo = operativo_aux
+	post:beneficio = beneficio_aux
+	siaf:importe = imp_aux3
+	post:importe_benef = imp_aux4
+
+	//Robo Cheque, adelanto monetario
+	post:sequence_aux = l_sequence_aux
+
+	call  csr:proc_list(F_CPFROMDUP, LST:tlr:JNLtran_header)
+	
+	FPRINT tlr:jnl_sequence,"%.*d",tlr:sequence.LENGTH,tlr:sequence //SECUENCIADOR DEL JOURNAL
+	KEYDEF POP
+		
+	if ( siaf:tran_retval == TRAN_CAIDA_VUELO)
+			// Para el caso de una transccion de firma invalida
+			// donde se cayo la linea en la cancelacion.
+		return TRAN_CAIDA_VUELO
+	end if
+	// Reseteo flag de TRAN  Caidas en Vuelo.
+	resetflag tlr:controla_marca,mayor_cien
+END SUB
+
+/*******/

@@ -1,0 +1,235 @@
+/****o* Clientes Medios/OFB:post:SVAL99460
+* NOMBRE
+*   OFB:post:SVAL99460
+* DESCRIPCION
+*   Rutina de Confirmacion de la TX de Cobranza de CM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99460
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99460
+	local varl_marca   like post:nro_factura
+	local varl_importe like common:csr_string
+
+	;if (post:estado_presu == 2) then
+		;if (ErrorPresu) then
+			;msgbox "Error en la Presupuestación, no podrá continuar con la cobranza", OFB_OK ,"Aviso"
+			;return (-2)
+		;end if
+	;end if		
+	
+	if (post:importe_fpendsel < 0) then	
+		msgbox "El importe seleccionado de Facturas y Notas de Credito no puede ser negativo.", OFB_OK ,"Aviso"
+		return (-2)
+	end if
+	
+	if (post:estado_presu != 4)
+		//Controlo que no hayan mas de 10 facturas o mas de 30 remitos seleccionados.
+		Call post:MISCctrl_fact_rem
+		If (retval == -2)
+			msgbox "No puede cobrar mas de 10 Facturas, Notas de Credito y/o 30 Comprobantes de Imposicion", OFB_OK ,"Aviso"
+			return (-2)
+		end if
+		if (retval == -1)		
+			msgbox "Debe seleccionar al menos una Factura o un Comprobante de Imposicion", OFB_OK ,"Aviso"
+			return (-2)
+		end if
+		if (retval == -3)		
+			msgbox "Debe seleccionar al menos una Factura si desea utilizar las Notas de Crédito", OFB_OK ,"Aviso"
+			return (-2)
+		end if
+		//50249 - GRABO EN LA PRESU EL IMPORTE DE LAS NC CONSUMIDAS PARA LUEGO GENERAR LA TX 99525
+		CALL post:CDSgrabo_imp_nc
+
+		/*MLD Si está habilitado para el pago diferido
+			pregunto si paga con cheque */
+		if (post:climed_financiacion > 0) then
+			if (post:pago_diferido == "S") then
+			//no hago la pregunta porque sino le estaria preguntando dos veces
+			//(una en el inicio y otra aca)
+			else
+				MSGBOX "Paga con Cheque Diferido?",OFB_YESNO2,""
+				If (RETVAL == 6) Then
+					post:pago_diferido = "S"
+				Else
+					post:pago_diferido = "N"
+				End If
+				call post:CDSUP_PagoDif_save
+			endif
+		end if
+		//Solicitud 50093 - No imprimir el recibo si existe un recibo manual
+		IF (COBrecibo_manual.NUMCHARS != 0) THEN
+			post:ImprimeRecCob = FALSE
+		ENDIF
+			
+	end if
+	
+  	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola*/
+	call MISCTotalTransac(siaf:codigo_siaf) 
+	call post:MISCAcumTotalesSes
+	
+	post:INDPresuD_Dat = OFB:CDSappend_99460
+    
+   	//Controlar si admite cheque diferido
+   	call post:MISCRestFlia
+    
+   	if (post:estado_presu != 4 )
+   		Call post:MISCGrabaDetalleTrn 
+	end if
+
+	//generar el nro de recibo en estado de presupuesto 2 (Susa lo necesita por si
+	//se paga con cheque diferido ya que el viaje se hace en la TX de Captura)
+	
+	//cgw:PS10481 - AUT-2393 salteo de numeracion de recibos.
+	//cuando no es pago diferido el nro de recibo se generara en post:estado_presu = 4.
+	//cuando es pago diferido el nro de recibo se generara en post:estado_presu = 2 ya que lo necesita en el viaje que se genera en la captura del medio de pago.
+	//if (estado_presu == 2) then
+	//cgw:Si se ingreso un numero de recibo manual se lo graba en la Presu
+	if (estado_presu == 2 && post:ImprimeRecCob == 0) then //recibo manual
+		//DEBE QUEDAR GRABADO EN EL MISMO CAMPO
+		nro_recibo = COBrecibo_manual
+		//Grabar el nro de recibo en la presu para poder journalizarlo en el fin de sesion
+		call post:CDSgrabo_recibo
+	end if
+	if ((estado_presu == 2 && post:pago_diferido == "S") || \
+		(estado_presu == 4 && post:pago_diferido != "S")) then
+		//Solicitud de Cambio 50093 - SI NO SE INGRESO UN RECIBO MANUAL....
+			IF (post:ImprimeRecCob) THEN
+			//IF (COBrecibo_manual.NUMCHARS == 0) THEN
+				// Obtengo el numero de recibo...
+    	   		clearfield nro_recibo
+	    	   	call CDSccseq_get_num("REC",nro_recibo)
+        		if (retval < 0) then
+		        	errmsg common:errmsg_list,"ERROR EN NUMERACION DE RECIBO.\nIMPOSIBLE CONTINUAR"
+		        	//cgw:PS10481 - AUT-2393
+    		        //cuando no es cheque diferido obtiene el nro de recibo en post:estado_presu = 4,
+		        	//nunca se va a dar un error al obtener el secuenciador de nro de recibo.
+		        	if (post:estado_presu == 2) then
+    		        	call ESC99460
+    		        	return (-3) // Sale de la Trx!!
+    		        end if
+	        	end if
+    			fprint nro_recibo "%4.4d%8.8d" common:br_CEC,nro_recibo
+    			
+    			//Imprimo el recibo solo si no se cargó un nro de recibo manual!
+    			siaf:imprime_comprobante = "D"
+    				
+    		/* cgw:PS10481 - AUT-2393 salteo de numeracion de recibos.
+    	    //se chequea antes si nro recibo manual	
+    		ELSE
+    	    	//DEBE QUEDAR GRABADO EN EL MISMO CAMPO
+    	    	nro_recibo = COBrecibo_manual
+    	    ENDIF
+    	    */
+    				
+        	    //Grabar el nro de recibo en la presu para poder journalizarlo en el fin de sesion
+        	    call post:CDSgrabo_recibo
+            END IF 
+    endif
+
+	
+  	if (estado_presu == 4) //ante ultima transaccion de presupuesto
+   		;let PresEst = 2
+   		;CALL CDSadt_presu_estado //marca el presupuesto como finalizado
+     		 
+     	/* Si hay facturas */
+		if (post:vec_facturas[0].numchars > 0) then
+        	// obtengo la firma para el recibo
+        	fprint common:csr_string "%e%e%5.5d%5.5s%8.8d%12.12e" siaf:fecha,\
+        	siaf:hora,op:op_operator_id,common:br_CEC,nro_recibo,siaf:importe
+           	 
+	        call csr:MD5checksum(common:csr_string,0,climed_recibo_id,1)
+    	    if (retval != 0) then
+        		// si no anduvo el MD5 aunque sea sumo los valores y uso eso 
+            	// de marca
+            	let varl_marca = siaf:hora  + siaf:fecha + op:op_operator_id
+            	let varl_marca = varl_marca + substr(common:br_CEC,1,4) + nro_recibo
+            	let varl_marca = varl_marca + (siaf:importe * 100)
+            	// pongo un par de caracteres mas... (naf=no anduvo firma:) 
+            	fprint climed_recibo_id "naf%14.14d%1" varl_marca,substr(tlr:jnl_branch,0,1)
+			end if
+        else
+        	
+        	clearfield tlr:INDdocs_list
+        	clearfield drv:INDspc_rtn[0]
+        	clearfield tlr:INDtots_append
+        	
+        end if
+        
+    	//EL VIAJE SE HACE DESPUES DE GENERAR EL NRO DE RECIBO
+    	giros:codigo_procesamiento = 997040
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+
+		call post:CDSpresu_climed_load
+
+		//PS 9331
+		varl_importe = (post:total_cobranza - post:resta_saldoCM) * 100
+		fprint post:financiado_operacion,"%s%012.12s",CLIMED_RESTA,varl_importe
+
+		varl_importe = CobAnticipo_CM * 100
+		fprint post:consumo_operacion,"%s",CLIMED_RESTA
+		
+		call post:CDSclimed_cheques
+		if (retval == 0 )
+			clearfield drv:INDhcomm_rtn
+			clearfield drv:INDspc_rtn[1]
+			clearfield giros:hora_viaje
+			clearfield giros:dia_viaje	
+			clearfield post:adt_codseq_nro
+			clearfield post:financiado_operacion
+			clearfield post:consumo_operacion
+		else
+			call post:MISCclimed_ingr_fact(siaf:codigo_siaf)
+			if (retval < 0 )
+				return -2
+			end if
+		end if    
+        
+	end if
+	
+	//Flag para saber si confirmamos desde la transaccion o si hubo alguna caida y se confirma por fuera.
+	post:TrxOpeCob = 1
+
+	/* Inicializo el consumo del Anticipo en 0, si luego viene informado se setea */
+	if (!testflag(tlr:tran_flags,correction) && post:estado_presu != 4) then
+		//post:ConsumoAnticipo = FALSE
+		post:OperacionCob = TRUE
+		post:ConvenioSesion = FALSE
+		post:ConvenioProducto = FALSE
+		//Seteo una marca de inicio para la Presupuestacion (se graba en la Presu)
+		post:AuxPresupuestacion = TRUE
+		post:ImprimeAcuseRec = FALSE
+		call post:CDSpresu_modalidadCM
+		if (post:adt_oc_nro.numchars != 0) then
+			post:ModalidadOC = TRUE
+		else
+			post:ModalidadOC = FALSE
+		end if
+		call post:MISCRemito_Item(SESION)
+		if (retval == 1) /* Hay remitos, Llamo al secuenciador interno de facturas que preciasa Susana */
+			call post:MISCobtSeqIdentFact 
+		end if
+		//Reseteo la marca en la Presu
+		Call post:CDSgrabo_marcaCob
+	end if
+	//PS 10117 - Nunca se borran las tabla de remitos y rem_item y esto trae problemas en los listados.
+	if (post:estado_presu == 4) then
+		call post:CDSborrar_deuda
+	endif
+		
+  	RETURN (RETVAL)
+END SUB
+
+/*******/

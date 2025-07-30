@@ -1,0 +1,268 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALventa_ev
+* NOMBRE
+*   OFB:tes:SVALventa_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALventa_ev
+	LOCAL i LIKE cont1
+	LOCAL importe LIKE adt_espv_importe
+	LOCAL NroTrn LIKE post:PreDNroTrn
+	LOCAL imp_auxi1 LIKE siaf:importe
+	LOCAL imp_auxi2 LIKE siaf:importe
+	LOCAL l_tot_promo LIKE post:fld_promo_imp
+	LOCAL loc_mensaje LIKE common:csr_string
+
+  //gpb:NI50479 - Genera NC PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+//gpb:Lo dejo comentado porque antes pasaba...		
+;;			//Tengo que recuperar los datos de la PresuDet porque se estan perdiendo algunos
+;;			//valores de campos que ya tenia...
+;;		CALL post:CDScons_presudet_ped
+;;		IF (RETVAL != 0) THEN
+;;			//no pudo recuperar el registro,debo cancelar el presupuesto
+;;		END IF		
+
+		post:ImporteConIva = siaf:ImporteConIva
+		post:TasaIva = tes:adt_espv_aliciva 
+		tes:SubImporte = siaf:importe		
+		post:TotalSinIva = siaf:ImporteSinIva
+		post:ImpServUP = siaf:ImporteConIva
+		post:AliServUP = tes:adt_espv_aliciva 
+		post:adt_dump_punit = siaf:importe
+		tes:espv_subcod = tes:adt_evaux_subcod
+		tes:adt_espv_valor = siaf:importe
+
+		/* Dejo una marca para las restricciones */
+		CALL post:MISCGrabaDetalleTrn
+		RETURN RETVAL
+	END IF  
+    
+	;PS9795 
+	IF (post:estado_presu == 1 && post:PresNro > 0 && post:Modo != "R") THEN
+		post:Modo = "R"
+	END IF
+    
+	IF (!(TESTFLAG(tlr:tran_flags,correction)) && \
+		(post:Modo == "R" && siaf:importe > post:adt_dgralsuc_impesp)) THEN
+		FPRINT loc_mensaje "%s\n", \
+			"Se ha superado el importe maximo de Especies Valorizadas para "
+		FPRINT loc_mensaje "%s%s", \
+			loc_mensaje,"Consumidor Final en Teclas Rapidas. Debe iniciar una sesion."
+		MSGBOX loc_mensaje,OFB_OK,"Aviso"
+		RETURN (-2)
+	END IF
+
+	imp_auxi1 = siaf:importe
+	
+	IF (post:NroCompPago == "") THEN
+		post:NroCompPago = 0
+	END IF
+
+	// FGB 24.01.2004 - Combos
+	IF (siaf:importe == 0 && post:cli_tipo != 1 && post:enCombo != "S") THEN
+		/****************************************/
+		/* El importe total no puede ser 0 salvo que el */
+		/* cliente sea un Cuentacorrentista. JPM 2/99   */
+		/****************************************/
+		MOVE "(L) IMPORTE TOTAL NO PUEDE SER 0" to drv:error_msg
+		CALL  OFB:drv:error_msg
+		RETURN (-2)
+	END IF
+    
+	/*Si alguna especie posee bonificacion se pone el campo post:promo_aplica en S
+	y si alguna inhibe UP se pone post:promo_inhibeUp en S*/
+	IF (post:estado_presu != 4) THEN
+		CALL tes:CDSpromo_aplicaEspV
+		CALL tes:CDSinhibeUpEspV
+	END IF
+    
+	/* Si el cliente es Cuentacorrentista se controla que si no se ingresó
+	la subespecie y la cantidad, y da <enter>, no aparezca en el Fin de
+	Sesión una transaccion con subespecie y cantidad en blanco .
+	Andrea - 18/2/99 */
+	IF (post:cli_tipo == 1 && post:estado_presu != 4) THEN
+		adt_evaux_suc = op:op_branch_id
+		adt_evaux_op = op:op_operator_id
+		adt_evaux_tesoro = "N"
+		adt_evaux_codigo = espv_cod
+
+		CDS SELECT FROM DSC:AuxEspV_tbl BECOMES DSC:AuxEspV_ctx \
+			WHERE adt_evaux_suc ==  op:op_branch_id && \
+			adt_evaux_op == op:op_operator_id && \
+			adt_evaux_tesoro == "N" && \
+			adt_evaux_prestran == 0
+		CDS FINDFIRST DSC:AuxEspV_ctx LOCK
+
+		LET lib:err_retval = CDSRETVAL
+			IF (lib:err_retval == -801) THEN
+				MOVE "(L) MOVIMIENTO NO INGRESADO" TO drv:error_msg
+				CALL  OFB:drv:error_msg
+				RETURN (-2)
+				CDS UNLOCK DSC:AuxEspV_ctx
+				CDS ENDSELECT DSC:AuxEspV_ctx
+				RETURN (-2)
+			END IF
+		END IF
+
+    IF (post:estado_presu != 1) THEN
+      tlr:INDdocs_list = 0
+    END IF
+    
+		/* MLD Se modifica para reingenieria. La supervision es en la primera pasada */
+		;IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+		IF (post:estado_presu != 4) THEN
+			/* Controlo que tenga stock */
+			CALL MISCcontrol_imp_ev
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+		CALL siaf:SVALnivel_sup
+		IF (RETVAL == -3) THEN
+			CALL post:MISCrechazo_transac
+			RETURN -3
+		ELSE
+			IF (RETVAL < 0) THEN
+				RETURN (RETVAL)
+			END IF
+		END IF
+
+		/* MLD Para reingenieria, en estado 4 no se debe mostrar la pantalla de confirmacion */
+		IF (post:estado_presu == 1) THEN
+			IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN
+				POPUP tes:SCRNconfirma
+				IF (siaf:continua_transaccion == "N" || LASTKEY == RT_ESC) THEN
+					RETURN (-2)
+				END IF
+			END IF
+		END IF
+
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+	END IF
+
+	//Tratamiento Cliente Medio
+	IF (post:cli_tipo == CLIMED && post:estado_presu != 4) THEN
+		//Verifico si alguna de las especies vendidas bonifica CM
+		CALL tes:MISCEsp_BonificaCM
+		IF (RETVAL == 0) THEN
+			post:bonificaCM = "S"
+		ELSE
+			post:bonificaCM = "N"
+		END IF
+	END IF
+    
+	/* Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+	IF (post:estado_presu != 1 && post:estado_presu != 4) THEN
+		CALL MISCSinIva_Esp
+		/* Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago - Gabriel Falciola*/
+		CALL post:MISCAcumTotalesSes
+	ELSE
+		IF (post:estado_presu == 1) THEN
+			/* La rutina MISCSinIva_Esp esta puesta aca para generar los importes en los
+			campos ImporteSinIvaNeto e ImporteConIvaNeto que se utilizan en el caso de reverso */
+			CALL MISCSinIva_Esp
+			CLEARFIELD siaf:ImporteConIva
+			CLEARFIELD siaf:ImporteSinIva
+			/* Se acumula el importe total según la Especie - HERNAN - 26/10/2000
+			Por el momento no se va a acumular por la especie sino por el
+			código siaf. Pero la dejo comentada porque más adelante se va a usar
+			CALL post:MISCTotalTransac(tes:adt_evaux_codigo) */
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+			post:TotalSinIva = 0
+			siaf:importe = 0
+		END IF
+	END IF
+
+	IF (post:estado_presu != 4) THEN
+		post:PreDForFis = adt_espv_formfiscal
+		CALL post:MISCRestFlia
+		CALL post:MISCGrabaDetalleTrn
+		IF (post:estado_presu ==  2) THEN
+			CALL MISCactuali_AuxEspV
+			//Tratamiento Cliente Medio
+			IF (post:cli_tipo == CLIMED) THEN
+				CALL tes:MISCEspeciesCM
+			END IF
+		END IF
+	END IF
+
+	imp_auxi2 = siaf:importe
+	siaf:importe = post:ImporteConIvaNeto
+	//siaf:importe = imp_auxi1
+
+  CALL post:MISCvuelto_sin_ses("")
+
+  siaf:importe = imp_auxi2
+
+	IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+		/* Journaliza cada subespecie vendida */
+		CALL MISCjnl_venta_ev
+		IF (RETVAL <0) THEN
+			RETURN (-2)
+		END IF
+		UNPROTFIELD siaf:moneda
+		UNPROTFIELD siaf:importe
+	END IF
+
+	/* Si es la confirmacion, actualizo el estado al final*/
+	IF (post:estado_presu == 4) THEN
+		/* Se acumula el importe total según la Especie - HERNAN - 26/10/2000 */
+		;CALL post:MISCTotalTransac(tes:adt_evaux_codigo)
+		CALL post:MISCTotalTransac(siaf:codigo_siaf)
+		/* Dejo una marca para las restricciones */
+		CALL post:MISCGrabaDetalleTrn
+	END IF
+
+	/*MLD -  Deshabilito el botón de Menu Principal y Menu de Actividades*/
+	IF (post:estado_presu == 1 && post:Modo == "R") THEN
+		LET drv:button = TFB2
+		CALL  drv:but_disable
+		LET drv:button = TFB3
+		CALL  drv:but_disable
+	END IF
+
+	drv:header = "YYNYYT    salida_caja"
+	IF (post:estado_presu == 3) THEN
+		CALL CDSevauxActRecords
+		//Tratamiento Cliente Medio
+		IF (post:cli_tipo == CLIMED) THEN
+			//resguardo
+			NroTrn = post:PreDNroTrn
+			//borro los descuentos de la presudet que se borraron de la AuxEspV
+			CALL tes:CDSBorroDescCM
+			//recupero
+			post:PreDNroTrn = NroTrn
+			//actualizo los descuentos de la presudet en base a la AuxEspV
+			CALL tes:MISCEspeciesCM
+		END IF
+	END IF
+    
+	IF (post:estado_presu == 1 || post:estado_presu == 2) THEN
+		CALL post:MISCactivar_buts
+	END IF
+    
+	/*Captura la pantalla para calcular el vuelto a entregar al cliente de acuerdo
+	con lo abonado por el mismo - Gabriel Falciola*/
+	;CALL post:MISCvuelto_sin_ses ("")
+	
+	siaf:importe = post:ImporteConIvaNeto
+	CALL post:MISCcap_teclas_rap(siaf:importe)
+
+END SUB
+
+/*******/

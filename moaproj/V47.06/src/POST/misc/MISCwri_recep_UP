@@ -1,0 +1,161 @@
+/****o* Pendientes de agrupación/OFB:post:MISCwri_recep_UP
+* NOMBRE
+*   OFB:post:MISCwri_recep_UP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCwri_recep_UP
+LOCAL lretval LIKE lib:err_retval
+local up_retval like lib:err_retval
+
+	/* Variables para uso local */
+	common:trap_reset = OFB:lib:KEYSreset_esc
+    siaf:i = 0
+    TotGralProdUP = 0
+    AcumTotProd = "N" //La uso para saber si acumule algo en el picklist de totales por porducto (Si es N, es porque no entro nunca y directamente imprimo el vector que acumula por pagina, es decir, no me supero una pagina (con respecto al ancho, a las Nis)).
+    ImpAcumProd = "N" //La uso para saber si ya imprimi los totales de los productos o si los tengo que imprimir al final de todo.
+    
+    ;LMB - PS 9780 - 14.07.2008
+    ;CALL CSR:file_open 7 "/te mp/lisrecup.lis" "w"
+    FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "lisrecup.lis"
+    CALL CSR:file_open 7 common:tmpDirTemporal "w"
+    
+    IF (RETVAL < 0) THEN
+      ERRMSG LST:common:errmsg_list,"Error al abrir el archivo lisrecup.lis"
+      RETURN (-2)
+    END IF
+
+
+	//Imprimo encabezado
+	call post:MISCencab_rec_up
+
+
+	//Borro toda la stockpUP_lis
+	Call post:CDSdel_stockpUP_lis
+	
+	//Recorro la stockpUP y almaceno en la stockpUP_lis
+	Call post:MISCproceso_stockpUP
+	lretval = retval
+	//Recorro la stockpUP_simp y almaceno en la stockpUP_lis
+	Call post:MISCpr_stockpUP_simp
+	//if (retval != 0 && lretval != 0) then
+	if (retval == 0 || lretval == 0) then
+	
+		//Borro todos los registros que me hayan quedado con 0 (la cantidad)
+		Call post:CDSdel_stockpUP_lis0
+		
+		//Cargo los codigos de productos en un picklist. Leo de la tabla CodTrack.
+		Call post:MISCcargo_prod_pic
+	
+		//Cargo las columnas de la matriz con las NIS de la stockpUP_lis.
+		Call post:MISCcargo_col_mat
+		DO
+			if (retval != 0) then
+				break
+			end if
+	
+			//Recorro el Picklist que contiene todos los productos y cargo de a 34 en la matriz
+			//de impresion.
+			let idx = 0
+			//Cargo la matriz con el picklist
+			Call post:MISCcargo_prod_mat
+			DO
+				if (retval < 0) 
+					break
+				end if
+				
+				//Cargo la matriz con los valors que tiene la tabla que cree. stockpUP_lis
+					
+			    row = 1 //En la 0 tengo los titulos de las NIS
+			    DO
+			    	If (row > PROD_PP - 1)  Then
+						break
+					end if	
+					if (mat_imp[row][0] == "") then
+						break
+					end if
+					col = 1
+					DO
+						if (col > UP_REC_PP - 1) then
+							break
+						end if
+						if (mat_imp[0][col] == "") then
+							break
+						end if
+						CDS SELECT FROM dsc:stockpUP_lis_tbl BECOMES dsc:stockpUP_lis_ctx WHERE \
+						post:adt_stockpUP_prod == mat_imp[row][0] && \
+						post:adt_stockpUP_NisUP == mat_imp[0][col]
+						CDS FINDFIRST dsc:stockpUP_lis_ctx LOCK
+						lib:err_retval = CDSRETVAL
+						if (lib:err_retval != 0) then
+							mat_imp[row][col] = 0
+						else
+							CDS EXTRACT dsc:stockpUP_lis_ctx post:adt_stockpUP_cant
+							mat_imp[row][col] = post:adt_stockpUP_cant
+						end if
+						CDS ENDSELECT dsc:stockpUP_lis_ctx
+						col = col + 1
+					LOOP
+					row = row + 1
+				LOOP			
+				
+				/******* Comienza la generacion del archivo a imprimir ************/
+	
+				//Imprimo Matriz
+				Call post:MISCimp_mat_lis
+					
+				//Vuelvo a cargar la matriz con lo que quede en el picklist.
+				Call post:MISCcargo_prod_mat
+			LOOP	
+			//Imprimo los totales por NIS
+			Call post:MISCimp_vec_up
+			
+			//Vuelvo a ver si tengo mas NIS para imprmir, en la stockpUP_lis
+			Call post:MISCcargo_col_mat
+		LOOP	
+		if (ImpAcumProd == "N") then
+			//Imprimo los totales por productos (si no los imprimi antes)
+			Call post:MISCimp_vec_totp
+		end if
+
+		common:csr_string = "   "
+		CALL MISCwrite_rec_up	
+	
+	else
+		// no hay piezas buzon para listar
+		up_retval = -2
+	end if
+	
+	//verifico si existen Piezas buzon, de ser así las incluyo en el listado
+	CALL MISCwri_piezasBuzon
+	if (retval == -2 && up_retval == -2)
+		common:csr_string = "    NO EXISTEN PIEZAS RECIBIDAS PARA LISTAR"
+		CALL MISCwrite_rec_up
+	end if
+	
+	//Cierro Archivo
+	call CSR:file_close 7
+	
+	// Borro Picklist
+	call csr:f_sadroppl Pic:PICaux_medios
+	call csr:f_sadroppl Pic:PICmedios
+	
+	
+	//Hasta aca todas las impresiones y cosas fueron hechas sobre el ARCHIVO
+	//Ahora lo imprimo.
+END SUB
+
+/*******/

@@ -1,0 +1,81 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrest_saldo
+* NOMBRE
+*   OFB:post:MISCrest_saldo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+//Ejecuta todas las Restricciones y me devuelve un picklist
+//con los Medios de Pago habilidatos 
+// Parametros de Entrada
+// CodigoTransaccion
+// Nombre del picklist
+// Ver saldo. Si este parametro tiene una "S", reviso que el medio de pago haya tenido
+// saldo inicial 0 y ningun movimiento para excluirlo.
+
+Sub post:MISCrest_saldo(Suc,NombPickList,ver_saldo,tipo_pic)
+    Local Error like lib:err_retval
+    
+    post:SupMedPago = "N"
+    
+    //Borro y Creo el PickList y el Auxiliar
+    call csr:f_sadroppl FLD:NombPickList
+    call csr:f_sadroppl PIC:PICmedios
+    call csr:f_sadroppl Pic:PICaux_medios
+    call csr:f_sanewpl dsc:pic_medios,PIC:PICmedios
+    call csr:f_sanewpl dsc:aux_pic_medios  ,PIC:PICaux_medios
+    
+    //Buscar todos los Medios de Pago  que no tienen restricciones
+    Cds Select from MEDIOS_TAB becomes MEDIOS_CTX where post:adt_mp_rest == "N"
+    Cds Findfirst MEDIOS_CTX nolock
+    While (CDSRETVAL != -801)
+        Cds Extract MEDIOS_CTX all
+        call post:MISCproceso_linea(post:adt_mp_cod,ver_saldo,tipo_pic,"N")
+ 	    CDS FindNext MEDIOS_CTX nolock
+    End While
+    Cds EndSelect MEDIOS_CTX
+    // Paso a Un Picklist la Tabla para que sea mas rapido dada la cantidad 
+    // de veces que se va acceder
+    // Busco todas las Restricciones
+    Cds Join from MEDIOS_TAB as "Medios" , RMEDIOS_TAB as "Restricciones"   \
+    becomes RMEDIOS_CTX  where ("Medios".post:adt_mp_cod == "Restricciones".post:adt_medpag_cod )
+    
+    //( "Medios".post:adt_mp_rest == "S"  && 
+    Cds Findfirst RMEDIOS_CTX nolock
+    While (cdsretval == 0)
+        Error = 0
+	    Cds Extract RMEDIOS_CTX  All 
+        If ( post:adt_mp_rest == "S"  && post:adt_rmedpag_bloq != "S")
+            /* Si el Medio de Pago Requiere supervision, directamente
+            seteo el flag */
+            Call MISCcheck_SupMedPago(post:adt_rmedpag_sup)
+	        // Tiene restriccion por provincia
+	        if ( post:adt_rmedpag_prov == "S" ) 
+		        Call MISCrestriccion_prov(Suc,adt_medpag_cod)
+    	        Error = Retval
+	        End If
+	        If ( Error == 0) 
+                call post:MISCproceso_linea(post:adt_mp_cod,ver_saldo,tipo_pic,SupMedPago)
+	        Endif 
+ 
+            SupMedPago = "N"
+        End If
+        Cds findnext RMEDIOS_CTX nolock
+    End While
+    Cds EndSelect RMEDIOS_CTX
+    call csr:PickOp 4 dsc:pic_medios "0,2"
+End Sub
+
+/*******/

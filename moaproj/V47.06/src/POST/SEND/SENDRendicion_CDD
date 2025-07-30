@@ -1,0 +1,95 @@
+/****o* Rendición Piezas CDD/OFB:post:SENDRendicion_CDD
+* NOMBRE
+*   OFB:post:SENDRendicion_CDD
+* DESCRIPCION
+*   Rutina de confirmacion de la TX REndicion De Piezas CDD.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDRendicion_CDD
+
+  	//Verificar si es un lote existente en la StockpCDD y no permitir la carga!!
+	CALL CDSverif_lote_CDD	
+	if (RETVAL < 0) then
+	    RETURN -2
+	endif
+	
+  	if (CDD_plan_total != CDD_total_ing) then
+  		MSGBOX "EXISTEN DIFERENCIAS ENTRE EL TOTAL DE LA PLANILLA Y LA SUMATORIA DE LOS IMPORTES CREM COBRADOS",0x00,"AVISO"
+  		UNPROTFIELD CDD_plan_total
+  		RETURN -2
+  	ENDIF
+  	PROTFIELD CDD_plan_total
+  	
+  	move "S"  to siaf:continua_transaccion
+	popup siaf:SCRNcontinua
+	if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+            // 0x0190 = ESC
+            return -2
+      	endif
+      	
+      	
+  	//Guardo registros de la tabla temporal StockpCDD_Aux en la tabla StockpCDD
+	CALL post:CDS_Save_StockpCDD 		
+	//elimino las piezas correspondiente a la fecha y nro de planilla ingresadas de la StockpCDD_Aux para que no queden como pendientes	
+        CALL post:CDSDel_StockpCDD_Aux
+ 	
+    	/*Journalizo la Cabecera de Rendicion de Piezas CDD 99091*/
+    	    	
+		UNGETKEY RT_SEND
+    		CALL post:MISCclear_campos_jou
+    		siaf:adt_tran_codigo = 99091
+	      	siaf:codigo_siaf = 99091
+    	   	tlr:tran_mnemonic = "SVTTRP"
+	       	siaf:nombre_transac = "RENDICION DE PIEZAS CDD"
+		drv:INDscr = SCR:SCRNHdr_CDD
+    		drv:INDjnl_rtn = OFB:post:JNLHdr_CDD
+	    	CALL tlr:JNLtran
+	    	UNGETKEY RT_SEND
+	/*recorro la StockpCDD y por cada pieza ingresada journalizo una 99092*/    
+        	CALL MISCJnl_Detalle_CDD
+    		
+	/*journalizo la captura a cobrar 99099*/
+		UNGETKEY RT_SEND
+		siaf:codigo_siaf = 99099
+	      	Call siaf:PRESfecha_hora
+		If ( Retval < 0 )
+			return -1
+		End IF
+		siaf:moneda = "00"
+		siaf:importe = post:CDD_plan_total
+		importe_origen = siaf:importe
+		MOVE siaf:adt_tran_afec_efvo TO siaf:afecta_efectivo
+		post:adt_mp_cod = siaf:moneda
+		CAll post:CDSadt_MedPago_load
+		Tipo_Adm = adt_mp_adm
+		medio_pago_desc = post:adt_mp_desc
+		DescripMedPag = medio_pago_desc
+		
+		drv:INDscr = SCR:post:SCRNcaptura_adiciona
+		drv:INDcur_tran = LST:TRAN99099
+		drv:INDjnl_rtn = OFB:JNLmulti_MedioPag
+		//tlr:INDtots_append =
+		drv:INDspc_rtn[0] = LST:TOTS99099
+	    	CALL tlr:JNLtran
+   
+   ;Para que no journalice de más....
+  	CALL post:MISCclear_campos_jou
+  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  	Resetflag tlr:tran_flags,correction
+  	
+  
+END SUB
+
+/*******/

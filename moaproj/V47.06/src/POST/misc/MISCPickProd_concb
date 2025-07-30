@@ -1,0 +1,87 @@
+/****o* Pendientes de agrupación/OFB:post:MISCPickProd_concb
+* NOMBRE
+*   OFB:post:MISCPickProd_concb
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCPickProd_concb
+    LOCAL LineaPick LIKE common:csr_string
+    LOCAL LIndice   LIKE siaf:i
+    
+    //Arma picklist con los productos que pueden componer un combo
+    LIndice = 0
+    
+    ;Destruyo PickList que pudiera haber quedado
+    CALL CSR:f_sadroppl DSC:PickProd_concb
+    
+    ;Genero El PickList
+    CALL CSR:f_sanewpl DSC:PickProd_concb PIC:PickProd_concb 490 300
+
+    //Agrega Servicios (Postales,Encomiendas,Monetarios,Telegraficos)
+    CDS SELECT FROM DSC:adt_serv_table BECOMES DSC:adt_serv_context \
+    WHERE adt_serv_tipo != "VA"
+    CDS FINDFIRST DSC:adt_serv_context NOLOCK    
+    WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:adt_serv_context adt_serv_serv adt_serv_desc adt_serv_tipo
+		CLEARFIELD LineaPick
+        FPRINT FLD:LineaPick "%-40.40s (%-2.2s) %-20.20s" \
+        adt_serv_desc,adt_serv_tipo,adt_serv_serv
+        ;Agrego en el Pick List
+        CALL CSR:f_saaddpl DSC:PickProd_concb FLD:LineaPick
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:adt_serv_context NOLOCK
+	END WHILE
+    CDS ENDSELECT DSC:adt_serv_context
+    
+    //Agrega Productos Varios
+    CDS SELECT FROM DSC:adt_prodvs_table BECOMES DSC:adt_prodvs_context
+	CDS FINDFIRST DSC:adt_prodvs_context NOLOCK
+    WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:adt_prodvs_context adt_prodvs_cod adt_prodvs_desc
+		CLEARFIELD LineaPick
+        FPRINT FLD:LineaPick "%-40.40s (PV) %-20.20s" \
+        adt_prodvs_desc,adt_prodvs_cod
+        ;Agrego en el PickList
+        CALL CSR:f_saaddpl DSC:PickProd_concb FLD:LineaPick
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:adt_prodvs_context NOLOCK
+	END WHILE
+    CDS ENDSELECT DSC:adt_prodvs_context
+    
+    //Agrega Especies Valorizadas
+    CDS SELECT UNIQUE tes:adt_espv_cod \
+        FROM DSC:tes:Especie_tbl BECOMES DSC:tes:Especie_ctx
+    CDS FINDFIRST DSC:tes:Especie_ctx NOLOCK
+    WHILE (CDSRETVAL == 0)
+        CDS EXTRACT DSC:tes:Especie_ctx tes:adt_espv_cod
+        CLEARFIELD LineaPick
+        FPRINT FLD:LineaPick "%-40.40s (EV) %-20.20s" \
+        tes:adt_espv_cod,tes:adt_espv_cod
+        CALL CSR:f_saaddpl DSC:PickProd_concb FLD:LineaPick
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:tes:Especie_ctx NOLOCK
+	END WHILE
+	CDS ENDSELECT DSC:tes:Especie_ctx
+	
+	IF (LIndice > 0) THEN
+	    CALL CSR:PickOp 4 DSC:PickProd_concb "0,40"
+	ELSE
+		MSGBOX "NO EXISTEN PRODUCTOS QUE PUEDAN COMPONER UN COMBO",0x00,"AVISO"
+		RETURN (-2)
+	END IF
+END SUB
+
+/*******/

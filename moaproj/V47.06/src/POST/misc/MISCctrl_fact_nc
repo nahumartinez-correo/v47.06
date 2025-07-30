@@ -1,0 +1,145 @@
+/****o* Transferencias Bancarias/OFB:post:MISCctrl_fact_nc
+* NOMBRE
+*   OFB:post:MISCctrl_fact_nc
+* DESCRIPCION
+*   CARGA LOS CAMPOS Y VECTORES CON LOS QUE SE HARAN EL VIAJE DE INGRESO DE FACTURA.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:MISCctrl_fact_rem
+* REFERENCIADO POR
+*   OFB:post:MISCctrl_fact_TB
+* DOCUMENTACION
+*   NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCctrl_fact_nc
+
+ local idx like siaf:i
+    local i_idx like siaf:i
+    local varl_imp_rem like post:importe_factura
+    local varl_imp_consumo like	 post:importe_factura    
+    local varl_tipo_fact like post:consulta_ordenCM
+    local cont like siaf:i
+	  local i_fact like siaf:i
+	  local limporte like siaf:importe
+	
+		
+	clearfield imp_nc_consumida //Importe de las NOTAS de CREdito seleccionadas para consumir
+	//siaf:i = 0 //Se usa para contar la cantidad total	de facturas y nc seleccionadas 
+	cont = 0   //Se usa para contar la cantidad de notas de credito
+	i_fact = 0 //se usa para contar la cantidad de facturas no vencidas seleccionadas
+	
+	//Recorro el picklist de facturas
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	//ordenarlo por tipo y nro de comprobante 
+	CALL csr:PickOp PICKOP_SORT dsc:facturas_cliente "0,16"
+	
+	call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+
+	Do
+		if (retval < 0)
+	    	break
+	    end if
+		fprint post:csr_string_250,"%s  ",post:csr_string_250
+	
+		If (substr(post:csr_string_250,62,1) == "*")
+  
+			if (substr(post:csr_string_250,0,1) == "F") then
+				vec_facturas[siaf:i] = substr(post:csr_string_250,1,15)
+				vec_impfact[siaf:i] = substr(post:csr_string_250,17,16)
+				vec_saldofact[siaf:i] = substr(post:csr_string_250,45,16)
+				vec_tipofact[siaf:i] = substr(post:csr_string_250,103,1)
+				/* Almaceno el secuenciador */
+				vec_seqfac[siaf:i] = substr(post:csr_string_250,121,15)
+				//recupero el importe del remito para devolverle al saldo
+				//varl_imp_rem = substr(post:csr_string_250,137,16) //OJO EL IMPORTE DEL REMITO ESTA EN OTRA POSICION!!!
+				varl_imp_rem = substr(post:csr_string_250,152,16) 
+				//recupero el importe del consumo de adelanto
+				//varl_imp_consumo = substr(post:csr_string_250,153,16) //OJO EL CONSUMO ESTA EN OTRA POSICION!!!
+				varl_imp_consumo = substr(post:csr_string_250,169,16)
+				/*Sumo los importes de las facturas seleccionadas*/
+				siaf:importe = siaf:importe + substr(post:csr_string_250,45,16)
+				//Indica si la factura proviene de una orden de compra/int.punitorios => no tengo que actualizar el credito
+				//hay que generar otro campo con los valores de las facturas de oc para que se le reste de total cobranza
+				//antes de mandar el mensaje
+				//varl_tipo_fact = substr(post:csr_string_250,168,1)//OJO EL TIPO DE FACTURA ESTA EN OTRA POSICION!
+				varl_tipo_fact = substr(post:csr_string_250,186,1)
+				vec_fact_fecha[siaf:i] = substr(post:csr_string_250,187,2) +  substr(post:csr_string_250,190,2) * 100 + substr(post:csr_string_250,193,4) * 10000
+				// MFM - Sumo el importe real de las facturas, en caso de que provengan de una fact.auto.			
+				if (varl_imp_rem > 0) then
+					post:total_cobranza = post:total_cobranza + varl_imp_rem
+						limporte = limporte  + varl_imp_rem //acumulo en limporte para saber si se emite recibo
+				else
+					post:total_cobranza = post:total_cobranza + substr(post:csr_string_250,45,16)
+						limporte = limporte  +  substr(post:csr_string_250,45,16) //acumulo en limporte para saber si se emite recibo
+				endif
+			
+				//PS 9330/9331
+				if (varl_tipo_fact == "I") then
+					//este despues lo resto de total cobranza antes del viaje!!
+					post:resta_saldoCM = post:resta_saldoCM + substr(post:csr_string_250,45,16)
+				endif
+			
+				//PS 9337 - Pidieron que en la tabla remitos del switch, cuando el remito pertenezca a una 
+				//OC, se guarde el importe original del mismo, esto hace que tenga que modificar
+				//el tratamiento del campo resta_saldoCM porque sino en la cobranza de facturas
+				//se está devolviendo credito al cliente por una factura de una OC.
+				if (varl_tipo_fact == "O") then
+					post:resta_saldoCM = post:resta_saldoCM + varl_imp_rem
+				endif
+			
+				i_fact = i_fact + 1
+			else
+				//es nota de credito!
+				vec_nc_nro[cont] = substr(post:csr_string_250,1,15)
+				vec_nc_id[cont] = substr(post:csr_string_250,121,15) // al host debe viajar el fact_id
+				vec_nc_imp[cont] = substr(post:csr_string_250,17,16)
+				vec_nc_tipo[cont] = substr(post:csr_string_250,103,1)
+				vec_nc_fecha[cont] = substr(post:csr_string_250,187,2) +  substr(post:csr_string_250,190,2) * 100 + substr(post:csr_string_250,193,4) * 10000
+				//Acumulo el importe de las notas de credito seleccionadas para luego generar la TX de Consumo NC (99525)
+				imp_nc_consumida = imp_nc_consumida + vec_nc_imp[cont]
+				/*Se resta el importe de las nota de credito seleccionada*/
+				post:total_cobranza = post:total_cobranza - substr(post:csr_string_250,17,16)
+				cont = cont + 1
+			endif
+			siaf:i = siaf:i + 1
+		endif
+		
+		let idx = idx + 1
+	  let i_idx = PL_GETITEM + idx
+	  clearfield post:csr_string_250
+	  call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+	Loop
+	
+	if (i_fact == 0) then
+		post:ImprimeRecCob = FALSE
+	else
+	//PS 9329: Si las facturas fueron pagadas con adelanto entonces no debo emitir el recibo
+	//ya que el importe es cero.
+			if (limporte == 0) then
+				post:ImprimeRecCob = FALSE
+			else
+				post:ImprimeRecCob = TRUE
+			endif
+	end if
+	
+	//si no hay facturas seleccionadas no puede haber nc seleccionadas
+	if (i_fact == 0 && cont > 0) then
+			return (-3)
+	end if
+	
+	
+	//Sumo tambien el importe de las Facturas
+	post:importe_saldo = post:importe_saldo + siaf:importe
+	//Resto el importe de las notas de credito
+	siaf:importe = siaf:importe - imp_nc_consumida
+	
+END SUB
+
+/*******/

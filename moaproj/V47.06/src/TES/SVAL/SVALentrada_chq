@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALentrada_chq
+* NOMBRE
+*   OFB:tes:SVALentrada_chq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrada_chq
+	LOCAL superviso LIKE tes:rend_sup
+	LOCAL idx LIKE siaf:i
+    
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (tes:chmov_login_orig.NUMCHARS == 0 || val_moneda[0].NUMCHARS == 0) THEN
+			LET common:csr_string = "FALTAN INGRESAR DATOS"
+			ERRMSG common:errmsg_list,FLD:common:csr_string
+			RETURN (-2)
+		END IF
+	END IF
+	
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		CALL tes:CDSCheqMov_lock
+		/* Esta lockeado */
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+	END IF
+    
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		POPUP tes:SCRNconfirma  
+		IF (siaf:continua_transaccion == "N" || LASTKEY == RT_ESC) THEN
+			RETURN (-2)
+		END IF
+	END IF
+	
+	CALL siaf:SVALnivel_sup
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+ 
+	// Guardo si fue supervisada para marcar las otras
+	superviso = rend_sup
+	IF (TESTFLAG(tlr:tran_flags,supovr_granted)) THEN
+		LET rend_sup = "S"
+	ELSE
+		LET rend_sup = "N"
+	END IF
+
+	IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN		
+		//Me fijo si alguno no tiene la marca de aceptado.
+		PasesRech_cant = 0
+		idx = PL_GETITEM
+		DO
+			CALL csr:myPickcontrol(DSC:PICPasesRech,common:csr_string,idx)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+	        
+			// Si se quiere rechazar
+			// verifico que el operador origen del pase no haya cerrado su caja
+			CALL tes:CDSchk_open_caj(tes:chmov_suc_id,tes:chmov_op_id_orig)
+			/* la caja esta cerrada o no se pudo leer el registro de rend.*/
+			IF (RETVAL < 1 && (tes:chmov_codtran == 8900||tes:chmov_codtran == 8580 )) THEN 	     
+				LET common:csr_string = "(L) IMPOSIBLE RECHAZAR EL PASE. OPERADOR ORIGEN CERRO CAJA"
+				ERRMSG common:errmsg_list,FLD:common:csr_string
+				RETURN (-3)
+			END IF
+			idx = idx + 1
+			PasesRech_cant = PasesRech_cant + 1
+		LOOP
+
+		IF (PasesRech_cant != 0) THEN //Hay algun pase que NO esta aceptado
+			//Grabo todos los que No esten aceptados
+			CALL MISCgrabo_chq_rech
+		END IF
+		
+		//A partir de aca me quedan todos los pases que estan aceptados		
+		CALL MISCgrabo_chq_acep        
+        
+		//LET drv:INDspc_rtn[2] = ofb:TRANprint_cheques
+		CLEARFIELD drv:INDjnl_rtn     
+	ELSE  
+		// (reversa)
+		//  verifico que el operador origen del pase no haya cerrado su caja */
+		CALL tes:CDSchk_open_caj(op:op_branch_id,tes:chmov_op_id_orig)
+		IF (RETVAL < 1 && tes:chmov_codtran == 8580) THEN
+			/* la caja esta cerrada o no se pudo leer el registro de rend.*/
+			LET common:csr_string = "(L) IMPOSIBLE REVERSAR. OPERADOR ORIGEN CERRO CAJA"
+			ERRMSG common:errmsg_list,FLD:common:csr_string
+			RETURN (-2)
+		END IF
+	
+		CALL MISCreverso_sesion
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+		
+		CALL MISCsend_msg_dest(tes:tmov_login_orig,"REVERSO SU PASE DE VALORES")
+		/* Por último actualizo el encabezado */
+	END IF
+    
+  rend_sup = superviso
+  CALL post:MISCflecha_restore
+    
+END SUB
+
+/*******/

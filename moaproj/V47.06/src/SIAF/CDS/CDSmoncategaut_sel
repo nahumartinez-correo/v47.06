@@ -1,0 +1,102 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSmoncategaut_sel
+* NOMBRE
+*   OFB:siaf:CDSmoncategaut_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSmoncategaut_sel
+ local LFecha like siaf:adt_cat_hasta
+
+    fprint LFecha "%04.04s%02.02s01" \
+        substr(siaf:per_fis_afipmmaaaa,2,4) \
+        substr(siaf:per_fis_afipmmaaaa,0,2)
+
+    select (siaf:form_grupo)
+      case 12 // Tratamiento Especial Para F.719
+		CDS SELECT FROM DSC:siaf:MonCatAutAfip_tbl \
+            BECOMES DSC:siaf:MonCatAutAfip_cont \
+		    WHERE (siaf:adt_importe_aut > 0 && \
+  		          ((siaf:adt_cat_hasta >= FLD:LFecha || \
+                    siaf:adt_cat_hasta == "00000000") && \
+                   (siaf:adt_cat_desde <= FLD:LFecha)) && \
+		          (siaf:adt_categoria == 7 || siaf:adt_categoria == 8))
+        break
+      case 17 // Tratamiento Especial Para F.1662
+      case 19 // Tratamiento Especial Para F.1670
+		CDS SELECT FROM DSC:siaf:MonCatAutAfip_tbl \
+            BECOMES DSC:siaf:MonCatAutAfip_cont \
+			WHERE siaf:adt_importe_aut > 0 && \
+  		          ((siaf:adt_cat_hasta >= FLD:LFecha || \
+                    siaf:adt_cat_hasta == "00000000") && \
+                   (siaf:adt_cat_desde <= FLD:LFecha))
+        break
+	  case else
+		CDS SELECT FROM DSC:siaf:MonCatAutAfip_tbl \
+            BECOMES DSC:siaf:MonCatAutAfip_cont \
+            where ((siaf:adt_cat_hasta >= FLD:LFecha || \
+                    siaf:adt_cat_hasta == "00000000") && \
+                   (siaf:adt_cat_desde <= FLD:LFecha))
+	end select
+
+    IF (CDSRETVAL < 0 ) THEN
+         ERRMSG LST:common:errmsg_list, \
+                "Error al buscar los códigos de categoria."
+         CDS ENDSELECT DSC:MonCatAutAfip_cont
+         RETURN (-2)
+    END IF
+
+	CDS FINDFIRST DSC:MonCatAutAfip_cont NOLOCK
+
+	//cargar el picklist
+	CALL csr:f_sanewpl("mon_cat_aut",PIC:siaf:mon_cat_aut, 20)
+	DO
+		IF (CDSRETVAL != 0 ) THEN
+			BREAK
+		END IF
+
+	    CDS EXTRACT DSC:MonCatAutAfip_cont ALL
+
+		FPRINT common:csr_string "%3.3s %-20.20s %16e" \
+		   siaf:adt_categoria, siaf:adt_cat_des, siaf:adt_importe_aut
+
+		CALL csr:f_saaddpl("mon_cat_aut",common:csr_string)
+
+		CDS FINDNEXT DSC:MonCatAutAfip_cont NOLOCK
+	LOOP
+
+	CALL csr:f_sadopl "mon_cat_aut"  common:csr_string
+	IF (RETVAL < 0) then //sino selecciono ningun item.
+		call csr:f_sadroppl("mon_cat_aut")
+		CDS ENDSELECT DSC:MonCatAutAfip_cont
+		RETURN (-1)
+	END IF
+
+
+	FPRINT siaf:mon_cat_autonomo "%d" substr(common:csr_string,0,3)
+	//FPRINT siaf:importe_21_prop  "%e"  substr(common:csr_string,25,16)
+
+	//REFRESH 	siaf:importe_21_prop
+	REFRESH 	siaf:mon_cat_autonomo
+	SETVALDONE 	siaf:mon_cat_autonomo
+
+	call csr:f_sadroppl("mon_cat_aut")
+
+	CDS ENDSELECT DSC:MonCatAutAfip_cont
+    RETURN (0)
+
+END SUB
+
+/*******/

@@ -1,0 +1,120 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:SVAL6670
+* NOMBRE
+*   OFB:post:SVAL6670
+* DESCRIPCION
+*   Rutina PRES de la transaccion de Cobro por Cuenta de Terceros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN6670
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL6670
+	LOCAL loc_retval LIKE lib:err_retval
+
+	loc_retval = 0	
+
+	SELECT (post:estado_presu)
+		CASE 2
+			IF (TESTFLAG(admin:mode_flags,grb)) THEN                  
+				CALL post:MISCcupon_tmp_agreg
+				RESETFLAG admin:mode_flags,grb
+				RETURN (-2)
+			END IF
+			IF (TESTFLAG(admin:mode_flags,act)) THEN
+				CALL post:MISCcupon_tmp_agreg
+				RESETFLAG admin:mode_flags,act
+				RETURN (-2)
+			END IF
+			IF (TESTFLAG(admin:mode_flags,bor)) THEN
+				CALL MISCcupon_tmp_borrar
+				RESETFLAG admin:mode_flags,bor
+				RETURN (-2)
+			END IF
+      
+      //gpb:PS10716 
+			CDS SELECT FROM DSC:post:cupon_tmp_table BECOMES DSC:post:cupon_tmp_ctx WHERE \
+			post:cupon_tmp_operator == op:op_operator_id SORT "CupOrden"
+			//post:cupon_tmp_operator == op:op_operator_id SORT "primary"
+
+			CDS FINDFIRST DSC:post:cupon_tmp_ctx LOCK
+			loc_retval = CDSRETVAL
+			IF (loc_retval == -801) THEN
+				CDS ENDSELECT DSC:post:cupon_tmp_ctx
+				MSGBOX "NO SE CARGARON CUPONES A COBRAR",0x00,"Error"
+				RETURN (-2)
+			END IF
+			
+		CASE 3
+			WHILE (loc_retval == 0)
+				IF (post:estado_presu == 2) THEN
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTdatos_cuponCCT)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTdatos_cuponCCT)
+					CDS EXTRACT DSC:post:cupon_tmp_ctx ALL
+				ELSE
+					CALL post:MISCtotal_cupon_tmp("PRESUDET") 
+					IF (RETVAL < 0 )  THEN
+						RETURN (-2)
+					END IF
+				END IF
+
+				post:captura_mp = siaf:adt_tran_med_pago
+				/*
+				siaf:moneda = 99
+				clearfield post:medio_pago_desc
+				*/
+				CALL siaf:SVALnivel_sup
+				IF (RETVAL < 0) THEN
+					CALL CSR:proc_list(F_CLEAR,LST:post:LISTdatos_cuponCCT)
+					CALL CSR:proc_list(F_REFRESH,LST:post:LISTdatos_cuponCCT)
+					RETURN (-2)                    
+				END IF
+
+				siaf:importe = post:importe_CCT
+				//Se acumula el Importe Total  en la tabla PresuPag
+				//No acumula en AuxIngBr debido a que no tiene formulario fiscal asociado post:PreDForFis (vacio)
+				CALL post:MISCAcumTotalesSes
+				//CALL pot:MISCRestFlia
+				CALL post:MISCGrabaDetalleTrn
+				IF (post:estado_presu == 2) THEN
+					//gpb:Original
+					//CDS FINDAGAIN DSC:post:cupon_tmp_ctx LOCK
+					//CDS DELETE DSC:post:cupon_tmp_ctx
+					//CDS FINDNEXT DSC:post:cupon_tmp_ctx LOCK
+				
+					//<--gpb:PS10716, debido a que la consulta se ordena por un indice y no por el primary,
+					//al hacer el DELETE y despues el FINDNEXT se estaba perdiendo el contenxto
+					CDS DELETE DSC:post:cupon_tmp_ctx
+					CDS ENDSELECT DSC:post:cupon_tmp_ctx
+					//vuelvo a hacer la consulta
+					CDS SELECT FROM DSC:post:cupon_tmp_table BECOMES DSC:post:cupon_tmp_ctx WHERE \
+						post:cupon_tmp_operator == op:op_operator_id SORT "CupOrden"
+					CDS FINDFIRST DSC:post:cupon_tmp_ctx LOCK
+					//gpb:PS107016-->
+					
+					loc_retval = CDSRETVAL
+				ELSE
+					BREAK
+				END IF
+			END WHILE
+			CDS ENDSELECT DSC:post:cupon_tmp_ctx
+			BREAK
+		CASE 4
+			//Marca la tx de cct en la presudet como journalizada.
+			CALL post:MISCGrabaDetalleTrn
+			//para que la listtran ejecute post:MISCimprimo_CCT e imprima firma validadora
+			siaf:imprime_comprobante = "D"
+	END SELECT
+	CALL csr:f_sadroppl "servicio"    
+    
+END SUB
+
+/*******/

@@ -1,0 +1,121 @@
+/****o* Pendientes de agrupación/OFB:tes:PRES_7580
+* NOMBRE
+*   OFB:tes:PRES_7580
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRES.h"
+
+SUB tes:PRES_7580
+    LOCAL l_codigo_siaf LIKE siaf:codigo_siaf
+
+    clearfield siaf:siaf_status //limpia variable que indica si hubo caida en vuelo en la busqueda de la cuenta del cliente corporativo.
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+        if (common:br_modCB != "S") then
+            move "No posee habilitación para Modo Cuentas Bancarias" to drv:error_msg
+	    call OFB:drv:error_msg
+	    return (-1)
+        end if
+        CALL tes:MISCclrfld_comunes
+        /* Calculo la fecha tope */
+	call siaf:MISCctrl_fecha_tope(common:system_date,common:emp_chqrech,"B",fecha_tope)
+    END IF
+    IF ((op:op_sup_auth != "X") && (op:op_tesoro != "S")) THEN
+        ERRMSG LST:common:errmsg_list, \
+        "No tiene el perfil necesario"
+        RETURN (-1)
+    END IF
+    CALL tes:MISCdia_laborable(common:system_date)
+    IF (RETVAL < 0) THEN
+    	ERRMSG LST:common:errmsg_list, \
+        "Hoy no es un día laborable para la sucursal."
+        RETURN (-1)
+    ENDIF
+
+
+   //cgw:limpia variables de viajes (no autoclear) que pudieran arrastrarse de alguna otra transaccion.
+   CLEARFIELD giros:clave_hdr_giros
+   CLEARFIELD giros:Firma_comm
+   CLEARFIELD giros:firma_enviada
+   CLEARFIELD giros:codigo_procesamiento
+
+
+    setflag tes:exit_prec,do_prec
+    siaf:nombre_transac.HIGHLITE = 0
+
+    IF (testflag(tlr:tran_flags,correction)) THEN
+    	//cgw:recupera siaf:codigo_siaf leido del journal.
+    	//    Si luego de las aperturas se paso por el desktop luego de llegar a la reversa de esta transaccion,
+    	//    siaf:codigo siaf tiene valor limpio y su area de dupeo tiene el codigo de la transaccion a reversar.
+    	l_codigo_siaf = siaf:codigo_siaf //reserva el codigo de transaccion.
+    	SWAPDUP siaf:codigo_siaf
+    	IF (siaf:codigo_siaf != 7580 && siaf:codigo_siaf != 7590) THEN
+    	    //cgw: La razon de este tratamiento es porque luego de las aperturas si se llega a la reversa de esta transaccion
+    	    //     sin volver al desktop, el area de dupeo de siaf:codigo siaf arrastra valores que no corresponden.
+    	    //     Con este tratamiento se evita problemas en la recuperacion del siaf:codigo_siaf correcto.
+    	    CLEARFIELD siaf:codigo_siaf
+    	    SWAPDUP siaf:codigo_siaf
+    	ELSE
+    	    //cgw:este caso se corresponde cuando luego de las aperturas y sin salir del desktop, se llega a la reversa de 7590,
+    	    //    y luego se realiza 7580 y se la reversa, queda siaf:codigo_siaf con valor 7580 y su area de dupeo 7590.
+    	    //    Con este tratamiento se evita problemas en la recuperacion del siaf:codigo_siaf correcto.
+    	    IF (l_codigo_siaf == 7580 || l_codigo_siaf == 7590) THEN
+    	    	CLEARFIELD siaf:codigo_siaf
+    	        SWAPDUP siaf:codigo_siaf
+    	    END IF
+    	END IF
+        l_codigo_siaf = siaf:codigo_siaf
+        SWAPDUP siaf:codigo_siaf
+        siaf:codigo_siaf = l_codigo_siaf
+    ELSE	
+        siaf:codigo_siaf = 7580
+    END IF
+
+    siaf:restr_otra_casa         = "N"
+    siaf:linea_validacion        = "S"
+    siaf:exhibe_pantalla         = "S"
+    siaf:imprime_comprobante     = "D"
+    siaf:afecta_efectivo         = "-"
+    tes:es_tesoro                = "S"
+    tes:viaja_nro_tesoro         = "N"
+    let siaf:INDhost_snd_fv = fld:drv:INDspc_rtn[6]
+    
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+    	//cgw:no es necesario limpiar Cuenta, de lo contrario puede traer problemas en el dupeo.
+        protfield post:CliCod
+        clearfield post:CliCod
+        refresh post:CliCod
+
+        //cgw:limpia para que no arrastre valores.
+        clearfield post:importe_origen
+        refresh post:importe_origen        
+        clearfield post:climed_tipo
+        clearfield post:climed_numero
+
+        clearfield post:item_motivo //cgw:limpia concepto seleccionado por boton.
+        clearfield tes:sel_concep_pb //cgw:limpia campo modo de seleccion concepto.
+
+    END IF
+    //protfield post:ClsuCod
+    //clearfield post:ClsuCod
+    //refresh post:ClsuCod
+    call siaf:PRESfecha_hora
+    if (retval < 0) then
+        return (-1)  /* Sale de la transaccion dentro de una pres */
+    endif
+    let tes:lugar_cuenta = 1
+    RETURN (RETVAL)
+END SUB
+
+/*******/

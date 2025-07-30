@@ -1,0 +1,156 @@
+/****o* Pendientes de agrupación/OFB:post:MISClst_RepRDD
+* NOMBRE
+*   OFB:post:MISClst_RepRDD
+* DESCRIPCION
+*   Cuerpo del reporte de Retiro de Dinero
+* ENTRADAS
+*   link_num = canal de comunicacion de acceso a archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCrep_RDD
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_RepRDD(link_num) 
+	LOCAL l_registro LIKE common:csr_string
+	LOCAL l_registro_ant LIKE common:csr_string
+	LOCAL l_cant LIKE siaf:i
+	LOCAL l_cant_sub_tot LIKE siaf:i
+	LOCAL l_cant_tot LIKE siaf:i
+	LOCAL l_importe LIKE siaf:importe2
+	LOCAL l_importe_sub_tot LIKE siaf:importe2
+	LOCAL l_importe_tot LIKE siaf:importe2
+	LOCAL l_terminalID LIKE post:adt_opvpi_terminalID
+	LOCAL l_merchaCode LIKE post:adt_opvpi_merchaCode
+	LOCAL l_login_id  LIKE post:adt_opvpi_login_id 
+	LOCAL l_amount LIKE post:adt_opvpi_amount
+	LOCAL l_terminalID_ant LIKE post:adt_opvpi_terminalID
+	LOCAL l_merchaCode_ant LIKE post:adt_opvpi_merchaCode
+	LOCAL l_login_id_ant  LIKE post:adt_opvpi_login_id 
+	LOCAL split LIKE common:csr_string
+	LOCAL l_linea LIKE common:csr_string
+
+	LET l_importe = 0
+	LET l_importe_sub_tot = 0
+	LET l_importe_tot = 0
+	LET l_cant = 0
+	LET l_cant_sub_tot = 0
+	LET l_cant_tot = 0
+	LET split = "----------------------------------------------------------------------------------------------------"
+
+	CDS FINDFIRST DSC:post:OperacionesVPI_ctx NOLOCK
+	
+	LET lib:err_retval = CDSRETVAL
+	
+	IF (lib:err_retval == -801) THEN 
+	  CDS ENDSELECT DSC:post:OperacionesVPI_ctx
+    	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "No se efectuaron Retiros de Dinero para el período solicitado",0x00,"Aviso"
+		END IF   
+		RETURN (-2)
+	END IF 
+
+	WHILE (lib:err_retval == 0)
+
+		CDS EXTRACT DSC:post:OperacionesVPI_ctx \
+			post:adt_opvpi_terminalID INTO l_terminalID \
+			post:adt_opvpi_merchaCode INTO l_merchaCode \
+			post:adt_opvpi_login_id INTO l_login_id \
+			post:adt_opvpi_amount INTO l_amount
+		
+		CLEARFIELD l_linea
+
+		IF (l_terminalID_ant.NUMCHARS == 0 && l_merchaCode_ant.NUMCHARS == 0 && l_login_id_ant.NUMCHARS == 0) THEN
+			LET l_terminalID_ant = l_terminalID
+			LET l_merchaCode_ant = l_merchaCode
+			LET l_login_id_ant = l_login_id
+		END IF
+		
+		IF (l_terminalID_ant != l_terminalID || l_merchaCode_ant != l_merchaCode) THEN
+			
+			FPRINT l_linea,"   %9.9s        %15.15s         %-14.14s         %6.6s             %14.14e",l_terminalID_ant,l_merchaCode_ant,l_login_id_ant,l_cant,l_importe
+			CALL post:MISCwrite_file_rdd (link_num,l_linea)
+			
+			IF (siaf:pantalla_impreso != "P") THEN
+				l_linea = " "
+				CALL post:MISCwrite_file_rdd (link_num,l_linea)
+				FPRINT l_linea,"<st>1</st>                                            Total transacciones: %4.4s  Importe Total: %14.14e",l_cant_sub_tot,l_importe_sub_tot
+				
+				CALL post:MISCwrite_file_rdd (link_num,l_linea)
+				CALL post:MISCwrite_file_rdd (link_num,split)
+			ELSE
+				l_linea = " "
+				CALL post:MISCwrite_file_rdd (link_num,l_linea)
+				FPRINT l_linea,"                                            Total transacciones: %4.4s  Importe Total: %14.14e",l_cant_sub_tot,l_importe_sub_tot
+				CALL post:MISCwrite_file_rdd (link_num,l_linea)
+				CALL post:MISCwrite_file_rdd (link_num,split)
+			END IF
+			
+			LET l_importe =  0
+			LET l_cant =  0
+			LET l_cant_sub_tot =  0
+			LET l_importe_sub_tot = 0
+			
+			LET l_terminalID_ant = l_terminalID
+			LET l_merchaCode_ant = l_merchaCode
+			LET l_login_id_ant = l_login_id
+		ELSE
+			IF (l_login_id_ant != l_login_id) THEN
+				FPRINT l_linea,"   %9.9s        %15.15s         %-14.14s         %6.6s             %14.14e",l_terminalID,l_merchaCode,l_login_id_ant,l_cant,l_importe
+				CALL post:MISCwrite_file_rdd (link_num,l_linea)
+				
+				LET l_importe =  0
+				LET l_cant =  0
+				LET l_login_id_ant = l_login_id	
+			END IF	
+		END IF
+		
+		LET l_importe = l_importe + (l_amount / 100)
+		LET l_cant = l_cant + 1
+		LET l_importe_sub_tot = l_importe_sub_tot + (l_amount / 100)
+		LET l_cant_sub_tot = l_cant_sub_tot + 1
+		LET l_importe_tot = l_importe_tot + (l_amount / 100)
+		LET l_cant_tot = l_cant_tot + 1
+		
+		CDS FINDNEXT DSC:post:OperacionesVPI_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+	END WHILE		
+	
+	FPRINT l_linea,"   %9.9s        %15.15s         %-14.14s         %6.6s             %14.14e",l_terminalID,l_merchaCode,l_login_id,l_cant,l_importe
+	CALL post:MISCwrite_file_rdd (link_num,l_linea)
+	
+	IF (siaf:pantalla_impreso != "P") THEN
+		l_linea = " "
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		FPRINT l_linea,"<st>1</st>                                            Total transacciones: %4.4s  Importe Total: %14.14e",l_cant_sub_tot,l_importe_sub_tot
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		CALL post:MISCwrite_file_rdd (link_num,split)
+		l_linea = " "
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		FPRINT l_linea,"<st>1</st>                                 Total general de transacciones: %4.4s  Total General: %14.14e",l_cant_tot,l_importe_tot
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+  ELSE
+		l_linea = " "
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		FPRINT l_linea,"                                            Total transacciones: %4.4s  Importe Total: %14.14e",l_cant_sub_tot,l_importe_sub_tot
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		CALL post:MISCwrite_file_rdd (link_num,split)
+		l_linea = " "
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+		FPRINT l_linea,"                                 Total general de transacciones: %4.4s  Total General: %14.14e",l_cant_tot,l_importe_tot
+		CALL post:MISCwrite_file_rdd (link_num,l_linea)
+  END IF
+	
+	CDS UNLOCK DSC:post:OperacionesVPI_ctx
+	CDS ENDSELECT DSC:post:OperacionesVPI_ctx	  
+
+END SUB
+
+/*******/

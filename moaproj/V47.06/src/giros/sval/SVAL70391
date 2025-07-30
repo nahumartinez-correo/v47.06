@@ -1,0 +1,390 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70391
+* NOMBRE
+*   OFB:giros:SVAL70391
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+sub giros:SVAL70391
+	LOCAL ind like siaf:i
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL importe_aux LIKE siaf:importe
+	local enSesion_aux like post:enSesion
+	local loc_combostr like common:csr_string
+	
+	// FGB 13.6.2001: Dado que la SVAL de una emision contiene toda la logica de la transaccion,
+	//  y que una caida del sistema resulta critica si no se reestablece a la misma en el punto 
+	// donde se cayo, es que se graba en la PresuDet un checkpoint indicando los pasos ya 
+	// realizados con el fin de continuar la transaccion sin repetir pasos.
+	// (situaciones desesperadas, requieren medidas desesperadas).
+	
+	select (checkpoint_emision)
+		case ANTES_JNL
+			goto antes_jnl
+			break
+		case ANTES_ANULACION
+			goto antes_anulacion
+			break
+		case ANTES_IMPRESION
+			goto antes_impresion
+			break
+		case ANTES_TOTAL_TRANSAC_1
+			goto antes_TotalTransac_1
+			break
+		case ANTES_TOTAL_TRANSAC_2
+			goto antes_TotalTransac_2
+			break
+		case ANTES_PRESUDET
+			goto antes_PresuDet
+			break
+		case else
+	end select
+	// FGB FIN 
+
+
+	// FGB 19.12.2001: Las emisiones de Giros NO PUEDEN ser hechas en modo teclas rapidas, por lo tanto, modifico
+    // las condiciones donde se pregunta por el estado del presupuesto (obviando la posibilidad de que sea 1) y
+	// controlo al principio que de no haber sesion, no se pueda continuar.
+	if (post:estado_presu == 1 || post:Modo == "R") then
+		if (post:estado_presu == 1) then
+			msgbox "NO HAY PRESUPUESTO ACTIVO\nIMPOSIBLE CONTINUAR",OFB_ICONEXCLAMATION,"Error"
+			ungetkey RT_ESC
+			return (-2)
+		else
+			let post:Modo = "NR"
+		endif
+	end if
+
+	if (ImporteNeto == 0 || ImporteNeto.numchars == 0 )
+		msgbox "DEBE INGRESAR UN IMPORTE",OFB_OK,"ERROR"
+		return -2
+	end if
+
+	select (post:estado_presu)
+	    CASE 1
+			// FGB 19.12.2001: Las emisiones de Giros NO PUEDEN ser hechas en modo teclas rapidas, por lo tanto, modifico
+    		// las condiciones donde se pregunta por el estado del presupuesto (obviando la posibilidad de que sea 1) y
+			// controlo al principio que de no haber sesion, no se pueda continuar.
+			msgbox "NO HAY PRESUPUESTO ACTIVO\nIMPOSIBLE CONTINUAR",OFB_ICONEXCLAMATION,"Error"
+			ungetkey RT_ESC
+			return (-2)
+			break
+		/*saliendo de la sesion*/
+	    CASE 2
+	    CASE 3
+	    
+	    	//Envío consulta de límite de sucursal pagadora para Transferencia Nacional
+	    	CALL OFBconsLimPagoTNac
+	    	IF (retval < 0)
+				giros:flia_giro_fld = giros:adt_giro_flia
+				// -2 cuando el comm_stat_init da problemas
+				// -3 cuando es != HOST_ACCEPTED
+				RETURN -2
+			ELSE
+				IF (ImporteNeto > LimTranPago)
+	    			giros:flia_giro_fld = giros:adt_giro_flia
+	    			MSGBOX "EL IMPORTE DE LA TRANSFERENCIA SUPERA EL LIMITE MAXIMO PERMITIDO A PAGAR EN LA SUCURSAL PAGADORA",0x00,"ERROR"
+					RETURN -2
+				END IF
+			END IF
+			giros:flia_giro_fld = giros:adt_giro_flia
+			
+			
+			POPUP SCR:giros:SCRNemis2 PRESbenef PCOLemis2 POSTCOLemis2
+			if (!testflag(opcionales_wu,fijo_dest)) then
+				CALL MISCcalculo_sellados(CodProvBenef_fld)
+			end if
+			ImporteTotal_fld = ((((((ImporteNeto + post:costo_opc) + Impuesto) \
+			+ Impuesto_abonado) + Comision_fld) + post:adt_tarif_fijo))
+			REFRESH ImporteTotal_fld
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			//
+			POPUP SCR:giros:SCRNemis1 PRESemis PCOLemis1 POSTCOLemis1
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			
+			// REEMPLAZO CHEQUE GP- COLECTAR NUEVOS CAMPOS
+       popup giros:SCRNemis3,PRESemis3,PCOLemis3,POSTCOLemis3
+		   if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			
+			// FGB 16.02.2005: me trato de asegurar de que no ingresen caracteres inválidos en los campos
+			call valido_flds_list
+			if (retval != 0) then
+				msgbox "Hay caracteres inválidos cargados (en Emisor o Beneficiario).\n (Ej: |, >, <, \, !, etc.)",OFB_OK,"Error"
+				return (-2)
+			endif
+		
+			setflag camara_flags,emis2
+			setflag camara_flags,emis1
+			call post:CDSpresudet_upd_dato
+			BREAK	    
+	    CASE 4
+			//Reingenieria
+			//POPUP SCR:giros:SCRNemis2 PRESbenef PCOLemis2 POSTCOLemis2
+			if (!testflag(opcionales_wu,fijo_dest)) then
+				CALL MISCcalculo_sellados(CodProvBenef_fld)
+			end if
+			ImporteTotal_fld = ((((((ImporteNeto + post:costo_opc) + Impuesto) \
+			+ Impuesto_abonado) + Comision_fld) + post:adt_tarif_fijo))
+			REFRESH ImporteTotal_fld
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			//
+			//Reingenieria
+			/*POPUP SCR:giros:SCRNemis1 PRESemis PCOLemis1 POSTCOLemis1
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			setflag camara_flags,emis2
+			setflag camara_flags,emis1
+			call post:CDSpresudet_upd_dato*/
+			BREAK
+
+		/*en sesion o modidficandola*/
+	//SOLO MANEJA LA PANTALLA PRINCIPAL DE ENVIO DE DATOS.
+    END SELECT
+   
+	  IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+	    /*msgbox "DESEA FINALIZAR LA TRANSACCION?",OFB_YESNO,"CONTINUAR"
+	    if (retval != 6) then
+		    //no
+		    init 33,0
+		    return (-2)
+	    end if*/
+	    
+	    //IDEM TRATAMIENTO WUI
+	    
+	    	msgbox "DESEA FINALIZAR LA TRANSACCION?",OFB_YESNO2,"CONTINUAR"
+		    if (retval == 7) then //NO
+		    	MSGBOX "NO SE OLVIDE de imprimir el Formulario Previo y verificar los datos con el cliente.",0x00,"ATENCION"
+				//	ungetkey RT_ESC
+					return -2
+		    else //6 (SI)  
+					msgbox "¿Confirma que el cliente verificó los datos filiatorios indicados en el Formulario Previo?",OFB_YESNO2,"Atencion"
+					if (retval == 7) then //NO
+					//	ungetkey RT_ESC
+						return -2
+					else //6 (SI)
+					endif
+			endif
+	END IF    
+	    
+	// popup giros:POPenvio_datos_wu
+	
+	;if (post:estado_presu < 4) then
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+		//
+		post:destino 	= post:adt_tarif_dest
+		post:unidad_fac = post:adt_tarif_um
+		//
+		//SC 50170
+		call post:MISCdesglosaIva(Comision_fld,post:adt_serv_aliciva,1,0)
+		ComisionSinIva_fld = post:ImporteSinIva
+		IvaComision_fld = post:ImporteIva
+		//SC 50170 FACTURACION
+		giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis
+		
+		//
+		post:ImpServUP = Comision_fld
+		post:AliServUP = post:adt_serv_aliciva
+		//
+		post:ImporteConIva = Comision_fld + post:costo_opc
+		//
+		ind = 0
+		while (ind < post:cant_opc)
+		    post:ImporteSinIva = post:ImporteSinIva + post:siniva_opc[ind]
+		    ind = ind + 1
+		end while
+	    post:ImporteSinIva = (post:ImporteSinIva + (giros:val_pala_wu - giros:iva_pala_wu))
+		//
+		call csr:cleararray(post:fliatran_vec)
+		call csr:cleararray(post:impciva_vec)
+		call csr:cleararray(post:impsiva_vec)
+		//
+		call MISCsumo_a_vectores(siaf:adt_tran_fliatran,Comision_fld,ComisionSinIva_fld)
+		//
+		ind = 0
+		while (ind < post:cant_opc)
+			call MISCsumo_a_vectores(post:flia_opc[ind],post:cos_opc[ind],post:siniva_opc[ind])
+		    ind = ind + 1
+		end while
+		//
+		if (CodProvSel_WU.NUMCHARS == 0) then
+			siaf:ProvImpuesto = CodProvBenef_fld
+		else
+			siaf:ProvImpuesto = CodProvSel_WU
+		end if
+	    call post:MISCImpSellosTratam("ING/EGR") /* llamo rutina de tratamiento de Sellados */
+		//
+		siaf:ImporteConIva = post:ImporteConIva
+		siaf:ImporteSinIva = post:ImporteSinIva
+		//
+		
+		/* Si la transaccion se cobra por porcentaje, esta SVAL deja la formula en el 
+		campo formuCalc para ser impreso en la factura*/
+		call SVALgralFormCalGiro		
+		
+	end if
+	//
+    //
+	siaf:siaf_status = HOST_ACCEPTED
+    ;if (post:estado_presu == 1 || post:estado_presu == 4) then
+    if (post:estado_presu == 4) then
+	//
+		call MISCemi_snapshot
+		call giros:CDSsval_chkpoint(ANTES_JNL)
+antes_jnl:
+		/* sba 20020108 - En caso que se haya caido la aplicación, despues de journalizar */
+		/* y quedando la sesión abierta, al reingresar hay que terminar la sesión. */
+		/* No tiene que volver a ejecutar la JNLtran */
+		call giros:CDSbusco_trx_jnl
+		if (retval == 0) then
+			let hcomm:tran_status = 003
+			goto after_jnl
+		end if
+		//
+
+	//
+		clave_hdr_giros = 0
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+
+;		UNDISPLAY SCR:giros:SCRN70391
+		// hago que entre a la JNLtran para que envie el msg y
+			// journalice la transaccion
+
+;			move "T" to substr(drv:header,5,1)
+
+;			move "1" to substr(drv:collect_done,0,1)
+		// SCR a Journalizar. -General entre 4 pantallas.
+
+		drv:INDscr  = SCR:giros:SCRN70391jnl
+		// Para que grabe en la posicion 0, la pantalla a
+		// journalizar.
+;		drv:screen_active = 0
+
+;		CUTSCREEN FLD:drv:INDcur_scr,CURRENTFIELD
+
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+		//
+		post:ImporteConIva = siaf:ImporteConIva
+		post:ImporteSinIva = siaf:ImporteSinIva
+		//
+		siaf:importe = post:ImporteConIva + ImporteNeto
+		//
+		post:ctrol_ult_tt = "S"
+		// SBA 04.02.2002 - parece que hay veces que el campo post:enSesion queda sucio
+		// y esto hace que el Pago quede journalizado con tlr:jnl_status = 002 (MEMO)
+		enSesion_aux = post:enSesion
+		clearfield post:enSesion
+		
+		call tlr:JNLtran
+		post:enSesion = enSesion_aux
+after_jnl:
+		post:ctrol_ult_tt = ""
+		//
+		let siaf:siaf_status = hcomm:tran_status
+		call giros:MISCemi_snapshot
+
+		IF (hcomm:tran_status != HOST_ACCEPTED) then
+			call giros:CDSsval_chkpoint(ANTES_ANULACION)
+antes_anulacion:
+			call MISCanulo_transac("NONE")
+		ELSE
+			call giros:CDSsval_chkpoint(ANTES_IMPRESION)
+antes_impresion:
+
+          /*  DO
+              msgbox "INGRESAR EL COMPROBANTE DE TRANSFERENCIA NACIONAL PARA IMPRIMIR",OFB_OK,"Atención"
+
+			  printdoc OFB:giros:PRT_ImpreEnvioWU,docprt,"Imprimiendo Comprobante..."	
+
+			  MSGBOX "Se imprimio correctamente el comprobante?",OFB_YESNO,"Servicio Monetario"
+			  IF (RETVAL == 6) THEN
+				  break
+			  END IF
+            LOOP*/
+      //REEMPLAZO CHEQUERA GIRO POSTAL
+			CALL giros:rutina_form_emision
+
+			 /*Llamo a la MISCTotalTransac solo si la transacción fue ACEPTADA. Hernán 21/12/2000 */
+
+			call giros:CDSsval_chkpoint(ANTES_TOTAL_TRANSAC_1)
+antes_TotalTransac_1:
+
+			// FGB 19.6.2001: en caso de caida del sistema, tengo que restaurar algunos campos...
+			call MISCemi_recall
+
+			/*CSZ - resguardo el importe de la tx y el formulario fiscal*/
+			importe_aux = siaf:importe
+			formulario_aux = post:PreDForFis
+
+
+			/*CSZ - Primero se llama a la rutina con el monto del giro emitido y el 
+			formulario fiscal vacio*/
+			CLEARFIELD post:PreDForFis
+			siaf:importe = ImporteNeto
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+			  
+			// FGB 12.02.2004 - Combos -
+			fprint loc_combostr "%e  ($%e)" giros:clave_hdr_giros,giros:ImporteNeto
+			call post:CDScb_prt_aux_save(post:adt_serv_nemonico,loc_combostr)
+
+			call giros:CDSsval_chkpoint(ANTES_TOTAL_TRANSAC_2)
+antes_TotalTransac_2:
+
+			// FGB 19.6.2001: en caso de caida del sistema, tengo que restaurar algunos campos...
+			call MISCemi_recall
+
+			/*CSZ - Luego se llama a la rutina con el monto del servicio(comision,
+			tasa y opcionales) que se cobra por la emision y el formulario fiscal
+			asociado al servicio*/
+			siaf:importe = post:ImporteConIva
+			post:PreDForFis = formulario_aux			  
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+			  
+			/*Restauro el importe de la tx*/
+			siaf:importe = importe_aux
+
+		END IF
+		call giros:CDSsval_chkpoint(ANTES_PRESUDET)
+antes_PresuDet:
+		CLEARFIELD drv:INDhcomm_rtn
+		CLEARFIELD drv:INDspc_rtn[1]
+		CLEARFIELD drv:INDcur_tran
+		CLEARFIELD drv:INDjnl_rtn
+		CLEARFIELD drv:INDspc_rtn[0]
+	end if
+	//
+	siaf:importe = post:ImporteConIva + ImporteNeto
+	//
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+		post:PreDForFis = post:adt_serv_formfiscal
+		call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+	end if
+	call post:MISCGrabaDetalleTrn  // ---> Grabo el Detalle
+	call post:MISCgrabo_sinsesion
+end sub
+
+/*******/

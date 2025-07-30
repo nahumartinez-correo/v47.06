@@ -1,0 +1,16 @@
+#include "ofbdefs.h"
+#include "drv.h"
+#include "admin_dt.h"
+#include "base.h"
+#include <csr.h>
+#include "pickdrv.h"
+#include "giros.h"
+#include "commdef.h"
+#include "descuento.h"
+#include "impresio.h"
+#define REST_REG "REGIONES:"
+#define REST_PRV "PROVINCIAS:"
+#define REST_SUC "SUCURSALES:"
+#define REST_CLI "CLIENTES:"
+#define REST_UP "UP:"
+

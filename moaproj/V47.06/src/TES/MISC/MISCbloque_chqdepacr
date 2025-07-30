@@ -1,0 +1,164 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCbloque_chqdepacr
+* NOMBRE
+*   OFB:tes:MISCbloque_chqdepacr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCbloque_chqdepacr
+    local i like siaf:i
+    LOCAL bco_ant     LIKE teso_cheq_id
+    LOCAL tipocta_ant LIKE teso_cheq_tipocta
+    LOCAL nrocta_ant  LIKE teso_cheq_nrocta
+    LOCAL total_cta   LIKE siaf:importe
+    LOCAL totales     LIKE siaf:importe
+
+    let siaf:lineas_cl = 0 // pone a cero el conteo de lineas
+    clearfield bco_ant
+    clearfield tipocta_ant
+    clearfield nrocta_ant
+
+    call csr:f_sadroppl dsc:Bloques
+    call csr:f_sanewpl dsc:Bloques pic:Bloques
+
+
+    /*Encabezado*/
+    call tes:MISCenc_chqdep_acr
+
+
+    if (post:umev_opcion == "TODAS") then
+       cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx  \
+       where (teso_cheq_suc     == FLD:common:sucursal_activa) && \
+             (teso_cheq_acred   == "N")                        && \
+             (teso_cheq_estado  == "P")
+    else
+       cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx  \
+       where (teso_cheq_suc     == FLD:common:sucursal_activa) && \
+             (teso_cheq_id      == FLD:banco_codigo)           && \
+             (teso_cheq_tipocta == FLD:tipo_cuenta)            && \
+             (teso_cheq_nrocta  == FLD:nro_cuenta)             && \
+             (teso_cheq_acred   == "N")                        && \
+             (teso_cheq_estado  == "P")
+    end if
+
+
+    CDS FINDFIRST TesoCheq_ctx NOLOCK
+    IF (cdsretval != 0)
+       MSGBOX "No hay Registros que Coincidan",0,"AVISO"
+       return (-2)
+    end if
+
+    total_cta = 0
+    totales   = 0
+
+
+    while (cdsretval == 0)
+            cds extract TesoCheq_ctx ALL
+
+            IF (!(bco_ant == teso_cheq_id && tipocta_ant == teso_cheq_tipocta && nrocta_ant == teso_cheq_nrocta))
+               // la moneda esta a partir de la posición 0 y ocupa 3, el clearing de la 60 a 63
+               call csr:PickOp 4 dsc:Bloques "0,3" "60,3"
+
+               let idx = 0
+               let i_idx = PL_GETITEM + 0
+
+               call csr:myPickcontrol dsc:Bloques common:csr_string i_idx
+               lib:err_retval = retval
+               While (retval >= 0)
+                  call MISCwrite_file(5,fld:common:csr_string)
+                  CALL tes:MISCcorte_hoja1
+                  let idx = idx + 1
+                  let i_idx = PL_GETITEM + idx
+                  call csr:myPickcontrol dsc:Bloques common:csr_string i_idx
+               End while
+
+
+               If (lib:err_retval >= 0)  /*para que la 1ra vez no lo imprima*/
+                  move "  " to common:csr_string
+                  call MISCwrite_file(5,fld:common:csr_string)
+                  fprint common:csr_string "TOTAL EN CUENTA                             %13.13e",total_cta
+                  call MISCwrite_file(5,fld:common:csr_string)
+                  totales = totales + total_cta
+                  total_cta = 0
+               end if
+
+
+               /*subencabezado*/
+               CALL tes:MISCsubenc_chqd_acr
+
+               call csr:f_sadroppl dsc:Bloques
+               call csr:f_sanewpl dsc:Bloques pic:Bloques
+
+            END IF
+            bco_ant       = teso_cheq_id
+            tipocta_ant   = teso_cheq_tipocta
+            nrocta_ant    = teso_cheq_nrocta
+
+            /* original
+            fprint common:csr_string "%3.3e       %3.3e  %8.8e      %13.13e        %10.10e           %3.3e",teso_cheq_moneda,teso_cheq_banco,teso_cheq_nro,teso_cheq_importe,teso_cheq_fdep,teso_cheq_clearing
+            */                
+				fprint common:csr_string "%3.3e  %3.3e  %20.20e %8.8e %13.13e  %10.10e  %3.3e    %1s",teso_cheq_moneda,teso_cheq_banco,teso_cheq_cuenta,teso_cheq_nro,teso_cheq_importe,teso_cheq_fdep,teso_cheq_clearing,teso_cheq_auto
+            call csr:f_saaddpl dsc:Bloques common:csr_string
+            total_cta = total_cta + teso_cheq_importe
+
+            cds findnext TesoCheq_ctx nolock
+
+    End While
+
+    // la moneda esta a partir de la posición 0 y ocupa 8, el clearing de la 60 al la 63
+    call csr:PickOp 4 dsc:Bloques "0,3" "60,3"
+
+    let idx = 0
+    let i_idx = PL_GETITEM + 0
+
+    call csr:myPickcontrol dsc:Bloques common:csr_string i_idx
+    DO
+        if (retval < 0)
+           break
+        end if
+        call MISCwrite_file(5,fld:common:csr_string)
+        CALL tes:MISCcorte_hoja1
+        let idx = idx + 1
+        let i_idx = PL_GETITEM + idx
+        call csr:myPickcontrol dsc:Bloques common:csr_string i_idx
+    LOOP
+
+
+    cds endselect TesoCheq_ctx
+
+    move "  " to common:csr_string
+    call MISCwrite_file(5,fld:common:csr_string)
+    fprint common:csr_string "TOTAL EN CUENTA                             %13.13e",total_cta
+    totales = totales + total_cta
+    call MISCwrite_file(5,fld:common:csr_string)
+
+
+    move "  " to common:csr_string
+    call MISCwrite_file(5,fld:common:csr_string)
+    call MISCwrite_file(5,fld:common:csr_string)
+
+    // Puede haber cuentas de diferentes moneda que no se pueden sumar
+    //fprint common:csr_string "TOTAL                                       %13.13e",totales
+    //call MISCwrite_file(5,fld:common:csr_string)
+
+    move "  " to common:csr_string
+    call MISCwrite_file(5,fld:common:csr_string)
+    call MISCwrite_file(5,fld:common:csr_string)
+
+    CALL tes:MISCtotal_hojas1
+
+END SUB
+
+/*******/

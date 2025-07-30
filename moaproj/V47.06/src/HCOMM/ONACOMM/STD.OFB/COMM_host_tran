@@ -1,0 +1,190 @@
+/****o* Pendientes de agrupación/OFB:hcomm:COMM_host_tran
+* NOMBRE
+*   OFB:hcomm:COMM_host_tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "ONACOMMSTD.OFB.h"
+
+SUB hcomm:COMM_host_tran
+    LOCAL hora LIKE post:hor_a
+    local l_campoIND like hcomm:INDhost_sndrt
+    LOCAL loc_mensaje LIKE common:csr_string
+    if (!testflag(common:rt_flags,reentry_active))
+        let common:trap_reset = ofb:lib:KEYSreset_lockout
+    end if
+
+    /* The hcomm:tran_status field is set by the COMM_stat_init	*/
+    /* routine which should be called from the transaction prior	*/
+    /* to COMM_host_tran.						*/
+#ifndef GIROS
+    if (hcomm:tran_status == MEMO || hcomm:tran_status == UNPOSTED)
+#else
+    if (hcomm:tran_status == MEMO || \
+        hcomm:tran_status == UNPOSTED || hcomm:tran_status == SEND_ERROR)
+#endif
+        goto exit_loop
+    END IF
+
+    call  OFB:hcomm:COMM_send
+    if (retval == OK)
+        call  OFB:hcomm:COMM_rcv
+    end if
+
+exit_loop:
+    /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+    /* Seteo para indicar que el mensaje no interesa */
+    if (host1.numchars > 0) then
+        comm set_event hcomm:host1 ofb:hcomm:COMM_unso
+    endif
+    /**/
+
+    /*  clearfield common:trap_reset */
+    if (hcomm:tran_status == UNPOSTED && lib:stat_reentry.numchars == 0)
+        CALL  hcomm:RENmisc_set_req
+        CALL  op:MISCckpt_state_flags
+    END IF
+
+/* MARTIN Y FEDERICO AGREGAN... */
+#ifndef GIROS
+    if (tran_status == UNPOSTED ||  \
+        (plataf:es_tran_plataf == 1 && tran_status == MEMO)) then
+#else
+    if (tran_status == UNPOSTED || tran_status == SEND_ERROR || \
+        (plataf:es_tran_plataf == 1 && tran_status == MEMO)) then
+#endif
+        if (siaf:codigo_siaf == 6860)
+            if (siaf:senial_sin_linea == 0)
+                if (testflag(common:rt_flags,batch_mode) && \
+                    batch:batch_options == "REC_CAIDAS_VUELO") then
+                    call batch:MISCgeneraLog("\nNo hay comunicacion con el host\n","AMBOS","N")
+                else
+                    errmsg common:errmsg_list,"NO HAY COMUNICACION CON EL HOST"
+                endif
+                let siaf:senial_sin_linea = 1
+            END IF
+        ELSE
+            if ( (!testflag(giros:giros_masivos,proc_gir_masivos )) || \
+                (!testflag(giros:giros_masivos_trx,proc_trx_masivos )) )
+                IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+                    hora = common:time_of_day
+                    FPRINT common:csr_string_171,"\n No hay comunicaci\xF3n con el host. Hora: %e ",hora
+                ELSE
+                    errmsg common:errmsg_list,"NO HAY COMUNICACION CON EL HOST"
+                END IF
+            end if
+        END IF
+    END IF
+    if (!testflag(common:rt_flags,reentry_active) && \
+        (tran_status >= 100)) then
+        beep
+    endif
+
+    /**/
+    /* MARTIN Y FEDERICO COMENTAN...
+    if (hcomm:tran_status >= HOST_REJECTED)
+        if (!testflag(common:rt_flags,reentry_active) )
+            errmsg common:errmsg_list,"TRANSACTION REJECTED BY HOST"
+        endif
+    endif
+    */
+#ifdef GIROS
+    if (hcomm:tran_status > HOST_REJECTED) then
+        if (testflag(giros:tran_send_mode,consulta_multiple) || \
+            testflag(giros:tran_send_mode,consulta_simple) || \
+            giros:consulta == 1)
+
+            IF (TESTFLAG(giros:tran_send_mode,ventaUP_diferida))
+            	CALL post:RCVEmsg_UP
+            	IF (RETVAL == (-1))
+            	    RETURN (-1)
+            	END IF
+            ELSE
+            	/*******PROCESO RT BATCH RECUPERACION CAIDAS********/
+            	IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+                    hora = common:time_of_day
+                    FPRINT common:csr_string_171,"\nNo se pudo realizar la consulta al switch. Hora: %e ",hora
+            	ELSE
+            	    /*******FIN PROCESO RT BATCH RECUPERACION CAIDAS********/
+                    MSGBOX "NO SE PUEDE REALIZAR LA CONSULTA" OFB_OK "Error"
+		    IF (giros:codigo_procesamiento == 998100) THEN
+		    	siaf:siaf_status = hcomm:tran_status //cgw:instancia para consultar si es caida en vuelo.
+        		FPRINT loc_mensaje,"%s%s",loc_mensaje,"/ALTA DE CLIENTE"
+        		MSGBOX loc_mensaje,OFB_OK,"Error"
+            	    END IF
+                END IF
+		let hcomm:tran_status = HOST_REJECTED
+            	RETURN (-1)
+            END IF
+        END IF
+        siaf:tran_retval = TRAN_CAIDA_VUELO
+
+        /*A pedido de Nina se cambia la leyenda que aparecera en el journal*/
+        //siaf:mensaje = "TRAN_CAIDA_VUELO"
+        siaf:mensaje = "ERROR DE COMUNICACION - TRANSACCION CANCELADA"
+        // EJ: Para el caso de una transccion de firma invalida
+        // donde se cayo la linea en la cancelacion.
+
+        // Resetear flag, para que no intente mandar la
+        // transaccion de nuevo.
+
+        resetflag tlr:controla_firma,cancelacion
+
+	if (post:jnl_flia_tran == "TES" && !TESTFLAG(giros:tran_send_mode,ventaUP_diferida) && \
+	    !TESTFLAG(giros:tran_send_mode,trat_cheques)) THEN
+	    /* rechazada por time out */
+	    hcomm:tran_status = HOST_REJECTED
+	    resetflag tlr:controla_firma, cancelacion
+ 	    siaf:tran_retval = HOST_REJECTED
+	    siaf:mensaje = "ERROR DE COMUNICACION - TRANSACCION RECHAZADA"
+
+	    clearfield drv:INDspc_rtn[3] ; No realiza LINK
+   	    clearfield drv:INDspc_rtn[4] ; No realiza impresion
+
+   	    /* CGW: Limpia tes:dt_app_aux */
+            if (tes:dt_app_aux == 4) || (tes:dt_app_aux == 5) then
+                clearfield tes:dt_app_aux
+            end if
+
+   	    cds unlock dsc:tes:DiaSuc_context
+            cds endselect dsc:tes:DiaSuc_context
+ 	end if
+
+    end if
+    // Rutina que setea el tlr:controla_marca en ON/OFF segun
+    // hcomm:tran_status, graba o borra marca en profiles
+    // del Operador.
+    ; PAW 16.7.2003: saco la restriccion para pagofacil pero agrego que solo sea en iPlan.
+    ;l_campoIND = OFB:post:SENDiplan
+    ; FGB 23.02.2005: ahora PFacil maneja varios mensajes.
+    IF ((post:jnl_flia_tran != "PF" && post:jnl_flia_tran != "TES") || \
+    	(post:jnl_flia_tran == "TES" && TESTFLAG(giros:tran_send_mode,ventaUP_diferida)) || \
+    	(post:jnl_flia_tran == "PF" && hcomm:INDhost_sndrt != 0 && post:adt_tran_sf1_codigo != 6660) || \
+    	(post:jnl_flia_tran == "TES" && testflag(giros:tran_send_mode,trat_cheques))) then
+        //Ver por que se excluyen las tx de familia tes
+        IF (!TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options != "REC_CAIDAS_VUELO")) THEN
+            CALL op:CDSop_marca_cien
+        END IF
+    END IF
+
+    //No me gusta el asunto de la hora... puede que este vacía...
+    IF (TESTFLAG(common:rt_flags,batch_mode) && batch:batch_options == "REC_CAIDAS_VUELO") THEN
+        IF (hora > 0)
+            //quiere decir que hubo una caída en vuelo
+            RETURN (TRAN_CAIDA_VUELO)
+        END IF
+    END IF
+END SUB
+
+/*******/

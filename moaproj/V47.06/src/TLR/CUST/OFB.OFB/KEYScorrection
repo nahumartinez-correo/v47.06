@@ -1,0 +1,157 @@
+/****o* Pendientes de agrupación/OFB:tlr:KEYScorrection
+* NOMBRE
+*   OFB:tlr:KEYScorrection
+* DESCRIPCION
+* 	Correction Key										
+* 	Correct displayed transaction if journal scan active.	
+* 	Correct previous transaction if idle.					
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "custOFB.OFB.h"
+
+	SUB tlr:KEYScorrection
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == CONFIRMATION) then
+	call post:MISClogMenues("tlr:KEYScorrection")
+	;endif
+#endif
+
+    //cgw:Cualquier motivo que no se pueda reversar se instancia return (-2).
+    //    De esta manera se puede capturar el error.
+    //    Antes salia de la rutina con return, no pudiendo indentificar el error.
+
+/* If scan active, convert displayed tran to "previous" tran */
+	if (testflag(lib:state_flags,scan_mode))
+		if (jnl_operator != op:op_operator_id)
+			move DSC:ERRdups_cor4 to drv:error_msg
+			CALL  drv:error_msg
+			return (-2)
+		END IF
+		// No se permite reversar en modo Presupuesto PJM 21-04-1998
+		// Ya que se complicaba demasiado manejar transacciones rechazadas y aceptadas
+		If ( MODO_PRESUPUESTO(post:estado_presu) )
+			MsgBox "No se puede reversar en Modo Presupuesto ",OFB_OK,"ERROR"
+			return (-2)
+		Endif
+		if (jnl_operator != op:op_operator_id)
+			errmsg common:errmsg_list,DSC:ERRdups_cor4
+			return (-2)
+		END IF
+		/* solo del dia */
+		if (jnl_bus_date != bus_date)
+			errmsg common:errmsg_list,DSC:ERRdups_cor5
+			return (-2)
+		END IF
+		/* Una Reversa que no puede Reversarse */
+		if (testflag(tlr:jnl_tran_flags,correction)) 
+			errmsg common:errmsg_list,DSC:ERRdups_cor6
+			return (-2)
+		END IF 
+		/* Una Transaccion que ya fue Reversada */
+		if (jnl_sequence_corr.numchars != 0 )
+			errmsg common:errmsg_list,DSC:ERRdups_cor3
+			return (-2)
+		END IF 
+		/* Martin y Sergio, para que no reverse, si la transaccion fue
+		   hecha fuera de linea y ahora estoy en linea.... 140596 */
+		if ( siaf:multiple == "S")
+			tlr:jnl_status = hcomm:tran_status
+		endif
+	        if (tlr:jnl_status == UNPOSTED && \
+			testflag(hcomm:state_flags,on_line))
+		    errmsg common:errmsg_list,\
+	   "(L) PARA REVERSAR ESTA TRANSACCION\nPRIMERO DEBE REALIZAR REENTRY"
+		    return (-2)
+		endif
+		/* si la transaccion fue rechazada no permito la reversa */
+		if (tlr:jnl_status >= 100)
+			errmsg common:errmsg_list,\
+				"(L) OPERACION NO PERMITIDA "
+			return (-2)
+		END IF
+
+		;REVERSA DE TRX.DE GIROS SIN COBRO DE SERVICIO POR JNL
+		call giros:CDSctrl_trx_giros
+		if (retval < 0)
+			return (-2)
+		end if
+
+		/* hasta aca agregada por martin */
+		/* journal scan will be waiting for a key */
+		ungetkey ' '
+//		setflag tran_flags,correction
+		resetflag tlr:state_flags,tran_active
+		swapdup jnl_tran_flags
+		swapdup INDtran_name
+		swapdup jnl_sequence
+	END IF
+	
+	// FGB 09.02.05: para q' no crea que a la reversa se la llama desde el browser
+	clearfield plataf:chosen_codtrn
+	clearfield plataf:chosen_lsttrn
+	
+/* If no tran active, correct "previous" tran from dup area */
+	if (!testflag(tlr:state_flags,tran_active))
+		/*  do a start tran */
+		let drv:INDrun_funct = 0
+		let drv:INDfld_tmp = ofb:tlr:KEYScorrection
+		CALL  csr:dt_tran DT_TRAN_START drv:INDfld_tmp
+		dupfield tlr:INDtran_name
+		if (INDtran_name != 0 )
+			dupfield jnl_tran_flags
+			if (testflag(tlr:jnl_tran_flags,correction))
+				move DSC:ERRdups_cor3 to drv:error_msg
+				CALL  drv:error_msg
+			else
+				dupfield jnl_sequence /* get original tran sequence */
+				let sequence_corr = jnl_sequence /* and save */
+				setflag tran_flags,correction
+				move "REVERSA"  to lib:stat_tlr_corr
+				let lib:stat_tlr_corr.highlite = 1
+				refresh lib:stat_tlr_corr
+				if ( !testflag(lib:state_flags,scan_mode))
+					dupfield all /* dup all fields */
+				END IF
+				let drv:INDrun_funct = tlr:INDtran_name
+				CALL  drv:do_mode
+			END IF
+		else
+			move DSC:ERRdups_cor1 to drv:error_msg
+			CALL  drv:error_msg
+		END IF
+		/* do an end tran */
+		let drv:INDfld_tmp = ofb:tlr:KEYScorrection
+		call post:MISCdumpCampos
+		CALL  csr:dt_tran DT_TRAN_END drv:INDfld_tmp
+		call post:MISClogCampos
+	else
+/* Else normal tran active */
+#if TLR_DUPS_CORCUR == 0
+		move DSC:ERRdups_cor2 to drv:error_msg
+#else
+		clearfield sequence_corr /* not correcting prev tran */
+		setflag tran_flags,correction
+		move "REVERSA"  to lib:stat_tlr_corr
+		let lib:stat_tlr_corr.highlite = 1
+		refresh lib:stat_tlr_corr
+#endif
+    END IF
+    /* inicio giros */
+	if (testflag(tlr:tran_flags,correction))
+		move giros:clave_hdr_giros to giros:clave_hdr_prev
+	end if
+	/* Fin giros */
+END SUB
+
+/*******/

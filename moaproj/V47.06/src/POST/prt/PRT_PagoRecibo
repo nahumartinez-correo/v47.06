@@ -1,0 +1,202 @@
+/****o* Pendientes de agrupación/OFB:post:PRT_PagoRecibo
+* NOMBRE
+*   OFB:post:PRT_PagoRecibo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_PagoRecibo
+
+local varl_contador	like siaf:i
+local varl_descripcion	like post:archivo
+local varl_descripcion2	like post:archivo
+local varl_moneda_bak	like siaf:moneda
+
+    call PRT_PagoReciboBody
+
+// detalle de Medios de Pago
+
+    PRT  POSITIONABS *3042 *288 
+    PRT  PRINT "Composición del pago"
+
+    let varl_contador = 0
+    let siaf:NRO_ITEM = 0 - 3198
+
+    PRT  TEXTFONTNAME "Courier New" // Arial no deja los importes alineados...
+
+    while (varl_contador < cant_valores && varl_contador < SAP_CANT_MAX_MPAG)
+	    PRT  POSITIONABS siaf:NRO_ITEM *315 
+	    PRT  PRINT EDIT ValorPago[varl_contador]
+	    PRT  POSITIONABS - *594 
+	    PRT  PRINT EDIT BancoPago[varl_contador]
+
+            clearfield adt_mp_int      // esto es pa' despues...
+            clearfield adt_codint_desc // idem
+
+            // saco la descripcion del banco...
+            let siaf:adt_banco_codigo = BancoPago[varl_contador]
+            clearfield siaf:adt_banco_desccorta // p' q' no arrastre basura
+            call siaf:CDSadt_banco_load
+            if (retval == 0) then
+               if (siaf:adt_banco_desccorta.NUMCHARS == 0 && \
+                   siaf:adt_banco_desc.NUMCHARS > 0) then
+                   siaf:adt_banco_desccorta = substr(siaf:adt_banco_desc,0,10)
+               end if
+            end if
+	    PRT  POSITIONABS - *891 
+            if (siaf:adt_banco_desccorta.NUMCHARS > 0) then
+	        PRT  PRINT EDIT siaf:adt_banco_desccorta
+            else
+// 
+// FGB 19.12.2000: Comento por cambiar el origen de la descripcion del medio
+// de pago, a partir de la 8.14 (carpeta medios de pago)
+//
+//                select (ValorPago[varl_contador]) 
+//                  case 00
+//	             PRT  PRINT "EFECTIVO"
+//	             break
+//                  case 97
+//	             PRT  PRINT "RETENCION ING. BRUTOS"
+//	             break
+//                  case 98
+//	             PRT  PRINT "RETENCION IVA"
+//	             break
+//                  case 99
+//	             PRT  PRINT "RETENCION GANANCIAS"
+//	             break
+//                end select
+// FGB fin
+                  // FGB 19.12.2000: modifico codigo para poner la descripcion 
+                  // de los medios de pago (a partir de la carpeta de Med.
+                  // de Pago)
+                  let adt_mp_cod = ValorPago[varl_contador]
+                  call CDSadt_MedPago_load
+                  if (retval == 0) then
+                      // FGB 17.1.2001: (Req.385) Cuando el medio de pago tiene
+                      // codigo interno, se imprimira la descripcion del mismo
+                      // y no la del medio de pago.
+                      if (post:adt_mp_int != "S") then
+                         let varl_descripcion = substr(post:adt_mp_desc,0,20)
+                         PRT PRINT EDIT varl_descripcion
+                      end if
+                  end if
+
+            end if
+
+	    PRT  POSITIONABS - *2187 
+	    PRT  PRINT EDIT Bco_Cuenta[varl_contador]
+            // FGB 19.12.2000: modifico codigo para poner la descripcion 
+            // de los codigos internos de los medios de pago (esto aparece
+            // a partir de la carpeta de Medios de Pagos)
+            if (adt_mp_int == "S") then // si tiene codigo interno
+	        // imprimo la descripcion
+	        let varl_moneda_bak = siaf:moneda
+	        let siaf:moneda = ValorPago[varl_contador]
+	        call tes:CDSexiste_codint(Bco_Cuenta[varl_contador])
+	        if (retval == 0) then
+	            let varl_descripcion2 = substr(adt_codint_desc,0,20)
+	            PRT  POSITIONABS - *891 
+	            PRT  PRINT EDIT varl_descripcion2
+	        else
+	            PRT  POSITIONABS - *3519 
+	            PRT  PRINT EDIT NumCuenta[varl_contador]
+	        end if
+	        let siaf:moneda = varl_moneda_bak
+            elseif (NumCuenta[varl_contador].NUMCHARS > 0) then
+	        PRT  PRINT EDIT NumCuenta[varl_contador]
+            end if
+
+
+
+
+	    PRT  POSITIONABS - *4653 
+	    //PRT  PRINT EDIT LEFT ImporteBanco[varl_contador]
+	    PRT  PRINT EDIT LEFT ImporteBase[varl_contador]	    
+	    let varl_contador = varl_contador + 1	    
+	    let siaf:NRO_ITEM = siaf:NRO_ITEM - 110 
+    end while
+
+// Analisis de Salto de Pagina
+
+    if (siaf:NRO_ITEM > -4464) then
+        PRT  POSITIONABS *4464 *297 
+        PRT  PRINT "** TOTAL"
+        PRT  POSITIONABS *4464 *4653 
+        PRT  PRINT EDIT LEFT siaf:importe
+
+        PRT  TEXTFONTNAME "Arial"
+        PRT  POSITIONABS *4689 *297 
+        PRT  PRINT "Aplicación del pago"
+    
+        PRT  POSITIONABS *4554 *189 
+        PRT  LINETO *4554 *5670 
+        PRT  POSITIONABS *4734 *189 
+        PRT  LINETO *4734 *5670 
+
+        let siaf:NRO_ITEM = 0 - 4854
+    else
+        PRT  POSITIONABS *6583 *297 
+        PRT  PRINT "** TOTAL"
+        PRT  POSITIONABS *6583 *4653 
+        PRT  PRINT EDIT LEFT siaf:importe
+
+        PRT  POSITIONABS *1440 *4950 
+        //PRT  POSITIONABS *6900 *4500 
+        PRT  PRINT "Hoja 1 de 2"
+
+        // hago salto de pagina
+        PRT  FORMFEED
+        call PRT_PagoReciboBody
+
+        PRT  POSITIONABS *3042 *288 
+        PRT  PRINT "Aplicacion del pago"
+
+        let siaf:NRO_ITEM = 0 - 3198
+
+        PRT  POSITIONABS *1440 *4950 
+       // PRT  POSITIONABS *6900 *4500 
+        PRT  PRINT "Hoja 2 de 2"
+    end if
+
+// Detalle de Comprobantes
+
+    PRT  TEXTFONTNAME "Courier New" // Arial no deja los importes alineados...
+
+    let varl_contador = 0
+    while (varl_contador < cant_comprob && varl_contador < SAP_CANT_MAX_COMP) 
+	    PRT  POSITIONABS siaf:NRO_ITEM *315 
+	    PRT  PRINT EDIT TipoComprobante[varl_contador]
+	    PRT  POSITIONABS - *720 
+	    PRT  PRINT EDIT ComprobanteDsc[varl_contador]
+	    PRT  POSITIONABS - *2187 
+	    PRT  PRINT EDIT NumComprobante[varl_contador]
+	    PRT  POSITIONABS - *4653 
+	    PRT  PRINT EDIT LEFT ImpComprobante[varl_contador]
+            if (TipoComprobante[varl_contador] == "NCR") then
+	        PRT  POSITIONABS - *5550 
+	        PRT  PRINT "-"
+            end if
+	    let varl_contador = varl_contador + 1
+	    let siaf:NRO_ITEM = siaf:NRO_ITEM - 110 
+    end while
+
+    PRT  POSITIONABS *7100 *351 
+    PRT  PRINT "** TOTAL"
+    PRT  POSITIONABS *7100 *4653 
+    PRT  PRINT EDIT LEFT siaf:importe2
+
+END SUB
+
+/*******/

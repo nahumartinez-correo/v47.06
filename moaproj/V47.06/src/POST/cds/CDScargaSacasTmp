@@ -1,0 +1,89 @@
+/****o* Expedicion/OFB:post:CDScargaSacasTmp
+* NOMBRE
+*   OFB:post:CDScargaSacasTmp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PRECcorteLinea, post:PRECllenadoSaca
+* DOCUMENTACION
+*   NI 50580 - Corte de Linea Agil
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaSacasTmp
+	/* Actualiza SacasTmp, cuando es Unica o No */
+	/* Jul. 1999 - B. Petrella - */
+	/* MFM - Agosto 2000 - Modificaciones*/
+	//indice_aux = 1 
+    CDS SELECT FROM DSC:post:NovTT_table BECOMES DSC:post:NovTT_ctx WHERE \
+	(post:adt_novtt_tipo == 15 || post:adt_novtt_tipo == 16 || \
+	post:adt_novtt_tipo == 99) && \
+	post:adt_novtt_saca == "S" && \
+	post:adt_novtt_saca_tipo != "" && \
+	post:adt_novtt_excep != "S" || \
+	(post:adt_novtt_excep == "S" && post:adt_novtt_excep_exis == "S")
+	
+	CDS FINDFIRST DSC:post:NovTT_ctx NOLOCK
+		
+	DO
+		IF (CDSRETVAL < 0)
+		  CALL MISCBorra_flds_NovTT
+	    CDS UNLOCK DSC:post:NovTT_ctx
+			CDS ENDSELECT DSC:post:NovTT_ctx
+			BREAK
+		END IF
+	  
+	  CALL MISCBorra_flds_NovTT
+	  CDS EXTRACT DSC:post:NovTT_ctx ALL
+		SELECT (siaf:codigo_siaf)
+		CASE 99040 //SACA
+			/*MFM - Grabo un registro en SacasTmp por cada pieza que deba ir a la saca y aun no
+			haya sido guardada en una*/
+			IF (adt_novtt_corte.numchars != 0 && adt_novtt_saca == "S" && \
+				adt_novtt_guia_saca == "")
+				/*MFM - Otra condición es que si la pieza debe pasar antes por un contenedor 
+				tengo que asegurarme de que haya sido asi*/
+				IF ((adt_novtt_contenedor == "S" && adt_novtt_guia_cont.numchars != 0) || \
+					(adt_novtt_contenedor == "N")) THEN
+					IF (post:adt_novtt_corte != "CRAPI") THEN
+						CALL CDSGraba_SacasTmp
+					ENDIF 
+				END IF
+			END IF
+		BREAK
+
+		CASE 99050 //LINEA
+		/*MFM - Grabo un registro en SacasLinTmp por cada saca que deba ir a la linea y aun no
+			haya sido despachada*/
+			 IF (adt_novtt_corte.numchars != 0 && adt_novtt_saca == "S" && adt_novtt_desp == "S" )
+					IF (( adt_novtt_guia_saca.numchars != 0 && adt_novtt_linea.numchars == 0)) THEN
+							IF (post:adt_novtt_corte != "CRAPI") THEN
+									CALL CDSGraba_SacasLinTmp
+							ENDIF 
+					ENDIF
+			ENDIF
+			
+		BREAK
+	 END SELECT
+		CDS FINDNEXT DSC:post:NovTT_ctx NOLOCK
+		
+	LOOP
+	
+	if (siaf:codigo_siaf == 99040) THEN
+		CALL CDSGraba_Simples
+	ENDIF
+/*   NI 50580 - Corte de Linea Agil
+	if (siaf:codigo_siaf == 99050) THEN
+		CALL CDSGraba_SimplesLin
+	ENDIF*/
+
+END SUB
+
+/*******/

@@ -1,0 +1,95 @@
+/****o* Pago en Destino/OFB:post:SVAL30070
+* NOMBRE
+*   OFB:post:SVAL30070
+* DESCRIPCION
+*   Rutina de Sval de la tx de Devolucion PED en Contingencia   
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN30070
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL30070
+	LOCAL indice     LIKE siaf:i
+
+	indice = PL_GETITEM
+	CALL csr:myPickcontrol(dsc:aux_pic_total,common:csr_string,indice)
+	IF (RETVAL < 0) THEN
+		MSGBOX "No hay piezas ingresadas",0x00,"Error"
+		drv:button = drv:last_button
+		CALL drv:but_up_enable
+		RETURN -2
+	END IF
+	
+	MOVE "S" TO siaf:continua_transaccion
+	POPUP siaf:SCRNcontinua
+	IF (siaf:continua_transaccion == "N" || LASTKEY == 0x0190 ) THEN
+		CALL csr:restore_currentfield
+		INIT 33,0
+		RETURN -2
+	END IF
+	
+	CLEARFIELD totalPiezasActivas
+	REFRESH totalPiezasActivas
+	
+	/* Journaliza el encabezado con otra pantalla */
+	drv:INDscr = SCR:post:SCRN30070_jnl_hdr
+	drv:INDjnl_rtn = OFB:post:JNLnada
+	
+	UNGETKEY RT_SEND
+	CALL tlr:JNLtran
+	UNGETKEY RT_SEND
+	
+	/*Actualizo las piezas seleccionadas y las journalizo*/ 
+	indice = 0 + PL_GETITEM
+	DO
+		CLEARFIELD common:csr_string
+		CALL csr:myPickcontrol(dsc:aux_pic_total,common:csr_string,indice)
+		IF (RETVAL < 0) THEN //no encontró ninguna pieza más.
+			BREAK
+		END IF
+		
+		CLEARFIELD Pieza
+		CLEARFIELD CRimp_cobrado
+		CLEARFIELD devolucionCont_date
+		CLEARFIELD stockp_ctaOM
+		CLEARFIELD stockp_fecha
+	
+		Pieza = SUBSTR(common:csr_string,0,32)
+		//CRimp_cobrado = SUBSTR(common:csr_string,33,12)
+		devolucionCont_date = SUBSTR(common:csr_string,68,8)
+		//stockp_ctaOM = SUBSTR(common:csr_string,77,10)
+		//CALL csr:trimfield(stockp_ctaOM)
+
+		//Actualizo los datos de las piezas ingresadas en el picklist
+		CALL post:CDSupd_30070
+
+		/* Journalizo el detalle*/
+		siaf:adt_tran_codigo = 30075
+		siaf:codigo_siaf = 30075
+		tlr:tran_mnemonic = "DPEDECD"
+		siaf:nombre_transac = "DETALLE DEVOLUCION PED EN CONTINGENCIA"
+		drv:INDscr = SCR:post:SCRN30070
+		drv:INDjnl_rtn = OFB:post:JNL30070
+		CALL tlr:JNLtran
+		UNGETKEY RT_SEND   
+		indice = indice + 1	
+	LOOP
+	
+	CLEARFIELD drv:INDsend_rtn
+	CLEARFIELD drv:INDscr
+	CLEARFIELD drv:INDjnl_rtn
+	CLEARFIELD drv:INDspc_rtn[0]
+	CLEARFIELD drv:INDspc_rtn[2]
+
+END SUB
+
+/*******/

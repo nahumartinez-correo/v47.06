@@ -1,0 +1,130 @@
+/****o* Transferencias Internacionales/OFB:giros:SVAL70383
+* NOMBRE
+* OFB:giros:SVAL70383
+* DESCRIPCION
+* Envio de Transferencia Internacional (SVAL). Tiene en cuenta los distintos estado de presupuesto de la sesion.
+* ENTRADAS
+* SALIDAS
+* RETURN (-2): No permite avanzar en la transaccion, vuelve a la Pantalla segun corresponda.
+* RETURN (-3): No permite avanzar en la transaccion, se ejecuta el ESC de la transaccion.
+* REFERENCIADO POR
+* LST:giros:TRAN70383
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70388
+	LOCAL importe_aux LIKE siaf:importe
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL enSesion_aux LIKE post:enSesion
+
+	/*	giros:SucSoli_fld = SUBSTR(common:sucursal_activa,0,1)
+		if (giros:ImporteEmis_fld.numchars == 0 && giros:ImportePago_fld.numchars == 0)
+		    msgbox "Debe ingresar el importe de emision o de destino",OFB_OK,"Error"
+		    return -2
+		end if
+	*/
+	//call giros:OFBcalcula_importes o 
+	CALL OFBcal_impEnvHOLD
+	
+	siaf:ProvImpuesto = SucSoli_fld
+	//call post:MISCImpSellosTratam("ING/EGR")
+	
+	lib:stat_override.highlite = 0
+	clearfield lib:stat_override
+	refresh lib:stat_override
+	clearfield ovr:ovr_sup_id
+	refresh lib:stat_override
+	resetflag tlr:tran_flags,oprovr_granted
+	resetflag tlr:tran_flags,supovr_granted
+
+	siaf:siaf_status = HOST_ACCEPTED
+		    //
+	post:ImpServUP = Comision_fld
+	post:AliServUP = post:adt_serv_aliciva
+		    //
+	//giros:ImporteTotal_WU = giros:ImporteEmis_fld + giros:comision_siniva + giros:opc_impsiniva[2] + giros:CargosAdic_fld
+		    //
+	post:ImporteConIva = Comision_fld //+ CargosAdic_fld + opc_impsiniva[2] + CargosIva_fld + opc_impiva[2]
+	post:ImporteSinIva = comision_siniva //+ CargosAdic_fld + opc_impsiniva[2]
+		    //
+	siaf:ImporteConIva = post:ImporteConIva
+	siaf:ImporteSinIva = post:ImporteSinIva
+		    //
+	call csr:cleararray(post:fliatran_vec)
+	call csr:cleararray(post:impciva_vec)
+	call csr:cleararray(post:impsiva_vec)
+		    //
+	call MISCsumo_a_vectores(siaf:adt_tran_fliatran,Comision_fld,comision_siniva)
+		    //
+	//ind = 0
+	/*while (ind < post:cant_opc)
+		call MISCsumo_a_vectores(post:flia_opc[ind],post:cos_opc[ind],post:siniva_opc[ind])
+		ind = ind + 1
+	end while*/
+	//
+	if (post:estado_presu == 1 || post:estado_presu == 4) then
+		//
+		giros:codigo_procesamiento = 442035
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		Call post:CDSobtiene_secuen("STAN")
+		//
+		tlr:INDdcol_scrn[0] = SCR:SCRN70388
+		tlr:INDdcol_scrn[1] = 0
+		tlr:INDdcol_scrn[2] = 0
+		tlr:INDdcol_scrn[3] = 0
+		//tlr:INDdcol_scrn[4] = 0
+		// parece que hay veces que el campo post:enSesion queda sucio
+		// y esto hace que la tx quede journalizado con tlr:jnl_status = 002 (MEMO)
+		enSesion_aux = post:enSesion
+		clearfield post:enSesion
+		post:ctrol_ult_tt = "S"
+		call tlr:JNLtran
+		post:ctrol_ult_tt = ""
+
+		post:enSesion = enSesion_aux
+		IF (hcomm:tran_status != HOST_ACCEPTED) THEN
+			call MISCanulo_transac("NONE")
+		ELSE
+			/* Llamo a la MISCTotalTransac solo si la transacción fue ACEPTADA. Hernán 21/12/2000*/
+			/*CSZ - resguardo el importe de la tx y el formulario fiscal*/
+			importe_aux = siaf:importe
+			formulario_aux = post:PreDForFis
+
+			/*CSZ - Primero se llama a la rutina con el monto del giro emitido y el 
+			formulario fiscal vacio*/
+			CLEARFIELD post:PreDForFis
+			siaf:importe = ImporteNeto
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+			/*CSZ - Luego se llama a la rutina con el monto del servicio(comision,
+			tasa y opcionales) que se cobra por la emision y el formulario fiscal
+			asociado al servicio*/
+			siaf:importe = siaf:ImporteConIva
+			post:PreDForFis = formulario_aux			  
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+			/*Restauro el importe de la tx*/
+			siaf:importe = importe_aux
+	
+	
+			//gpb:NI50547 HOLD TRANSACTION WESTERN UNION INTERNACIONAL
+			CALL post:DOCSwuiHoldTransac
+		END IF
+		CLEARFIELD drv:INDhcomm_rtn
+		CLEARFIELD drv:INDspc_rtn[1]
+		CLEARFIELD drv:INDcur_tran
+		CLEARFIELD drv:INDjnl_rtn
+		CLEARFIELD drv:INDspc_rtn[0]
+		//
+	end if
+	//
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+		post:PreDForFis = post:adt_serv_formfiscal
+		call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+	end if
+	//
+	call post:MISCGrabaDetalleTrn 
+END SUB
+/*******/

@@ -1,0 +1,176 @@
+/****o* Pendientes de agrupación/OFB:post:TOTSfact_no_emit
+* NOMBRE
+*   OFB:post:TOTSfact_no_emit
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "posttots.h"
+
+SUB post:TOTSfact_no_emit
+
+	/* Variables para uso local */
+	LOCAL OPERADOR              like op:op_login_id
+	LOCAL TIPO                  like adt_tipo_formulario
+	LOCAL PRES                  like PresNro_Fact
+	LOCAL FECHA	                like adt_fecha
+	LOCAL CENTRO_EMIS	        like adt_br_CEC_fact
+	LOCAL NOTA_CREDITO	        like NotaCredito
+	LOCAL cabecera_factura      like common:csr_string
+	LOCAL primera_entrada       like common:csr_string
+
+	call  CSR:fld_to_upper (ope)
+
+	idx = 1
+
+	IF (siaf:pantalla_impreso != "P") THEN
+		CALL siaf:MISCopen_tot
+	END IF
+
+	common:trap_reset = OFB:lib:KEYSreset_esc                               
+	op:adt_branch_id = op:op_branch_id
+	op:adt_operator_id = op:op_operator_id
+
+	siaf:pick_titulo = "totales"
+	CALL CSR:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+
+	let siaf:i = 0
+	common:csr_string = "  "
+	CALL MISCwrite_tot
+	let siaf:i = 0
+
+	// El campo tipo y el estado hay que convertirlos.
+
+	IF (tip.numchars !=0)
+		IF (tip == "A" || tip == "a")
+			tip = 1
+		ELSE
+			tip = 2
+		END IF
+	END IF
+
+    est = adt_fact_anula
+	
+	/*Debo convertir también el campo del Documento Fiscal - Gabriel Falciola*/
+	call csr:trimfield(dfisc)
+	if (dfisc.numchars != 0)
+		if (dfisc == "FACTURA")
+			dfisc = "N"
+		else
+			dfisc = "S"
+		end if
+	end if
+	
+	common:csr_string = "P"
+	
+	// Primero voy a abrir la tabla de facturas
+	
+	if (post:ord == "OPERADOR")
+		CDS SELECT FROM DSC:post:TABfact BECOMES DSC:CONfact WHERE LST:post:LISTclausula_where SORT "porOpe"
+	else
+		CDS SELECT FROM DSC:post:TABfact BECOMES DSC:CONfact WHERE LST:post:LISTclausula_where SORT "porNum"
+	endif	
+
+	CDS FINDFIRST DSC:CONfact NOLOCK
+	if (cdsretval == 0)
+		CDS EXTRACT DSC:CONfact ALL
+	end if
+	call MISCheader_con(common:csr_string_tmp)
+	nro_factura = 0
+	primera_entrada = "S"
+	
+	while (cdsretval == 0)
+		OPERADOR = op_login_id_fact
+		FECHA = adt_fecha
+		while ((OPERADOR == op_login_id_fact || post:ord != "OPERADOR") && (cdsretval == 0))
+			if (CENTRO_EMIS != adt_br_CEC_fact)
+				nro_factura = 0
+			end if
+			CENTRO_EMIS = adt_br_CEC_fact		
+			while ((OPERADOR == op_login_id_fact || post:ord != "OPERADOR") && (CENTRO_EMIS == adt_br_CEC_fact) && (cdsretval == 0))
+				call MISClect_prev
+				NOTA_CREDITO = NotaCredito
+				while ((OPERADOR == op_login_id_fact || post:ord != "OPERADOR") && (NOTA_CREDITO == NotaCredito) && (CENTRO_EMIS == adt_br_CEC_fact) && (cdsretval == 0))
+					if (TIPO != adt_tipo_formulario)
+						nro_factura = 0
+					end if
+					TIPO = adt_tipo_formulario
+					while ((OPERADOR == op_login_id_fact || post:ord != "OPERADOR") && (TIPO == adt_tipo_formulario) && (NOTA_CREDITO == NotaCredito) && (CENTRO_EMIS == adt_br_CEC_fact) && (cdsretval == 0))
+						If ( nro_factura == 0 )
+							nro_factura = adt_nro_fact
+							cabecera_factura = "S"
+						else	
+							cabecera_factura = "N"
+						Endif
+						If ((adt_nro_fact - nro_factura ) > 1 )
+							nro_factura = nro_factura + 1
+							if (primera_entrada == "S")
+								call MISClect_prev
+								call MISCheader_fact(2)
+							else								
+								if (cabecera_factura == "S")
+									call MISClect_prev
+									call MISCheader_fact(2)
+								end if				
+							end if
+							While ( nro_factura != adt_nro_fact )
+								FPRINT common:csr_string, "%s",nro_factura
+								CALL MISCwrite_tot
+								nro_factura = nro_factura + 1
+							end while
+						end if
+						nro_factura = adt_nro_fact
+						CDS FINDNEXT DSC:CONfact NOLOCK			
+						if (cdsretval == 0)
+							CDS EXTRACT DSC:CONfact ALL
+   						end if			
+					end while
+				end while
+			end while
+		end while
+	end while
+	
+	IF (siaf:pantalla_impreso != "P") THEN
+		/*Cuando termina de armar el listado agrego el número total de páginas - Gabriel Falciola*/
+		while (siaf:i < 57)
+			common:csr_string = " "
+			CALL MISCwrite_tot
+		end while
+		FPRINT common:csr_string, "==========================================================================="
+		CALL MISCwrite_tot
+		FPRINT common:csr_string,"                                                      Total de Hojas: %05.05d",idx
+		CALL MISCwrite_tot
+		CALL siaf:MISCclose_tot
+	END IF
+	
+	IF (siaf:pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+	    ;LMB - PS 9780 - 18.06.2008
+		;FPRINT common:csr_string,"/te mp/totales.lis"
+        FPRINT common:csr_string, "%s%s", common:dirTemporal, "totales.lis"
+	    KEYDEF PUSH
+	    CALL siaf:KEYSdefine_tots_oper
+	    CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+	    KEYDEF POP
+	ELSE
+	    FYIMSG LST:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS TOTALES "
+	    ;LMB - PS 9780 - 18.06.2008
+		;CALL siaf:MISCfile_print("\\te mp\\totales.lis","predeterminada")
+        FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "totales.lis"
+        CALL siaf:MISCfile_print(common:tmpDirTemporal, "predeterminada")
+	    EXEC common:csr_string
+	END IF
+	CDS ENDSELECT DSC:CONfact
+END SUB
+
+/*******/

@@ -1,0 +1,169 @@
+/****o* Pendientes de agrupación/OFB:post:PRESimpre_fiscal
+* NOMBRE
+*   OFB:post:PRESimpre_fiscal
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESimpre_fiscal
+	LOCAL l_escape LIKE post:label_string
+	LOCAL l_str LIKE post:label_string
+
+	siaf:codigo_siaf = 99023
+	PROTFIELD importe_sesion
+	
+	//cgw:boton F6 Modificar Remitos debe estar deshabilitado.
+	IF (drv:dt_app == 2) THEN
+		LET drv:button = TFB5
+		CALL drv:but_disable
+	END IF    
+
+	IF (post:estado_presu == 4) THEN
+		//cgw:se graba en PresuAct,el campo que indica si hay cheque acreditado Giros Masivos limpio.
+		CLEARFIELD post:chq_acre_GM
+		CALL post:CDSadt_presuact_save
+	END IF    
+    
+	CALL post:MISCdesprotege_doc
+
+	/*Seteo en el campo indirecto la rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	INDticket_laser = OFB:post:PRT_Ticket
+
+	IF ( post:Modo == "R" ) THEN
+		//PJM 30-11-98 se seteo para no se pierda el nombre de la transaccion
+		drv:INDcur_tran = LST:post:TRANimpre_fiscal
+		CALL CDSleeEscPresu("S")
+		l_escape = RETVAL
+		;IF (LASTKEY == RT_ESC) THEN
+		IF (l_escape) THEN
+			importe_sesion = 0
+			//gpb:PS10690 Arreglo para teclas rapidas, vuelvo a setear ESC
+			LASTKEY = RT_ESC
+		ELSE
+			/*Obtengo los datos necesarios para Teclas Rápidas - Gabriel Faciola*/
+			CALL CDSSacaPresuR
+			CALL csr:trimfield PreDForFis
+			IF (PreDForFis.numchars != 0) THEN
+				importe_sesion = siaf:importe
+				CLEARFIELD PreDForFis
+			ELSE
+				CLEARFIELD post:nro_impre
+				importe_sesion = 0
+			ENDIF
+		ENDIF		
+		//cgw:En teclas rapidas,debe verificar si la tx tiene flia."CSM" (giros).
+		//Si existe debe mostrar scr:SCRNimpre_fiscal, no en caso contrario.
+		CALL post:CDSver_fliatran_CSM 
+		IF (RETVAL < 0 ) THEN
+			//cgw:No es de flia."CSM" o, si lo es, no imprime factura. Setea pantalla vacia para no mostrar scr:SCRNimpre_fiscal.
+			drv:INDscreen[0] = SCR:post:SCRNsin_scr_1
+		ENDIF
+	ENDIF
+	
+	IF (!TESTFLAG(tlr:tran_flags,correction) ) THEN
+		CLEARFIELD siaf:importe
+		CLEARFIELD siaf:moneda
+		CALL CSR:cleararray docfis_sobre_tasa
+		CALL siaf:PRESfecha_hora
+		IF (RETVAL < 0) THEN
+			RETURN RETVAL
+		ENDIF
+		
+		//Cargo la Hora de la Factura
+		adt_hora_fact = common:time_of_day
+		//Seteo el Estado como que solo falta imprimir
+		IF (sistCaido != "S") THEN
+			PresEst = 2
+			CALL CDSadt_presu_estado
+		END IF
+
+		/*Carina - Si es Cliente Interno debe quedar registrado como tal en el journal por eso
+		no rescato los datos de la tabla CliOca*/
+		IF (!TESTFLAG(uso_int_flag,uso_interno)) THEN
+			;Busco los Datos de Cliente
+			CALL post:MISCsaco_dat_cli
+		END IF
+
+		PROTFIELD PresNro
+		PROTFIELD CliRaz
+		
+		//Obtengo los Datos de la Empresa
+		CALL post:MISCobtiene_empresa( DSC:CorreoArgentino )
+		IF (TESTFLAG(lib:state_flags,scan_mode)) THEN
+			DISABLECONTROL Impresion
+		END IF
+		
+		post:PresNro_Tmp = PresNro
+		
+		IF ( LASTKEY == RT_ESC ) THEN
+			CLEARFIELD nro_impre
+		END IF
+		
+		;SMC Limpio la tabla de Facturas antes de empezar con la impresion.
+		CLEARFIELD post:Estado_Fact
+		//CALL post:CDSanular_lote
+	ELSE
+		REFRESH importe_sesion
+		LET siaf:fecha = common:system_date
+		LET siaf:hora = common:time_of_day
+		MOVE common:sucursal_activa TO siaf:sucursal
+		LET siaf:posible_off = "S"
+		LET siaf:tiene_reverso = "S"
+	END IF
+	
+	adt_cativa_discri = "N"
+	post:adt_cativa_cod = IvaCod
+	CALL  post:CDS_CatIva_Load
+	;SMC Limpio la tabla de Facturas antes de empezar con la impresion.
+	CLEARFIELD post:Estado_Fact
+	//CALL post:CDSanular_lote
+	PDM enableitem drv:menubar all MOA_DISABLED
+	;PDM enableitem drv:sup_sistema 1 MOA_ENABLED
+	
+	//robo de linea
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		CALL giros:CDSverif_ttgir_imp
+		IF (RETVAL ==0) THEN
+			MSGBOX "LA SESION CONTIENE,AL MENOS, UN GIRO CON T&T. NO OLVIDE REALIZAR LA IMPOSICION CORRESPONDIENTE",0x00,"Advertencia"
+		END IF	
+	END IF	
+	
+	//PS 10587 - Pago Facil 
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		//Verifico si en el presupuesto hay al menos un pago facil
+		CALL post:CDSPverif_es_PF
+		IF (RETVAL == 0)
+			//Actualizo el status = 002 en las tx de PF que conformen el presupuesto
+			//siempre que no sean tx con viaje
+			CALL post:CDSupd_stat_jnlPF
+		END IF
+	END IF
+
+	IF (plataf:current_state == FORM_PRINTING && rechazoDiferido) THEN
+		//Si el operador canceló el presupuesto cambio el mensaje del 
+		//siaf:mensaje para que quede mas claro
+		IF (post:cancelaOperador) THEN
+			FPRINT siaf:mensaje, "%sSESION REVERSADA POR EL OPERADOR", siaf:mensaje
+		ELSE
+			FPRINT siaf:mensaje, "%sSESION REVERSADA AUTOMATICAMENTE", siaf:mensaje
+		END IF
+	ELSE
+		CLEARFIELD siaf:mensaje
+	END IF
+	
+END SUB
+
+/*******/

@@ -1,0 +1,146 @@
+/****o* Pendientes de agrupación/OFB:post:MISCbusco_cierre_dia
+* NOMBRE
+*   OFB:post:MISCbusco_cierre_dia
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCbusco_cierre_dia
+	local LRetval like lib:err_retval
+	
+	call tes:CDSbusco_cierre_dia(9560)
+	let LRetval = retval
+	select (LRetval)
+		case 0
+			/* Esta el cierre del día */
+			#ifdef MENSAJES_CIERRE
+				/* Agrego la impresion de mensajes para develar
+				el "Misterio del Cierre del Dia" */
+				dprint "Cierre del dia, encuentro el cierre\r\n"
+			#endif
+		break
+		case -801
+			/* No está el cierre del día en el journal, así
+			que lo forzamos */
+			#ifdef MENSAJES_CIERRE
+				/* Agrego la impresion de mensajes para develar
+				el "Misterio del Cierre del Dia" */
+				dprint "Cierre del dia, no encuentro primera búsqueda. Intento grabar nuevamente %s\r\n",LRetval
+			#endif
+			let siaf:codigo_siaf = 9560
+			clearfield drv:INDspc_rtn[3]
+			clearfield drv:INDspc_rtn[4]
+			call siaf:PRESfecha_hora
+			let drv:INDjnl_rtn = OFB:tes:JNLaper_cierre_dia
+			UNGETKEY 0x190
+			call tlr:JNLtran
+		break
+		case else
+			#ifdef MENSAJES_CIERRE
+				/* Agrego la impresion de mensajes para develar
+				el "Misterio del Cierre del Dia" */
+				dprint "Cierre del Dia, busco el cierre. Error: %s\r\n",LRetval
+			#endif
+			/*
+			fprint common:csr_string, "Primer Intento de Lectura. Error %s al leer journal",lib:err_retval
+			errmsg lst:common:errmsg_list, \
+			fld:common:csr_string
+			*/
+		break
+  end select
+
+	if (LRetval != 0)
+		/* Vuelvo a leer el journal */
+		call tes:CDSbusco_cierre_dia(9560)
+		LRetval = retval
+		select (LRetval)
+			case 0
+				/*
+				errmsg common:errmsg_list, \
+				"El Cierre del dia tuvo inconvenientes finalmente superados. Igualmente informe a Mesa de Ayuda"
+				*/
+			break
+			case -801
+				errmsg common:errmsg_list, \
+				"No Se Pudo Grabar Registro de Cierre del Dia. Se realizará Mañana Automáticamente. Informe a Mesa de Ayuda."
+				/* No marco nada, ni envio nada */
+				#ifdef MENSAJES_CIERRE
+					/* Agrego la impresion de mensajes para develar
+					el "Misterio del Cierre del Dia" */
+					dprint "No encuentra en segunda busqueda CDRETVAL: %s No se hace el cierre del dia. \r\n",LRetval
+				#endif
+				return (0)
+			break
+			case else
+				#ifdef MENSAJES_CIERRE
+					/* Agrego la impresion de mensajes para develar
+					el "Misterio del Cierre del Dia" */
+					dprint "Error en segunda busqueda CDRETVAL: %s \r\n",LRetval
+				#endif
+				/*errmsg lst:common:errmsg_list, \
+				"Error en Segunda lectura. Vuelva a intentar e informe a Mesa de ayuda"
+				*/
+			break
+			;return (0)
+		end select
+  end if
+	#ifdef MENSAJES_CIERRE
+		/* Agrego la impresion de mensajes para develar
+		el "Misterio del Cierre del Dia" */
+		dprint "OK Todo, paso a la MISCenv_jnl_total \r\n"
+	#endif
+	    
+	/*Marcar en la tabla DiaSuc*/
+	call tes:CDSsuc_marca_ciedia("X")
+	call MISCenv_jnl_total
+	/*Desmarcar en la tabla DiaSuc*/
+	call tes:CDSsuc_marca_ciedia("")
+        
+	/*Ya no se bloquea por medio de una tabla - Gabriel Falciola
+	Se bloquea Retiro de Piezas en el cierre del dia hasta que se termine
+	de ejecutar el script
+	CALL CDSbloq_ret_cierre*/
+	
+	//gpb:AUT-2033 *Verifico si hay un proceso de NovIPS corriendo
+	CALL post:MISCverif_bloqNovIPS
+	IF (RETVAL == 0) THEN
+		//gpb:AUT-2033 Actualizo la NovTT
+		CALL post:MISCupdateCondNovTT
+		//gpb:AUT-2033 se ejecuta el script que envia los datos de la tabla NovTT
+		CALL post:MISCenv_NovIPS
+		//para que no se superponga con el Envio de Novedades T&T, sino no se transmiten 
+		//las piezas.
+		NAP 5000
+	END IF
+	
+	/*Verifico si hay un proceso de NovTT corriendo - Gabriel Falciola*/
+	call post:MISCverif_bloqNovTT
+	if (retval == 0)
+		/*Se pone en condiciones los registros que se van a enviar de la NovTT*/
+		CALL MISCen_cond_NovTT
+		/*Se ejecuta el script que envia los datos de la tabla NovTT*/
+		CALL MISCenv_NovTT("CierreDia")
+		
+		/*Ahora las Excepciones se envian cuando termine el envío de las Novedades - Gabriel Falciola
+		MFM - Se ejecuta el Script que envía los datos de Marca de Excepcion
+		CALL MISCenv_Excep*/
+	end if
+
+ 	/*MFM - Restauro la tabla temporal de Despachos con BH2 con la parametría centralizada*/
+ 	CALL post:CDSAct_DespBH2tmp
+        
+END SUB
+
+/*******/

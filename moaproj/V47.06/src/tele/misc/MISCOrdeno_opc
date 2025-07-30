@@ -1,0 +1,109 @@
+/****o* Pendientes de agrupación/OFB:tele:MISCOrdeno_opc
+* NOMBRE
+*   OFB:tele:MISCOrdeno_opc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telemisc.h"
+
+SUB tele:MISCOrdeno_opc(prmPickName,prmCantOpc)
+LOCAL loc_vector[6] LIKE post:adt_opc_desc
+LOCAL idx LIKE siaf:i
+LOCAL idx2 LIKE siaf:i
+LOCAL idx3 LIKE siaf:i
+LOCAL opc_sel LIKE siaf:i
+LOCAL opc_temp like post:adt_opc_desc
+LOCAL x LIKE siaf:i
+local l_cant_opc	like post:cant_opc
+
+// controlo la cantidad de opcionales
+l_cant_opc = prmCantOpc
+if (l_cant_opc == 0) then
+	return (-1)
+endif
+
+/* ACP-Rutina para ordenamiento de opcionales, para el caso de telegramas
+    multiples con opcionales especiales, que se requiere que siempre se 
+    encuentren en el ultimo lugar del picklist, aunque se hayan seleccionado
+    antes. */
+
+	//Recorro el picklist con los opcionales marcados
+	idx = 0x8000
+	do
+		CALL CSR:myPickcontrol(prmPickName,common:csr_string,idx)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF    
+     	loc_vector[idx2] = SUBSTR(common:csr_string,0,4)
+    	idx = idx + 1
+    	idx2 = idx2 + 1
+	loop
+	
+	idx = 0x8000
+	idx2 = 0
+	idx3 = 0
+		 
+	// ordeno vector
+	if (siaf:adt_tran_fliatran == "CST" )	
+		x = 1		 		
+	    while (x < l_cant_opc)
+			idx2 = 0
+			do
+				if (idx2 == 5)
+					break
+				endif
+				idx3 = idx2 + 1		
+				call csr:trimfield(loc_vector[idx3])
+				if (loc_vector[idx3]!= "" || loc_vector[idx3].NUMCHARS > 0)
+					opc_sel = 0
+					;PS9490
+					call post:MISCopcCantPart(loc_vector[idx2], post:tipo_produc, opc_sel)
+					if (retval == 1)
+						opc_temp = loc_vector[idx2]
+						loc_vector[idx2] = loc_vector[idx3]
+						loc_vector[idx3] = opc_temp 		
+					end if
+				end if
+				idx2 = idx2 + 1
+			loop
+			x = x + 1
+		end while
+	end if 		
+	
+	//Elimino picklist
+	call csr:f_sadroppl prmPickName
+
+	//Creo nuevo picklist
+	CALL CSR:f_sanewpl(prmPickName,PIC:OpcInd_sel,380,150)
+	
+	  
+	//LLeno picklist nuevo con el vector ordenado
+	idx2 = 0
+	do
+		if (idx2 == 6)
+			break
+		endif
+		if (loc_vector[idx2].NUMCHARS == 0)
+			break
+		else
+			post:adt_opcserv_opci = loc_vector[idx2]	
+			FPRINT post:adt_opc_desc,"%-40.40s",post:adt_opcserv_opci
+			CALL CSR:f_saaddpl(prmPickName,post:adt_opcserv_opci)
+		end if
+		idx2 = idx2 + 1
+	loop
+		
+END SUB
+
+/*******/

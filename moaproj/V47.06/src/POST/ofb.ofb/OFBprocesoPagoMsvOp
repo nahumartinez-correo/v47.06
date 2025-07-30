@@ -1,0 +1,214 @@
+/****o*Mensajería/OFB:post:OFBprocesoPagoMsvOp
+* NOMBRE
+*   OFB:post:OFBprocesoPagoMsvOp
+* DESCRIPCION
+*   
+* ENTRADAS
+* SALIDAS
+* IMPACTOS
+* REFERENCIADO POR
+
+* DOCUMENTACION
+* SOURCE
+*/
+
+#include "postofb.ofb.h"
+
+SUB post:OFBprocesoPagoMsvOp
+local l_estado like adt_benTmp_estado
+local l_cod_proc like giros:codigo_procesamiento
+local l_estado_A like adt_benTmp_estado
+local l_estado_J like adt_benTmp_estado
+local l_estado_R like adt_benTmp_estado
+local l_benTmp_operativo like adt_benTmp_operativo
+local l_benTmp_benef like adt_benTmp_benef
+local l_benTmp_fecha_pag like adt_benTmp_fecha_pag
+local l_benTmp_importe like adt_benTmp_importe
+local l_benTmp_cod_reimp like adt_benTmp_cod_reimp
+local l_benTmp_nombre like adt_benTmp_nombre
+local l_benTmp_cli like adt_benTmp_cli
+local l_benTmp_cli_desc like adt_benTmp_cli_desc
+local l_benTmp_suc_cli like adt_benTmp_suc_cli
+local l_benTmp_sucCliSel like adt_benTmp_sucCliSel
+LOCAL MENSAJE like common:csr_string
+    l_benTmp_operativo = adt_benTmp_operativo
+    l_benTmp_benef = adt_benTmp_benef
+    l_benTmp_fecha_pag = adt_benTmp_fecha_pag
+    l_benTmp_importe = adt_benTmp_importe
+    l_benTmp_cod_reimp = adt_benTmp_cod_reimp
+    l_benTmp_nombre = adt_benTmp_nombre                 
+    l_benTmp_cli = adt_benTmp_cli                     
+    l_benTmp_cli_desc = adt_benTmp_cli_desc             
+    l_benTmp_suc_cli = adt_benTmp_suc_cli              
+    l_benTmp_sucCliSel = adt_benTmp_sucCliSel             
+                 
+    select (siaf:codigo_siaf)
+        case 6640
+            fprint MENSAJE "¿CONFIRMA EL ENVIO DE ASIGNACION DE PAGOS?"
+            l_cod_proc = 970020
+            l_estado = "S"
+            l_estado_A = "AS"
+            l_estado_J = "JS"
+            l_estado_R = "RS"
+        break
+        case 6650
+        Select (drv:screen_active)
+            case 0
+                fprint MENSAJE "¿CONFIRMA EL ENVIO DE RENDICION DE BENEFICIOS PAGADOS?"
+                l_cod_proc = 970010
+                l_estado = "X"
+                l_estado_A = "AX"
+                l_estado_J = "JX"
+                l_estado_R = "RX"
+                marca_masivo = "S"
+                break
+            CASE 1
+                fprint MENSAJE "¿CONFIRMA EL ENVIO DE RENDICION DE BENEFICIOS NO PAGADOS?"
+                l_cod_proc = 970021
+                l_estado = "Y"
+                l_estado_A = "AY"
+                l_estado_J = "JY"
+                l_estado_R = "RY"
+            break
+        end select
+        break
+    end select
+    
+    call csr:f_sadroppl("pic_beneficios")
+    call csr:f_sanewpl("pic_beneficios",PIC:climedio_multiple)
+    
+    CDS ENDSELECT "ctx_BenefTmp"
+    CDS SELECT FROM "BenefTmp" BECOMES "ctx_BenefTmp" WHERE  \
+        adt_benTmp_PresNro == post:PresNro && \
+        adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+        adt_benTmp_pag_NroD == adt_benTmp_pag_NroD && \
+        adt_benTmp_estado == l_estado
+    
+    
+    CDS FINDFIRST "ctx_BenefTmp" NOLOCK
+    
+    if (CDSRETVAL == 0) then
+        MSGBOX MENSAJE,OFB_YESNO,"Atención" 
+        if (retval == 6) then
+            while (CDSRETVAL == 0)
+               clearfield post:fecha
+                CDS EXTRACT "ctx_BenefTmp" all
+                operativo = adt_benTmp_operativo
+                beneficio = adt_benTmp_benef
+                giros:codigo_procesamiento = l_cod_proc
+                importe_benef = adt_benTmp_importe
+                siaf:importe = importe_benef
+                call post:CDSobtiene_secuen("STAN")
+                giros:hora_viaje = common:time_of_day
+                giros:dia_viaje  = common:system_date
+                post:fecha = adt_benTmp_fecha_pag
+                call post:CDSbenefTmp("A",l_estado_A,"","")
+                call post:OFBconsulta_simon(l_cod_proc)
+                clearfield siaf:importe
+                if (retval == 0) then
+                    call post:CDSbenefTmp("A",l_estado_J,"","")
+                    select (siaf:codigo_siaf)
+                        case 6640
+                            if (retval == 0) then
+                                pagoMsvImpPagCarg = pagoMsvImpPagCarg - adt_benTmp_importe
+                                pagoMsvImpRendPag = pagoMsvImpRendPag + adt_benTmp_importe
+                                CALL post:CDSbeneficios("M","E")
+                            end if
+                            break
+                        case 6650
+                            Select (drv:screen_active)
+                                case 0
+                                    if (retval == 0) then
+                                        pagoMsvImpPagCarg = pagoMsvImpPagCarg - adt_benTmp_importe
+                                        pagoMsvImpRendPag = pagoMsvImpRendPag + adt_benTmp_importe
+                                        CALL post:CDSbeneficios("M","P")
+                                    end if
+                                    break
+                                CASE 1
+                                    if (retval == 0) then
+                                        pagoMsvImpNoPagCarg = pagoMsvImpNoPagCarg - adt_benTmp_importe
+                                        pagoMsvImpRendNoPag = pagoMsvImpRendNoPag + adt_benTmp_importe
+                                        CALL post:CDSbeneficios("S","")
+                                    end if
+                                    break
+                            End select
+                            break
+                    end select
+                    refresh pagoMsvImpPagCarg
+                    refresh pagoMsvImpRendPag
+                    refresh pagoMsvImpNoPagCarg
+                    refresh pagoMsvImpRendNoPag
+                else
+                    if (hcomm:tran_status == HOST_REJECTED) then
+                        call post:CDSbenefTmp("A",l_estado_R,"","")
+                    else
+                        ;Si hay un caida en vuelo en el caso de rendición de beneficios
+                        ;se deben confirmar como enviados y grabar estos en una tabla
+                        ;temporal (simon_caidas) que será tomado por el proceso batch
+                        ;para realizar el envío
+                        select (l_estado_J)
+                            case "JX"
+                            case "JY"
+                                ;genero registro en la tabla simon_caidas
+                                call CDSsimon_caidas_save(l_estado)
+                                
+                                call post:CDSbenefTmp("A",l_estado_J,"","")
+                                Select (drv:screen_active)
+                                    case 0
+                                        if (retval == 0) then
+                                            pagoMsvImpPagCarg = pagoMsvImpPagCarg - adt_benTmp_importe
+                                            pagoMsvImpRendPag = pagoMsvImpRendPag + adt_benTmp_importe
+                                            CALL post:CDSbeneficios("M","P")
+                                        end if
+                                        break
+                                    CASE 1
+                                        if (retval == 0) then
+                                            pagoMsvImpNoPagCarg = pagoMsvImpNoPagCarg - adt_benTmp_importe
+                                            pagoMsvImpRendNoPag = pagoMsvImpRendNoPag + adt_benTmp_importe
+                                            CALL post:CDSbeneficios("S","")
+                                        end if
+                                        break
+                                End select
+                                break
+                            case "JS"
+                                call post:CDSbenefTmp("A",l_estado,"","")
+                        end select
+                        refresh pagoMsvImpPagCarg
+                        refresh pagoMsvImpRendPag
+                        refresh pagoMsvImpNoPagCarg
+                        refresh pagoMsvImpRendNoPag
+                    end if
+                    break
+                end if
+                
+                CDS FINDFIRST "ctx_BenefTmp" NOLOCK
+            end while 
+        END IF
+    ELSE
+        MSGBOX "NO HAY REGISTROS PENDIENTES DE ENVIO",OFB_OK,"Atención" 
+        
+    END IF
+    CDS ENDSELECT "ctx_BenefTmp"
+    call csr:f_sadroppl("pic_beneficios")
+    adt_benTmp_operativo = l_benTmp_operativo
+    adt_benTmp_benef = l_benTmp_benef
+    adt_benTmp_fecha_pag = l_benTmp_fecha_pag
+    adt_benTmp_importe = l_benTmp_importe
+    adt_benTmp_cod_reimp = l_benTmp_cod_reimp
+    
+    adt_benTmp_nombre = l_benTmp_nombre                 
+    adt_benTmp_cli = l_benTmp_cli                     
+    adt_benTmp_cli_desc = l_benTmp_cli_desc             
+    adt_benTmp_suc_cli = l_benTmp_suc_cli 
+    adt_benTmp_sucCliSel = l_benTmp_sucCliSel
+    
+    refresh adt_benTmp_operativo
+    refresh adt_benTmp_benef
+    refresh adt_benTmp_fecha_pag
+    refresh adt_benTmp_importe
+    refresh adt_benTmp_nombre
+    refresh adt_benTmp_sucCliSel
+END SUB
+
+/*******/
+

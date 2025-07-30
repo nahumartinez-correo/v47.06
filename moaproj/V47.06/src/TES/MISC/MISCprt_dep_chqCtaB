@@ -1,0 +1,169 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCprt_dep_chqCtaB
+* NOMBRE
+*   OFB:tes:MISCprt_dep_chqCtaB
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCprt_dep_chqCtaB
+    local i like siaf:i
+    local total_importe like siaf:importe
+    local seguir like lib:err_retval
+
+
+    /* Veo si tengo que crear el picklist */
+    let siaf:pick_titulo = "est_cheq"
+    if (siaf:pantalla_impreso ==  "P") then
+       call csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+    else
+       ;LMB - PS 9780 - 12.06.2008
+       ;call MISCopen_file("\\te mp\\est_cheq.lis",5)
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCopen_file(common:tmpDirTemporal,5)
+       
+    end if
+
+    let siaf:lineas_cl = 0
+    /* pongo encabezado */
+    let siaf:indica_calcu = 0 // inicializa cant. de hojas
+    let fld:tes:INDsheet_header = OFB:tes:MISCdep_chqCB_encab
+    common:trap_reset = OFB:lib:KEYSreset_esc
+
+    /* MLD Por ahora elimino la impresion de las reversadas */
+    if (fecha_valor.numchars != 0)
+       CDS SELECT FROM "journal" BECOMES DSC:tlr:jnl_context WHERE \
+       tlr:jnl_branch      == op:op_branch_id     && \
+       tes:banco_codigo    == tes:banco_codigo    && \
+       tes:tipo_cuenta     == tes:tipo_cuenta     && \
+       tes:nro_cuenta      == tes:nro_cuenta      && \
+       tes:fecha_valor     == tes:fecha_valor     && \
+       tes:boleta_deposito == tes:boleta_deposito && \
+       siaf:importe        != 0                   && \
+       tlr:jnl_status       < 100                 && \
+       tlr:jnl_sequence_corr == 0  /* Por ahora saco las reversas */
+    else
+       CDS SELECT FROM "journal" BECOMES DSC:tlr:jnl_context WHERE \
+       tlr:jnl_branch      == op:op_branch_id     && \
+       tes:banco_codigo    == tes:banco_codigo    && \
+       tes:tipo_cuenta     == tes:tipo_cuenta     && \
+       tes:nro_cuenta      == tes:nro_cuenta      && \
+       tlr:jnl_date        == siaf:fecha_proceso  && \
+       tes:boleta_deposito == tes:boleta_deposito && \
+       siaf:importe        != 0                   && \
+       tlr:jnl_status       < 100                 && \
+       tlr:jnl_sequence_corr == 0  /* Por ahora saco las reversas */
+
+    end if
+
+    IF (CDSRETVAL != 0) THEN
+       ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+       return (-2)
+    END IF
+
+    CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+    LET seguir = CDSRETVAL
+    if (cdsretval == -801) then
+       MSGBOX "No hay Registros que Coincidan",0,"AVISO"
+       return (-2)
+    end if
+
+    CDS EXTRACT DSC:tlr:jnl_context \
+    FLD:tlr:jnl_operator into FLD:post:Operador_id \
+    siaf:codigo_siaf
+
+    if (siaf:codigo_siaf == 7550 || siaf:codigo_siaf == 7630)
+       siaf:linea_pantalla = "CONSULTA DE DEPOSITOS EN EFVO EN CTA BANCARIA"
+    end if
+
+
+    CALL tes:MISCdep_chqCB_encab
+
+    total_importe = 0
+
+    while (seguir == 0)
+       CDS EXTRACT DSC:tlr:jnl_context \
+       FLD:tlr:jnl_sequence_corr  \
+       FLD:tlr:jnl_sequence       \
+       FLD:siaf:cod_banco         \
+       FLD:siaf:cheqcuenta        \
+       FLD:siaf:nro_cheque        \
+       FLD:post:importe_origen	
+
+       if (FLD:tlr:jnl_sequence_corr.numchars == 0 || \
+          (FLD:tlr:jnl_sequence_corr.numchars != 0 && FLD:tlr:jnl_sequence_corr > FLD:tlr:jnl_sequence))
+          /*Obtener la descripcion del banco*/
+          CALL tes:CDSbanco_load(siaf:cod_banco)
+
+
+          if (siaf:codigo_siaf == 7550 || siaf:codigo_siaf == 7630)
+             //fprint common:csr_string "%13.13e",siaf:importe
+               fprint common:csr_string "%13.13e",post:importe_origen
+          else
+             fprint common:csr_string "%3.3e %-30.30e %20.20e %8.8e %13.13e",siaf:cod_banco,siaf:adt_banco_desc,siaf:cheqcuenta,siaf:nro_cheque,post:importe_origen
+          end if
+
+          if (FLD:tlr:jnl_sequence_corr != 0)
+             fprint common:csr_string "%s   REVERSADA",common:csr_string
+          end if
+          //total_importe = total_importe + siaf:importe
+            total_importe = total_importe + post:importe_origen
+            
+          call MISCwrite_file1(5,fld:common:csr_string)
+          /*total_importe = total_importe + siaf:importe*/
+       end if
+       CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+       let seguir = cdsretval
+    end while
+
+    fprint common:csr_string "  "
+    call MISCwrite_file1(5,fld:common:csr_string)
+    fprint common:csr_string "  "
+    call MISCwrite_file1(5,fld:common:csr_string)
+
+    fprint common:csr_string "TOTAL DEPOSITADO...............................................  %13.13e",total_importe
+    call MISCwrite_file1(5,fld:common:csr_string)
+
+    fprint common:csr_string "  "
+    call MISCwrite_file1(5,fld:common:csr_string)
+    call MISCwrite_file1(5,fld:common:csr_string)
+    call MISCwrite_file1(5,fld:common:csr_string)
+
+    //Total de hojas
+    if (siaf:pantalla_impreso ==  "I") then
+       fprint common:csr_string "  "
+       While (siaf:lineas_cl < 59)
+             call MISCwrite_file1(5,fld:common:csr_string)
+       end while
+       fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:indica_calcu
+       call MISCwrite_file1(5,fld:common:csr_string)
+    End if
+
+
+    CDS ENDSELECT DSC:tlr:jnl_context
+
+    /* Salida segun opcion del usuario */
+    if (siaf:pantalla_impreso == "P") then
+       call csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+    else
+       ; LMB - PS 9780 - 12.06.2008 
+       ;call MISCclose_file("\\te mp\\est_cheq.lis",5)
+       ;call siaf:MISCfile_print("\\te mp\\est_cheq.lis","predeterminada")
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCclose_file(common:tmpDirTemporal,5)
+       call siaf:MISCfile_print(common:tmpDirTemporal,"predeterminada")
+   end if
+END SUB
+
+/*******/

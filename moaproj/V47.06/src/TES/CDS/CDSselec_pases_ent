@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSselec_pases_ent
+* NOMBRE
+*   OFB:tes:CDSselec_pases_ent
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSselec_pases_ent
+LOCAL sequence LIKE tes:tmov_sequence_pase
+local op_orig like tes:tmov_op_id_orig 
+
+    CDS SELECT FROM DSC:tes:teso_mov_table BECOMES DSC:tes:teso_mov_context \
+    WHERE tmov_suc_id == op:op_branch_id && \
+    tmov_fecha == common:system_date && \
+    tmov_login_dest == op:op_login_id && \
+    (tmov_marca_ing == " " || tmov_marca_ing == "E" || tmov_marca_ing == "S")
+    CDS FINDFIRST DSC:tes:teso_mov_context NOLOCK
+	lib:err_retval = CDSRETVAL
+    if (lib:err_retval == -801) //No hay registros
+       FYIMSG CLEAR
+       ERRMSG LST:common:errmsg_list,tes:ERRno_mov
+       CDS ENDSELECT DSC:tes:teso_mov_context    //dsc operador
+       return (-2)
+    end if
+    if (lib:err_retval == -803) //Registro lockeado
+       FYIMSG CLEAR
+       ERRMSG LST:common:errmsg_list,ovr:ERRrec_locked
+       CDS ENDSELECT DSC:tes:teso_mov_context
+       return (-2)
+    end if
+	
+	/*Creo un picklist auxiliar, para ordenarlo*/
+	CALL csr:f_sadroppl dsc:analitico
+	CALL csr:f_sanewpl dsc:analitico pic:analitico
+	DO
+		CDS EXTRACT DSC:tes:teso_mov_context ALL
+    	FPRINT common:csr_string,"%-5s      %-14s     %4e",tmov_op_id_orig,tmov_login_orig,tmov_sequence_pase
+    	CALL csr:f_saaddpl dsc:analitico common:csr_string
+
+		CDS FINDNEXT  DSC:tes:teso_mov_context NOLOCK
+		lib:err_retval = CDSRETVAL
+		IF (lib:err_retval != 0)
+			BREAK
+		END IF
+	LOOP
+    cds unlock DSC:tes:teso_mov_context
+    cds endselect DSC:tes:teso_mov_context
+   	 	
+    /*Ordeno el picklist, seun sequence de pase (tmov_sequence_pase)*/
+    CALL csr:PickOp 4 dsc:analitico "30,4" "0,5"
+	
+	/*Creo el picklist que voy a mostrar*/
+    sequence = ""
+    op_orig = ""
+    CALL csr:f_sadroppl dsc:pases
+    CALL csr:f_sanewpl dsc:pases pic:pic_pases
+
+	/*Recorro el picklist ordenado y cargo el otro*/
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	call csr:myPickcontrol dsc:analitico common:csr_string i_idx            
+	Do
+		if (retval < 0)
+	    	break
+	    end if
+		
+		;IF (sequence != substr(common:csr_string,30,4))
+		IF ((sequence != substr(common:csr_string,30,4)) || (sequence == substr(common:csr_string,30,4) && op_orig != substr(common:csr_string,0,5)))
+			FPRINT siaf:nota_1,"%-5s      %-14s     %4e",\
+			substr(common:csr_string,0,5),substr(common:csr_string,11,14),substr(common:csr_string,30,4)
+	    	CALL csr:f_saaddpl dsc:pases siaf:nota_1
+    	END IF
+		
+		sequence = substr(common:csr_string,30,4)
+		op_orig = substr(common:csr_string,0,5)
+		
+		let idx = idx + 1
+	    let i_idx = PL_GETITEM + idx
+	    call csr:myPickcontrol dsc:analitico common:csr_string i_idx            
+	Loop
+	CALL csr:f_sadroppl dsc:analitico
+	
+	clearfield common:csr_string
+    CALL csr:f_sadopl dsc:pases common:csr_string
+    lib:err_retval = retval
+    CALL csr:f_sadroppl dsc:pases
+    if (lib:err_retval < 0)   ///No selecciono nada
+       clearfield tmov_op_id_orig
+       clearfield tmov_login_orig
+       refresh tmov_login_orig
+       clearfield tmov_sequence_pase
+       FYIMSG CLEAR
+       ERRMSG LST:common:errmsg_list,tes:ERRno_op_select
+       return (-2)
+    end if
+	tmov_op_id_orig = substr(common:csr_string,0,5)
+	tmov_login_orig = substr(common:csr_string,11,14)
+	tmov_sequence_pase = substr(common:csr_string,30,4)
+	call csr:trimfield(tmov_login_orig)
+END SUB
+
+/*******/

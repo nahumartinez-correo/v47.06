@@ -1,0 +1,162 @@
+/****o* Pendientes de agrupación/OFB:post:CDSDcto_Sesion
+* NOMBRE
+*   OFB:post:CDSDcto_Sesion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSDcto_Sesion(tipo)
+/*MFM - En base a las transacciones de la sesion que bonifican a CM, calculo valores*/
+LOCAL montobruto LIKE siaf:importe
+LOCAL desc	LIKE siaf:importe
+local cant_aux LIKE post:cantidad
+LOCAL ldcto_CM LIKE post:Dcto_CliMed
+local l_presnro LIKE post:PresNro
+local l_cod_siaf LIKE siaf:codigo_siaf
+	
+	if (!post:OperacionCob && !post:OperacionAut) then
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+		WHERE (post:fecha == FLD:common:system_date && \
+		post:op_operator_id == FLD:op:op_operator_id && \
+		post:PresNro == post:PresNro && \
+		siaf:codigo_siaf != 99099 && \
+		siaf:codigo_siaf != 99023 && \
+		siaf:codigo_siaf != 99300 && \
+		post:bonificaCM == "S")
+	else
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+		WHERE (post:fecha == FLD:common:system_date && \
+		post:op_operator_id == FLD:op:op_operator_id && \
+		post:PresNro == post:PresNro && \
+		siaf:codigo_siaf != 99099 && \
+		siaf:codigo_siaf != 99023 && \
+		siaf:codigo_siaf != 99300 && \
+		post:bonificaCM == "S" && \
+		post:remito_nro == post:remito_nro)
+	end if		
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+    	lib:err_retval = CDSRETVAL
+	TotalSesionCM  = 0 //sin impuestos ni descuentos
+	TotalNetoCM    = 0 //sin impuestos, con descuentos
+	Imp_DctoCliMed = 0 //descuento Cliente Medio
+	DO
+    	IF (lib:err_retval == 0) THEN
+    		
+    		CLEARFIELD siaf:adt_tran_fliatran
+    		CDS EXTRACT DSC:CONPresuDeta siaf:adt_tran_fliatran
+    		select (siaf:adt_tran_fliatran)
+	    		case "TAV"
+	    		CDS EXTRACT DSC:CONPresuDeta siaf:codigo_siaf into l_cod_siaf
+	    		if (l_cod_siaf == 18100 || l_cod_siaf == 18101)
+	    				 	CDS EXTRACT DSC:CONPresuDeta post:tarifa INTO montobruto \
+    				Imp_DctoCliMed INTO desc post:descuento \
+    				post:cant_opc post:Dcto_CliMed INTO ldcto_CM
+    			endif
+	    		case "TES"
+    				/*//if (tipo == "S") then //si es descuento por total de venta tomo el importe del campo SimporteCM
+    				//Segun requerimiento, siempre se toma el importe bruto total de todas las 
+    				//transacciones que permiten bonificacion a CM (se le hayan aplicado descuentos o no)
+    				CDS EXTRACT DSC:CONPresuDeta tes:SimporteCM INTO montobruto \
+    				Imp_DctoCliMed INTO desc
+    				else //si es descuento por producto tomo el importe del campo PimporteCM
+    					CDS EXTRACT DSC:CONPresuDeta tes:PimporteCM INTO montobruto \
+    					Imp_DctoCliMed INTO desc
+	    			end if*/
+	    			//Bug 14412
+	    			CDS EXTRACT DSC:CONPresuDeta post:PreDNroTrn into l_presnro
+    				//post:Dcto_CliMed INTO l_dcto
+    				//hay que llamar a un proceso que recorra la AuxEspV
+    				CDS SELECT FROM DSC:tes:AuxEspV_tbl BECOMES DSC:tes:AuxEspV_ctx \
+    				WHERE tes:adt_evaux_prestran == l_presnro && tes:adt_evaux_op == op:op_operator_id && \
+    				tes:adt_espv_bonifCM == "S"
+    				CDS FINDFIRST DSC:tes:AuxEspV_ctx NOLOCK
+    				WHILE (CDSRETVAL == 0)
+    					CDS EXTRACT DSC:tes:AuxEspV_ctx tes:adt_evaux_importe INTO montobruto 
+	    				TotalSesionCM =  TotalSesionCM + montobruto
+    					desc = (montobruto * Dcto_CliMed) / 100
+    					Imp_DctoCliMed = Imp_DctoCliMed + desc
+    					CDS FINDNEXT DSC:tes:AuxEspV_ctx NOLOCK
+    				END WHILE
+    				CDS ENDSELECT DSC:tes:AuxEspV_ctx
+    				break
+    			case "CSV"
+    			case "CME"
+    				CDS EXTRACT DSC:CONPresuDeta siaf:importe INTO montobruto \
+    				Imp_DctoCliMed INTO desc
+    				break
+	    		case "CSP" ;postales
+    			case "CSE"
+    			case "CST" ;telegraficas
+					case "VAP"
+						clearfield cant_opc
+    				call csr:cleararray (post:bonifCM_opc)
+    				call csr:cleararray (post:cos_opc)
+    			    //ldcto_CM = post:Dcto_CliMed
+    			    
+     				CDS EXTRACT DSC:CONPresuDeta post:tarifa INTO montobruto \
+    				Imp_DctoCliMed INTO desc post:descuento \
+    				post:cant_opc post:Dcto_CliMed INTO ldcto_CM
+    				
+    				//PS OPCIONALES
+    				//extraigo los valores de los opcionales uno a uno
+					cant_aux = 0
+					while (cant_opc > cant_aux)
+						CDS EXTRACT DSC:CONPresuDeta post:bonifCM_opc[cant_aux] post:cos_opc[cant_aux] 
+						cant_aux = cant_aux + 1
+					end while
+
+    				cant_aux = 0
+    				while (post:cant_opc > cant_aux)
+    					if (post:bonifCM_opc[cant_aux] == "S") then
+							//desc = desc + ((post:cos_opc[cant_aux] * post:Dcto_CliMed) / 100)
+							desc = desc + ((post:cos_opc[cant_aux] * ldcto_CM) / 100)
+    						montobruto = montobruto + post:cos_opc[cant_aux]
+    					end if
+    					cant_aux = cant_aux + 1
+    				end while
+    				
+    				clearfield cant_opc
+    				call csr:cleararray (post:bonifCM_opc)
+    				call csr:cleararray (post:cos_opc)
+    				//post:Dcto_CliMed = ldcto_CM 
+    				
+    				if (tipo == "S") then
+    					//las postales pueden tener descuento aparte y no me lo tiene que mostrar en el importe bruto.
+	    				montobruto = montobruto - post:descuento
+    				endif
+	    		break
+    			case else
+    				montobruto = 0
+	    			desc  = 0
+    				break
+    		end select
+    		//Bug 14412
+    		if (siaf:adt_tran_fliatran != "TES") then
+    		    //Calculo el Bruto
+    		    TotalSesionCM =  TotalSesionCM + montobruto
+    		    //Calculo los descuentos
+    		    Imp_DctoCliMed = Imp_DctoCliMed + desc
+    		endif
+    		CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+    		lib:err_retval = CDSRETVAL
+    	ELSE
+    		CDS ENDSELECT DSC:CONPresuDeta
+    		BREAK
+    	END IF
+    		
+	LOOP   	
+END SUB
+
+/*******/

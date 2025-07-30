@@ -1,0 +1,135 @@
+/****o* Caja Unificada/OFB:post:PBaceptar_web
+* NOMBRE
+*   OFB:post:PBaceptar_web
+* DESCRIPCION
+*   Rutina que se ejecuta cuando se presiona el botón Aceptar de la pantalla de la TX
+*   de Registración WEB.
+*   Esta rutina invoca al navegador de internet segun corresponda.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:PREC6680
+* REFERENCIADO POR
+*   SCR:post:SCRN6680
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBaceptar_web
+	LOCAL l_firma LIKE common:csr_string
+	LOCAL l_firmaMD5 LIKE common:csr_string
+	LOCAL Longitud LIKE cantidad
+	LOCAL contingencia LIKE cantidad
+	
+	IF (post:adt_pweb_nombre.NUMCHARS == 0) THEN
+		MSGBOX "SELECCIONE UNA APLICACION WEB",0x00,"ERROR"
+		drv:button = CB1 //BOTON ACEPTAR
+		CALL drv:but_up_enable  
+		RETURN (-2)
+	END IF 
+   
+	//1.Generar la firma validadora ( campos Secuenciador web (post:PresNro)- Fecha (comon:system_date) -Operador(op:op_operator_id) – NIS (common:sucursal_activa))
+	FPRINT l_firma,"%s%s%s%s",PresNro,common:system_date,op:op_operator_id,common:sucursal_activa
+	Longitud = l_firma.NUMCHARS
+	CALL CSR:MD5checksum(l_firma,1,l_firmaMD5,1)
+	IF (l_firmaMD5.NUMCHARS > 32) THEN
+		MSGBOX "LA FIRMA NO PUEDE SUPERAR LOS 32 CARACTERES DE LONGITUD",0x00, "ERROR"
+	ELSE 
+		web_tmp_firma = l_firmaMD5
+	END IF 
+	
+	//2.Grabar un registro cabecera en  tabla temporal web_tmp
+	CALL CDSsave_web_tmp("CABEC", "P")
+	//lo borro para que no quede el hardcode "999" de la cabecera
+	clearfield post:web_tmp_nro_tx_web
+	
+	//Grabar una marca para que la TX no pueda ser cancelada/borrada/modificada/reversada ni anulada .
+	IF (post:es_WEB.numchars == 0) THEN
+		post:es_WEB = "X"
+		CALL post:CDSPresu_es_WEB
+	END IF
+		
+	//3.GERMAN! - INVOCAR AL NAVEGADOR DE INTERNET SEGUN PARAMETRO EN DDPROJ.INI
+	CALL post:MISCllamaURL
+	IF (RETVAL < 0) THEN
+		ENABLECONTROL drv:PBcb1 //BOTON ACEPTAR
+		//Eliminar la cabecera (sino queda encerrado!)
+		CALL post:CDSdel_web_tmp
+		RETURN (-2)
+	END IF   
+    
+	//4.CARINA! - REALIZAR LA CONSULTA DE LAS NOVEDADES WEB
+	siaf:i = 0
+	WHILE (siaf:i <= 3)
+		CALL post:OFBconsulta_CajaUnif
+		IF (RETVAL < 0) THEN
+			IF (RETVAL == -3 ) THEN //No hay transacciones WEB procesadas OK
+				MSGBOX "NO SE REGISTRARON TRANSACCIONES WEB. SI LO DESEA PUEDE SALIR CON ESC",0x00,"AVISO"
+				drv:button = CB1 //BOTON ACEPTAR
+				CALL drv:but_up_enable				
+				RETURN -2
+			ELSE
+				//REINTENTO: no se pudo realizar la consulta 
+				contingencia = TRUE
+				siaf:i = siaf:i + 1
+			END IF
+		ELSE
+			//Hay tx web procesadas OK
+			lib:stat_msg_line = "Op. WEB satisfactoria. Finalice el presupuesto presionando ENTER"
+			REFRESH lib:stat_msg_line
+			DISABLECONTROL drv:PBcb0 //boton Aplicacion web			
+			drv:button = CB1 //BOTON ACEPTAR
+			CALL drv:but_up
+			contingencia = FALSE
+			BREAK
+		END IF
+	END WHILE
+	
+	//6.SI NO SE LOGRA RECUPERAR ENTONCES SE ENTRA EN CONTINGENCIA
+	IF (contingencia) THEN
+		DISABLECONTROL drv:PBcb0 //boton Aplicacion web
+		drv:button = CB1 //BOTON ACEPTAR
+		CALL drv:but_up
+		//DISABLECONTROL drv:PBcb1 //boton Aceptar
+		//MGI: AUT-2457
+		IF (adt_pweb_mandatoria == "S") THEN
+			MSGBOX "REINTENTE RECUPERAR LOS DATOS O LLAME A MESA DE AYUDA PARA REALIZAR LA CARGA MANUAL.",0x00,"ATENCION"
+			CALL csr:proc_list(F_REFRESH,LST:LISTparam_web_fld) 
+			CALL CSR:proc_list(F_CLEAR,,LST:LISTManualWEB_flds)
+			CALL CSR:proc_list(F_REFRESH,LST:LISTManualWEB_flds)
+			ENABLECONTROL drv:PBcb2 //BOTON REINTENTAR
+			ENABLECONTROL drv:PBcb3 //BOTON CARGA MANUAL
+			//50417 - No se habilita mas el Boton Cancelar Sesion en esta instancia
+			//ENABLECONTROL drv:PBcb5 //BOTON CANCELAR SESION
+		ELSE 
+			//AUT-2174 - No realizaba tratamiento de aplicacion no mandatoria.	
+			//IF (allWebIncorrectas)
+				//Para que la sesion finalices, todas las tx consultadas (more data) 
+				//al switch deben estar con estado != OK. 
+				MSGBOX "TRANSACCION NO MANDATORIA. SE FINALIZARA LA SESION EN FORMA AUTOMATICA.",0x00,"AVISO"
+				CLEARFIELD post:es_WEB
+				CALL post:CDSPresu_es_WEB 
+				CALL CSR:proc_list(F_CLEAR,,LST:LISTparam_web_fld)
+				CLEARFIELD web_tmp_cantidad 
+				CLEARFIELD web_tmp_impweb 
+				CALL CSR:proc_list(F_CLEAR,,LST:LISTManualWEB_flds)
+				
+				//gpb:Fuerzo un ESC para invocar a post:ESC6680 que es la rutina que me va a cancelar el presupuesto
+				post:web_fin_sesion = "X"
+				UNGETKEY RT_ESC
+			//END IF
+		END IF 
+  ELSE
+  	//en la mensajeria se agrega un mensaje para indicar al operador que presione ENTER para confirma la sesion	
+  	SETVALDONE post:firma_web
+  	SETVALDONE post:web_tmp_codbarra
+  	//SOLICITUD DEL USUARIO
+  	UNGETKEY RT_SEND
+  END IF 
+END SUB
+
+/*******/

@@ -1,0 +1,65 @@
+/****o* Pendientes de agrupación/OFB:post:MISCEP_Rest
+* NOMBRE
+*   OFB:post:MISCEP_Rest
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCEP_Rest
+	local LRetval like lib:err_retval
+	local ImpAux like siaf:importe
+	
+	LRetval = -1
+	
+	clearfield MPAcum
+	
+    CLEARFIELD cant_serv_EP
+    CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+        WHERE fecha_EP == common:system_date && \
+            operador_EP == op:op_operator_id && \
+            PresNro_EP == PresNro && \
+            cod_agrupacion == cod_agrupacion && \
+            siaf:importe != ""
+    /*La condicion se siaf:importe se pone porque a pesar de que no se cobre, se
+    genera un regisro de almacenaje. Si el importe esta cargado es porque el
+    servicio de almacenaje se esta cobrando de manera que se debera tenerlo en
+    cuenta en la generacion de los medios de pagos habilitado. En caso contrario, NO*/
+    CDS FINDFIRST DSC:EntrPieza_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval != -801)
+        //cuento la cantidad de servicios asociados a la entrega de piezas
+        cant_serv_EP = cant_serv_EP + 1
+        CDS EXTRACT DSC:EntrPieza_ctx adt_serv_formfiscal cod_EP siaf:importe into ImpAux
+        IF (adt_serv_formfiscal == "FACTU" || adt_serv_formfiscal == "TICKE")
+            CALL post:MISCver_rest_MP(common:sucursal_activa,cod_EP,"S","N",0,2)
+        ELSE    
+            CALL post:MISCver_rest_MP(common:sucursal_activa,cod_EP,"S","N",1,2)
+        END IF        
+		
+		if (retval == 0) then
+			MPAcum = MPAcum + ImpAux
+			LRetval = 0
+		end if
+        
+        CDS FINDAGAIN DSC:EntrPieza_ctx NOLOCK    
+        CDS FINDNEXT DSC:EntrPieza_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    CDS ENDSELECT DSC:EntrPieza_ctx
+    return (LRetval)
+
+END SUB
+
+/*******/

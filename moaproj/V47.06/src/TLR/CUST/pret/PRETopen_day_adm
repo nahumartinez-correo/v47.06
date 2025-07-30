@@ -1,0 +1,160 @@
+/****o* Pendientes de agrupación/OFB:tlr:PRETopen_day_adm
+* NOMBRE
+*   OFB:tlr:PRETopen_day_adm
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "custpret.h"
+
+SUB tlr:PRETopen_day_adm
+/* don't allow open day to be duped or corrected */
+	CALL  OFB:PRETno_dup
+	if (retval != 0)
+		return (-2)
+	END IF
+	CALL  OFB:PRETno_cor
+	if (retval != 0)
+		return (-2)
+	END IF
+;**********************************************************************
+; ****** Ahora el perfil de retaguardia (marchandizing) realiza la *****
+; ******      misma apertura que la caja. FB 14/04/98		  *****
+; **********************************************************************
+; don't allow open day if day already open
+;	if (testflag(op:op_state_flags,open_day))
+;		move DSC:ERRalready_open to drv:error_msg
+;               CALL  drv:error_msg
+;		return (-2)
+;	END IF
+; es una tran memo
+;	let siaf:posible_off = "S"
+; 	clearfield hcomm:INDhost_sndrt
+;	clearfield drv:INDhcomm_rtn
+; **********************************************************************
+
+	call tes:MISCverif_cierre
+	call tes:CDSren_caj_load
+	/* verifica si el registro de totales no aparece como abierto. La
+	excepcion es cuando se creo al operador o es la primera vez que se
+	ingresa como operador al sistema con tesoreria (rend_fecha vacio) */
+	if ((tlr:tots_status == "O" || tlr:tots_status == "A") \
+	     && tes:rend_fecha != "") then
+		move "Perfil abierto de dia/s anterior/es" to drv:error_msg
+                CALL  drv:error_msg
+		move "Debe realizar cierre forzado" to drv:error_msg
+                CALL  drv:error_msg
+		return (-2)
+	END IF
+/* no permite abrir el dia de caja antes que el de tesoro 
+	call tes:CDScons_tes_tesor
+	if (tes:tes_marca_cierre == "X") then
+		move "No se puede abrir perfil: Tesoro no abierto" to \
+		   drv:error_msg
+		call drv:error_msg
+		return (-2)
+	end if
+	call csr:date_compare(tes:tes_fecha,common:system_date)
+	if (tes:tes_fecha == "" && tes:tes_marca_cierre == "")
+		; Tesoro nuevo 
+			move "Tesoro No abierto" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+	end if
+	if (retval == 2) then // tesoro estaba abierto
+		if (tes:tes_marca_cierre == "") then
+			move "No se puede abrir Merchandizing: Tesoro abierto desde dia/s anterior/es" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+		end if
+	end if
+*/
+        /* Se modifica agregando Sucursal */
+	call tes:CDScons_suc_sucur
+	if (tes:suc_marca_cierre == "X") then
+	        move "No se puede abrir Merchandising: Sucursal no abierta" to \
+                drv:error_msg
+                call drv:error_msg
+		return (-2)
+	end if
+
+	/* Comparo con fecha de la sucursal */
+	call csr:date_compare(tes:suc_fecha,common:system_date) 
+	if (tes:suc_fecha == "" && tes:suc_marca_cierre == "")
+		// Sucursal nueva 
+			move "Sucursal No abierta" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+	end if
+	if (retval == 2) then // sucursal estaba abierto
+		if (tes:suc_marca_cierre == "") then
+			move "No se puede abrir Merchandizing: Sucursal abierta desde dia/s anterior/es" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+		end if
+	end if
+
+/* verifica en que condiciones esta abriendo el dia */
+	call tes:CDSren_caj_load
+	call csr:date_compare(tes:rend_fecha,common:system_date)
+	let lib:err_retval = retval
+	select (lib:err_retval)
+	    case 0
+	       /* pregunto por la marca en tabla totales porque es la ultima
+		   de todas las marcas colocadas al cierre */
+		if (tlr:tots_status == "C") then
+			move "El Dia Ya Fue Cerrado. Desea Reabrir?" to \
+			     common:csr_string
+			msgbox FLD:common:csr_string,OFB_YESNO,"Aviso"
+			if (retval == 7) then
+				return (-2)
+			end if
+			call tes:MISCopenday_ovr_req
+			if (retval < 0) then
+				return (-2)
+			end if
+			let siaf:nombre_transac = \
+				"REAPERTURA DE DIA DE MERCHANDIZING"
+			let drv:descrip = "REOPENME"
+			let tlr:tran_mnemonic = "REOPENME"
+		end if
+		break
+	    case 2
+		/* verfico que todas las marcas esten puestas.
+		   Caso contrario no se realiza la apertura */
+		if (tlr:tots_status == "O" || tes:rend_marca_cierre != "X") then
+			let common:csr_string = \
+				"El Dia Anterior No Fue Cerrado"
+			errmsg common:errmsg_list,FLD:common:csr_string
+			let common:csr_string = \
+				"Debe Realizarse Cierre Forzado"
+			msgbox FLD:common:csr_string,OFB_OK,"Aviso"
+			return (-2)
+		end if
+		break
+	end select
+
+	let tlr:set_bus_date = tlr:bus_date
+	let op:op_login_aux = op:op_login_id
+	let siaf:posible_off = "S"
+	
+	//gpb:NI50546 - Mercado Pago
+	//Traigo el device_name de la tabal Terminal_MP
+	CALL post:CDSmpGetDevicePoint
+	IF (RETVAL == 0) THEN
+		CALL post:MISCmpDelDevicePoint
+	END IF
+	
+END SUB
+
+/*******/

@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:post:OFBupd_cheque_env
+* NOMBRE
+*   OFB:post:OFBupd_cheque_env
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postOFB.h"
+
+SUB post:OFBupd_cheque_env
+
+	;UPDATE TRANSACCION INFORMATIVA DE CHEQUE
+	;----------------------------------------
+
+	clearfield siaf:tran_retval
+
+    	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context WHERE  \
+        tlr:jnl_branch   == FLD:op:op_branch_id  && \
+        tlr:jnl_operator == FLD:op:op_operator_id && \
+        tlr:jnl_bus_date == FLD:tlr:bus_date && \
+        tlr:jnl_sequence == FLD:tlr:jnl_sequence 
+
+    	CDS FINDFIRST DSC:tlr:aux_context LOCK 
+ 	if (cdsretval != 0) then
+        	CDS UNLOCK DSC:tlr:aux_context 
+        	CDS ENDSELECT DSC:tlr:aux_context 
+		return
+	end if
+
+	fprint siaf:nota_1,"%s",\
+	"Busqueda registro Trx. Ingreso de cheque en journal"
+	call batch:OFBlog_batch(siaf:nota_1,cdsretval,"S","S","INFO","N")
+
+	CDS CLEARBUFFER DSC:tlr:aux_context
+
+    	if  (hcomm:tran_status > HOST_REJECTED) then
+        	siaf:tran_retval = TRAN_CAIDA_VUELO
+        	CDS UNLOCK DSC:tlr:aux_context 
+        	CDS ENDSELECT DSC:tlr:aux_context 
+		return
+	end if
+
+    	if (hcomm:tran_status == HOST_ACCEPTED) then
+        	siaf:mensaje = "TRANSACCION ACEPTADA"
+	else
+		if (hcomm:tran_status == HOST_REJECTED )
+			siaf:mensaje = "TRANSACCION RECHAZADA"
+		end if
+	end if
+
+	let tlr:jnl_hora_ult_act = common:time_of_day
+	let tlr:jnl_dia_ult_act  = common:system_date
+
+    	CDS APPEND DSC:tlr:aux_context \
+        	siaf:mensaje \
+		tlr:jnl_hora_ult_act \
+		tlr:jnl_dia_ult_act \
+		giros:CodRespuesta_comm \
+		giros:firma_enviada \
+		giros:Firma_comm
+
+    	CDS UPDATE DSC:tlr:aux_context LOCK
+
+	fprint siaf:nota_1,\
+	"Actualizacion Trx. Ingreso de cheque sec.:%s,s/cod.resp.:%s",\
+	tlr:jnl_sequence,giros:CodRespuesta_comm
+	call batch:OFBlog_batch(siaf:nota_1,cdsretval,"S","S","INFO","N")
+
+    	if (retval < 0)
+        	fprint common:csr_string,\
+		 "\nError al actualizar el journal luego de la respuesta del host de la transaccion con secuencia %e. Hora: %e \n",tlr:jnl_sequence,common:time_of_day
+        	call batch:MISCgeneraLog(common:csr_string,"ERROR","N")
+		return -1
+	end if
+
+    	CDS UNLOCK DSC:tlr:aux_context 
+    	CDS ENDSELECT DSC:tlr:aux_context 
+	clearfield siaf:mensaje
+
+END SUB
+
+/*******/

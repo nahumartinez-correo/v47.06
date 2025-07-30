@@ -1,0 +1,147 @@
+/****o* Registro RPP/OFB:post:FVALpiezaRegRPP
+* NOMBRE
+*   OFB:post:FVALpiezaRegRPP
+* DESCRIPCION
+*   Valida el campo Pieza a registrar. Verifica que la pieza no haya sido ya registrada, o entregada
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNregistroRPP,SCRNregRPP_jnl,  SCR:post:SCRNservicioRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpiezaRegRPP
+	local modifica like siaf:i
+	local l_registrada like post:adt_stockp_rpp_reg
+	local l_operador_RPP like post:operador_RPP   
+	local l_adt_stockp_Baja like post:adt_stockp_Baja
+	local l_msje like common:csr_string
+	local l_err like siaf:i
+	local l_rpp_corp like post:adt_stockp_rpp_corp
+	
+	let l_err = 0
+	
+sel_entrPieza:    
+	;leo RegRPP_tmp para saber si la pieza ya fue ingresada en la tx actual
+	call CDSregRPP_tmp_lee
+	if (retval == 0) then
+		CALL drv:MISCdis_enablePB_ABM(0,1,1)
+		if (estado_presu == 2) then
+			modifica = 1
+			setvaldone adt_serv_serv
+		end if
+	else
+		CALL CSR:trimfield(Pieza)
+		IF (Pieza.NUMCHARS == 0)
+			//IF (TESTFLAG(admin:mode_flags,grb) || TESTFLAG(admin:mode_flags,act)) then
+			IF (LASTKEY != RT_SEND)
+				//Si no presiono ENTER obligo a ingresar un T&T    			
+				MSGBOX "CAMPO REQUERIDO.",0x00,"Error"
+				call post:PBNuevoRegRPP
+				call admin:ABMresetflag
+				RETURN (-2)
+			ELSE
+				//SI presionó ENTER no valido campos de pantalla
+				CALL MISCsetvaldone_rpp
+			END IF
+		
+			//END IF
+			RETURN 0
+		END IF
+			    	
+		if (post:estado_presu == 2) then
+			CALL CSR:proc_list(F_CLEAR,LST:post:LISTregRPP_All)
+			CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All)
+		else
+			//por que la limpia?
+			
+			//CALL CSR:proc_list(F_CLEAR,LST:post:LISTregRPP_All)
+			CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All)
+		end if
+   	
+		//hago el select a la stockp con la pieza ingresada
+		CALL CDSregRPP_sel_new 
+		if (retval == -801)
+			//si no la encuentra y es de 11 digitos le agrego "AR" y vuelvo a hacer el select
+			if (Pieza.numchars == 11)
+				CDS ENDSELECT DSC:STOCKP_CTX
+				//Controlo la cantidad de dígitos, si es de 11 le agrego "AR"
+				CALL MISCcant_digitos_tt(Pieza,"8")
+				goto sel_entrPieza:
+			end if	
+			CDS ENDSELECT DSC:STOCKP_CTX
+			CLEARFIELD Pieza
+			REFRESH Pieza
+			MSGBOX "LA PIEZA INGRESADA NO EXISTE EN STOCK PARA SER REGISTRADA",0x00,"Error"
+			call admin:ABMresetflag
+			RETURN (-2)  
+		elseif (retval == 0) then
+			CDS EXTRACT DSC:STOCKP_CTX \
+				post:adt_stockp_rpp_corp into l_rpp_corp \
+				post:adt_stockp_rpp_reg INTO l_registrada \
+				post:operador_RPP INTO l_operador_RPP\
+				post:adt_stockp_Baja INTO l_adt_stockp_Baja
+		
+			if (l_adt_stockp_Baja != "S") then
+				if (l_rpp_corp == "S") then
+					let l_err = 1
+					let l_msje = "La pieza es corporativa. Debe entregarse sin registrarse."
+				else
+					if (l_registrada == "S") then
+						let l_err = 1
+						let l_msje = "La pieza ya ha sido registrada. Puede consultar el REPORTE de RPP."
+					elseif (l_operador_RPP.numchars > 0)
+						if (l_operador_RPP != op:op_operator_id) then
+							let l_err = 1
+							let l_msje = "La pieza esta siendo registrada por otro operador."
+						else
+							let l_err = 1
+							let l_msje = "La pieza está siendo registrada en el presupuesto actual."
+						end if
+					end if  
+				endif
+			else
+				let l_err = 1
+				let l_msje = "La pieza ya ha sido entregada. Puede consultar el REPORTE de RPP."
+			end if
+		
+			if (l_err == 1) then
+				CDS ENDSELECT DSC:STOCKP_CTX
+				CLEARFIELD Pieza
+				REFRESH Pieza
+				MSGBOX l_msje,0x00,"Error"
+				call admin:ABMresetflag
+				RETURN (-2)
+			end if
+		end if
+	
+		CDS FINDAGAIN DSC:STOCKP_CTX NOLOCK
+		CDS EXTRACT DSC:STOCKP_CTX ALL
+		CALL drv:MISCdis_enablePB_ABM(1,0,0)
+	end if 	
+    
+	//Habilito los campos necesarios para registrar la pieza
+	CALL MISChabFldsRegRPP("SI_HAB",modifica)
+	
+	if (post:estado_presu == 2) then
+		CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All)
+	else
+		CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All) 
+	end if
+	SETVALDONE Pieza
+	if (modifica)
+		PROTFIELD adt_serv_serv
+		DISABLECONTROL drv:PBcb1	
+		SETFLAG admin:mode_flags,todos
+		UNGETKEY RT_SEND
+  END IF
+END SUB
+
+/*******/

@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:giros:SVALconsulta_canc
+* NOMBRE
+*   OFB:giros:SVALconsulta_canc
+* DESCRIPCION
+*   PROCESO DE CONSULTA MULTIPLES PARA CANCELACIONES
+*   Envio de Consulta al Switch
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "girossval.h"
+
+SUB giros:SVALconsulta_canc
+
+   	If (!TestFlag(tran_send_mode,consulta_simple))
+		
+		/*if (giros:flia_giro_fld == "I" )
+			hcomm:INDhost_sndrt = OFB:giros:SENDconsulta_inter
+		else
+			hcomm:INDhost_sndrt = OFB:giros:SENDconsulta_multi
+		end if*/ 
+    Else
+		hcomm:INDhost_sndrt = OFB:giros:SENDingreso_cons
+   	Endif		
+
+   	hcomm:INDhost_rcvrt = OFB:giros:RCVEconsulta_multi
+
+	CALL hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RETURN (-2)
+	END IF 
+
+	/************************************************************************/
+	/*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+	/************************************************************************/
+		
+	/* Si el flag de TRAN caidas en Vuelo esta ON,
+    Ejecuto proceso correspondiente,para su procesamiento 	            
+	Se ejecutara el proceso de recuperacion siempre y cuando la transaccion
+    en curso tenga rutina de send y  de rcve, es decir las que viajan a
+    HOST.  Se realizo el procedimiento anterior, para que no se modifique
+    el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+	
+	call siaf:CDSchk_trxs_caidas
+    if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+    		clearfield hcomm:INDhost_sndrt 
+    		clearfield hcomm:INDhost_rcvrt 
+    		return TRAN_CAIDA_VUELO
+		end if
+		FYIMSG CLEAR
+	elseif (retval == -5) then // hay trx's con caida pendiente de recuperar por el proc. batch.
+		msgbox "NO SE PUEDE REALIZAR LA OPERACION.\nTRANSACCIONES PENDIENTES DE RECUPERACION",OFB_OK,"Aviso"
+		clearfield hcomm:INDhost_sndrt
+		clearfield hcomm:INDhost_rcvrt
+		return (-2)
+    end if    
+    /************************************************************************/
+    /*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+    /************************************************************************/
+
+	/******************************************************************************/
+	/* Esto se comenta por dos razones: 1-Se cambio el flag que determinaba si se */
+	/* estaba en una recuperacion por una rutina que busca tx a recuperar en la   */
+	/* jnl_caidas.                                                                */
+	/* 2-En base a la modificación anterior surge el problema de que si se esta   */
+	/* recuperando una caída y se produce otra caída, el sistema no te saca de la */
+	/* transaccion actual y genera diferencias en el switch.                      */
+	/*                                                                            */
+	/*if ( retval == TRAN_CAIDA_VUELO  )                                          */
+	/*	return TRAN_CAIDA_VUELO                                                   */
+	/*end if                                                                      */
+	/*if ( retval < 0  )                                                          */
+	/*	return retval                                                             */
+	/*end if                                                                      */
+    /*CALL hcomm:COMM_stat_init                                                   */
+    /*IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N")) THEN */
+	/*	MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"          */
+	/*	RETURN (-2)                                                               */
+    /*END IF                                                                      */ 
+	/******************************************************************************/
+	
+       call post:CDSobtiene_secuen("STAN")
+       giros:hora_viaje = common:time_of_day
+       giros:dia_viaje = common:system_date
+
+       CALL hcomm:COMM_host_tran
+       if ( giros:err_firma == -1 )    // Error en Verificacion Firma 
+    		common:trap_reset = OFB:drv:KEYSreset_esc
+    		KEYDEF CLEAR
+    		CALL drv:KEYSnavigation
+		return -2
+       end if
+       common:trap_reset = OFB:drv:KEYSreset_esc
+       KEYDEF CLEAR
+       CALL drv:KEYSnavigation
+       If (hcomm:tran_status != HOST_ACCEPTED) THEN
+            CALL hcomm:COMM_host_msg
+            Return -2
+       ELSE
+      		CLEARFIELD lib:stat_message
+      		REFRESH lib:stat_message
+       END IF
+END SUB
+
+/*******/

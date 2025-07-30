@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:post:SVALrobo_cheque
+* NOMBRE
+*   OFB:post:SVALrobo_cheque
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSVAL.h"
+
+
+SUB post:SVALrobo_cheque
+
+	if (!testflag(tlr:tran_flags,correction))
+    		giros:codigo_procesamiento = 998140
+    		jnl_cheques_tipo = "D" //directa
+	else
+		setflag giros:flags_back,cancelacion 
+    		giros:codigo_procesamiento = 998141
+    		jnl_cheques_tipo = "C" //reversa x journal
+	end if
+	if (!testflag(tlr:tran_flags,correction))
+		if (siaf:cod_banco.numchars == 0 || siaf:cheqcuenta.numchars == 0 || \
+			siaf:nro_cheque.numchars == 0) then
+			errmsg lst:common:errmsg_list "Datos del cheque incompletos"
+			return (-2)
+		end if	
+		popup tes:SCRNconfirma
+       	if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+        	return (-2)
+       	END IF
+
+       	//Convierto a moneda base.
+       	call post:MISCconvierto_coti(post:importe_origen)
+	    
+	    //seteo los campos del tipo y nro de cliente
+	    climed_tipo = tes:teso_cheq_tipo
+	    climed_numero = tes:teso_cheq_clinro        	
+	end if
+	
+   	CALL siaf:SVALnivel_sup
+    if (retval < 0)
+    	return (-2)
+    end if
+	
+	//TOTALIZO
+	if (!testflag(tlr:tran_flags,correction))
+		if (drv:dt_app != 4) then
+            		fld:drv:INDspc_rtn[0] = LST:post:TOTS99280
+            		fld:tlr:INDtots_append = LST:post:TOTS99280
+        	/*else
+            		fld:drv:INDspc_rtn[0] = LST:post:TOTS99280_TES
+            		fld:tlr:INDtots_append = LST:post:TOTS99280_TES*/
+        	end if
+	else
+        	fld:drv:INDspc_rtn[0] = fld:tlr:INDtots_append
+    end if 
+    	
+    if (!testflag(tlr:tran_flags,correction))
+    	IF (siaf:moneda == 15) //cheque certificado
+	    	//Es cheque certificado en plazo?
+	    	CALL MISCchq_cert_plazo(tes:teso_cheq_fcap,adt_mp_dias_plazo)
+	    	IF (retval == 0)
+	   			chq_en_plazo = "S"
+	   		ELSE
+	   			chq_en_plazo = "N"
+	   		END IF 	
+   		ELSE
+   			clearfield chq_en_plazo
+   		END IF
+  		
+    end if
+   
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+   	call post:CDSobtiene_secuen("STAN")
+
+	fprint post:datos_msg108,"%010.10s%4.4s%2.2s%2.2s",post:numero_denuncia,\
+	substr(fecha_denuncia,0,4),\
+	substr(fecha_denuncia,4,2),substr(fecha_denuncia,6,2)
+
+	setflag giros:tran_send_mode,trat_cheques   	
+
+END SUB
+
+
+
+
+/*******/

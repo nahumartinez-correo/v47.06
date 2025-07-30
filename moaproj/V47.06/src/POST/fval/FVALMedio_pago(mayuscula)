@@ -1,0 +1,220 @@
+/****o* Pendientes de agrupación/OFB:post:FVALMedio_Pago
+* NOMBRE
+*   OFB:post:FVALMedio_Pago
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   50596 - MEDIOS DE PAGOS CON TARJETA PARA CLIENTES PYMES
+* SOURCE
+*/
+#include "postFVAL.h"
+
+SUB post:FVALMedio_Pago
+	LOCAL esNumerico LIKE siaf:i
+	/*Cuidado!!!!!!!
+	Existe otra rutina (post:FVALmedio_pago) que tiene otra funcionalidad
+	Chequear cual es la que se debe modificar!!!!!*/
+
+	IF (rechazoDiferido) THEN
+		RETURN 0
+	END IF
+
+	CALL csr:getrowcol MonedaMedioPago
+	col = RETVAL
+	IF (MonedaMedioPago[col].NUMCHARS == 0) THEN
+		CLEARFIELD MedPDesMedioPago[col]
+		CLEARFIELD MontoEntMedioPago[col]
+		CLEARFIELD CotizacionMedioPago[col]
+		CLEARFIELD ImporteMedioPago[col]
+		CLEARFIELD VueltoMedioPago[col]
+		UNPROTFIELD MontoEntMedioPago[col]
+		VueltoMedioPago[0].HIGHLITE = 0
+		CALL post:MISCrecalculo_pesos
+		REFRESH MedPDesMedioPago[col]
+		REFRESH MontoEntMedioPago[col]
+		REFRESH CotizacionMedioPago[col]
+		REFRESH ImporteMedioPago[col]
+		REFRESH VueltoMedioPago[col]
+		IF (adt_mp_mon != adt_emp_moneda) THEN
+			VueltoMedioPago[0] = MontoEntMedioPago[0] - CotizacionMedioPago[0]
+		ELSE
+			VueltoMedioPago[0] = MontoEntMedioPago[0] - ImporteMedioPago[0]
+		END IF
+
+		// Pedido por fede: si el vuelto es negativo en un cobro o positivo en un pago no mostrarlo.
+		IF (VueltoMedioPago[0] * CotizacionMedioPago[0] < 0) THEN
+			CLEARFIELD VueltoMedioPago[0]
+			REFRESH VueltoMedioPago[0]
+		END IF
+
+		IF ((CotizacionMedioPago[0]+ 0) == 0) THEN
+			VueltoMedioPago[0] = 0
+			MontoEntMedioPago[0] = 0
+			REFRESH MontoEntMedioPago[0]
+		END IF
+		
+		IF ((VueltoMedioPago[0] + 0) != 0) THEN
+			VueltoMedioPago[0].HIGHLITE = 1
+		ELSE
+			VueltoMedioPago[0].HIGHLITE = 0
+		END IF
+		
+		REFRESH VueltoMedioPago[0]
+		RETURN 0
+	END IF
+
+	esNumerico = (SUBSTR(MonedaMedioPago[col],0,1) <= "9" && SUBSTR(MonedaMedioPago[col],0,1) >= "0") || SUBSTR(MonedaMedioPago[col],0,1) == ""
+	esNumerico = esNumerico && ((SUBSTR(MonedaMedioPago[col],1,1) <= "9" && SUBSTR(MonedaMedioPago[col],1,1) >= "0") || SUBSTR(MonedaMedioPago[col],1,1) == "")
+
+	siaf:moneda = MonedaMedioPago[col]
+	If (!esNumerico) THEN
+		CLEARFIELD MedPDesMedioPago[col]
+		CLEARFIELD MontoEntMedioPago[col]
+		CLEARFIELD CotizacionMedioPago[col]
+		CLEARFIELD ImporteMedioPago[col]
+		CLEARFIELD VueltoMedioPago[col]
+
+		REFRESH MedPDesMedioPago[col]
+		REFRESH MontoEntMedioPago[col]
+		REFRESH CotizacionMedioPago[col]
+		REFRESH ImporteMedioPago[col]
+		REFRESH VueltoMedioPago[col]
+
+		MSGBOX "Medio de pago inválido.",0x00,"ERROR"
+		RETURN -2
+	ELSE
+		FPRINT MonedaMedioPago[col] "%02.2d" MonedaMedioPago[col]
+	END IF
+
+	CALL post:MISCMonedaRepetida(col)
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	CALL CDSmedio_Pago_Load
+	IF (RETVAL < 0) THEN
+		siaf:i = col
+		CALL PBMedio_Pago
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+		RETURN
+	END IF
+	
+	//gpb:NI50525 POS Integrado
+	IF (siaf:moneda == "06") THEN
+		//Valido que la terminal este integrada
+		IF (common:adt_vpi_termi_integ == "N" && common:adt_mp_termi_integ == "N") THEN
+			MSGBOX "Terminal no habilitada para usar este medio de pago.",OFB_OK,"ERROR"
+			RETURN -2
+		ELSE
+			//Valido el tipo de cliente
+			IF (post:cli_tipo == 1 || post:cli_tipo == 4) // || post:cli_tipo == 5) THEN
+				MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+				RETURN (-2)				
+			END IF
+			//NI 50596
+		 IF (post:cli_tipo == 5 && post:modalidad_CM != "S") THEN
+				MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+				RETURN (-2)				
+			END IF
+			
+			//Valido que no exista en el presupuesto tx con viaje al HOST
+			CALL post:CDSvpiNoHostTran
+			IF (RETVAL == 0) THEN
+				MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+				RETURN (-2)					
+			END IF
+		END IF
+	END IF
+
+	adt_mp_cod = MonedaMedioPago[col]
+	CALL post:CDSadt_MedPago_load
+	//IF (cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+		IF (adt_mp_diferido == "S" && adt_mp_viaje == "S") THEN
+			IF (cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+				IF (monto_chk_dif == 0) THEN
+					MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+					RETURN (-2)
+				END IF
+			ELSE
+				IF (pago_diferido != "S") THEN
+					MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+					RETURN (-2)
+				END IF
+			END IF
+		END IF
+	//END IF
+	
+	/*MFM - Validar si puede Pagar con Cheque Pesos*/
+	IF (adt_mp_adm == "I" && adt_mp_admban == "S" && adt_mp_viaje == "S" \
+		&& adt_mp_diferido != "S")THEN
+		IF (!TESTFLAG (MPcheque, MPpago_cheque)) THEN
+			MSGBOX "No puede seleccionar este medio de pago.",OFB_OK,"ERROR"
+			CLEARFIELD MonedaMedioPago[col]
+			NEXTFIELD MonedaMedioPago[col]
+			RETURN (-2)
+		END IF
+	END IF
+		
+	siaf:moneda = MonedaMedioPago[col]
+	; agregado --- para saber el maximo de ese medio de pago.
+	CALL CDSmonto_PresuPag
+	siaf:suma_total_bol = siaf:suma_total_bol + PrePImp
+	IF (siaf:suma_total_bol < 0) THEN
+		siaf:suma_total_bol = -1 * siaf:suma_total_bol
+	END IF
+
+	; fgb 28.06.2003
+	; cuando el Med.Pago no maneja decimales se debe mostrar el monto max.
+	; como numero entero.
+	IF (post:ImporteNeto < 0) THEN
+		IF (siaf:suma_total_bol > (post:ImporteNeto * -1)) THEN
+			siaf:suma_total_bol = (post:ImporteNeto * -1)
+		END IF
+	ELSE
+		IF (siaf:suma_total_bol > post:ImporteNeto) THEN
+			siaf:suma_total_bol = post:ImporteNeto
+		END IF
+	END IF
+	
+	IF (post:adt_mp_decimales == "S") THEN
+		FPRINT MedPDesMedioPago[col], "%s (%s)",adt_mp_desc_corta,siaf:suma_total_bol
+	ELSE
+		; fgb: agrego el ",00" para que quede con el mismo formato q' el resto.
+		FPRINT MedPDesMedioPago[col], "%s (%i,00)",adt_mp_desc_corta,siaf:suma_total_bol
+	END IF
+	REFRESH MedPDesMedioPago[col]
+
+	// fgb 11.04.2006 - Tratamiento de Cheques
+	IF (adt_mp_diferido == "S" && adt_mp_viaje == "S") THEN
+		IF (cli_tipo != CLIUP && cli_tipo != CLIMED) THEN
+			IF (pago_diferido == "S") THEN
+				monto_chk_dif = siaf:suma_total_bol
+			END IF
+		END IF
+	END IF
+	// fgb fin
+	
+	; bloqueo vuelto si el medio de pago no es global o no es monetario.
+	IF (adt_mp_adm != "G" || adt_mp_monet != "S") THEN
+		PROTFIELD MontoEntMedioPago[col]
+	ELSE
+		UNPROTFIELD MontoEntMedioPago[col]
+	END IF
+	CALL post:MISCrefreshMonedas
+
+	;NEXTFIELD CotizacionMedioPago[col]
+	NEXTFIELD MontoEntMedioPago[col]
+	
+END SUB
+
+/*******/

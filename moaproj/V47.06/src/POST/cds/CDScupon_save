@@ -1,0 +1,104 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:CDScupon_save
+* NOMBRE
+*   OFB:post:CDScupon_save
+* DESCRIPCION
+*   Graba en la tabla cupon los cupones CCT cobrados/cancelados 
+*	para que sean enviados al HOST (tabla log_cupones)por el RT_BATCH
+* ENTRADAS
+*   estado = UNPOSTED
+*	tipo = "D" DIRECTA "C" CANCELACION
+*   serv = "CCT" / "CREM" 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:LINK6670,post:CDSCaida_RT_CCT
+*  OFB:post:LINK6675
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+*   https://jirats.atos.net.ar/jira/browse/AUT-2311
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDScupon_save(estado,tipo,serv)
+	
+	CDS SELECT FROM "cupon" BECOMES "cupon_ctx" \
+	WHERE tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence == tlr:jnl_sequence 
+		
+	CDS FINDFIRST "cupon_ctx" LOCK
+	
+	IF (CDSRETVAL == -801) THEN
+		
+		IF (tipo == "D")
+			post:adt_cupon_cancelado = "N"
+				//Si es directa se asocia la terminal del operador que origina la directa
+				post:adt_cupon_node = op:op_node_id 	
+		ELSE
+		    post:adt_cupon_cancelado = "S"
+		ENDIF
+		
+		post:adt_cupon_tipo_serv = serv
+		
+		IF (serv == "CCT") THEN
+		    post:adt_cod_barra = post:cod_barra_CCT
+		ELSE
+		    CLEARFIELD post:adt_cod_barra
+		ENDIF
+        
+        fprint tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,estado
+		post:adt_cupon_operacion = tipo
+		
+		CDS CLEARBUFFER "cupon_ctx"
+		CDS APPEND "cupon_ctx" \
+		FLD:tlr:jnl_branch \
+		FLD:tlr:jnl_operator \
+		FLD:tlr:jnl_date \
+		FLD:tlr:jnl_time \
+		FLD:tlr:jnl_bus_date \
+		FLD:tlr:jnl_sequence \
+		FLD:tlr:jnl_status \
+		FLD:post:cupon_cta_cupon AS FLD:post:adt_cupon_cta_cupon \
+		FLD:op:op_login_id AS FLD:post:adt_cupon_operador \
+		FLD:post:adt_cupon_operacion \
+		FLD:post:adt_cupon_tipo_serv \
+		FLD:post:servicio_CCT AS FLD:post:adt_cupon_serv_desc \
+		FLD:post:cupon_def_cupon AS FLD:post:adt_cupon_def_cupon 
+		
+		CDS APPEND "cupon_ctx" \
+		FLD:post:cupon_cod_serv AS FLD:post:adt_cupon_cod_serv \
+		FLD:post:cupon_nis_liq AS FLD:post:adt_cupon_nis_liq \
+		FLD:post:id_cupon_CCT AS FLD:post:adt_cupon_id_cupon \
+		FLD:post:id_comitente_CCT AS FLD:post:adt_cupon_comitente \
+		FLD:post:comitente_CCT AS FLD:post:adt_cupon_comit_desc \
+		FLD:post:fecha_vto_CCT AS FLD:post:adt_cupon_fec_vto \
+		FLD:post:importe_CCT AS FLD:post:adt_cupon_imp_cob \
+		FLD:post:adt_cupon_cancelado \
+		FLD:post:cupon_cta_om \
+		FLD:post:cupon_cta_sap \
+		FLD:post:cupon_letra_serv \
+		FLD:post:cupon_rend_fis \
+		FLD:post:adt_cupon_pieza \
+		FLD:post:adt_cupon_node \
+        FLD:post:cod_barra_CCT AS FLD:post:adt_cod_barra		
+		
+		IF (tipo == "C")
+			//se deben grabar los datos de stan, dia y hora de viaje de la Directa
+			CDS APPEND "cupon_ctx" 	post:adt_codseq_nro   \
+			giros:hora_viaje  \
+			giros:dia_viaje  \
+			post:jnl_sequence_ori1
+		ENDIF
+		
+		CDS INSERT "cupon_ctx" LOCK
+	ENDIF
+	CDS UNLOCK "cupon_ctx"
+	CDS ENDSELECT "cupon_ctx"
+
+END SUB
+
+/*******/

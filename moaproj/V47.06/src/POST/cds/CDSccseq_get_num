@@ -1,0 +1,131 @@
+/****o* Pendientes de agrupación/OFB:post:CDSccseq_get_num
+* NOMBRE
+*   OFB:post:CDSccseq_get_num
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSccseq_get_num(prm_code,prm_target)
+
+// Obtiene el nro de secuencia de la tabla cc_seq, incrementando el 
+// secuenciador (para que quede listo para la proxima trx).
+// La sucursal tomada como condicion de busqueda es SIEMPRE la sucursal
+// activa...
+
+local varl_code		like post:adt_ccseq_codigo
+local varl_number	like post:nro_impre_tmp
+local varl_auxiliar	like common:csr_string
+
+// << controlo el parametro de entrada >>
+let varl_code = prm_code
+if (varl_code.NUMCHARS == 0) then
+    return (-1)
+end if
+pickverify varl_code PIC:secuen_cc_cod  // (A) verifica que sea un codigo valido
+if (retval < 0) then
+    return (-2)
+end if
+ 
+// << leo el registro de la tabla >>
+CDS SELECT FROM DSC:post:TABccseq BECOMES DSC:post:CONccseq \
+    WHERE adt_ccseq_suc == common:sucursal_activa && \
+          adt_ccseq_codigo == varl_code
+if (cdsretval == 0) then
+    CDS FINDFIRST DSC:post:CONccseq LOCK
+    if (cdsretval == 0) then
+        CDS EXTRACT DSC:post:CONccseq adt_ccseq_numero
+        if (cdsretval == 0) then
+            // << obtiene numero >>
+            clearfield varl_number
+            // FGB 23.2.2001 - Req. 2386 - 
+            // por problemas en la encriptacion/desencriptacion de la secuencia
+            // se comenta dicho proceso
+            // call BlowFishDes(adt_ccseq_numero,varl_auxiliar)
+            move adt_ccseq_numero to varl_auxiliar
+            let retval = 0 // p' simular el valor devuelto por al rutina
+            // FGB fin
+            if (retval == 0) then
+                let varl_number = varl_auxiliar // paso str a num
+                if (varl_number == 0) then
+                    CDS UNLOCK DSC:post:CONccseq
+                    CDS ENDSELECT DSC:post:CONccseq
+                    return (-3) // por ponerle un valor distinto...
+                end if
+                // << incrementa >>
+                let prm_target = varl_number
+                if (varl_number == 99999999) then
+                    let varl_number = 1
+                else
+                    let varl_number = varl_number + 1 
+                end if
+                
+                // << guarda nuevo numero >>
+                fprint varl_auxiliar "%08.8d" varl_number
+                // FGB 23.2.2001 - Req. 2386 - 
+                // por problemas en la encriptacion/desencriptacion de la
+                // secuencia se comenta dicho proceso
+                // call BlowFishEnc(varl_auxiliar,adt_ccseq_numero)
+                move varl_auxiliar to adt_ccseq_numero
+                // FGB fin
+                CDS CLEARBUFFER DSC:post:CONccseq
+                CDS APPEND DSC:post:CONccseq post:adt_ccseq_numero
+                CDS UPDATE DSC:post:CONccseq LOCK
+                if (cdsretval == 0) then
+                    // << nos vamos felices y contentos >>
+                    CDS UNLOCK DSC:post:CONccseq
+                    CDS ENDSELECT DSC:post:CONccseq
+                    return (0)
+                end if
+            end if
+        end if
+        CDS UNLOCK DSC:post:CONccseq
+    elseif (cdsretval == -801) then
+        // << inicializa >>
+        let varl_number = 1 
+        let prm_target = varl_number
+        // << guarda nuevo numero >>
+        let varl_number = varl_number + 1
+        fprint varl_auxiliar "%08.8d" varl_number
+        // FGB 23.2.2001 - Req. 2386 - 
+        // por problemas en la encriptacion/desencriptacion de la secuencia
+        // se comenta dicho proceso
+        // call BlowFishEnc(varl_auxiliar,adt_ccseq_numero)
+        move varl_auxiliar to adt_ccseq_numero
+        // FGB fin
+        CDS CLEARBUFFER DSC:post:CONccseq
+        let post:adt_ccseq_suc = common:sucursal_activa
+        let post:adt_ccseq_codigo = prm_code
+        let post:adt_ccseq_desc = substr(common:csr_string,4,35) // viene de (A)
+        let post:adt_ccseq_fecha = common:system_date
+        CDS APPEND DSC:post:CONccseq post:adt_ccseq_suc \
+                                     post:adt_ccseq_codigo \
+                                     post:adt_ccseq_desc \
+                                     post:adt_ccseq_numero \
+                                     post:adt_ccseq_fecha
+        CDS INSERT DSC:post:CONccseq LOCK
+        if (cdsretval == 0) then
+             // << nos vamos felices y contentos >>
+             CDS UNLOCK DSC:post:CONccseq
+             CDS ENDSELECT DSC:post:CONccseq
+             return (0)
+        end if
+    end if
+    CDS ENDSELECT DSC:post:CONccseq
+end if
+// << si llego aca es porque me voy triste y angustiado >>
+return (-2)
+END SUB
+
+/*******/

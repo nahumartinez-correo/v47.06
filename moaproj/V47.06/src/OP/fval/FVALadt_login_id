@@ -1,0 +1,226 @@
+/****o* Pendientes de agrupación/OFB:op:FVALadt_login_id
+* NOMBRE
+*   OFB:op:FVALadt_login_id
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   NI 50591-TRASLADO DE OPERADORES JEFE DE OFICINA
+* SOURCE
+*/
+#include "adtutlfval.h"
+
+SUB op:FVALadt_login_id
+
+	LET drv:save_button = CB0
+	call  CSR:proc_list F_COPY LST:adt LST:adt_std
+
+    if (op:adt_login_id.NUMCHARS == 0 && lastkey != RT_TAB) THEN
+        errmsg lst:common:errmsg_list, "FALTA INGRESAR OPERADOR"
+        CALL drv:side_bar_disable
+        RETURN -2
+    end if
+
+    IF (lastkey == RT_TAB && op:adt_login_id.NUMCHARS == 0) THEN
+    	CALL  OFB:op:CDSadt_op_sel_ger
+    	IF (RETVAL < 0)
+            CALL drv:side_bar_disable
+        	return -2
+        END IF
+    END IF
+
+    IF (op:adt_branch_id.NUMCHARS != 0) THEN
+        let admin:adt_br_branch = op:adt_branch_id
+        call admin:CDSadt_br_load
+        if (retval < 0) then
+            errmsg common:errmsg_list,"NO SE PUEDE ENCONTRAR NIS (OFICINA) DEL OPERADOR"
+          	LET drv:button = drv:last_button
+           	CALL  OFB:drv:but_up_enable
+            call op:MISClimpio_dato_op
+            return -2
+        endif
+        LET Dest_Server = admin:adt_br_server
+    ELSE
+       CALL  OFB:op:CDSadt_op_sel_ger
+       IF (RETVAL < 0)
+          CALL drv:side_bar_disable
+        	return -2
+        END IF
+       /* errmsg common:errmsg_list,"DEBE INGRESAR LA SUCURSAL"
+     	LET drv:button = drv:last_button
+       	CALL  OFB:drv:but_up_enable
+        call op:MISClimpio_dato_op
+        return -2*/
+    endif
+
+    if (op:adt_branch_id == common:sucursal_activa) THEN
+        CALL OFB:CDSadt_op_load
+    else
+        if (op:adt_branch_id.NUMCHARS != 0) THEN
+            CALL OFB:MISCread_remote
+            IF (TESTFLAG(op:admin_flags,is_connect)) THEN
+	    		/*Verifico si no hubo cambios locales de perfiles en la Sucursal - Gabriel Falciola*/
+    			call MISCverifCambioPerf
+	    		if (retval < 0) then
+    	    		clearfield op:adt_branch_id
+    	    		clearfield op:adt_login_id
+        			refresh op:adt_branch_id
+        			refresh op:adt_login_id
+        			return -2
+    			end if
+    		END IF
+        endif
+    endif
+
+    /*No puede cargarse un operador(OPVIRTUAL) con Nro.Op = 99912 - Carlos Wisznienski*/
+    IF (op:adt_operator_id == 99912) THEN
+    	errmsg common:errmsg_list,"EL OPERADOR NO PUEDE TENER NRO.OP DE CAJERO WEB"
+        LET drv:button = drv:last_button
+        CALL  OFB:drv:but_up_enable
+        return -2
+    END IF
+
+    RESETFLAG op:admin_flags,is_change
+    RESETFLAG op:mode_flags,update
+    RESETFLAG op:mode_flags,delete
+
+    CALL OFB:MISCdisable_chks
+
+	// SMC Reemplazo por una rutina para que sea mas facil de actualizar
+	flag_new_user = 0
+
+	if (lib:err_retval == -801) then  // usuario no existente 
+      
+     /*NI 50591 - TRASLADO DE OPERADORES. NO PERMITE EL ALTA DE USUARIOS DESDE JEFE
+     	PDM GETSTATE drv:traslados,0,drv:menu_state
+
+     IF (drv:menu_state == MOA_CHECKED && (op:adt_branch_id == common:sucursal_activa)) THEN 
+	    		errmsg common:errmsg_list,"NO TIENE PERMITIDO DAR DE ALTA NUEVOS USUARIOS."
+    			clearfield op:adt_login_id
+	 				return -2
+	 	ENDIF*/
+    if (!TESTFLAG(op:admin_flags,is_connect)) THEN
+         if (op:adt_branch_id != common:sucursal_activa) then
+                errmsg common:errmsg_list,"SUCURSAL FUERA DE LINEA. IMPOSIBLE ALTA DE USUARIOS"
+                clearfield op:adt_login_id
+                return -2
+         endif
+    endif
+  
+		//mercedes - para registrar fecha y hora de creacion
+		flag_new_user = 1
+
+        IF (TESTFLAG(op:admin_flags,is_select) && op:old_branch_id != op:adt_branch_id) THEN
+            SETFLAG op:admin_flags,is_change
+        ELSE
+    		call op:op_adt_clear
+    		//fin mercedes
+
+    		//mercedes
+    		unprotfield new_passwd2   // para req. de crear usuarios con password
+	    	unprotfield verify_passwd2
+    		//fin mercedes
+
+		    unprotfield adt_operator_id
+    		unprotfield adt_operator_siaf_id
+	    	clearfield adt_operator_id
+		    clearfield adt_operator_siaf_id
+    		clearfield adt_node_id
+	    	clearfield adt_operator_flags
+		    refresh adt_operator_id
+      		call  CSR:proc_list F_UNPROTECT LST:adt_new_op
+    		call  CSR:proc_list F_CLEAR LST:adt_new_op
+	    	call  CSR:proc_list F_REFRESH LST:adt_new_op
+	    	LET op:adt_fecha_com_op = common:system_date
+	    	LET op:adt_inhibido = "N"
+	    	LET op:adt_tesoro = "N"
+	    	LET op:adt_tesoro_id = 0
+	    	LET op:adt_llave_tesoro = "N"
+
+            ;SMC Obtengo siguiente numero de Operador
+		    call op:MISCget_op_secuence
+            RESETFLAG op:admin_flags,is_select
+
+        END IF
+        call  drv:enable_save
+	else
+        SETFLAG op:admin_flags,is_select
+        LET op:old_branch_id = admin:adt_br_branch
+        LET op:old_br_server = admin:adt_br_server
+
+        IF (!TESTFLAG(op:admin_flags,is_connect)) THEN
+            if (op:adt_branch_id != common:sucursal_activa) then
+                errmsg common:errmsg_list,"SE USARAN DATOS LOCALES"
+            end if
+        end if
+		//mercedes - journalizacion de cambio de perfil
+		call  adt_to_bck
+        call  drv:enable_del_upd
+
+		protfield adt_operator_id
+		protfield adt_operator_siaf_id
+// 		protfield adt_branch_id
+
+		//mercedes - para el req. de crear usuarios con password
+		protfield new_passwd2
+		protfield verify_passwd2
+		SETVALDONE adt_inhibido //porque la FVAL de este campo cambia algunos
+		//datos del operador que solo deben cambiarse si el valor de este campo cambia.
+		//fin mercedes
+
+        LET post:adt_limsupev_suc = op:adt_branch_id
+        LET post:adt_limsupev_op  = op:adt_operator_id
+
+	end if
+
+    ;SMC Obtengo SID NT del Operador
+    call op:MISCobtengo_SIDop
+    if (retval != 1) then
+       CALL drv:side_bar_disable
+       return -2
+    endif
+
+	if (op:adt_node_id.NUMCHARS > 0)
+		FYIMSG drv:fyimsg_list,DSC:op:FYIno_update
+	end if
+	call  CSR:proc_list F_COPY LST:adt_std LST:adt
+
+    call  OFB:MISCre_display
+
+    ;Activa-Desactiva Boton de Limites de Especies
+    call op:MISCboton_LimEsp
+
+    LET drv:button = CB15
+    CALL  OFB:drv:but_enable
+
+    ;Actualizo el dupfield de la sucursal
+;    swapdup op:adt_branch_id
+;    dupfield op:adt_branch_id
+	setvaldone adt_branch_id
+	setvaldone adt_login_id
+;	setvaldone adt_operator_id
+
+	IF (op:adt_node_id.NUMCHARS > 0)
+		MSGBOX dsc:op:FYIno_update OFB_OK "ERROR"
+    	CALL drv:side_bar_disable
+		RETURN -2
+	END IF
+
+    ;SMC marco el operador como que esta en uso para que no sea
+    ;    usado por nadie mas
+	call op:CDSoperador_enuso("Borrar")
+    call op:CDSoperador_enuso("Actualizar")
+
+    if (lastkey == RT_SEND)
+        return -2
+    end if
+END SUB
+
+/*******/

@@ -1,0 +1,130 @@
+/****o* Chequeras/OFB:tes:SVALentrada_Ck
+* NOMBRE
+* OFB:tes:SVALentrada_Ck
+* DESCRIPCION
+* Adjudicacion y Desadjudicacion de Chequeras Postales (SVAL).
+* ENTRADAS
+* SALIDAS
+* RETURN (-2): No permite continuar con la transaccion, por motivos variados.
+* RETURN (-3): No permite Rechazar Pase, debido al Estado de la Chequera.
+* RETURN (-3): No permite Rechazar Pase, por Operador No disponible.
+* RETURN (-3): Difiere Cantidad de cheques originales.
+* REFERENCIADO POR
+* LST:tes:TRAN9910
+* LST:tes:TRAN9930
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrada_Ck
+
+    IF (!(testflag(tlr:tran_flags,correction)))
+		if (adt_chk_datos.numchars == 0 ) then
+			msgbox "No hay Chequera seleccionada",OFB_OK,"Error"
+			return (-2)
+		end if
+		if (tes:adt_chk_marca_ing != "R")
+			if (serie_fld.numchars == 0 ) then
+				msgbox "Ingrese la serie",OFB_OK,"Error"
+				nextfield serie_fld
+				return (-2)
+			end if
+			if (nrogiro_fld.numchars == 0) then
+				msgbox "Ingrese 1er Número de Giro",OFB_OK,"Error"
+				nextfield nrogiro_fld
+				return (-2)
+			End if
+			if (cantid_fld.numchars == 0) then
+				msgbox "Ingrese la Cantidad",OFB_OK,"Error"
+				nextfield cantid_fld
+				return (-2)
+			end if
+			
+			if (adt_chk_serie != serie_fld || adt_chk_proxim != nrogiro_fld || adt_chk_libres != cantid_fld)
+				msgbox "DATOS NO COINCIDEN",OFB_OK,"Error"
+				nextfield serie_fld
+				return (-2)
+			end if
+
+			popup tes:SCRNrechaza
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+		else
+            popup tes:SCRNacepto_rechazo    //pase rechazado
+            if (lastkey == RT_ESC) then
+               return -2
+            end if	
+ 		end if
+
+		if (siaf:continua_transaccion == "N") then   //pase rechazado
+			
+			if (tes:adt_chk_marca_ing == "I")
+				//si la chequera está en un estado intermedio no se puede rechazar el pase
+				let common:csr_string = \
+				"(L) EL ESTADO DE LA CHEQUERA NO PERMITE RECHAZAR EL PASE"
+				errmsg common:errmsg_list,fld:common:csr_string
+				return (-3)				
+			end if
+			
+			// verifico que el operador origen del pase no haya cerrado su caja
+			call tes:CDSchk_open_caj(tes:adt_chk_suc,tes:adt_chk_op_orig)
+			
+			// la caja esta cerrada o no se pudo leer el registro de rend.
+			if (retval < 1) then
+				let common:csr_string = \
+				"(L) IMPOSIBLE RECHAZAR PASE. OPERADOR NO DISPONIBLE"
+				errmsg common:errmsg_list,fld:common:csr_string
+				return (-3)
+			end if
+		
+			//enviar un mensaje al operador origen
+			call MISCsend_msg_dest(tes:adt_chk_orig,"RECHAZO SU PASE DE CHEQUERAS")
+			
+			tes:hora_aux = common:time_of_day
+		end if
+		
+		call tes:MISCjournal_chk_mov
+		if (retval < 0) then
+			return (-2)
+		end if
+    ELSE
+		giros:Serie_fld = adt_chk_serie
+		giros:NroGiro_fld = adt_chk_nrogiro
+		CALL giros:CDSbuscoChequera
+		if (giros:adt_chk_usado != (adt_chk_cantid - adt_chk_libres)) then
+		msgbox "DIFIERE CANTIDAD DE CHEQUES ORIGINALES" OFB_OK "Error"
+		return -3
+		end if
+		LET giros:adt_chk_fecha = adt_chk_fecha
+		LET giros:adt_chk_hora  = adt_chk_hora
+
+		if (tes:adt_chk_marca_ing == "R") then
+		    //cgw:Reversa de rechazo.
+		    //    Se asigna el operador origen de cuando se hizo el pase en RecepChk.
+		    LET giros:adt_chk_op = adt_chk_op_orig
+		    //cgw:Se invierten origen a destino y viceversa en TesChkMov
+		    LET adt_chk_orig    = adt_chk_dest
+	            LET adt_chk_op_orig = adt_chk_op_dest		    		    
+		    LET adt_chk_dest    = op:op_login_id
+	            LET adt_chk_op_dest = op:op_operator_id
+		else
+		    //cgw:Reversa des/adjudicacion.
+		    //    Se asigna el operador destino de cuando se hizo el pase en RecepChk.
+		    LET giros:adt_chk_op = adt_chk_op_dest
+		end if
+
+		LET giros:adt_chk_estado = 1
+		IF (siaf:codigo_siaf == 9910) THEN
+		LET giros:adt_chk_tesoro = "N"
+		ELSE
+		LET giros:adt_chk_tesoro = "S"
+		END IF
+		LET adt_chk_marca_ing = "P"
+		LET adt_chk_tesoro = giros:adt_chk_tesoro
+		CALL CDSadt_chk_actu   // Actualiza el archivo de chequeras
+		call CDSupd_habilitador
+		CALL CDSgraba_TesChkVMov
+		END IF
+END SUB
+/*******/

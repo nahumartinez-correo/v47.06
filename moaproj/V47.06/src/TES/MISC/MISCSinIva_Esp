@@ -1,0 +1,84 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCSinIva_Esp
+* NOMBRE
+*   OFB:tes:MISCSinIva_Esp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCSinIva_Esp
+LOCAL loc_importe   LIKE siaf:importe
+
+/*Esta rutina calcula el Importe sin IVA de las Ventas de Especies Valorizadas para acumularlo
+  luego en la tabla AuxIngBr - Gabriel Falciola*/
+
+	siaf:ImporteSinIva = 0
+	siaf:ImporteConIva = 0
+	post:ImporteConIvaNeto = 0
+	post:ImporteSinIvaNeto = 0
+    
+    if (post:enCombo == "S") THEN
+    	//cgw:no calcula importes
+    	RETURN (0)
+    endif
+   	
+	cds select FROM DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx \
+	where tes:adt_evaux_suc == op:op_branch_id && \
+	adt_evaux_op == op:op_operator_id && \
+	adt_evaux_prestran == 0 && \
+	adt_evaux_tesoro == "N"
+	
+    cds findfirst DSC:AuxEspV_ctx LOCK
+    do
+		if (cdsretval != 0) then
+			break
+		end if
+		cds extract DSC:AuxEspV_ctx ALL
+		; El siguiente select se, estaba afuera del loop, se incorporó dentro de este
+		; porque el formulario fiscal se debe obtener para todas las especies.
+		; Esta modificación se debe a que en la versión 26 se pueden seleccionar
+		; múltiples especies. *** MDG
+		cds select from Especie becomes Especie \
+            where adt_espv_cod == fld:adt_evaux_codigo
+        cds findfirst Especie nolock
+    	if (cdsretval == 0)
+            cds extract Especie adt_espv_formfiscal
+            if (adt_espv_formfiscal.numchars == 0) then
+                post:PreDForFis = ""
+            else
+                post:PreDForFis = adt_espv_formfiscal
+            end if
+    	end if
+    	cds endselect Especie
+    	if (post:PreDForFis.numchars == 0)
+    		return (0)
+    	end if
+		
+		loc_importe = adt_evaux_importe
+		//SC 50170
+		call post:MISCdesglosaIva(post:fld_promo_imp,adt_espv_aliciva,adt_evaux_cantidad,0)
+   		post:ImporteSinIvaNeto = (- post:ImporteSinIva)
+        //SC 50170
+        CALL post:MISCdesglosaIva(loc_importe,adt_espv_aliciva,adt_evaux_cantidad,0)
+		post:ImporteSinIvaNeto = post:ImporteSinIvaNeto + post:ImporteSinIva
+		post:ImporteConIvaNeto = post:ImporteConIvaNeto + adt_evaux_importe - post:fld_promo_imp
+		siaf:ImporteSinIva = siaf:ImporteSinIva + post:ImporteSinIvaNeto
+		siaf:ImporteConIva = post:ImporteConIvaNeto
+    	cds findnext DSC:AuxEspV_ctx LOCK
+	loop
+    cds unlock DSC:AuxEspV_ctx
+    cds endselect DSC:AuxEspV_ctx
+END SUB
+
+/*******/

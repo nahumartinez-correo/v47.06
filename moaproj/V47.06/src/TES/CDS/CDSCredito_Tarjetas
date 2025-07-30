@@ -1,0 +1,128 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSCredito_Tarjetas
+* NOMBRE
+*   OFB:tes:CDSCredito_Tarjetas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSCredito_Tarjetas
+	LOCAL saldo_cuenta  LIKE mov_importe
+	LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+    LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+    LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+    LOCAL mone          LIKE siaf:cant
+    LOCAL loc_scr       LIKE drv:INDscr
+
+    loc_jnl_rtn   = drv:INDjnl_rtn
+    loc_tran_name = tlr:jnl_tran_name
+    loc_mnemonic  = tlr:tran_mnemonic
+    loc_nom_tran  = siaf:nombre_transac
+    loc_scr       = drv:INDscr    
+
+    drv:INDjnl_rtn       = "SAVCAR"
+    tlr:jnl_tran_name    = "SAVCAR"
+    tlr:tran_mnemonic    = "SAVCAR"
+    siaf:nombre_transac  = "SAL.VAL.CAJA A ADM.REG"
+    let siaf:codigo_siaf = 8776
+	
+	/*Creo el PickList, para los datos de la tabla*/
+	call csr:f_sanewpl dsc:post:pic_medios,PIC:post:PICmedios
+
+	/*Obtengo las tarjetas*/
+	CDS select from dsc:TesoCheq_tbl becomes dsc:TesoCheq2_ctx where \
+	tes:teso_cheq_suc == common:sucursal_activa && \
+	tes:teso_cheq_estado == "O"                 && \
+    tes:teso_cheq_id == op:op_operator_id		   
+ 	
+	cds findfirst dsc:TesoCheq2_ctx nolock
+	let lib:err_retval = cdsretval
+	DO
+		if (lib:err_retval < 0)
+			break
+		end if
+		cds extract dsc:TesoCheq2_ctx all
+	    //Busco el Medio de Pago que sea tarjeta
+	    Cds Select from DSC:post:MEDIOS_TAB becomes DSC:post:MEDIOS_CTX where \
+	    post:adt_mp_adm == "I" 		&& \
+	    post:adt_mp_auto == "S"		&& \
+	    post:adt_mp_cod == tes:teso_cheq_moneda    	    
+	    Cds Findfirst DSC:post:MEDIOS_CTX nolock
+	    
+	    If (CDSRETVAL != -801) then
+  			/*Si Existe cargo en el picklist*/
+  	        Fprint common:csr_string "%02.2s %-20.20s %-20.20s %-20.20s", \
+			tes:teso_cheq_moneda		\
+			tes:teso_cheq_nro			\
+			tes:teso_cheq_importe		\
+			tes:teso_cheq_cuenta
+		    call csr:f_saaddpl dsc:post:pic_medios common:csr_string	
+	    End if
+	
+	    Cds EndSelect DSC:post:MEDIOS_CTX
+		cds findnext dsc:TesoCheq2_ctx nolock
+		let lib:err_retval = cdsretval
+	Loop
+
+	/*obtengo la primer linea del picklist*/
+    let idx = 0
+    let i_idx = PL_GETITEM + 0
+    call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx
+
+    clearfield tlr:INDtots_append  
+    clearfield drv:INDspc_rtn[0]         
+    ;let tlr:INDtots_append = lst:siaf:TOTS8760
+    ;let drv:INDspc_rtn[0]  = lst:siaf:TOTS8760
+
+    let tlr:INDtots_append = lst:siaf:TOTS8770
+    let drv:INDspc_rtn[0]  = lst:siaf:TOTS8770
+
+    DO
+    	if (retval < 0)
+        	break
+        end if
+		
+		let siaf:cod_banco   = 0
+		let siaf:cheqcuenta  = 0
+		let siaf:moneda      = substr(common:csr_string,0,2)
+		let siaf:nro_cupcheq = substr(common:csr_string,3,20)
+		let siaf:importe     = substr(common:csr_string,24,20)
+		let post:codigo_interno = substr(common:csr_string,45,20)
+		   	    
+	    let drv:INDscr = SCR:tes:SCRNsal_val_AR
+	    let siaf:tiene_reverso = "N"
+		drv:INDjnl_rtn = ofb:JNLsal_val_AR
+
+		UNGETKEY 0x190
+		call tlr:JNLtran
+		
+		let idx = idx + 1
+        let i_idx = PL_GETITEM + idx
+        call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx
+	Loop
+
+    clearfield tlr:INDtots_append  
+    clearfield drv:INDspc_rtn[0]         
+
+	cds endselect dsc:TesoCheq2_ctx
+	drv:INDjnl_rtn      = loc_jnl_rtn
+    tlr:jnl_tran_name   = loc_tran_name
+    tlr:tran_mnemonic   = loc_mnemonic
+    siaf:nombre_transac = loc_nom_tran
+    drv:INDscr          = loc_scr
+
+END SUB
+
+/*******/

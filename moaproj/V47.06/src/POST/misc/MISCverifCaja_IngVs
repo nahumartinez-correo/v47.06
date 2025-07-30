@@ -1,0 +1,64 @@
+/****o* Uso General/OFB:post:MISCverifCaja_IngVs
+* NOMBRE
+*   OFB:post:MISCverifCaja_IngVs
+* DESCRIPCION
+*   Verifica antes de reversar un Ingreso Vario si hay saldo positivo para el medio de pago.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2) = No cuenta con saldo del medio de pago para realizar la reversa.
+*   RETURN (-2) = Medio de Pago Inexistente
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCverifReversar
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2466
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverifCaja_IngVs
+	//cgw:AUT-2466 - PS 10523. Verifica antes de reversar el Ingreso Vario en efectivo si hay saldo positivo para el medio de pago en caja.
+	local efec_en_caja like siaf:importe
+	local descMon like post:adt_mp_desc
+	local Limporte_origen LIKE post:importe_origen
+
+	cds select from dsc:MEDIOS_TAB becomes dsc:MedPag_ctx where \
+		post:adt_mp_cod == siaf:moneda
+		
+	cds findfirst dsc:MedPag_ctx nolock
+	if (cdsretval != 0) then
+		//cgw: No podria darse nunca
+		MSGBOX "Medio de pago inexistente" OFB_OK "ERROR"
+		cds endselect dsc:MedPag_ctx
+		return (-2)
+	end if
+
+	cds extract dsc:MedPag_ctx post:adt_mp_cod into siaf:moneda \
+		post:adt_mp_desc into descMon
+	cds endselect dsc:MedPag_ctx
+
+	efec_en_caja = siaf:tefec_inic_vec[siaf:moneda] + siaf:tefectivo_vec[siaf:moneda]
+
+	//Reserva variable
+	Limporte_origen = post:importe_origen
+	
+	; convierto por la cotizacion.
+	adt_mp_mon = siaf:moneda
+	call post:MISCcalc_importe_ori
+
+	if ((efec_en_caja - importe_origen) < 0)
+		fprint common:csr_string "No cuenta con el medio de pago (%s) en caja para poder realizar la reversa.", descMon
+		MSGBOX common:csr_string OFB_OK "ERROR"
+		//recupero variable
+		post:importe_origen = Limporte_origen
+		return (-2)
+	end if
+	
+	//recupero variable
+	post:importe_origen = Limporte_origen
+
+END SUB
+
+/*******/

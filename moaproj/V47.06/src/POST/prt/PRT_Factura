@@ -1,0 +1,700 @@
+/****o* Facturación/OFB:post:PRT_Factura
+* NOMBRE
+*   OFB:post:PRT_Factura
+* DESCRIPCION
+*   Rutina que imprime la Factura y se usa tambien para generar la Nota de Credito.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:PRT_Ticket_Jou
+* REFERENCIADO POR
+*   post:PRTfac_nc_gral
+*		post:MISCmuestraPaginas
+*		post:PREScaptura
+*		post:MISCReimpresionNC
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*   http://jira.sibs.net/jira/browse/AUT-1227
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Factura
+#ifndef SIN_IMPRESION
+	LOCAL INDICE LIKE post:cantidad /* indice que cuentas las lineas del cuerpo */
+	LOCAL ITEM LIKE post:cantidad /* indice que cuentas las lineas del cuerpo */
+	LOCAL PRECIO_UNITARIO LIKE  siaf:importe
+	LOCAL TOTAL_IMPORTE LIKE siaf:importe
+	LOCAL TOTAL LIKE siaf:importe
+	LOCAL SUBTOTAL LIKE siaf:importe
+	LOCAL primero LIKE post:adt_cativa_discri  ; un char.
+	LOCAL codAnterior LIKE cod_agrupacion
+	LOCAL auxPresNroTT LIKE post:PresNro_tt
+	LOCAL auxCanti LIKE post:cantidad2
+	LOCAL errCanti LIKE lib:err_retval
+	LOCAL strBonif LIKE common:csr_string
+	LOCAL l_cad_importe LIKE common:csr_string
+	LOCAL l_cad_importe2 LIKE common:csr_string
+
+	CLEARFIELD strBonif
+	CLEARFIELD NroTrn_tt
+	CLEARFIELD Pieza
+	
+	//gpb:NI50479 - Genera NC PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+		post:impNotaCred = "S"
+	END IF
+	
+	errCanti = 0
+	adt_cativa_discri = "N"
+	post:adt_cativa_cod = IvaCod
+	CALL  post:CDS_CatIva_Load
+	nro_factura = SUBSTR(DocInic,5,8)
+	INDICE = 0
+	ITEM = 0
+	TOTAL_IMPORTE = 0
+	SUBTOTAL = 0
+	TOTAL = 0
+	primero = "S"
+	CALL post:MISCseteo_documento
+	pagActual = 1
+	/*Obtengo el Nro de CAI para imprimir en la Factura*/
+	CALL CDScai_load_min
+	admin:nro_cai = admin:adt_nro_cai
+	admin:fecha_venc_cai = admin:adt_fecha_cai
+	;Busco los Datos de impresion
+	CALL post:MISCinic_datos_imp
+	IF ( RETVAL >= 0 ) THEN
+		CALL post:PRT_Encabe_Fac
+		CALL giros:PRT_Factura_Giros
+		INDICE = giros:indice
+		SUBTOTAL = giros:Total
+		ITEM = ITEM + giros:ITEM
+		DO
+			/*Corte de página si se alcanzó el máximo*/
+			//TM No necesitamos corte de pagina
+			//CALL PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA_CUERPO, 1)
+			//INDICE = RETVAL
+				entraEnUnaPag = "S"
+			/*Imprimo el El Cuerpo del Remito*/
+
+			CLEARFIELD nro_ingrvario
+			CALL post:CDSbuscaDatosImp
+			IF ( RETVAL < 0 ) THEN
+				IF (entraEnUnaPag == "S") THEN
+					;[PAW] --> me falta el ultimo bloque de servicios.
+					IF (codAnterior == 0) THEN
+						CALL CDSimpreServ(INDICE, SUBTOTAL, 0)
+					ELSE
+						CALL CDSimpreServ(INDICE, SUBTOTAL, codAnterior)
+					END IF
+					INDICE = RETVAL
+				END IF
+				BREAK
+			else
+				IF (tipo_impre != DESCUENTO && tipo_impre != OPCIONAL && \
+					tipo_impre != BONIF_PROD && primero != "S" && entraEnUnaPag == "S") THEN
+					IF (cod_agrupacion == 0) THEN
+						IF (cod_agrupacion != codAnterior) THEN
+							CALL CDSimpreServ(INDICE, SUBTOTAL, codAnterior)
+						ELSE
+							CALL CDSimpreServ(INDICE, SUBTOTAL, 0)
+						END IF
+						INDICE = RETVAL
+					ELSE
+						IF (cod_agrupacion != codAnterior) THEN
+							CALL CDSimpreServ(INDICE, SUBTOTAL, codAnterior)
+							INDICE = RETVAL
+						END IF
+					END IF
+				END IF
+				codAnterior = cod_agrupacion
+				primero = "N"
+				;[PAW] --> falta el extract all que se le sacó a la CDSbuscaDatosImp
+
+				//[PAW] --> Lo siguiente se hace porque el campo post:PresNro_tt
+				//debe mantenerse hasta imprimir los track & trace. El problema es
+				//que el campo solo esta en la cabecera, y si tiene algun opcional,
+				//este se lee antes, asi que borra el campo.
+				//Lo que se hace es simplemente resguardar el campo y volver a
+				//tomarlo en caso de que se levante un descuento u opcional.
+				CLEARFIELD leyenlar_bloq
+				auxPresNroTT = post:PresNro_tt
+				CLEARFIELD post:PresNro_tt
+				CDS FINDAGAIN DSC:CtxImpreTmp LOCK
+				CDS EXTRACT DSC:CtxImpreTmp ALL
+				IF (tipo_impre == DESCUENTO || tipo_impre == OPCIONAL || tipo_impre == BONIF_PROD) THEN/* \
+					|| tipo_impre == BONIF_SUR_POSTAL) THEN*/
+					post:PresNro_tt = auxPresNroTT
+				END IF
+
+				;PJM 21/12/98 se agrego para que se descrimine el Iva tambien para las Facturas B
+				IF (adt_cativa_discri == "S") THEN
+				//SUC-964:Resolución General N° 5614/2024: solo discriminar el iva al final de la factura, no en el cuerpo
+					if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3) 
+					//SC 50170 OJO ACA TENDRIA QUE TOMAR EL VALOR DEL IMPORTE SIN IVA QUE SE VA A GUARDAR EN LA IMPRETMP!!!!
+					//importe_impre = importe_impre -  importeIva_impre
+					importe_impre = importeSinIva_impre
+					endif
+				END IF
+ 				
+				;PJM 17-07-1998 fue agregado para los egresos por que sumaban en vez de restar
+				IF (siaf:afecta_efectivo == "-") THEN
+					SUBTOTAL = SUBTOTAL - importe_impre
+				ELSE
+					SUBTOTAL = SUBTOTAL + importe_impre
+				END IF
+				
+				IF (importe_impre < 0) THEN
+					importe_impre = importe_impre * -1
+					PRECIO_UNITARIO = PRECIO_UNITARIO * -1
+				END IF
+
+				//SC 50170
+				PRECIO_UNITARIO = precio_unitario
+				IF (precio_unitario.NUMCHARS == 0) THEN
+					IF ( cantid_impre.NUMCHARS == 0 ) THEN
+						PRECIO_UNITARIO = importe_impre
+					ELSE
+						PRECIO_UNITARIO = importe_impre / cantid_impre
+					END IF
+				END IF
+					
+				;PJM 10-07-1998 pedido por marcerlo que salga el numero de secuenciador
+				;en ingresos varios
+				IF (nro_ingrvario.NUMCHARS != 0) THEN
+				//MFM - IMPRESORA TERMICA SE MUESTRA EN DOS LINEAS
+					FPRINT desc_impre "%-s" desc_impre
+					
+					//FPRINT desc_impre "%-s %010.10s\n" "NRO.COMPROBANTE" , nro_ingrvario
+				END IF
+
+				IF ( tipo_impre != DESCUENTO && tipo_impre != OPCIONAL && tipo_impre != BONIF_PROD) THEN/*&& \
+					tipo_impre != BONIF_SUR_POSTAL) THEN*/
+					IF (post:codigo_impre != 99019) THEN
+						ITEM = ITEM + 1
+					END IF
+					//[PAW] --> PREGUNTAR POR EL adt_tarif_modo
+					IF (adt_tarif_modo == "D" && tipo_impre != INGRVARIOS) THEN
+						IF ( siaf:afecta_efectivo == "-" ) THEN
+							FPRINT l_cad_importe "(%s)" PRECIO_UNITARIO
+							FPRINT l_cad_importe2 "(%e)" importe_impre
+							//TM - saco ITEM
+							//FPRINT common:csr_string "%3.3s %6.6s %-49.49s   %10.10s %14.14e\n",\
+							//	ITEM,cantid_impre,desc_impre,l_cad_importe,l_cad_importe2
+							//MFM - SE MUESTRA INFO EN DOS LINEAS
+							FPRINT common:csr_string "%-6.6s %-41.41s\n",\
+								cantid_impre,desc_impre
+								CALL post:MISCprt2laser(common:csr_string)
+								INDICE = INDICE + 1
+								FPRINT common:csr_string "       %-10.10s %15.15s %14.14e\n",\
+								l_cad_importe," ",l_cad_importe2
+						else
+							//TM - saco ITEM
+							//FPRINT common:csr_string "%3.3s %6.6s %-53.53s %8.8s %14.14e\n",\
+							//	ITEM,cantid_impre,desc_impre,PRECIO_UNITARIO,importe_impre
+							//MFM - SE MUESTRA EN UNA LINEA CANTIDAD Y NOMBRE DEL SERVICIO
+							FPRINT common:csr_string "%-6.6s %-41.41s\n",\
+								cantid_impre,desc_impre	
+								CALL post:MISCprt2laser(common:csr_string)
+								INDICE = INDICE + 1  	
+								//MFM - SE MUESTRA EN OTRA LINEA EL RANGO Y DESTINO
+							//	adt_tarif_desde        #35:39  fixed    len: 8  81.000
+							//	adt_tarif_hasta        #35:40  fixed    len: 9  100.000
+							//	destino                #35:225 string   len:15  BASICO NACIONAL
+								/*	FPRINT common:csr_string "%-6.6s %-9.9s A %-9.9s %-15.15s\n",\
+								" ",post:desc_impre_tm post:adt_tarif_desde,adt_tarif_hasta, destino*/
+								if (post:desc_impre_tm != "")
+										FPRINT common:csr_string "%-6.6s %-s \n",\
+									" ",post:desc_impre_tm
+									CALL post:MISCprt2laser(common:csr_string)
+									INDICE = INDICE + 1  	
+							  ENDIF
+								//TELEGRAMA EN DOS LINEAS
+								FPRINT common:csr_string "%12.12s%-8.8s %12.12s %14.14e\n",\
+									 "       P.U: ",PRECIO_UNITARIO," ", importe_impre
+						END IF
+					ELSE
+						IF (siaf:afecta_efectivo == "-") THEN
+							FPRINT common:csr_string "(%e)" importe_impre
+							//TM - saco ITEM
+							//FPRINT common:csr_string "%3.3s %6.6s %-61.61s      %10.10s\n",\
+							//	ITEM,cantid_impre,desc_impre,common:csr_string
+							CALL CSR:trimfield(post:desc_impre)
+							CALL CSR:trimfield(common:csr_string)
+							FPRINT common:csr_string "%-6.6s %-29.29s %11.11s\n",\
+								cantid_impre,desc_impre,common:csr_string	
+						else
+							IF (siaf:adt_tran_fliatran == "TES" || siaf:adt_tran_fliatran == "CME") THEN
+								//TM - saco ITEM
+								//FPRINT common:csr_string  "%3.3s %6.6s %-53.53s %8.8s %14.14e\n",\
+								//	ITEM,cantid_impre, desc_impre, PRECIO_UNITARIO, importe_impre
+								//MFM - Impresora Termica -  linea 1 cantidad y descripcion.	
+								//MFM - Sale aleatoriamente un espacio en blanco entre la descripcion y el renglo de PU. 
+								//SE HACE UN TRIMFIELD del campo desc_impre de manera preventiva para que la linea no supere los 48 caracteres.
+								
+								CALL CSR:trimfield(post:desc_impre)
+								FPRINT common:csr_string  "%-6.6s %-40.40s\n",\
+										cantid_impre, desc_impre
+								CALL post:MISCprt2laser(common:csr_string)
+								INDICE = INDICE + 1
+								//MFM - Impresora Termica -  linea 2 precio unitario monto total
+								FPRINT common:csr_string  "%12.12s%-8.8s %12.12s %14.14e\n",\
+									 "       P.U: ",PRECIO_UNITARIO," ", importe_impre
+							ELSE
+								//TM - saco ITEM
+								//FPRINT common:csr_string "%3.3s %6.6s %-55.55s        %14.14e\n",\
+								//	ITEM,cantid_impre,desc_impre,importe_impre
+								// INGRESOS VARIOS
+								//MFM - Impresora Termica -  linea 1 cantidad y descripcion. Linea 2 comprobante y total
+								FPRINT common:csr_string "%-6.6s %-40.40s\n",\
+									cantid_impre,desc_impre
+										if (!OperacionInt) then
+											CALL post:MISCprt2laser(common:csr_string)
+											INDICE = INDICE + 1
+			  							//2do renglon
+							  				FPRINT desc_impre "%-s%010.10s" "NRO.COMPROBANTE:" , nro_ingrvario
+												FPRINT common:csr_string "       %26.26s %14.14e\n",\
+												desc_impre, importe_impre 
+										else
+											//Para intereses punitorios se muestra todo en un mismo renglon
+												FPRINT common:csr_string "%32.32s %14.14e\n",\
+												common:csr_string, importe_impre
+										endif
+										
+							END IF
+						END IF
+					END if
+									
+					;Se actualiza el post:itemFact con el item real de la factura
+					;a fin de que el anexo mantenga cuerencia con la factura *** MDG
+					post:itemFact = ITEM
+					CDS CLEARBUFFER DSC:CtxImpreTmp
+					CDS APPEND DSC:CtxImpreTmp post:itemFact
+					CDS UPDATE DSC:CtxImpreTmp LOCK
+					CDS UNLOCK DSC:CtxImpreTmp
+                			
+					;Bonificaciones UP
+					IF (post:codigo_impre == 99019) THEN
+						strBonif = common:csr_string
+					ELSE
+						CALL post:MISCprt2laser(common:csr_string)
+						INDICE = INDICE + 1
+					END IF
+							
+					;[PAW] --> para ver bien los numeros y sus posiciones.
+					IF (formuCalc.NUMCHARS != 0 && entraEnUnaPag == "S") THEN
+						FPRINT common:csr_string "%11.11s%s\n"," ",formuCalc
+						CALL post:MISCprt2laser(common:csr_string)
+						INDICE = INDICE + 1
+					END IF
+				ELSE
+					/*Para los opcionales se divide el importe por la cantidad = cant_aux
+					se usa cant_aux porque en MISCactua_opcional se limpia el campo
+					cantidad*/
+					IF (tipo_impre == OPCIONAL && leyenlar_bloq.NUMCHARS == 0) THEN
+						IF ( cant_aux.NUMCHARS == 0 ) THEN
+							PRECIO_UNITARIO = importe_impre
+						ELSE
+							PRECIO_UNITARIO = importe_impre / cant_aux
+						END IF
+					END IF
+					
+					IF ((tipo_impre == OPCIONAL) && (entraEnUnaPag != "S") && leyenlar_bloq.NUMCHARS == 0) THEN
+						longDesc = longDesc + 1
+						desc_impre = SUBSTR(desc_impre, 0, longDesc)
+					END if
+					IF (leyenlar_bloq.NUMCHARS == 0) THEN
+						IF (adt_tarif_modo != "V" && adt_tarif_modo != "S") THEN
+							IF (tipo_impre == DESCUENTO) THEN
+								FPRINT common:csr_string "(%e)" importe_impre
+								/*FPRINT common:csr_string  "%3.3s  %5.5s  %-58.58s        %10.10s\n",\*/
+								//NI 50254
+								/*FPRINT common:csr_string  "%3.3s  %6.6s  %-57.57s        %10.10s\n",\
+									" ", cantid_impre, desc_impre,common:csr_string*/
+								//termica acortar a 47 (eliminar espacio de ITEM (%3.3s)
+								FPRINT common:csr_string  "%-6.6s %-29.29s %11.11s\n",\
+									cantid_impre, desc_impre,common:csr_string
+							ELSE
+								IF (tipo_impre == BONIF_PROD  || tipo_impre == BONIF_SUR_POSTAL) THEN
+									FPRINT common:csr_string "(%e)" importe_impre
+								/*	FPRINT common:csr_string  "          %-58.58s         %10.10s\n",\*/
+								//termica acortar a 47
+									FPRINT common:csr_string  "          %-27.27s         %10.10s\n",\
+										desc_impre,common:csr_string
+								else
+								//OPCIONAL
+									//FPRINT common:csr_string  "%3.3s  %6.6s  %-49.49s   %8.8s %14.14e\n",\
+										FPRINT common:csr_string  "%-6.6s  %-13.13s   %8.8s %14.14e\n",\
+										cantid_impre, desc_impre, PRECIO_UNITARIO, importe_impre
+								END IF
+							END IF
+						else
+							IF (tipo_impre == DESCUENTO) THEN
+							FPRINT common:csr_string "(%e)" importe_impre
+								//FPRINT common:csr_string  "%2.2s  %4.4s  %-60.60s        (%e)\n",\
+								//	" ", cantid_impre, desc_impre, importe_impre
+								/*FPRINT common:csr_string  "%3.3s  %5.5s  %-58.58s        %10.10s\n",\*/
+								//NI 50254
+								/*FPRINT common:csr_string  "%3.3s  %6.6s  %-57.57s        %10.10s\n",\
+									" ", cantid_impre, desc_impre,common:csr_string*/
+									//TERMICA acortar a 47 (eliminar espacio de ITEM (%3.3s)
+								FPRINT common:csr_string  "%-6.6s %-29.29s %11.11s\n",\
+									cantid_impre, desc_impre,common:csr_string
+							ELSE
+								IF (tipo_impre == BONIF_PROD || tipo_impre == BONIF_SUR_POSTAL) THEN
+									FPRINT common:csr_string "(%e)" importe_impre
+									FPRINT common:csr_string  "          %-55.55s         %10.10s\n",\
+										desc_impre,common:csr_string
+								ELSE
+									//OPCIONAL (TELEGRAMA Y POSTAL)
+										//Nina pidio si el importe es cero que no salga impreso el importe
+										if (importe_impre > 0) THEN
+												//FPRINT common:csr_string  "%3.3s  %6.6s  %-51.51s          %14.14e\n",
+											//TERMICA : Se pregunta por este nuevo campo para definir si es opcional con calculo.
+											//no se puede poner un define para VADC porque puede cambiar por parametria si realiza calculo o no o agregarse algun otro OPC que haga el calculo como el VADC.
+												if (desc_impre_tm != "") 
+													//Se muestra en 2 lineas: 1era la descripcion y la 2da el calculo e importe a cobrar
+													call CSR:trimfield(post:desc_impre)
+													call CSR:trimfield(common:csr_string)
+													FPRINT common:csr_string  "%-6.6s %-25.25s\n",\
+													cantid_impre, desc_impre
+													CALL post:MISCprt2laser(common:csr_string)
+													INDICE = INDICE + 1
+													/*FPRINT common:csr_string  "%6.6s%-32.32s %10.10e\n",\
+													cantid_impre, desc_impre_tm, importe_impre*/
+													FPRINT common:csr_string  "        %-29.29s %10.10e\n",\
+													 desc_impre_tm, importe_impre
+												else
+													FPRINT common:csr_string  "%-6.6s  %-25.25s %14.14e\n",\
+													cantid_impre, desc_impre, importe_impre 
+												ENDIF
+										else
+												if (desc_impre_tm != "") 
+													//Se muestra en 2 lineas: 1era la descripcion y la 2da el calculo e importe a cobrar
+													call CSR:trimfield(post:desc_impre)
+													call CSR:trimfield(common:csr_string)
+													FPRINT common:csr_string  "%-6.6s %-25.25s\n",\
+													cantid_impre, desc_impre
+													CALL post:MISCprt2laser(common:csr_string)
+													INDICE = INDICE + 1
+													/*FPRINT common:csr_string  "%6.6s%-32.32s %10.10e\n",\
+													cantid_impre, desc_impre_tm, importe_impre*/
+													FPRINT common:csr_string  "        %-29.29s %10.10e\n",\
+													 desc_impre_tm, importe_impre
+											  else
+											  	FPRINT common:csr_string  "%-6.6s %-25.25s\n",\
+											 		cantid_impre, desc_impre
+												endif	
+													
+									END IF
+								END IF
+							END IF
+						END IF
+					ELSE
+						//[PAW] --> pedido por Maricel (Mariano Gecik) bloq. adicionales.
+						//---------------------------------------------------------------
+				//	FPRINT common:csr_string  "           %-58.58s       %12.12e\n", leyenlar_bloq, imp_bloques
+				//FPRINT common:csr_string  "           %-60.60s       %10.10e\n", leyenlar_bloq, imp_bloques
+				//FPRINT common:csr_string  "           %-60.60s         %8.8e\n", leyenlar_bloq, imp_bloques
+				//TERMICA MOSTRAR BLOQUES ADICIONALES EN UN RENGLON CON LEYENDA CORTA Y MONTO EN OTRO!
+					FPRINT common:csr_string  "       %-29.29s\n", leyencor_bloq
+						CALL post:MISCprt2laser(common:csr_string)
+						INDICE = INDICE + 1
+					FPRINT common:csr_string  "       %-27.27s  %12.12e\n", " ",imp_bloques
+
+					END IF
+					CALL post:MISCprt2laser(common:csr_string)
+					INDICE = INDICE + 1
+				END IF
+			END IF
+
+			IF ((siaf:adt_tran_fliatran == FAMILIA_ENC_INT && post:PresNro_tt.NUMCHARS != 0) || \
+				(siaf:adt_tran_fliatran == "TAV" && post:codigo_impre == 99124 && post:PresNro_tt.NUMCHARS != 0) || \
+				(siaf:adt_tran_fliatran == "TAV" && post:codigo_impre == 6680 && giros:desc_impre2 != "")) THEN
+				FPRINT common:csr_string  "           %s\n", giros:desc_impre2
+				CALL post:MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 1
+			END IF
+		LOOP
+
+	ELSE
+		;Mensaje de Error que No hay Datos
+	END IF
+		
+	CALL post:MISCclose_datos_imp
+
+	;si tengo bonificaciones las imprimo!!
+	IF (strBonif.NUMCHARS != 0) THEN
+		ITEM = ITEM + 1
+		
+		//TM - saco ITEM
+		//FPRINT common:csr_string "%3.3s%s", ITEM, substr(strBonif,3,999)
+		FPRINT common:csr_string "   %s",substr(strBonif,3,999)
+		//FPRINT common:csr_string = strBonif
+
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 1
+	END IF
+
+	;imprimo la leyenda si la nis tiene guarda.
+	IF (post:adt_nis_guarda_web.NUMCHARS > 0) THEN
+		;vos a buscar la leyenda.
+		CALL giros:CDSdatgralsuc_load
+		;imprimo.
+		CALL post:MISCprt2laser(LINEANUEVA)
+		FPRINT common:csr_string "%s\n", giros:adt_dgralsuc_leyVirt
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 2
+	END IF
+	
+	/**********************************/
+	/*Aca Empieza el Pie de la Factura*/
+	/**********************************/
+	;Calculo las Lineas que me quedan para Avanzar en Cuerpuito de la Factura
+	CALL post:MISCprt2laser(LINEANUEVA)
+	//gpb:Original
+	//FPRINT common:csr_string "%78.78s %9.9e\n","SUBTOTAL ",SUBTOTAL
+
+	//gpb:PS10705
+	IF (modoPrt == LASER) THEN
+		FPRINT common:csr_string "%75.75s %14.14e\n","SUBTOTAL ",SUBTOTAL
+	ELSE
+		//justifico a la derecha
+		FPRINT common:csr_string "\x1Ba\x32%s% 14.14e\n" ,"SUBTOTAL ",SUBTOTAL
+	END IF
+	
+	CALL post:MISCprt2laser(common:csr_string)
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		FPRINT common:csr_string "\x1Ba\x30"
+	END IF
+	
+	INDICE = INDICE + 2
+
+	IF (!ModalidadAT && !OperacionCob) THEN
+		/*MFM (04.01.2002) - Intereses cobrados por financiación*/
+		CALL CDSGetIntVentaUP(INDICE,SUBTOTAL,1,52)
+		IF (RETVAL == 0) THEN
+			/*CALL post:PRT_INTVENTAUP(INDICE,SUBTOTAL,1,52)*/
+			INDICE = RETVAL
+			SUBTOTAL = siaf:importe
+		END IF
+	END IF
+		
+	;Totales por porcentaje de Iva esta guardados en la Tabla Auxiliar AuxIva(que original
+	;el Nombre)
+	
+	;PJM 23-06-98 modificacion pedida por MARCELO se debe poner este if porque
+	;ahora tambien se calcula el IVA para las FACTURAS DEL TIPO B
+	;PJM 21-12-98 se agrego que solo se imprima el Iva si en la Tabla CatIva tiene
+	;asociado que se descrimine
+	IF (adt_cativa_discri == "S") THEN
+	//SUC-964:Resolución General N° 5614/2024. Aplica para Facturas B de TICKFACTB "EXE" 	TICKFACTB2  "NR"	TICKFACTB3   "CF"
+		if (IvaCod ==  TICKFACTB ||  IvaCod == TICKFACTB2   ||  IvaCod == TICKFACTB3)   
+ 				//Se debe imprimir  entre importe total y cai, alineado a izquierda.
+ 				//Esto se realiza más abajo.
+		else
+				CALL post:PRT_IVA(INDICE,SUBTOTAL,1,75)
+				INDICE = RETVAL
+				;Me devuelve en Retval la cantidad de Lineas y siaf:importe el TOTAL
+				SUBTOTAL = siaf:importe
+		endif
+	ELSE
+		;PJM 23-12-98
+		;Dentro del Cds se fija que solo funcione para RNI
+		;Esto se tiene que hacer por mas que no se imprima hay
+		;que sumarselo al total
+		IF (IvaCod ==  FACTURAA2) THEN
+			CALL post:CDSsobreTasaTotal(SUBTOTAL)
+			SUBTOTAL = siaf:importe
+		END IF
+	END IF
+
+	;23-12-03 PAW Agrego RG3337
+	CALL post:PRT_RG3337(INDICE, SUBTOTAL, 68)
+	INDICE = RETVAL
+	SUBTOTAL = siaf:importe
+	
+	;15-4-99 MLD Agrego el impuesto de sellos.
+	CALL post:PRT_Sellos(INDICE,SUBTOTAL,1,70)
+	INDICE = RETVAL
+	SUBTOTAL = siaf:importe
+
+	;12-11-98 [PAW] ---> Monotributo.
+	IF (IvaCod != FACTURAA2) THEN
+		CALL post:PRT_MONO(INDICE,SUBTOTAL,1,77)
+		INDICE = RETVAL
+		SUBTOTAL = siaf:importe
+		;[PAW] ---> hay que asignarlo y no acumularlo.
+	END IF
+
+	CALL post:PRT_INGBRUT(78, INDICE, SUBTOTAL, 1)
+	INDICE = RETVAL
+	TOTAL = SUBTOTAL + siaf:importe
+	CALL post:MISCprt2laser(LINEANUEVA)
+	
+	//gpb:Original
+	//FPRINT common:csr_string "%78.78s %9.9e\n","TOTAL ",TOTAL
+
+	//gpb:PS10705
+	IF (modoPrt == LASER) THEN		
+		FPRINT common:csr_string "%76.76s %14.14e\n","TOTAL ",TOTAL
+	ELSE
+		//justifico a la derecha
+		FPRINT common:csr_string "\x1Ba\x32%s %14.14e\n","TOTAL ",TOTAL
+	END IF
+	
+	CALL post:MISCprt2laser(common:csr_string)
+	CALL post:MISCavaz_linea_imp(1)
+	clearfield common:csr_string
+	CALL post:MISCprt2laser(common:csr_string)
+
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+	END IF
+	
+	INDICE = INDICE + 2
+
+	//Pedido por Alejandro se invirtio el orden
+	CALL PRTimpTotalEnLetras(INDICE, TOTAL)
+	INDICE = RETVAL
+	CALL post:MISCprt2laser(LINEANUEVA)
+	//IF (!ModalidadAT) THEN
+	CALL PRT_MedioPago(INDICE, TOTAL, 0, 0, 1)
+	INDICE = RETVAL + 1
+	//END IF
+	
+	//Clientes Medios - Modalidades
+	//IF ((post:ModalidadCD && !OperacionCob) || (post:ModalidadCC && (OperacionInt || OperacionAut))) THEN
+	//mientras haya cobro diferido....
+	IF (post:Imp_CobroDif > 0) THEN
+		IF (impNotaCred != "S") THEN
+			/*MFM Mostrar Fecha de Vencimiento de la Factura*/
+			CALL PRT_VencimientoCD(INDICE, TOTAL, 0, 0, 1)
+			INDICE = RETVAL + 1
+		END IF
+		/*MFM Se muestra el Cobro Diferido como un medio de pago mas*/
+		CALL PRT_CobroDiferido(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1
+	END IF
+	//END IF
+		
+	IF ((post:ConsumoAnticipo || post:AnticipoRemito) && !OperacionInt) THEN
+		/*MFM Se muestra el Consumo del Anticipo como un medio de pago mas*/
+		/*si es cobranza e imprime recibo no se muestra la aplicacion del consumo en la 
+		factura pues ya se mostró en el recibo...*/
+		IF (OperacionCob && ImprimeRecCob) THEN
+			// muestro el saldo restante
+			IF (impNotaCred != "S") THEN
+				/*Se agrega el Saldo del Adelanto CM*/
+				CALL PRT_SaldoAnticipo(INDICE, TOTAL, 0, 0, 1)
+				INDICE = RETVAL + 1
+			END IF
+		ELSE
+			IF (impNotaCred != "S") THEN
+				/*MFM Se muestra el Consumo del Anticipo como un medio de pago mas*/
+				CALL PRT_ConsumoAnticipo(INDICE, TOTAL, 1, 0)
+				INDICE = RETVAL + 1
+			END IF
+			IF (impNotaCred != "S") THEN
+				/*MLD 30-07-2003 Se agrega el Saldo del Adelanto CM*/
+				Call PRT_SaldoAnticipo(INDICE, TOTAL, 0, 0, 1)
+				INDICE = RETVAL + 1
+			END IF
+		END IF
+	END IF
+
+	//50295 - AUT-1227
+	IF (post:ConsumoAnticipoMon) THEN
+		IF (impNotaCred != "S") THEN
+			/*Se agrega el Saldo del Adelanto Monetarios CM*/
+			CALL PRT_SaldoAnticipoLG(INDICE, TOTAL, 0, 0, 1)
+			INDICE = RETVAL + 1
+		END IF
+	END IF
+		
+	//Orden de Compra
+	IF (post:adt_oc_nro.NUMCHARS != 0)
+		//Muestro el Id de la OC
+		CALL PRT_Id_OC(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1
+		//Imprimir Leyenda
+		CALL PRT_Leyenda_OC(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1
+	END IF
+
+	IF (OperacionCob || OperacionAut) THEN
+		//Imprimo los Comprobantes de imposicion
+		CALL PRT_ComproImpo(INDICE, TOTAL, 0, 1)
+		INDICE = RETVAL + 1
+	END IF
+
+	//50249 
+	IF (post:OperacionNC) THEN // && !AnulOperNC) THEN
+		CALL PRT_Id_OC(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1
+		CALL PRT_Fact_Inc(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1
+		//Imprimo los productos incumplidos
+		CALL PRT_Prod_Incumplidos(INDICE, TOTAL, 0, 1)
+		INDICE = RETVAL + 1
+	END IF
+	
+	CLEARFIELD dgralsuc_leyendaRM
+	CALL giros:CDSleyRM_dgralsuc
+	IF (post:IvaCod == "RM" && post:dgralsuc_leyendaRM == "S")
+		//Imprimir Leyenda de Monotributo
+		//renglon 1
+		CALL PRT_Leyenda_RM(INDICE, TOTAL, 0, 0, 1, 1)
+		INDICE = RETVAL + 1
+		//renglon 2
+		CALL PRT_Leyenda_RM(INDICE, TOTAL, 0, 0, 1, 2)
+		INDICE = RETVAL + 1
+		//renglon 3
+		CALL PRT_Leyenda_RM(INDICE, TOTAL, 0, 0, 1, 3)
+		//renglon 4
+		CALL PRT_Leyenda_RM(INDICE, TOTAL, 0, 0, 1, 4)
+		INDICE = RETVAL + 1
+		CALL post:MISCprt2laser(LINEANUEVA)
+	END IF
+	CLEARFIELD dgralsuc_leyendaRM
+	
+	
+	//gpb:NI50479
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_nc_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		//Imprimir Leyenda
+		CALL PRT_Leyenda_PED(INDICE, TOTAL, 0, 0, 1)
+		INDICE = RETVAL + 1		
+	END IF
+	
+#endif
+	//SUC-964:Resolución General N° 5614/2024:
+	IF (adt_cativa_discri == "S") THEN
+		if (IvaCod ==  TICKFACTB ||  IvaCod == TICKFACTB2   ||  IvaCod == TICKFACTB3)   
+ 				CALL post:PRT_IVA_B(INDICE,SUBTOTAL,1,75)
+ 				INDICE = RETVAL
+				;Me devuelve en Retval la cantidad de Lineas y siaf:importe el TOTAL
+				SUBTOTAL = siaf:importe
+				//Se pide dejar una linea en blanco.
+				CALL MISCavaz_linea_imp(1)
+				clearfield common:csr_string
+			 CALL post:MISCprt2laser(common:csr_string)
+		endif
+	ENDIF
+
+	CALL PRT_CAI(INDICE)
+	
+	//TM
+	CALL MISCavaz_linea_imp(5)
+	
+	RETURN (errCanti)
+END SUB
+
+/*******/

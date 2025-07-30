@@ -1,0 +1,159 @@
+/****o* Facturación/OFB:post:MISCaplico_dif_mult
+* NOMBRE
+*   OFB:post:MISCaplico_dif_mult
+* DESCRIPCION
+*   Esta rutina calcula si existe diferencia entre los imp de iva  de 2 y 11 decimales
+*   de opcionales, bloques adicionales y servicio telegrafico y postal.
+*   Si existe diferencia se aplica solo al primer item. Tambien tiene en cuanta de aplicar
+*   la diferencia calculada por la DifFact.Cuando se continua la journalizacion se debe
+*   restaurar el importe con la diferencia para que el resto de las tx journalizadas 
+*   queden con el valor correcto.
+* ENTRADAS
+*   l_bloq_acum_iva:  importe acumulado de 2 decimales de los bloques adicionales
+*   l_bloq_acum_iva4: importe acumulado de 4 decimales de los bloques adicionales
+*   l_serv_acum_iva:  importe acumulado de 2 decimales del servicio telegrafico
+*   l_serv_acum_iva4: importe acumulado de 4 decimales del servicio telegrafico
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCjnl,OFB:post:MISCjnl_tele
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCaplico_dif_mult(l_bloq_acum_iva, l_bloq_acum_iva4,l_serv_acum_iva,l_serv_acum_iva4)
+	LOCAL cont LIKE cant_opc
+	LOCAL l_dif_opc LIKE post:ImporteSinIva
+	LOCAL l_dif_blq LIKE post:imp_bloques_siva
+	LOCAL l_dif_serv LIKE tele:imp_siniva_serv
+  
+   //TENGO QUE DEJAR JOURNALIZADA LA DIFERENCIA PARA RESTAURAR LOS IMPORTES EN CASO DE ANULACION PARCIAL
+    clearfield post:jnl_dif_blq
+    clearfield post:jnl_dif_serv
+    call csr:cleararray(post:jnl_dif_opc)
+    //se aplica la diferencia solo en el primer item que se journaliza!!
+    if (cont_jnl == 0) then
+        //aplico diferencia sobre el telegrama y el bloque adicional
+        //tambien tengo que aplicar la diferencia de la factura!!!
+        if (post:jnl_flia_tran == "CST") then
+	       	init 22,1
+		l_dif_blq = l_bloq_acum_iva - l_bloq_acum_iva4
+    		l_dif_serv = l_serv_acum_iva - l_serv_acum_iva4
+    		init 22,0
+		if (cod_dif_aplicada == "BLQ")
+			post:imp_bloques_siva = post:imp_bloques_siva  - dif_calculada - l_dif_blq
+		else
+			post:imp_bloques_siva = post:imp_bloques_siva - l_dif_blq
+		endif
+		if (post:cod_dif_aplicada == "SERV") then
+			tele:imp_siniva_serv = tele:imp_siniva_serv - dif_calculada - l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva -	l_dif_serv - dif_calculada
+		else
+			tele:imp_siniva_serv = tele:imp_siniva_serv - l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva -	l_dif_serv
+		endif
+		post:jnl_dif_blq = l_dif_blq
+    		post:jnl_dif_serv = l_dif_serv
+	endif
+	/*if (post:jnl_flia_tran == "CSE" || post:jnl_flia_tran == "CSP") then
+		init 22,1
+		l_dif_blq = l_bloq_acum_iva - l_bloq_acum_iva4
+		l_dif_serv = ImpSinIva_serv - ImporteSinIva_bis
+		init 22,0
+		if (cod_dif_aplicada == "BLQ")
+			post:BloqueSinIva_serv = post:BloqueSinIva_serv - dif_calculada - l_dif_blq
+		else
+			post:BloqueSinIva_serv = post:BloqueSinIva_serv - l_dif_blq
+		endif
+		if (post:cod_dif_aplicada == "SERV") then
+			ImpSinIva_serv = ImpSinIva_serv - dif_calculada - l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva -	dif_calculada - l_dif_serv
+		else
+			ImpSinIva_serv = ImpSinIva_serv - l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva -	l_dif_serv
+		endif
+		
+		post:jnl_dif_blq = l_dif_blq
+    		post:jnl_dif_serv = l_dif_serv
+	endif*/
+	//aplico diferencia sobre opcionales
+	//tambien tengo que aplicar la diferencia de la factura!!!
+    	cont = 0
+    	WHILE (cont < cant_opc)
+        	init 22,1
+        	l_dif_opc = opc_acum_iva[cont] - opc_acum_iva4[cont]
+          	init 22,0
+        	siniva_opc[cont] = siniva_opc[cont] - dif_opc[cont] - l_dif_opc
+        	//no tiene sentido porque este campo es interno!
+        	//ImporteSinIva = ImporteSinIva - l_dif_opc - dif_opc[cont]
+        	post:jnl_dif_opc[cont] = l_dif_opc
+        	cont = cont + 1
+	END WHILE
+   end if
+   //tengo que restaurar el importe, sino todas las TX quedan journalizadas con la diferencia!!
+   if (cont_jnl == 1) then
+  	 //aplico diferencia sobre el telegrama y el bloque adicional
+  	 //tambien tengo que aplicar la diferencia de la factura!!!
+         if (post:jnl_flia_tran == "CST") then
+        	init 22,1
+		l_dif_blq = l_bloq_acum_iva - l_bloq_acum_iva4
+    		l_dif_serv = l_serv_acum_iva - l_serv_acum_iva4
+    		init 22,0
+		if (cod_dif_aplicada == "BLQ")
+			post:imp_bloques_siva = post:imp_bloques_siva + dif_calculada + l_dif_blq
+		else
+			post:imp_bloques_siva = post:imp_bloques_siva + l_dif_blq
+		endif
+		if (post:cod_dif_aplicada == "SERV") then
+			tele:imp_siniva_serv = tele:imp_siniva_serv + dif_calculada + l_dif_serv 
+			post:adt_dump_siniva = 	post:adt_dump_siniva + dif_calculada + l_dif_serv 
+		else
+			tele:imp_siniva_serv = tele:imp_siniva_serv + l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva + l_dif_serv 
+		endif
+	endif
+	/*if (post:jnl_flia_tran == "CSE" || post:jnl_flia_tran == "CSP") then
+		init 22,1
+		l_dif_blq = l_bloq_acum_iva - l_bloq_acum_iva4
+		l_dif_serv = ImpSinIva_serv - ImporteSinIva_bis
+		init 22,0
+		if (cod_dif_aplicada == "BLQ")
+			post:BloqueSinIva_serv = post:BloqueSinIva_serv + dif_calculada + l_dif_blq
+		else
+			post:BloqueSinIva_serv = post:BloqueSinIva_serv + l_dif_blq
+		endif
+		if (post:cod_dif_aplicada == "SERV") then
+			ImpSinIva_serv = ImpSinIva_serv + dif_calculada + l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva + dif_calculada + l_dif_serv
+		else
+			ImpSinIva_serv = ImpSinIva_serv + l_dif_serv
+			post:adt_dump_siniva = 	post:adt_dump_siniva + l_dif_serv
+		endif
+	endif*/
+	//aplico diferencia sobre opcionales
+	//tambien tengo que aplicar la diferencia de la factura!!!
+    	cont = 0
+    	WHILE (cont < cant_opc)
+        	init 22,1
+        	l_dif_opc = opc_acum_iva[cont] - opc_acum_iva4[cont]
+        	init 22,0
+        	siniva_opc[cont] = siniva_opc[cont] + dif_opc[cont] + l_dif_opc 
+        	//no tiene sentido porque este campo es interno!
+        	//ImporteSinIva = ImporteSinIva + l_dif_opc + dif_opc[cont]
+        	cont = cont + 1
+	END WHILE
+	//borro los campos de diferencia de la factura para que no queden journalizados
+    	//en los n registros
+    	clearfield post:dif_calculada
+    	clearfield post:cod_dif_aplicada
+    	call csr:cleararray(post:dif_opc)
+    	
+endif
+END SUB	
+
+/*******/
+

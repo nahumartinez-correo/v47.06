@@ -1,0 +1,234 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70321
+* NOMBRE
+*   OFB:giros:SVAL70321
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70321
+    local saldo_cuenta  like siaf:importe
+    LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_scr       LIKE drv:INDscr
+    local LRetval       like lib:err_retval
+
+/****************** Transiciones Posibles***********************    
+
+RECEPCIONADO -> ACREDITADO
+             -> RECHAZADO
+             -> VENCIDO
+             -> DADO DE BAJA
+
+ACREDITADO   -> RECHAZADO
+RECHAZADO    -> ACREDITADO
+
+****************************************************************/
+
+
+if (!TESTFLAG(tlr:tran_flags,correction))
+
+    if (giros:cheques_ingresados.NUMCHARS == 0) then
+        errmsg lst:common:errmsg_list, "FALTA INGRESAR CHEQUES"
+        return -2
+    end if    
+    /* Lockeo el cheque para que nadie cambie el 
+    estado */
+    cds select from dsc:remitTmpTAB becomes dsc:remitTmpCON \
+        where giros:adt_girChqtmp_rem == giros:adt_girChqtmp_rem && \
+              giros:marcaSelec == "S"
+    cds findfirst dsc:remitTmpCON nolock
+    if (cdsretval == 0)
+        errmsg lst:common:errmsg_list, "El Cheque esta siendo usado en una Sesion"
+        cds endselect dsc:remitTmpCON
+        return (-2)
+    end if        
+    cds endselect dsc:remitTmpCON
+    CDS SELECT FROM DSC:girosChqTmpTAB BECOMES DSC:girosChqTmpCON where \
+    giros:adt_girChqtmp_rem == giros:adt_girChqtmp_rem && \
+    giros:adt_girChqtmp_sec == giros:adt_girChqtmp_sec && \
+    giros:adt_girChqtmp_op == giros:adt_girChqtmp_op
+
+    cds findfirst dsc:girosChqTmpCON lock
+    lib:err_retval = cdsretval
+
+    if (lib:err_retval == -803)
+        errmsg lst:common:errmsg_list, "Cheque Lockeado"
+        cds endselect dsc:girosChqTmpCON
+        return (-2)
+    end if
+
+    clearfield tes:teso_cheq_estado
+    CDS select from dsc:tes:TesoCheq_tbl becomes dsc:tes:TesoCheq_ctx where \
+        tes:teso_cheq_suc == common:sucursal_activa && \
+        tes:teso_cheq_moneda == siaf:moneda && \
+        tes:teso_cheq_banco == post:cod_banco &&  \
+        tes:teso_cheq_cuenta == post:cuenta && \
+        tes:teso_cheq_nro == post:nro_cheque
+    cds findfirst dsc:tes:TesoCheq_ctx nolock 
+    let lib:err_retval = cdsretval
+
+    select (lib:err_retval)
+        case 0
+            cds extract dsc:tes:TesoCheq_ctx all
+            break
+        case -803
+            errmsg common:errmsg_list, "Registro de cheques lockeado"
+            CDS UNLOCK DSC:girosChqTmpCON
+            CDS ENDSELECT DSC:girosChqTmpCON 
+            return (-2)
+            break
+        case -801
+            break
+    end select
+
+    if (lib:err_retval == 0)
+        select (tes:teso_cheq_estado)
+        case "T"
+            errmsg lst:common:errmsg_list, \
+            "El Cheque está en el tesoro!!"
+            LRetval = -2
+            break
+        case "O"
+            errmsg lst:common:errmsg_list, \
+            "El Cheque está en la caja!!"
+            LRetval = -2
+            break
+        case " "
+            errmsg lst:common:errmsg_list, \
+            "El cheque está en un pase"
+            LRetval = -2       
+            break
+        case "B"
+            errmsg lst:common:errmsg_list, \
+            "El cheque está en caja buzon"
+            LRetval = -2
+            break
+        case "P"
+            /* Si el cheque está en una cta bancaria debeo hacer un credito
+            o un debito */
+            /* VENCIDO, DADO DE BAJA o RECHAZADO IMPLICAN UN DEBITO 
+            EN LA CUENTA */
+            tes:banco_codigo = tes:teso_cheq_id
+            tes:tipo_cuenta = tes:teso_cheq_tipocta
+            tes:nro_cuenta = tes:teso_cheq_nrocta
+            tes:clearing = tes:teso_cheq_clearing
+            tes:fecha_valor = common:system_date
+            tes:mov_facred = common:system_date
+            let siaf:tiene_reverso = "N"
+            let siaf:adt_motvarios_ctrl = "S"
+            let siaf:cod_banco = tes:teso_cheq_banco
+	    let siaf:cheqcuenta = tes:teso_cheq_cuenta
+            let siaf:nro_cheque = tes:teso_cheq_nro
+
+            //cgw:datos del cliente
+            let post:cli_tipo_aux = tes:teso_cheq_tipo
+            if (tes:teso_cheq_tipo == 4) then
+                let post:NisUP = tes:teso_cheq_NisUP
+            end if
+            let post:CliUP = tes:teso_cheq_rsoc
+
+            loc_jnl_rtn   = drv:INDjnl_rtn
+            loc_scr       = drv:INDscr
+            LRetval = 0
+            break
+        end select
+
+        if (LRetval < 0)
+            CDS UNLOCK DSC:girosChqTmpCON
+            CDS ENDSELECT DSC:girosChqTmpCON 
+            return (LRetval)
+        end if
+    END IF
+
+    call siaf:SVALnivel_sup
+    if (retval < 0) 
+        CDS UNLOCK DSC:girosChqTmpCON
+        CDS ENDSELECT DSC:girosChqTmpCON 
+        return (-2)
+    end if
+
+    /* Si el cheque está en una cuenta bancaria propia,
+    registro el crédito o el débito, según corresponda */
+    IF (tes:teso_cheq_estado == "P")
+        select (estado)
+            case CH_ACREDITADO
+                    drv:INDjnl_rtn = ofb:tes:JNLcredito_cta
+                    drv:INDscr = SCR:tes:SCRNreg_cred
+                    let siaf:codigo_siaf = 7570
+                    break            
+            case CH_RECHAZADO
+                    //cgw: Debito en Cuenta - Cheque depositado rechazado.
+                    drv:INDjnl_rtn = ofb:tes:JNLdebito_cta
+                    drv:INDscr = SCR:tes:SCRNreg_deb
+                    let siaf:codigo_siaf = 7590
+                    break
+            case CH_BAJA
+            case CH_VENCIDO
+                    drv:INDjnl_rtn = ofb:tes:JNLdebito_cta
+                    drv:INDscr = SCR:tes:SCRNreg_deb
+                    let siaf:codigo_siaf = 7580
+                    break
+        end select
+    
+        call siaf:PRESfecha_hora
+        if (retval < 0) //cgw:valida existencia de 7590 o 7580 en parametria.
+            cds unlock dsc:girosChqTmpCON
+            cds endselect dsc:girosChqTmpCON
+            return (-2)
+        end if
+
+        /* Lockeo la tabla de cuentas bancarias */
+        call tes:CDSctasbanc_lock
+        if (retval < 0)
+            cds unlock dsc:girosChqTmpCON
+            cds endselect dsc:girosChqTmpCON
+            return (-2)
+        end if
+        call tes:CDSSaldo_cta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,tes:fecha_valor,saldo_cuenta)
+
+        if (retval == 0)
+            /* El Debito o Credito no son reversables */
+            let siaf:tiene_reverso = "N"
+            let tes:es_tesoro = "S"
+    	    UNGETKEY 0x190
+    	    call tlr:JNLtran
+    	    clearfield tes:es_tesoro
+    	    cds unlock dsc:tes:adt_cta_ctx
+            cds endselect dsc:tes:adt_cta_ctx
+    	else
+            CDS UNLOCK DSC:girosChqTmpCON
+            CDS ENDSELECT DSC:girosChqTmpCON 
+            cds unlock dsc:tes:adt_cta_ctx
+            cds endselect dsc:tes:adt_cta_ctx
+    	    return (-2)
+    	end if
+        drv:INDjnl_rtn = loc_jnl_rtn
+        drv:INDscr = loc_scr                
+    end if
+    /* Actualizo el estado del cheque */
+    //let adt_girChqtmp_est = giros:estado
+    CDS CLEARBUFFER DSC:girosChqTmpCON    
+    CDS APPEND DSC:girosChqTmpCON \
+	giros:estado as adt_girChqtmp_est
+    CDS update DSC:girosChqTmpCON LOCK
+    CDS UNLOCK DSC:girosChqTmpCON
+    CDS ENDSELECT DSC:girosChqTmpCON 
+
+    let siaf:codigo_siaf = 70321
+
+    call siaf:PRESfecha_hora                    
+end if
+end sub
+
+/*******/

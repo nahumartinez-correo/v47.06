@@ -1,0 +1,124 @@
+/****o* Reportes/OFB:post:MISCirrTot_revAuto
+* NOMBRE
+*   OFB:post:MISCirrTot_revAuto
+* DESCRIPCION
+*   Reporte Irregularidades - Todas Las Irregularidades.
+*   Motivo: Operaciones con Franqueadora Rapida Canceladas por Sucursal u Operador segun seleccion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay Operaciones con Franqueadoras Rapidas canceladas a reportar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCirre_todos_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirrTot_revAuto(opcion_irregula)
+
+	local loc_NroTrn like adt_PreDNroTrn
+    local loc_PresNro like post:PresNro
+    local oper_irre like tlr:jnl_operator
+
+    loc_PresNro = -1
+	
+	IF (opcion_irregula == "SUCURSAL") THEN
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjscn WHERE \
+            (tlr:jnl_date >= FLD:adt_umov_fecha_ini &&\
+             tlr:jnl_date <= FLD:adt_umov_fecha_fin ) && \
+		     post:usa_franqueadora == "S"
+	ELSE
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjscn WHERE \
+		    (tlr:jnl_date >= FLD:adt_umov_fecha_ini &&\
+		     tlr:jnl_date <= FLD:adt_umov_fecha_fin ) && \
+		     tlr:jnl_operator == adt_umev_op && \
+		     post:usa_franqueadora == "S"		
+	END IF
+
+	CDS FINDFIRST DSC:tlr:CONjscn NOLOCK
+   	LET lib:err_retval = CDSRETVAL	
+	
+	IF (lib:err_retval == -801)
+        RETURN (-2)
+	END IF
+
+    oper_irre = -1 //cgw:NI50276 - Intancia variable utilizada para el corte de control por operador.
+	
+    //post:flag_irregularidades = "S" ;cgw:comento porque todavia no se si hay irregularidades.
+
+	clearfield adt_PreDNroTrn
+	clearfield post:PresNro
+	cds extract DSC:tlr:CONjscn \
+        post:PresNro \
+        post:adt_PreDNroTrn
+
+    while (lib:err_retval == 0)
+          //cgw:NI50276 - Extrae el operador para control de corte de operador.
+          //Se estrae tambien post:usa_franqueadora (anteriormente no lo estaba haciendo).
+	      cds extract DSC:tlr:CONjscn \
+              tlr:jnl_tran_flags \
+              tlr:jnl_operator \
+              post:usa_franqueadora
+
+          IF (TESTFLAG(tlr:jnl_tran_flags,rev_automatica)) THEN
+
+              clearfield adt_PreDNroTrn
+			  clearfield post:PresNro
+			  cds extract DSC:tlr:CONjscn \
+				          post:PresNro \
+				          post:adt_PreDNroTrn
+
+			  IF (loc_PresNro != post:PresNro) THEN  //si corte PresNro,se inicializa loc_NroTrn
+                  loc_PresNro = post:PresNro
+                  loc_NroTrn = -1
+		      END IF
+		          
+			  IF (loc_NroTrn != adt_PreDNroTrn)
+				  loc_NroTrn = adt_PreDNroTrn
+
+                  IF (post:irregu_esp == "S") THEN
+                      //cgw:NI50276: imprime titulo de separacion de Irregularidades especiales,
+                      //si es la primera irregularidad especial a reportar.
+                      CALL post:MISCtitulo_irreg_esp
+                      CLEARFIELD post:irregu_esp //limpia variable de control de titulo de irregularidades especiales.
+                  END IF
+
+                  //cgw:NI50276 - Corte de Control por Operador.
+	              //El reporte de todas las irregularidades, solo imprime los operadores con irregularidades en el
+	              //rango fecha de selección, a diferecia del reporte del motivo irregularidad particular por sucursal.
+	              //que imprime todos los operadores que operaron en el rango seleccionado.
+				  IF (oper_irre != tlr:jnl_operator) THEN
+                      oper_irre = tlr:jnl_operator
+                      //cgw:NI50276 - Imprime Operador.
+                      post:operator_irre = oper_irre
+                      CALL post:MISCencab_oper_irre
+                  END IF
+
+				  //Extraigo del jnl los datos necesarios para armar las lineas de impresion
+
+				  //cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+				  CDS FINDAGAIN DSC:tlr:CONjscn	NOLOCK
+				  lib:err_retval = CDSRETVAL
+
+				  CALL MISCext_irr_revAuto
+
+				  //Armo las lineas de impresion	        	
+		          CALL MISCwri_irr_revAuto
+                  post:flag_irregularidades = "S" //cgw:recien aqui estoy seguro que hay irregularidades.
+    
+	          END IF
+		    
+		  END IF
+
+		  CDS FINDNEXT DSC:tlr:CONjscn NOLOCK
+	 	  lib:err_retval = CDSRETVAL
+
+    End while		
+
+END SUB
+
+/*******/

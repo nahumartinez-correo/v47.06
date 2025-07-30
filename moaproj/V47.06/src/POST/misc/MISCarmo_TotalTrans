@@ -1,0 +1,293 @@
+/****o* Sesion Correo/OFB:post:MISCarmo_TotalTrans
+* NOMBRE
+*   OFB:post:MISCarmo_TotalTrans
+* DESCRIPCION
+*   Graba en la tabla TotalTransac los datos necesarios para que se visualice el importe de la transaccion
+*   en la captura de Medios de PAgo
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS  
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCarmo_TotalTrans
+	LOCAL esCaptura LIKE siaf:i
+	LOCAL esFinSesion LIKE siaf:i
+	//LOCAL esBonifLocal LIKE siaf:i
+	LOCAL esIngresoEgreso LIKE siaf:i
+	LOCAL l_codigoSiaf LIKE siaf:codigo_siaf
+	LOCAL esGiroRechazado LIKE siaf:i
+	LOCAL esiPlanRechazado LIKE siaf:i
+	LOCAL esGiroMasivoChq LIKE siaf:i
+	LOCAL esPagoOnSiteRech LIKE siaf:i
+	
+	l_codigoSiaf = siaf:codigo_siaf
+
+	CALL post:CDSborro_PresuPag
+	CALL post:CDSTotalTransac_del
+	CLEARFIELD track_trace
+	//SC 50170 - Para no hacer los swapdup, recupero directamente de la Presu
+	CALL post:CDSdatos_Presu
+	
+	/*Si esta en post:PreDEst==9 es un combo con algun error*/
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES CONPresuDeta where \
+		(post:op_operator_id == op:op_operator_id ) && \
+		(post:PresNro == post:PresNro) && \
+		(post:fecha   == common:system_date) && \
+		(post:PreDEst < 9)
+
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	
+	DO
+		LET lib:err_retval = CDSRETVAL
+		
+		IF (lib:err_retval == -801) THEN
+			BREAK
+		END IF
+		
+		CALL post:MISCclear_dat_impre
+		CLEARFIELD PresNro_tt
+		CLEARFIELD NroTrn_tt
+		CLEARFIELD siaf:adt_mot_modulo
+		CLEARFIELD post:motagr_modulo
+		CLEARFIELD siaf:ImporteSinIva //FGB: p' giros
+		CLEARFIELD siaf:ImporteConIva //FGB: p' giros
+		CLEARFIELD giros:ImporteNeto //FGB: p' giros
+
+		CLEARFIELD siaf:siaf_status
+		CLEARFIELD giros:ImpFactChq
+		CLEARFIELD giros:ImpNetoChq
+		
+		CLEARFIELD post:combo_nro //FGB: p' combos
+		CALL csr:proc_list(F_CLEAR,LST:post:LISTContCombo_flds)	//FGB: p' combos
+		CLEARFIELD post:enCombo //FGB: p' combos
+		CLEARFIELD post:esPpalCombo //FGB: p' combos
+		
+		//SC50170
+		CLEARFIELD cant_opc
+		CLEARFIELD giros:gir_nro_lote
+		CALL csr:cleararray docfis_tasa_por
+		CALL csr:cleararray docfis_importe
+		CALL csr:cleararray docfis_imp_siva		
+		CALL csr:cleararray docfis_imp_siva4
+		
+		//gpb:PS10678
+		CLEARFIELD siaf:moneda
+
+		CDS EXTRACT DSC:CONPresuDeta All
+
+		SELECT (siaf:adt_tran_fliatran)
+			CASE "PCL" ; Impuestos
+				esCaptura = (siaf:codigo_siaf == 99099)
+				esFinSesion = (siaf:codigo_siaf == 99023)
+				//esBonifLocal = (siaf:codigo_siaf == 99007)
+				//IF (!esCaptura && !esFinSesion && !esBonifLocal) THEN
+				IF (!esCaptura && !esFinSesion) THEN
+					CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+				END IF
+			BREAK
+			CASE "CSV" ;I/E y Templates
+				esIngresoEgreso = (siaf:codigo_siaf == 6800 || siaf:codigo_siaf == 6810 || siaf:codigo_siaf == 6600 || siaf:codigo_siaf == 6610)
+				IF (esIngresoEgreso) THEN
+					FPRINT common:csr_string_171 "%s%s%s" siaf:motivo siaf:adt_mot_modulo siaf:adt_mot_submodulo
+					CALL MISCacumTotalTransac(common:csr_string_171, siaf:adt_tran_afec_efvo, siaf:importe)
+				ELSE
+					SELECT (siaf:codigo_siaf)
+						CASE 6620 //PAGO POR CTA DE TERCEROS
+						CASE 6640 //PAGO MASIVO DE OPERATIVOS
+						CASE 6650 //RENDICION DE PAGO MASIVO DE OPERATIVOS
+						//cgw:NI50361 - AUT-1684
+						CASE 6670 //COBRO POR CUENTA DE TERCEROS 
+						//gpb: SC50368 - AUT-1692
+						CASE 7210 //OFICIOS JUDICIALES
+							CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+						BREAK
+						CASE 6630 //PAGO ON SITE
+							IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+								CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+							END IF
+						BREAK
+						CASE ELSE   
+							;aca entra por template.
+							CDS SELECT FROM MotAgrup_tbl BECOMES MotAgrup_ctx \
+								WHERE fecha_tmpl == common:system_date && \
+								operador_tmpl == op:op_operator_id && \
+								PresNro_tmpl == PresNro && \
+								cod_agrupacion == cod_agrupacion && \
+								motagr_tmpl == template
+									
+							CDS FINDFIRST MotAgrup_ctx LOCK
+							LET lib:err_retval = CDSRETVAL
+					
+							WHILE (lib:err_retval != -801)
+								CDS EXTRACT MotAgrup_ctx ALL
+								post:PreDForFis = siaf:adt_mot_formfiscal
+								FPRINT common:csr_string_171 "%s%s%s" motagr_cod,motagr_modulo,motagr_submodulo
+								CALL MISCacumTotalTransac(common:csr_string_171, siaf:afecta_efectivo, post:motagr_imp)
+								CDS FINDNEXT MotAgrup_ctx LOCK
+								lib:err_retval = CDSRETVAL
+							END WHILE
+							CDS ENDSELECT MotAgrup_ctx
+					END SELECT
+				END IF
+			BREAK
+			CASE "TAV"
+				SELECT (siaf:codigo_siaf)
+					CASE 99200 	;Reemplazo de cheque diferido.
+					CASE 99240
+					CASE 99242
+					CASE 6690
+					CASE 6890
+						post:captura_mp = "N"
+						CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+					BREAK
+					CASE 99124  ;POLIZAS
+						IF (siaf:siaf_status == HOST_ACCEPTED || siaf:siaf_status.numchars == 0) THEN
+							CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+						END IF
+					BREAK
+					CASE 99430  ;ANTICIPO
+					CASE 99460  ;COBRANZA 
+					CASE 99461  ;COBRANZA CON TB
+					CASE 99480  ;FACTURACION INTERESES PUNITORIOS
+					CASE 6680   ;REGISTRACION WEB
+					CASE 99451  ;TRANSFERENCIAS BANCARIAS
+					CASE 18101  ;REGISTRO SIMPLE RPP
+						CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+					BREAK
+					CASE ELSE	 //Entrega piezas
+						CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+						WHERE fecha_EP == common:system_date && \
+						operador_EP == op:op_operator_id && \
+						PresNro_EP == PresNro && \
+						cod_agrupacion == cod_agrupacion
+				            
+						CDS FINDFIRST DSC:EntrPieza_ctx LOCK
+						LET lib:err_retval = CDSRETVAL
+					    
+						WHILE (lib:err_retval != -801)
+							CLEARFIELD adt_serv_aliciva
+							CDS EXTRACT DSC:EntrPieza_ctx ALL
+							PreDForFis = adt_serv_formfiscal
+							CALL MISCacumTotalTransac(post:cod_EP, post:afec_efvo_EP, siaf:importe)
+							CDS FINDNEXT DSC:EntrPieza_ctx LOCK
+							LET lib:err_retval = CDSRETVAL
+						END WHILE
+						CDS ENDSELECT DSC:EntrPieza_ctx
+				END SELECT
+			BREAK
+			CASE "CSM" ; Giros
+				;TRX.DE CHEQ. SEGUN GIROS MASIVOS
+				SELECT (siaf:codigo_siaf)
+					CASE 70630	;SOBRANTE S/GM CON CHEQUE ACRED.
+						CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo,siaf:importe)
+					BREAK
+					CASE 70620	;FALTANTE S/GM CON CHEQUE ACRED.
+						FPRINT adt_codigo "%sC" siaf:codigo_siaf
+						CALL MISCacumTotalTransac(adt_codigo, "+",giros:ImpFactChq)
+						CLEARFIELD post:PreDForFis
+						FPRINT adt_codigo "%sE" siaf:codigo_siaf
+						CALL MISCacumTotalTransac(adt_codigo, "+",giros:ImpNetoChq)
+					BREAK
+				END SELECT
+
+				IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+					IF (siaf:codigo_siaf == 70610 && giros:marca_chq_acre == "S") THEN
+						;Si es Trx.GM con Chq.Acreditado se acumula en TotalTransac
+						;el sobrante o faltante del cheque.
+						BREAK
+					END IF
+					SELECT (post:tipoAcumTotalTransac)
+						CASE SOLORESTA
+							CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, giros:ImporteNeto)
+						BREAK
+						CASE SOLOSUMA
+							CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:ImporteConIva)
+						BREAK
+						CASE SUMADISCRIMINADO
+							FPRINT adt_codigo "%sC" siaf:codigo_siaf
+							CALL MISCacumTotalTransac(adt_codigo, "+", siaf:ImporteConIva)
+							CLEARFIELD post:PreDForFis
+							FPRINT adt_codigo "%sE" siaf:codigo_siaf
+							CALL MISCacumTotalTransac(adt_codigo, "+", giros:ImporteNeto)
+						BREAK
+						CASE SUMARESTA
+							FPRINT adt_codigo "%sC" siaf:codigo_siaf
+							CALL MISCacumTotalTransac(adt_codigo, "+", siaf:ImporteConIva)
+							CLEARFIELD post:PreDForFis
+							FPRINT adt_codigo "%sE" siaf:codigo_siaf
+							CALL MISCacumTotalTransac(adt_codigo, "-", giros:ImporteNeto)
+						BREAK
+					END SELECT
+				END IF
+			BREAK
+			CASE "PF " ; Pago facil
+				IF (siaf:siaf_status <= HOST_ACCEPTED || siaf:siaf_status == "") THEN
+					CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+				END IF
+			BREAK
+			CASE ELSE
+				CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:adt_tran_afec_efvo, siaf:importe)
+			BREAK
+		END SELECT
+		
+		esCaptura = (siaf:codigo_siaf == 99099)
+		esFinSesion = (siaf:codigo_siaf == 99023)
+		esGiroRechazado = siaf:adt_tran_fliatran == "CSM" && siaf:siaf_status != HOST_ACCEPTED
+		esiPlanRechazado = siaf:adt_tran_fliatran == "PF " && !(siaf:siaf_status <= HOST_ACCEPTED || siaf:siaf_status == "")
+		esGiroMasivoChq = (siaf:codigo_siaf == 70610 && giros:marca_chq_acre == "S" )
+		esPagoOnSiteRech = (siaf:codigo_siaf == 6630 && siaf:siaf_status != HOST_ACCEPTED)
+		
+		IF (siaf:jnl_codigo_siaf != 99300 && !esGiroRechazado && !esiPlanRechazado && \
+			!esCaptura && !esFinSesion && !esGiroMasivoChq && !esPagoOnSiteRech) THEN
+			;Actualizo en la PresuPag.
+			monedaNC = 0
+			post:imp_d = 0
+			IF (siaf:moneda.numchars == 0)
+				CALL post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+			ELSE
+				CALL post:CDSadt_PresuPag_save(siaf:moneda,monedaNC,siaf:importe,post:imp_d)
+			END IF
+		END IF
+		
+		//SC 50170
+		//swapdup post:adt_oc_nro
+		IF (!(cli_tipo == CLIMED && (post:ImpCC_Min == "S" || post:adt_oc_nro.numchars != 0 || OperacionAut)))
+			IF (pasadaMP == PRIMER_PASADA)
+				CALL MISCarmo_DifFact(siaf:adt_tran_fliatran)
+			END IF
+		END IF
+		//swapdup post:adt_oc_nro
+		//FIN SC 50170
+		CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+	LOOP
+	CDS ENDSELECT DSC:CONPresuDeta
+	
+	//SC 50170 - Cobranza de Remitos con Ordenes de Compra, se debe usar la PresuDetOC
+	//mejor los recupero de la Presu!!
+	//SWAPDUP post:adt_oc_nro
+	//SWAPDUP post:OperacionCob
+	IF (cli_tipo == CLIMED && post:OperacionCob && post:adt_oc_nro.NUMCHARS != 0) THEN
+		//Recorro la PresuDetOC y se genera la DifFact por familia de tx
+		CALL post:MISCbarro_PreDet("PresuDetOC","PresuDetOC_CTX")
+		IF (RETVAL < 0) THEN
+			MSGBOX "No se pudo generar la DifFact",0x00,"Atencion"
+			RETURN (-2)
+		END IF
+	END IF
+	
+	//SWAPDUP post:adt_oc_nro
+	//SWAPDUP post:OperacionCob
+	//FIN SC 50170
+	siaf:codigo_siaf = l_codigoSiaf
+END SUB
+
+/*******/

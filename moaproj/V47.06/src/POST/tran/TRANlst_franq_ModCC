@@ -1,0 +1,117 @@
+/****o* Reportes/OFB:post:TRANlst_franq_ModCC
+* NOMBRE
+*   OFB:post:TRANlst_franq_ModCC
+* DESCRIPCION
+*   Reporte de FRANQUEOS CON FACTURACION DIFERIDA
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:MISClist_cieforsuc,OFB:tes:MISClist_cierre_suc
+* DOCUMENTACION
+*   NI50572 Digitalizacion de Reportes
+* SOURCE
+*/
+#include "posttran.h"
+
+SUB post:TRANlst_franq_ModCC
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	
+	LET copias_aux = 1
+    
+	/* Veo si tengo que crear el picklist */
+	LET siaf:pick_titulo = "est_suc"
+	if (siaf:pantalla_impreso ==  "P") THEN
+		CALL csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	ELSE
+		;LMB - PS 9780 - 18.06.2008
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "franq_ModCC.lis"
+		CALL tes:MISCopen_file(common:tmpDirTemporal,5)
+	END IF
+    
+	LET siaf:lineas_cl = 0
+	/* pongo encabezado */
+	LET siaf:indica_calcu = 0 // inicializa cant. de hojas
+	LET FLD:tes:INDsheet_header = OFB:post:MISCenc_franq_ModCC
+	CALL post:MISCenc_franq_ModCC
+
+	/* Genero el listado */
+	CALL post:MISCwri_franq_ModCC // LISTADO
+	SELECT (RETVAL)
+		CASE -2
+			LET common:csr_string = "(L) Error realizando listado"
+			ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+			;LMB - PS 9780 - 18.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "franq_ModCC.lis"        	
+			CALL tes:MISCclose_file(common:tmpDirTemporal,5)
+			//NO DEBERIA BORRAR EL ARCHIVO ACA TAMBIEN?
+			RETURN (-2)
+		BREAK
+		CASE -1
+			;No hubo movimientos
+			;LMB - PS 9780 - 18.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "franq_ModCC.lis"   
+			CALL tes:MISCclose_file(common:tmpDirTemporal,5)
+			//NI50572 Digitalizacion de Reportes
+			IF (siaf:pantalla_impreso != "P") THEN 
+				FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+				CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+				EXEC post:linea_spvCM          
+			END IF
+			RETURN (-2)
+		BREAK
+	END SELECT
+
+	/* Salida segun opcion del usuario */
+	IF (siaf:pantalla_impreso == "P") THEN
+		CALL csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+	ELSE
+		;LMB - PS 9780 - 18.06.2008
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "franq_ModCC.lis"          
+		CALL tes:MISCclose_file(common:tmpDirTemporal,5)
+
+		//gpb:NI50752
+		CALL tes:MISCflowPDF("franq_ModCC.lis")
+		IF (siaf:pantalla_impreso != "P") THEN
+  		//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN		
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("franq_ModCC.lis")
+
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;					IF (RETVAL < 0) THEN
+;;						MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;						RETURN 
+;;					END IF 
+;;					PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;					IF (PRTRETVAL != 0) THEN
+;;						FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;						MSGBOX siaf:mensaje,0x00000000,"Error"
+;;					END IF
+;;					CALL CSR:file_close(7) 
+;;					LET copias_aux = copias_aux + 1 			
+;;				END WHILE
+			END IF
+		END IF
+		
+		CALL post:MISCfile_exists(common:tmpDirTemporal)
+		IF (RETVAL == 0)  THEN
+			CLEARFIELD common:csr_string	
+	    FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "franq_ModCC.lis"
+	    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+	    EXEC common:csr_string
+		END IF
+		LET siaf:indica_calcu = 0
+
+	END IF
+	UNDISPLAY siaf:SCRNcomo_lista
+
+END SUB
+
+/*******/

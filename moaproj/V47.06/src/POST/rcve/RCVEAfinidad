@@ -1,0 +1,215 @@
+/****o* Pendientes de agrupación/OFB:post:RCVEAfinidad
+* NOMBRE
+*   OFB:post:RCVEAfinidad
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postrcve.h"
+
+SUB post:RCVEAfinidad
+   local loc_saldo like post:totales_sf1
+   local loc_cant_empresas like post:cant_cod_barras
+   local LineaPick like common:ExecString
+   local cant_linea like post:cantidad
+   local loc_emp_cod like post:afin_emp_cod
+   local loc_emp_desc like post:afin_emp_desc
+   local cant like siaf:i
+   local sclave like common:csr_string
+   local key like common:csr_string
+   local loc_conf_str	like common:csr_string
+   
+   loc_cant_empresas = 1
+
+   ;SMC Limpio campos
+   Clearfield post:afin_emp_cod
+   clearfield post:afin_emp_desc 
+   
+   SETFLAG drv:mode_flags,picklist_mode
+   
+
+    call hcomm:RCVEheaderV105
+    ;SMC Codigo 390 significa que el ID no tiene asignado ningun numero de 
+    ;    Telefono. Debo Pedirselo al cliente y volver a mandar.
+    if (hcomm:ResultCode != 0 && hcomm:ResultCode != 390)
+        if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+            msg = msg + 45
+        else
+            msg = msg + 69
+        endif
+        return 0
+    endif
+
+	; PAW 28.05.2003 - agrego una capa para la desencriptacion.
+	cant = MSGEND - MSG
+    COMM  GET fieldRespuestaBULK  FROM MSG TYPE BULK LENGTH cant
+
+	comm deallocate
+	
+	; PAW 28.05.2003 - desencripto la respuesta.
+	fprint sclave "%04s%06s%04s%02s%02s%02s%02s%02s",\
+		tlr:jnl_sequence,\
+		op:op_operator_id, \
+		substr(tlr:jnl_date,0,4), \
+		substr(tlr:jnl_time,0,2), \
+		substr(tlr:jnl_date,4,2), \
+		substr(tlr:jnl_time,2,2), \
+		substr(tlr:jnl_date,6,2), \
+		substr(tlr:jnl_time,4,2)
+
+    clearfield fieldRespuestaSTR
+    DLL _BfJ_creaClave ( sclave key )
+    DLL _BfJ_inicia ( key )
+    DLL _BfJ_desencripta (fieldRespuestaBULK fieldRespuestaSTR  cant )
+    DLL _BfJ_fin ( )
+    siaf:i = 0
+
+    if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+        /* Terminal */
+        call MISCcommGet(fieldRespuestaSTR, 6)
+        terminal = common:csr_string
+        	// comm get terminal from msg type ASCII length 6
+        /* Operador */
+        call MISCcommGet(fieldRespuestaSTR, 1)
+        call MISCcommGet(fieldRespuestaSTR, 5)
+        operador_tmpl = common:csr_string
+        	// msg = msg + 1 //porque nuestro operador es de 5 y en la mensajeria de 6
+        	//comm get operador_tmpl from msg type ASCII length 5
+        /* Ticket */
+        call MISCcommGet(fieldRespuestaSTR, 4)
+        ticket = common:csr_string
+        	// comm get ticket from msg type ASCII length 4
+        /* saldo */
+        call MISCcommGet(fieldRespuestaSTR, 13)
+        loc_saldo = common:csr_string
+        	// comm get loc_saldo from msg type ASCII length 13
+        /* ID Pin */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id_pin = common:csr_string
+        	//	comm get result_id_pin from msg type ASCII length 20
+        /* ID Tran */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id = common:csr_string
+        	// comm get result_id from msg type ASCII length 20
+
+	   /* Cantidad Empresas */
+	   call MISCcommGet(fieldRespuestaSTR, 2)
+	   loc_cant_empresas = common:csr_string
+	   		// comm get loc_cant_empresas from msg type ASCII length 2
+	   
+	   ;contador linea
+	   cant_linea = 1
+	   if (loc_cant_empresas > 0) then
+			CALL  CSR:f_sanewpl DSC:post:PICAfinidad_emp PIC:post:PICAfinidad_emp 650 400
+			while (cant_linea <= loc_cant_empresas) 
+			      /*limpio campos*/
+			      /*Asigno campos*/
+			      /* Codigo Empresa */
+			      call MISCcommGet(fieldRespuestaSTR,3)
+			      loc_emp_cod = common:csr_string 
+			      		// comm get loc_emp_cod from msg type ASCII length 3
+			      
+			      /* Descripcion Empresa */
+			      call MISCcommGet(fieldRespuestaSTR,20)
+			      call csr:trimfield (common:csr_string,loc_emp_desc)
+			      		// comm get loc_emp_desc from msg type ASCII length 20
+			      		// call  CSR:trimfield (loc_emp_desc)
+		          /*Escribo a lineapick*/
+		          fprint FLD:LineaPick "%-20.20s %-03.03s" FLD:loc_emp_desc,loc_emp_cod
+		          /*Grabo todas las lineas al picklist*/
+		          CALL  CSR:f_saaddpl DSC:post:PICAfinidad_emp FLD:LineaPick
+		          cant_linea = cant_linea + 1
+		   	end while
+		endif
+		;SMC si es una sola empresa, no necesito usar el picklist
+		if (loc_cant_empresas == 1) then
+			;SMC Destruyo PickList
+	   		;CALL  csr:f_sadroppl DSC:post:PICAfinidad_emp	
+			fprint post:afin_emp_cod "%s" loc_emp_cod
+			fprint post:afin_emp_desc "%s" loc_emp_desc
+			call csr:trimfield post:afin_emp_cod
+			call csr:trimfield post:afin_emp_desc
+		endif
+		if (hcomm:ResultCode == 390 && hcomm:Gravedad == 0)
+			;No completada
+			hcomm:tran_status = 100
+			siaf:mensaje = "Operación Incompleta"
+			
+			;SMC Limpio los campos que contendran el numero de TE
+			clearfield post:result_id_pin
+			clearfield post:result_id
+		endif
+		if (loc_cant_empresas <= 1) && (post:afin_emp_cod == "" || post:afin_emp_cod.numchars == 0) then
+			;Comercio Inexistente
+			hcomm:tran_status = 114
+	
+			;SMC Limpio los campos que contendran el numero de TE
+			clearfield post:result_id_pin
+			clearfield post:result_id
+		endif
+    else /* es una anulacion de pin*/
+        /* Terminal */
+        call MISCcommGet(fieldRespuestaSTR,6)
+        terminal = common:csr_string
+        /* Operador */
+        call MISCcommGet(fieldRespuestaSTR,1)
+        call MISCcommGet(fieldRespuestaSTR,5)
+        operador_tmpl = common:csr_string
+        /* Ticket */
+        call MISCcommGet(fieldRespuestaSTR,4)
+        ticket = common:csr_string
+        /* saldo */
+        call MISCcommGet(fieldRespuestaSTR,13)
+        siaf:monto = common:csr_string
+        /* id Tran */
+        call MISCcommGet(fieldRespuestaSTR,20)
+        result_id = common:csr_string
+        /* idorig */
+        call MISCcommGet(fieldRespuestaSTR,20)
+        result_id_orig = common:csr_string
+        
+        // si estoy reversando o recuperando una caida, aca termina la historia...
+        return
+    endif
+	
+	
+	    /* Ahora llamo al bob para que me devuelva el ticket */
+    if (!testflag(tlr:tran_flags,correction))
+
+	   dprint "\nRCVEAfinidadiplan: -------------------------\n"
+	   dprint "result_id: %s \n" result_id
+	   dprint "result_id_pin: %s \n" result_id_pin
+	   dprint "result_pin: %s \n" result_pin
+	   dprint "-------------------------------------\n"
+	   
+
+        sf1_cta_nro = result_id
+        ;loc_codbarras = sf1_codbarras_nuevo
+
+        ;SMC Envio Codigo de Empresa y Numero de Telefono para imprimir el Ticket.
+        fprint post:datos_cliente "%s|%s" post:afin_emp_cod,post:result_id_pin
+   		
+   		if (hcomm:tran_status == HOST_ACCEPTED) then
+		        call MISCobtiene_impreSf1("N")
+		        if (retval < 0)
+		            let hcomm:tran_status = 106
+		            let siaf:mensaje = "Canc. Automática por problema en los BOB"
+		            let hcomm:Gravedad = 10
+		            return (-2)
+		    	endif
+		endif
+    endif
+    
+END SUB
+
+/*******/

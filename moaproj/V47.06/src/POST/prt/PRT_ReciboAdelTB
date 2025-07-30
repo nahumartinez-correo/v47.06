@@ -1,0 +1,140 @@
+/****o* Transferencias Bancarias/OFB:post:PRT_ReciboAdelTB
+* NOMBRE
+*   OFB:post:PRT_ReciboAdelTB
+* DESCRIPCION
+*   Arma Recibo de Adelanto de Transferencias Bancarias.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETVAL (-2): No deberia darse nunca. No encuentra en PresuDet la Aplicacion de Transferencias Bancarias (99541).
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:DOCS99453
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Recibo_AdelTB
+    LOCAL varl_importe      LIKE siaf:importe
+    LOCAL l_cadena          LIKE common:csr_string
+    LOCAL l_importe         LIKE post:importe_sesion
+    LOCAL l_total_adelanto  LIKE siaf:importe
+    LOCAL ind               LIKE siaf:i
+    
+    //cgw: NI50244 - Adelanto por Transferencias Bancarias.
+
+    varl_importe = 0
+
+    //Composición de Pago
+    PRT  TEXTFONTNAME "Courier New" 
+    PRT  POSITIONABS *3042 *288 
+    PRT  PRINT "Composición del pago"
+    LET siaf:NRO_ITEM = 0 - 3198
+    PRT  TEXTSIZE *110 
+   
+  	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+    	WHERE post:fecha == common:system_date &&                 \
+    	post:op_operator_id == op:op_operator_id &&               \
+    	post:PresNro == post:PresNro  &&                          \
+    	siaf:codigo_siaf == 99453
+    CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	IF (CDSRETVAL < 0) THEN
+		//No deberia suceder nunca.
+		errmsg common:errmsg_list,"ERROR EN IMPRESION DEL RECIBO.\nIMPOSIBLE CONTINUAR"
+		RETURN (-2)
+	END IF
+	
+	CDS EXTRACT DSC:CONPresuDeta \
+	    siaf:importe into l_total_adelanto \
+	    array post:vec_fectb \
+   	    array post:vec_nrotb \
+   	    array post:vec_imptb \
+   	    siaf:motivo
+
+    CDS ENDSELECT DSC:CONPresuDeta
+    
+    //Composicion del Pago
+    ind = 0	
+   	DO
+   		varl_importe = varl_importe + post:vec_imptb[ind]
+   		PRT  POSITIONABS siaf:NRO_ITEM *315 
+		FPRINT l_cadena "Transferencia Bancaria %-s   %-e",post:vec_nrotb[ind],post:vec_fectb[ind]
+		PRT  PRINT l_cadena
+		PRT  POSITIONABS - *4653 
+		PRT  PRINT EDIT LEFT post:vec_imptb[ind]
+		LET siaf:NRO_ITEM = siaf:NRO_ITEM - 110  
+		ind = ind + 1
+    	IF (ind > 99 || post:vec_fectb[ind] == "") THEN
+    		BREAK
+    	END IF
+    LOOP
+
+	LET siaf:NRO_ITEM = siaf:NRO_ITEM - 110    
+	post:importe = varl_importe
+	//Se pasa como parametro a csr:nro_a_letras, variable del importe con 2 decimales.
+	l_importe = varl_importe
+	CALL csr:nro_a_letras l_importe,desc_moneda,linea_letras1,linea_letras2,linea_letras3
+
+	CALL post:PRT_ReciboCMBody
+	CALL post:PRT_FirmaCob
+	PRT  TEXTFONTNAME "Courier New" // Arial no deja los importes alineados...
+
+	// Analisis de Salto de Pagina
+    IF (siaf:NRO_ITEM > -4464) THEN
+        PRT  POSITIONABS *4464 *297 
+        PRT  PRINT "** TOTAL"
+        PRT  POSITIONABS *4464 *4653 
+        PRT  PRINT EDIT LEFT varl_importe
+        PRT  TEXTFONTNAME "Arial"
+        PRT  POSITIONABS *4689 *297 
+        PRT  PRINT "Aplicación del pago"
+        PRT  POSITIONABS *4554 *189 
+        PRT  LINETO *4554 *5670 
+        PRT  POSITIONABS *4734 *189 
+        PRT  LINETO *4734 *5670
+        LET siaf:NRO_ITEM = 0 - 4854
+    ELSE
+        PRT  POSITIONABS *6583 *297 
+        PRT  PRINT "** TOTAL"
+        PRT  POSITIONABS *6583 *4653 
+        PRT  PRINT EDIT LEFT varl_importe
+        PRT  POSITIONABS *1440 *4950 
+        PRT  PRINT "Hoja 1 de 2"
+        // hago salto de pagina
+        PRT  FORMFEED
+        CALL post:PRT_ReciboCMBody
+        CALL post:PRT_FirmaCob
+        PRT  POSITIONABS *3042 *288 
+        PRT  PRINT "Aplicacion del pago"
+        LET siaf:NRO_ITEM = 0 - 3198
+        PRT  POSITIONABS *1440 *4950 
+        PRT  PRINT "Hoja 2 de 2"
+    END IF
+
+    PRT  TEXTFONTNAME "Courier New"
+
+    //Aplicaciones de Pago.
+    
+    if (siaf:motivo == "ADEMO") then
+		common:csr_string =  "Adelanto para Lista de Giros"
+	else //para UP siempre va a estar vacio el campo entonces entra por acá
+		common:csr_string =  "Adelanto para Servicios Varios"
+	endif
+    //common:csr_string = "Adelanto para Servicios Varios"
+  	PRT  POSITIONABS siaf:NRO_ITEM *315 
+	PRT  PRINT common:csr_string
+	PRT  POSITIONABS - *4653 
+    PRT  PRINT EDIT LEFT l_total_adelanto
+
+	PRT  POSITIONABS *6565 *351
+    PRT  PRINT "** TOTAL"
+   	PRT  POSITIONABS *6565 *4653 
+	PRT  PRINT EDIT LEFT l_total_adelanto
+
+END SUB
+
+/*******/

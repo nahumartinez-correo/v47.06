@@ -1,0 +1,168 @@
+/****o* Pendientes de agrupación/OFB:tes:PRETcierre_dia
+* NOMBRE
+*   OFB:tes:PRETcierre_dia
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRET.h"
+
+SUB tes:PRETcierre_dia
+    
+	ALLCONTROLS OFF /* Inabilita todos los botones */
+	PDM ENABLEITEM drv:menubar ALL 2
+	KEYDEF CLEAR /* anula el acceso a las teclas de funciones a traves del teclado */
+	;SMC Activo tecla de Lockeo de Terminal
+	KEYDEF KEY_GREET_ON
+	
+	CALL drv:KEYSnavigation    
+    
+  
+	call ofb:tlr:JNLinitialize
+	if (tlr:bus_date == "") then
+		// si sale con la fecha vacia le pongo la de hoy para que no de
+		// error al journalizar 
+		tlr:bus_date = common:system_date
+	end if
+
+	IF (tes:dt_app_aux == 5) THEN
+		ERRMSG LST:common:errmsg_list,"Debe salir de la Sucursal para hacer el Cierre"
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		RETURN (-2)
+	END IF
+           
+	call siaf:CDSadt_sucur_load
+	if (siaf:adt_sucur_cierre_dia == "S" && \
+		post:adt_sucur_dia_dump == common:system_date) then
+		let common:csr_string = "El Dia ya fue cerrado"
+		errmsg common:errmsg_list,fld:common:csr_string
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		return (-2)
+	end if
+
+	/* datos de una PRES */
+	siaf:nombre_transac.HIGHLITE = 0
+	siaf:codigo_siaf = 9560
+	
+	siaf:imprime_comprobante = "N"
+	      
+	/* controla la fecha de registro de la sucursal*/
+	call CDScons_suc_sucur
+	call csr:date_compare(tes:suc_fecha,common:system_date)
+	if (retval == 1 || retval < 0) then
+		let common:csr_string = "Fecha de Sucursal no corresponde"
+		errmsg common:errmsg_list,fld:common:csr_string
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		return (-2)
+	end if
+	
+	/* controla la marca de cierre (datos ya cargados por ctrl fecha) */
+	if (tes:suc_marca_cierre == "") then
+		let common:csr_string = "Debe realizar el cierre de Sucursal"
+		errmsg common:errmsg_list,fld:common:csr_string
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		return (-2)
+	else
+		if (tes:suc_fecha != common:system_date) then
+			let common:csr_string = "Sucursal No Abierta"
+			errmsg common:errmsg_list,fld:common:csr_string
+			ALLCONTROLS ON /* Habilita todos los botones */
+			PDM ENABLEITEM drv:menubar ALL 0
+			call MISChabil_perfiles
+			return (-2)
+		end if
+	end if
+
+	//SC 50190 FASE 2 - Evento 11
+	//Verifica que no haya piezas liquidadas parcialmente en las tablas stockp y StockpCDD
+	CALL post:CDSPiezasLiqParc
+	IF (RETVAL < 0) THEN
+		MSGBOX "Existen piezas CREM pendientes de liquidación. No se puede realizar el cierre del día.",OFB_OK,"ERROR"
+		return (-2)
+	END IF   
+        
+	//gpb:AUT-2033 Verifico si hay un proceso NovIPS corriendo
+	CALL post:MISCverif_bloqNovIPS 
+	IF (RETVAL < 0) THEN
+		msgbox "Las Novedades de IPS no podrán ser transmitidas.\nDesea continuar realizando el Cierre?",0x04,"AVISO"
+		IF (RETVAL == 0X07) THEN//NO
+			ALLCONTROLS ON /* Habilita todos los botones */
+			PDM ENABLEITEM drv:menubar ALL 0
+			CALL MISChabil_perfiles
+			RETURN (-2)
+		END IF
+	END IF      
+        
+	/*Verifico si hay un proceso NovTT corriendo - Gabriel Falciola*/
+	call post:MISCverif_bloqNovTT
+	IF (RETVAL < 0)
+		msgbox "Las Novedades de T&T no podrán ser transmitidas.\nDesea continuar realizando el Cierre?",0x04,"AVISO"
+		if (RETVAL == 0X07) Then//NO
+			ALLCONTROLS ON /* Habilita todos los botones */
+			PDM ENABLEITEM drv:menubar ALL 0
+			call MISChabil_perfiles
+			RETURN (-2)
+		endif
+	END IF
+    
+	call tes:CDScierre_dia_login // consulta por operadores identificados
+	if (retval < 0) then
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		return (-2)
+	end if
+         
+	call siaf:PRESfecha_hora
+	if (retval < 0) then
+		ALLCONTROLS ON /* Habilita todos los botones */
+		PDM ENABLEITEM drv:menubar ALL 0
+		call MISChabil_perfiles
+		return (-2)
+	end if
+	
+	let drv:INDscreen[drv:screen_active] = SCR:tes:SCRNcierre_dia
+	#ifdef MENSAJES_CIERRE
+		/* Agrego la impresion de mensajes para develar 
+		el "Misterio del Cierre del Dia" */
+		dprint "Cierre del dia, Estoy en la PRET %s\r\n",common:time_of_day
+	#endif	
+
+
+	//Verifico que no este corriendo NovTTol. Si no esta corriendo lockeo el registro 9560 en la TranStat
+	//para que no puede correrse el mismo desde el servicio hasta que no termine la apertura de Sucursal
+	CALL post:MISCtrat_NovTTol("9560") //siaf:codigo_siaf = 9560
+	IF (RETVAL == -1)
+		//se mostro mensaje de que no encontro registro en la TranStat o 
+		//que ya se esta realizando esa tx por otro operador//
+   		RETURN (-2)
+	ELSE
+		IF (RETVAL == -2)
+     		MSGBOX "Se están enviando Novedades de T&T. Espere unos segundos y vuelva a intentar la Apertura",OFB_OK,"ATENCION"
+     		RETURN (-2)
+     	END IF
+	END IF
+
+
+END SUB
+
+/*******/
+

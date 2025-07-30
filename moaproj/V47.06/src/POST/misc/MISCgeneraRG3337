@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgeneraRG3337
+* NOMBRE
+*   OFB:post:MISCgeneraRG3337
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgeneraRG3337()
+	//local calc like post:importe
+	local l_ivaBas like post:importe
+	local l_importe like post:importe
+	local l_IvaPor like IvaPor
+
+    //cgw:SC 50170
+    local calc        like post:importe_sesion
+    local Limporte    like post:importe_sesion
+    local LIvaBasCalc like post:reimpre_unitario
+
+    call CDSgetExentoRG3337
+
+	CDS SELECT FROM post:adt_RG3337_tbl BECOMES post:adt_RG3337_ctx \
+		WHERE post:adt_acreperc_cativa == post:IvaCod
+
+	CDS FINDFIRST post:adt_RG3337_ctx NOLOCK
+	if (cdsretval == 0)
+		CDS EXTRACT post:adt_RG3337_ctx post:adt_acreperc_mtomin, post:adt_acreperc_calculo, post:adt_acreperc_leyenda, post:adt_acreperc_aliacre
+		CDS ENDSELECT post:adt_RG3337_ctx
+
+		CDS SELECT FROM post:TblImpreIva BECOMES post:CtxImpreIva \
+			WHERE post:IvaPor > 0 && post:op_operator_id == op:op_operator_id
+
+    	CDS FINDFIRST DSC:CtxImpreIva nolock
+		while (cdsretval == 0)
+    	  	CDS EXTRACT DSC:CtxImpreIva IvaPor into l_IvaPor post:IvaBasCalc into l_ivaBas, post:importe into l_importe
+    	  	//cgw:SC 50170 (Redondea a dos decimales)
+            INIT 22,1
+            LIvaBasCalc = l_ivaBas
+            Limporte = l_importe
+            INIT 22,0
+    	  	
+    	  	if (l_IvaPor.numchars != 0 && LIvaBasCalc.numchars != 0 && LIvaBasCalc > 0)
+			 	If (post:adt_acreperc_calculo == "MSI")
+			 		ImpBaseRG3337 = LIvaBasCalc
+			 	else
+			 		ImpBaseRG3337 = LIvaBasCalc + Limporte
+				endif
+
+				INIT 22,1
+				if (post:esExentoRG3337 == "S")
+					calc = ((ImpBaseRG3337 * (100 - porcExentoRG3337) / 100) * post:adt_acreperc_aliacre / 100)
+				else
+					calc = (ImpBaseRG3337 * post:adt_acreperc_aliacre / 100)
+				endif
+				INIT 22,0
+				TasaPerc = l_IvaPor
+
+				CALL post:CDSsumoTransacRG3337(calc, post:adt_acreperc_leyenda, ImpBaseRG3337, post:adt_acreperc_aliacre, l_IvaPor)
+
+				if ( post:NotaCredito  == "S" )
+					siaf:codigo_siaf = 99006
+			       	if (sistCaido == "S")
+			   		   	call CDScheck_jnl_anul
+			   		end if
+			   		if (retval == 0 || sistCaido != "S" )
+						call siaf:PRESfecha_hora
+						post:NroCompPago = 0
+						tlr:INDdcol_scrn[0] = SCR:post:SCRNimpPerc
+						tlr:INDtran_name = LST:post:TRANimpRG3337
+						tlr:INDjnl_append = OFB:post:JNLimpRG3337
+						tlr:INDtots_append = LST:TOTS_impRG3337
+						call MISCmuevo_campos_jou
+						call siaf:MISClleno_modalidad
+						NotaCredito = "N"
+						UngetKey RT_SEND
+						CALL tlr:JNLtran
+						NotaCredito = "S"
+						call post:CDSCobraPagaNC(siaf:importe,siaf:afecta_efectivo,PresNro)
+					end if
+				endif
+			endif
+			CDS FINDNEXT DSC:CtxImpreIva nolock
+		end while
+		CDS ENDSELECT post:CtxImpreIva
+	endif
+END SUB
+
+/*******/

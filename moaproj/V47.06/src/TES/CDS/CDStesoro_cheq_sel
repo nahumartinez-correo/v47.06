@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:tes:CDStesoro_cheq_sel
+* NOMBRE
+*   OFB:tes:CDStesoro_cheq_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDStesoro_cheq_sel(stat,ident)
+    local err_retval_aux like lib:err_retval    
+    local idx like post:cantidad
+    local ret like cont1    
+    
+    teso_cheq_estado = stat
+    teso_cheq_id = ident
+    
+    select (teso_cheq_estado)            
+        case "O" /* Operador */
+              adt_cheqaux_tesoro = "N"
+        break            
+        case "T" /* Tesoro */
+              adt_cheqaux_tesoro = "S"
+        break
+    end select  
+
+	/* MLD, no permito depositar los cheques recibidos */
+    cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx \
+        where teso_cheq_suc == fld:teso_cheq_suc && \
+              teso_cheq_moneda == fld:teso_cheq_moneda && \
+              teso_cheq_estado == fld:teso_cheq_estado && \
+              teso_cheq_id == fld:teso_cheq_id && \
+              teso_cheq_recep != "S"
+              
+    cds findfirst dsc:TesoCheq_ctx nolock
+    lib:err_retval = cdsretval
+    
+    call csr:f_sadroppl dsc:ChequesDisp
+    call csr:f_sanewpl dsc:ChequesDisp pic:ChequesDisp_pic 
+    
+    while (lib:err_retval == 0)    
+           call CDSteso_cheq_list           
+           cds select from dsc:AuxCheq_tbl becomes dsc:AuxCheq_ctx \
+               where adt_cheqaux_suc == fld:teso_cheq_suc && \
+                     adt_cheqaux_moneda == fld:teso_cheq_moneda && \
+                     adt_cheqaux_tesoro == fld:adt_cheqaux_tesoro && \
+                     adt_cheqaux_op == fld:teso_cheq_id && \
+                     adt_cheqaux_banco == fld:siaf:cod_banco && \
+                     adt_cheqaux_cuenta == fld:siaf:cheqcuenta && \
+                     adt_cheqaux_nro == fld:siaf:nro_cheque
+           cds findfirst dsc:AuxCheq_ctx nolock
+           err_retval_aux = cdsretval
+           if (err_retval_aux != 0) then
+               fprint common:csr_string " %3.3e  %20.20e  %8.8e   %13.13e", \
+                      siaf:cod_banco, siaf:cheqcuenta,siaf:nro_cheque,post:importe_origen
+               call csr:f_saaddpl dsc:ChequesDisp common:csr_string
+               siaf:i = 1
+           end if           
+           cds findnext dsc:TesoCheq_ctx nolock
+           lib:err_retval = cdsretval
+    end while
+    
+ /* Esta funcion C se encarga de ordenar el contenido del picklist. */
+    call csr:PickOp 4 dsc:ChequesDisp  "1,35"
+    
+    call csr:f_sadopl dsc:ChequesDisp common:csr_string
+    ret = retval   
+    cds endselect dsc:TesoCheq_ctx    
+    call csr:f_sadroppl dsc:ChequesDisp
+    return (ret)
+END SUB
+
+/*******/

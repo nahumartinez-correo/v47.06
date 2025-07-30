@@ -1,0 +1,197 @@
+/****o* Pago en Destino/OFB:post:PBbusca_pza_Ped
+* NOMBRE
+*   OFB:post:PBbusca_pza_Ped
+* DESCRIPCION
+*   Busca el tipo de documento
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:BUT30020
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBbusca_pza_Ped
+	LOCAL l_last_button LIKE drv:last_button
+	
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	
+	//Realizo las validaciones
+	IF (busqueda_ped == "2")	//(TESTFLAG(post:sesion_ped_flags,busca_por_tt_ped)) THEN	
+		CALL CSR:trimfield (post:track_trace)
+		IF (post:track_trace.NUMCHARS == 0) THEN
+			MSGBOX "Debe Ingresar un Track and Trace",0x00,"Error" 
+			GOTO Fin
+		END IF
+	ELSE
+		IF (busqueda_ped == "3")
+			CALL CSR:trimfield (post:TipoDocEmisPED)
+			CALL CSR:trimfield (post:CuitEmisPED)
+			CALL CSR:trimfield (post:CloTipDoc)
+			CALL CSR:trimfield (post:CloCuit)
+		
+			IF (post:TipoDocEmisPED.NUMCHARS == 0 && post:CuitEmisPED.NUMCHARS == 0 && post:CloTipDoc.NUMCHARS == 0 && post:CloCuit.NUMCHARS == 0) THEN
+				MSGBOX "Debe Ingresar Tipo y Nro de Doc. \ndel Emisor o del Destinatario",0x00,"Error" 
+				GOTO Fin
+			ELSE
+				IF (post:TipoDocEmisPED.NUMCHARS > 0) THEN
+					IF (post:CuitEmisPED.NUMCHARS == 0) THEN
+						MSGBOX "Debe Ingresar Nro de Doc. del Emisor",0x00,"Error" 
+						NEXTFIELD post:CuitEmisPED
+						GOTO Fin
+					END IF	
+				ELSE
+					IF (post:CuitEmisPED.NUMCHARS > 0) THEN
+						MSGBOX "Debe Ingresar Tipo de Doc. del Emisor",0x00,"Error" 
+						NEXTFIELD post:TipoDocEmisPED
+						GOTO Fin				
+					END IF
+				END IF
+				IF (post:CloTipDoc.NUMCHARS > 0) THEN
+					IF (post:CloCuit.NUMCHARS == 0) THEN
+						MSGBOX "Debe Ingresar Nro de Doc. del Destinatario",0x00,"Error" 
+						NEXTFIELD post:CloCuit
+						GOTO Fin
+					END IF	
+				ELSE
+					IF (post:CloCuit.NUMCHARS > 0) THEN
+						MSGBOX "Debe Ingresar Tipo de Doc. del Destinatario",0x00,"Error" 
+						NEXTFIELD post:CloTipDoc
+						GOTO Fin				
+					END IF
+				END IF
+			END IF
+			//busca todos los tt
+		END IF
+	END IF
+	
+	//limpio campos
+	CLEARFIELD post:CliRazonPED
+	CLEARFIELD post:serv_desc_vap
+	CLEARFIELD post:adt_serv_serv
+	CLEARFIELD post:CloRazon
+	REFRESH post:CliRazonPED
+	REFRESH post:serv_desc_vap
+	REFRESH post:adt_serv_serv
+	REFRESH post:CloRazon  
+  
+	CALL post:CDSreg_impone_ped
+	IF (RETVAl < 0) THEN
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+		RETURN -2 
+	END IF
+	
+	LET post:tipo_produc = post:adt_serv_serv
+	CALL post:FVALtrack_trace_ped
+	IF (RETVAL < 0) THEN
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+		
+		CALL post:PBlimpia30020_Ped
+		RETURN -2 		
+	END IF
+
+	//si el Emisor es CM
+	IF (post:cli_tipoPED == CLIMED)THEN
+		//Hago una consulta simple al HOST y traigo los datos basicos del cliente
+		CALL post:OFBclimed_ped_simple
+		IF (RETVAl < 0) THEN
+			//limpio campos
+			CLEARFIELD post:CliRazonPED
+			CLEARFIELD post:serv_desc_vap
+			CLEARFIELD post:adt_serv_serv
+			CLEARFIELD post:CloRazon
+			
+			CLEARFIELD post:TipoDocEmisPED 
+			CLEARFIELD post:CuitEmisPED
+			CLEARFIELD post:CloTipDoc 
+			CLEARFIELD post:CloCuit 	
+			
+			REFRESH post:CliRazonPED
+			REFRESH post:serv_desc_vap
+			REFRESH post:adt_serv_serv
+			REFRESH post:CloRazon  
+			
+			REFRESH post:TipoDocEmisPED 
+			REFRESH post:CuitEmisPED
+			REFRESH post:CloTipDoc 
+			REFRESH post:CloCuit 	
+		
+			CALL drv:back_but_status
+			drv:button = l_last_button
+			CALL drv:but_up_enable
+			RETURN -2 
+		END IF
+		
+		//Hago una consulta (utiliza more data!!!) al HOST para traer los datos del convenio y cargar la tabla conv_productos
+		CALL post:OFBclimed_ped_conv
+		IF (RETVAl < 0) THEN
+			//limpio campos
+			CLEARFIELD post:CliRazonPED
+		  CLEARFIELD post:serv_desc_vap
+		  CLEARFIELD post:adt_serv_serv
+		  CLEARFIELD post:CloRazon
+		  
+		  CLEARFIELD post:TipoDocEmisPED 
+			CLEARFIELD post:CuitEmisPED
+			CLEARFIELD post:CloTipDoc 
+			CLEARFIELD post:CloCuit 
+		  
+			REFRESH post:CliRazonPED
+		  REFRESH post:serv_desc_vap
+		  REFRESH post:adt_serv_serv
+		  REFRESH post:CloRazon  		
+		  
+			REFRESH post:TipoDocEmisPED 
+			REFRESH post:CuitEmisPED
+			REFRESH post:CloTipDoc 
+			REFRESH post:CloCuit 	
+			
+			CALL drv:back_but_status
+			drv:button = l_last_button
+			CALL drv:but_up_enable
+			RETURN -2 
+		END IF
+	ELSE
+		//Limpio la tabla conv_productos
+		CALL post:CDSbaja_conv_local
+	END IF
+	
+Fin:
+	CALL drv:back_but_status
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+	
+	//si se hubo seleccion de registro
+	IF (post:adt_serv_serv.NUMCHARS > 0 && post:CloRazon.NUMCHARS > 0 && post:CliRazonPED.NUMCHARS > 0) THEN
+		//protejo campos y botones
+		PROTFIELD post:track_trace
+		PROTFIELD post:TipoDocEmisPED
+		PROTFIELD post:CuitEmisPED
+		PROTFIELD post:CloTipDoc
+		PROTFIELD post:CloCuit	
+		DISABLECONTROL drv:PBcb0
+		DISABLECONTROL drv:PBcb1
+		DISABLECONTROL drv:PBcb2
+		DISABLECONTROL op:CHK0
+		DISABLECONTROL op:CHK1
+		DISABLECONTROL op:CHK2
+	END IF
+	
+	INIT 33,0
+	RETURN (0)
+END SUB
+
+/*******/

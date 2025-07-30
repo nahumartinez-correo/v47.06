@@ -1,0 +1,228 @@
+/****o* Pendientes de agrupación/OFB:post:FVALcli_tipo
+* NOMBRE
+*   OFB:post:FVALcli_tipo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALcli_tipo
+	
+	//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+    //    y en consulta y venta por OC.
+    clearfield post:cliente_inhibido
+    clearfield post:cliente_pagodiferido
+    
+    PICKVERIFY cli_tipo,cli_tipo ,UPDATE
+    IF (RETVAL < 0) THEN    	 
+    	//Deshabilitaciones de Medio Pago por tipo de cliente invalido
+	    CALL post:MISCsetea_mpago_cli2(cli_tipo)
+	    clearfield cli_tipo_desc
+    	refresh cli_tipo_desc
+        RETURN (-2)
+    ELSE
+       post:cli_tipo_desc = substr(common:csr_string,2,20)
+    END IF
+    refresh cli_tipo_desc
+	if (cli_tipo != 2) then
+	    CloPersonaJuridica = "S"
+	    es_juridica	= "S"
+	//mgi.AUT-1779 Se agrega validación que contempla la posibilidad de que sea cliente minorista antes de llamar al
+	//PBes_juridica que definirá el estado del radiobutton (persona física/jurídica)
+    else
+        CloPersonaJuridica = "N"
+	    es_juridica	= "N"
+    end if 
+    call post:PBes_juridica       	    
+    ; Se saca la siguiente restricción que no es necesaria, pero que entorpece para reemplazo de cheques *** MDG
+    ;if (post:cli_tipo == CLIMED  && siaf:tiene_tran_dep == "S" )
+	;msgbox "DEBERA REALIZAR LA SESION DESDE EL INICIO DE SESION CORRESPONDIENTE Y NO DESDE LA TRANSACCION INGRESADA PREVIAMENTE.",OFB_OK,"Atencion"
+	;ungetkey RT_ESC
+    ;    return -2
+    ;end if
+
+
+    //MFM - Carpeta Cheque al Dia - 05/03/2004
+    CALL post:MISCsetea_mpago_cli(post:cli_tipo)
+
+    /* limpia al cambiar el tipo cliente */
+	//datos popup clientes corporativos
+    call post:ABMCliCorp_clear
+    //datos SCRNidentifica_cli3
+    call post:ABMCliCorp2_clear        
+    //datos popup clientes minoristas
+    call post:ABMCliMedio_clear
+    //datos SCRNidentifica_cli2
+    call post:ABMCliMedio2_clear        
+    clearfield post:bck_cli_tipo
+    clearfield post:bck_TipoDoc
+    clearfield post:bck_CloCuit
+    resetvaldone post:CloCuit
+	
+    // FGB 16.11.05: comenta por Tratamiento de Cheques (el regreso del jedi)
+    // Habilitaciones de Medio Pago segun tipo de cliente	
+    // CALL post:MISCsetea_mpago_cli2(cli_tipo)
+
+#ifdef COMPILA_SAP
+	//Se comenta este IF ya que a partir de la V26 se accede a los datos de Sap
+	// a traves del switch
+	/****************************************************************************/
+     /*if (cli_tipo == 1) then
+        // Realiza Logon contra SAP
+        call sap_logon
+        if (estado_conexion_sap == SAP_OFF) then
+             common:csr_string = "Imposible establecer una conexion con SAP."
+             fprint common:csr_string \
+                   "%s\nCargue los datos en forma referencial" common:csr_string
+             msgbox fld:common:csr_string, OFB_ICONEXCLAMATION,"Aviso"
+        end if
+    else
+        // si eligio ocasional despues de haber elegido ctas/ctes. es posible
+        // que haya quedado una conexion abierta...
+        if (estado_conexion_sap == SAP_ON) then
+            call sap_logoff
+        end if
+    end if*/
+	/***************************************************************************/
+#endif
+    
+    CALL post:FVALcli_tipo2
+    IF (RETVAL < 0) THEN
+       RETURN (-2)
+    ELSE    	
+    	IF (post:en_screen.numchars > 0) THEN
+    		//solo ejecuta setvaldone cuando no es llamado de la PRES
+            setvaldone post:cli_tipo
+        END IF            
+    END IF
+
+    if (cli_tipo == 1) /* corporativo */
+        protfield CloSSFranq
+        // unprotfield CliFranqueo  // <- FGB (SAP) - se hace en FVALcli_tipo2
+        CloSSFranq = "N"
+        // nextfield CliCod
+        let CloInscripto = "N"
+        protfield CloInscripto
+    else              /*ocasional*/
+        clearfield CloInscripto
+        protfield CliFranqueo
+	    if (cli_tipo != CLIUP) /*no UP!! - debe estar todo protegido!*/
+  	        unprotfield CloSSFranq
+        	unprotfield CloInscripto
+	    endif
+        let CliFranqueo = "N"
+        let CloSSFranq = "N"
+    end if
+    refresh CloInscripto
+    refresh CliFranqueo
+    refresh CloSSFranq
+	
+   //Tratamiento para Cliente Medio
+    if (post:cli_tipo == CLIMED)
+    	enablecontrol tag:op:chk0 
+    	enablecontrol tag:op:chk1		
+		call post:ABMCliMed_clear
+		refresh post:IvaCod
+		call post:ABMCliMed_prot		
+	 	tablaCli    = DSC:post:TABCliMed
+	 	contextoCli = DSC:post:CONCliMed
+	else
+    	disablecontrol tag:op:chk0 
+    	disablecontrol tag:op:chk1		
+	end if 	
+	if (post:cli_tipo == 2)
+    	enablecontrol tag:op:chk2 
+    	enablecontrol tag:op:chk3
+    	es_juridica = "N"
+	else
+	    es_juridica = "S"
+    	disablecontrol tag:op:chk2 
+    	disablecontrol tag:op:chk3		
+	end if
+
+	
+	if (post:cli_tipo == CLIMED || post:cli_tipo == CLIUP)
+		drv:button =  2
+		call drv:but_disable
+		drv:button =  4
+		call drv:but_disable
+		drv:button = 11	
+		call drv:but_disable
+		drv:button = 12
+		call drv:but_disable
+		drv:button = 13
+		call drv:but_disable
+	end if	
+	
+	if (post:cli_tipo == 2)
+	    drv:button =  2
+		call drv:but_up_enable
+		drv:button =  4
+		call drv:but_up_enable
+		drv:button = 13
+		call drv:but_up_enable
+		drv:button = 11	
+	    call drv:but_up_enable
+		drv:button = 12
+		call drv:but_up_enable
+		call post:ABMCliMed_unprot
+		CloInscripto = "N"
+        refresh CloInscripto
+		unprotfield post:CloInscripto
+	 end if		
+	
+	 if (post:cli_tipo == 1)
+		 protfield post:CloInscripto
+		 drv:button = 2
+		 call drv:but_disable
+		 drv:button = 4
+		 call drv:but_disable
+		 drv:button = 11	
+		 call drv:but_disable
+		 drv:button = 12
+		 call drv:but_up_enable
+    	 drv:button = 13
+		 call drv:but_disable
+	     unprotfield post:CloCuit
+		 protfield post:adt_TipoDoc_tipo		  		 		
+   	     protfield post:CliRazon
+   	     protfield post:IvaCod
+	  end if				    		
+
+    post:en_screen = "S" //esta en screen
+    setvaldone post:cli_tipo
+    ; Si es sesión de reemplazo de cheques protejo los siguientes controles *** MDG
+    if (post:esSesionReempChq == "S") then
+        RESETFLAG MPcheque,MPpago_cheque
+		ALTERCONTROLSET TAG:post:CHK6
+		DISABLECONTROL TAG:post:CHK6
+		
+		RESETFLAG MPtarjeta,MPpago_tarjeta,
+		ALTERCONTROLSET TAG:post:CHK7
+		DISABLECONTROL TAG:post:CHK7 
+		
+		; Requiere factura
+		ALTERCONTROLSET TAG:post:CHK8
+		DISABLECONTROL TAG:post:CHK8
+		
+		RESETFLAG cheque_dif,UPpago_dif
+		ALTERCONTROLSET TAG:post:CHK9
+		DISABLECONTROL TAG:post:CHK9 
+    end if                                 
+    
+   	RETURN (0)
+   	
+END SUB
+
+/*******/

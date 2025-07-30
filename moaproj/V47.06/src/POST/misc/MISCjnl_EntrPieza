@@ -1,0 +1,246 @@
+/****o* Entrega de piezas/OFB:post:MISCjnl_EntrPieza
+* NOMBRE
+*   OFB:post:MISCjnl_EntrPieza
+* DESCRIPCION
+*   Esta rutina journaliza la Entrega de Piezas. La journalizacion se hace recorriendo la tabla EntPiezas 
+*	y journalizando un registro por servicio asociado a la pieza.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALentrega_pieza
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_EntrPieza(loc_cod_agrup)
+
+	LOCAL flag like adt_serv_pesob
+
+	ver_anulacion = "N"
+	
+	CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+	WHERE fecha_EP == common:system_date && \
+		operador_EP == op:op_operator_id && \
+		PresNro_EP == PresNro && \
+		cod_agrupacion == loc_cod_agrup
+            
+	CDS FINDFIRST DSC:EntrPieza_ctx LOCK
+	LET lib:err_retval = CDSRETVAL
+	
+	WHILE (lib:err_retval != -801)
+		CLEARFIELD adt_serv_aliciva
+		CDS EXTRACT DSC:EntrPieza_ctx ALL
+		flag = "V"
+		PreDForFis = adt_serv_formfiscal
+		
+		SELECT (cod_EP)
+		    CASE 18701 //Contra Reembolso
+				CALL post:MISCBusco_seq_tot(18701,post:indice_total)
+				LET siaf:adt_tran_codigo = 18701
+				siaf:codigo_siaf = 18701
+				tlr:tran_mnemonic = "CREEMB"
+				siaf:nombre_transac = "CONTRA REEMBOLSO"
+				
+				drv:INDcur_tran = LST:TRANcontra_reemb
+				drv:INDspc_rtn[0] = LST:TOTScontra_reemb
+				siaf:codigo_siaf = cod_EP
+				drv:INDscr = SCR:SCRNcontra_reemb
+				drv:INDjnl_rtn = OFB:JNLcontra_reemb
+				//QUE PASA CON LA RUTINA DE IMPRESION???????
+				//Mirar en la rutina de journalizacion de los templates
+				BREAK
+
+    	    CASE 18401 //Almacenaje Nacional
+        		IF (cant_dias_almac != 0) THEN /*Si dias de alm. es 0 no journalizo - MFM*/
+          			CALL post:MISCBusco_seq_tot(18401,post:indice_total)
+	          		LET siaf:adt_tran_codigo = 18401
+	          		siaf:codigo_siaf = 18401
+	          		tlr:tran_mnemonic = "ALMNAC"
+	          		siaf:nombre_transac = "ALMACENAJE NACIONAL"
+	          		drv:INDcur_tran = LST:TRANalmac_nac
+	          		drv:INDspc_rtn[0] = LST:TOTSalmac_nac
+	          		drv:INDscr = SCR:SCRNalmacenaje
+	          		drv:INDjnl_rtn = OFB:JNLalmacenaje
+          		ELSE
+          			flag = "F"
+          		END IF
+          		BREAK
+
+        	CASE 28402 //Almacenaje Internacional
+          		IF (cant_dias_almac != 0) THEN /*Si dias de alm. es 0 no journalizo - MFM*/
+          			CALL post:MISCBusco_seq_tot(28402,post:indice_total)
+            		LET siaf:adt_tran_codigo = 28402
+            		siaf:codigo_siaf = 28402
+            		tlr:tran_mnemonic = "ALMINT"
+            		siaf:nombre_transac = "ALMACENAJE INTERNACIONAL"
+            		drv:INDcur_tran = LST:TRANalmac_internac
+            		drv:INDspc_rtn[0] = LST:TOTSalmac_internac
+            		drv:INDscr = SCR:SCRNalmacenaje
+            		drv:INDjnl_rtn = OFB:JNLalmacenaje
+          		ELSE
+          			flag = "F"
+          		END IF
+          		BREAK
+
+			CASE 18201 //Correspondencia de Cargo
+				CALL post:MISCBusco_seq_tot(18201,post:indice_total)
+				LET siaf:adt_tran_codigo = 18201
+				siaf:codigo_siaf = 18201
+				LET falta_franqueo = falta_franq
+				tlr:tran_mnemonic = "CCARGO"
+				siaf:nombre_transac = "CORRESPONDENCIA DE CARGO"
+				/* MLD Cargo el campo en memoria */
+				post:adt_serv_umstd = post:unidad_fac
+				drv:INDcur_tran = LST:TRAN_CorrCargo
+				drv:INDspc_rtn[0] = LST:TOTS_CorrCargo
+				drv:INDscr = SCR:SCRNpn_corrCargo
+				drv:INDjnl_rtn = OFB:JNL_CorrCargo
+				BREAK
+
+        	CASE 18601 //Presentacion de Aduana - Pieza Entrantee
+				CALL post:MISCBusco_seq_tot(18601,post:indice_total)
+				LET siaf:adt_tran_codigo = 18601
+				siaf:codigo_siaf = 18601
+				tlr:tran_mnemonic = "PADPIE"
+				siaf:nombre_transac = "PRESENTACION ADUANA PIEZA ENTRANTE"
+				drv:INDcur_tran = LST:TRANpresAd_PieEnt
+				drv:INDspc_rtn[0] = LST:TOTSpresAd_PieEnt
+				drv:INDscr = SCR:SCRNpresAduana
+				drv:INDjnl_rtn = OFB:JNLpres_aduana
+				BREAK
+
+			CASE 18602 //Presentacion de Aduana - Encomenda Entrante
+				CALL post:MISCBusco_seq_tot(18602,post:indice_total)
+				LET siaf:adt_tran_codigo = 18602
+				siaf:codigo_siaf = 18602
+				tlr:tran_mnemonic = "PADENC"
+				siaf:nombre_transac = "PRESENTACION ADUANA ENCOMIENDA ENTRANTE"
+				drv:INDcur_tran = LST:TRANpresAd_EncEnt
+				drv:INDspc_rtn[0] = LST:TOTSpresAd_EncEnt
+				drv:INDscr = SCR:SCRNpresAduana
+				drv:INDjnl_rtn = OFB:JNLpres_aduana
+				BREAK
+
+			CASE 18301 //Lista
+				CALL post:MISCBusco_seq_tot(18301,post:indice_total)
+				LET siaf:adt_tran_codigo = 18301
+				siaf:codigo_siaf = 18301
+				tlr:tran_mnemonic = "LISTA"
+				siaf:nombre_transac = "LISTA"
+				/* Cargo la unidad de medida */
+				post:adt_serv_umstd = post:unidad_fac
+				drv:INDcur_tran = LST:TRAN_Lista
+				drv:INDspc_rtn[0] = LST:TOTS_Lista
+				drv:INDscr = SCR:SCRNpn_lista
+				drv:INDjnl_rtn = OFB:JNLlista
+				BREAK
+
+			CASE 30101 //Cobranza PED
+				CALL post:MISCBusco_seq_tot(30101,post:indice_total)
+				LET siaf:adt_tran_codigo = 30101
+				siaf:codigo_siaf = 30101
+				tlr:tran_mnemonic = "COBPED"
+				siaf:nombre_transac = "COBRANZA PED"
+				drv:INDcur_tran = LST:TRANcobranza_ped
+				drv:INDspc_rtn[0] = LST:TOTScobranza_ped
+				siaf:codigo_siaf = cod_EP
+				drv:INDscr = SCR:SCRNcobranza_ped
+				drv:INDjnl_rtn = OFB:JNLcobranza_ped
+				BREAK		
+			case 18100 //RPP
+				LET siaf:adt_tran_codigo = 18100
+				siaf:codigo_siaf = 18100
+				tlr:tran_mnemonic = "COBRPP"
+				siaf:nombre_transac = "SERVICIO RPP"
+				post:adt_serv_umstd = post:unidad_fac
+				drv:INDcur_tran = LST:TRANservicioRPP
+				drv:INDspc_rtn[0] = LST:TOTSservicioRPP
+				drv:INDscr = SCR:SCRNservicioRPP
+				drv:INDjnl_rtn = OFB:JNLservicioRPP
+			break
+						
+    END SELECT
+
+    //gpb:NI50437 VAP Encomienda Comercial
+    IF (post:fliatran_EP == "VAP") THEN  	
+			//traigo el indice con el que va a totalizar
+    	CALL post:MISCcargoIndiceVAP(post:cod_EP)
+
+			LET siaf:adt_tran_codigo = cod_EP
+			siaf:codigo_siaf = cod_EP
+			
+			//gpb:consulto en la transac y traigo los valores de los campos tlr:tran_mnenomic y siaf:nombre_transac
+			//tlr:tran_mnemonic = "VEC"
+			//siaf:nombre_transac = "VAP ENCOMIENDA COMERCIAL"
+			CALL post:CDScargoDatosTransac
+			
+			/* MLD Cargo el campo en memoria */
+			post:adt_serv_umstd = post:unidad_fac
+			drv:INDcur_tran = LST:TRANservicioVAP
+			drv:INDspc_rtn[0] = LST:TOTSservicioVAP
+			drv:INDscr = SCR:SCRNservicioVAP
+			drv:INDjnl_rtn = OFB:JNLservicioVAP
+		END IF			
+    
+		; PAW - acumulo en la TotalTransac para la captura de medios de pago. (por servicio asociado)
+		CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+		IF (flag != "F") THEN
+			CLEARFIELD drv:INDspc_rtn[2]
+			MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+			if (siaf:codigo_siaf == 18100) then
+					jnl_flia_tran = "TAV"
+			else
+					jnl_flia_tran = fliatran_EP
+			endif
+			siaf:secuencia_aux = tlr:sequence + 1
+			
+			LET post:ImporteConIva = siaf:importe
+			//LET post:ImporteSinIva = siaf:ImporteSinIva
+			LET post:AliServUP = adt_serv_aliciva
+			LET post:ImpServUP = siaf:ImporteConIva
+
+			CALL tlr:JNLtran
+			
+			//CCT: Si es CREM y gran cliente se deba grabar la cupon y la cupon_rep
+			IF (siaf:codigo_siaf == 18701 && adt_stockp_es_grancl == "T")
+				//Instancio algunos campos que se graban en ambas tablas "cupon" y "cupon_rep"
+				cupon_cod_serv = adt_cct_cod_serv
+				id_comitente_CCT = adt_cct_comitente
+				importe_CCT = siaf:importe
+				comitente_CCT = adt_climay_razon
+				cupon_rend_fis = adt_cct_rend_fis
+				adt_cupon_pieza = Pieza
+				
+				//Instancio algunos campos específicos para grabar la tabla "cupon"
+				cupon_def_cupon = adt_cct_def_cupon
+				cupon_nis_liq = adt_cct_nis_liq
+				CALL CDScupon_save(UNPOSTED,"D","CREM")
+				
+				//Instancio algunos campos especiíficos para grabar la tabla "cupon_rep"
+				rep_cupon_rend_fis = adt_cct_rend_fis
+				cupon_cta_om = adt_stockp_ctaOM
+				es_CDD = "N"
+				CALL CDScupon_rep_save ("CREM")
+			END IF			
+			
+		END IF
+		CDS FINDNEXT DSC:EntrPieza_ctx LOCK
+		LET lib:err_retval = CDSRETVAL
+
+  END WHILE
+  CDS ENDSELECT DSC:EntrPieza_ctx
+  CLEARFIELD drv:INDscr
+  CLEARFIELD drv:INDjnl_rtn
+  CLEARFIELD drv:INDspc_rtn[0]
+  CLEARFIELD drv:INDspc_rtn[2]
+
+END SUB
+
+/*******/

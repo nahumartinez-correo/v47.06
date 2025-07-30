@@ -1,0 +1,106 @@
+/****o* Transferencias Bancarias/OFB:post:SVAL99451
+* NOMBRE
+*   OFB:post:SVAL99451
+* DESCRIPCION
+*   Rutina de confirmacion de la TX de Aplicacion de Transferencias Bancarias 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*    LST:post:TRAN99451
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99451
+
+	local varl_importe like common:csr_string	
+	local varl_marca   like post:nro_factura	
+
+	IF (estado_presu == 4)
+	    //cgw: NI50244 - Verifico si ejecuto Adelanto por Transferencias Bancarias. (post:Adelanto_TB = 1)
+	    CALL post:MISCVerifAdelanto_TB 
+
+		if (OperacionCan) //Flor M.
+		    // Obtengo el numero de recibo...
+		    clearfield nro_recibo
+    	 	call CDSccseq_get_num("REC",nro_recibo)
+        	if (retval < 0) then
+		       errmsg common:errmsg_list,"ERROR EN NUMERACION DE RECIBO."
+    		else
+    			fprint nro_recibo "%4.4d%8.8d" common:br_CEC,nro_recibo
+    			
+    			// obtengo la firma para el recibo
+        		fprint common:csr_string "%e%e%5.5d%5.5s%8.8d%12.12e" siaf:fecha,\
+        		siaf:hora,op:op_operator_id,common:br_CEC,nro_recibo,siaf:importe
+
+	        	call csr:MD5checksum(common:csr_string,0,climed_recibo_id,1)
+    	    	if (retval != 0) then
+        			// si no anduvo el MD5 aunque sea sumo los valores y uso eso 
+            		// de marca
+            		let varl_marca = siaf:hora  + siaf:fecha + op:op_operator_id
+            		let varl_marca = varl_marca + substr(common:br_CEC,1,4) + nro_recibo
+            		let varl_marca = varl_marca + (siaf:importe * 100)
+            		// pongo un par de caracteres mas... (naf=no anduvo firma:) 
+            		fprint climed_recibo_id "naf%14.14d%1" varl_marca,substr(tlr:jnl_branch,0,1)
+    			end if
+    			
+	        	//Grabar el nro de recibo en la presu para poder journalizarlo en el fin de sesion
+        		call post:CDSgrabo_recibo
+			    call DOCS99461
+    			post:tira_auditora = "N"
+    		end if
+	    else
+	        //cgw: NI50244 - Recibo de Adelanto por Transferencias Bancarias.
+            if (post:Adelanto_TB) then //Ejecuto trx Adelanto por Transferencias Bancarias.
+	            //Obtengo el numero de recibo...
+                clearfield post:nro_recibo
+                call post:CDSccseq_get_num("REC",nro_recibo)
+                if (retval < 0) then
+                    errmsg common:errmsg_list,"ERROR EN NUMERACION DE RECIBO."  //continua.
+                else
+                    fprint nro_recibo "%4.4d%8.8d" common:br_CEC,nro_recibo
+                    //Grabar el nro de recibo en la presu para poder journalizarlo en el fin de sesion
+                    clearfield post:COBrecibo_manual  //Se graba sin valor. No es tenido en cuenta.
+                    clearfield post:COBimp_rec_manual //Se graba sin valor. No es tenido en cuenta.
+                    call post:CDSgrabo_recibo
+
+                    //obtengo la firma para el recibo
+                    fprint common:csr_string "%e%e%5.5d%5.5s%8.8d%12.12e" siaf:fecha,\
+                    siaf:hora,op:op_operator_id,common:br_CEC,nro_recibo,siaf:importe
+                    call csr:MD5checksum(common:csr_string,0,climed_recibo_id,1)
+                    if (retval != 0) then
+                        // si no anduvo el MD5 aunque sea sumo los valores y uso eso 
+                        // de marca
+                        let varl_marca = siaf:hora  + siaf:fecha + op:op_operator_id
+                        let varl_marca = varl_marca + substr(common:br_CEC,1,4) + nro_recibo
+                        let varl_marca = varl_marca + (siaf:importe * 100)
+                        // pongo un par de caracteres mas... (naf=no anduvo firma:) 
+                        fprint climed_recibo_id "naf%14.14d%1" varl_marca,substr(tlr:jnl_branch,0,1)
+                    end if
+                    call post:DOCS99453 //imprime recibo Adelanto Transferencias Bancarias.
+	                if (retval < 0) then
+		                return -2
+	                end if
+
+                    siaf:imprime_comprobante = "D"
+                    post:tira_auditora = "N"
+                end if
+            end if
+	    end if
+	END IF
+
+   	if (estado_presu == 4) //ante ultima transaccion de presupuesto
+      	call post:MISCTotalTransac(siaf:codigo_siaf)
+   	endif
+   
+    call post:MISCGrabaDetalleTrn
+
+END SUB
+
+/*******/

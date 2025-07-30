@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:post:MISCver_saldo_suc
+* NOMBRE
+*   OFB:post:MISCver_saldo_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCver_saldo_suc(mp)
+    local total_ayer like siaf:importe
+    
+    /* Si al menos algunos de estos tiene saldo, se retorna 0 */
+    CDS SELECT FROM DSC:tlr:TABtots BECOMES DSC:tlr:CONtots_temp \
+    where tlr:tots_branch == common:sucursal_activa
+    cds findfirst dsc:tlr:CONtots_temp nolock
+    let lib:err_retval = cdsretval
+    do
+        if (lib:err_retval < 0)
+            break
+        end if
+        call csr:cleararray(siaf:auximp_vec)
+        call csr:cleararray(siaf:aux1imp_vec)
+        call csr:cleararray(siaf:auxcant_vec)
+
+        cds extract dsc:tlr:CONtots_temp array siaf:tefectivo_vec into array siaf:auximp_vec \
+        array siaf:tefec_inic_vec into array siaf:aux1imp_vec \
+        array siaf:cefectivo_vec into array siaf:auxcant_vec \
+        tlr:tots_operator into op:adt_operator_id
+        ;Verifico si abrio la caja
+        
+        call tes:CDSren_caj_load2(op:adt_operator_id)
+        ;Si abrio debo fijarme el inicial y movimientos
+        if (retval == 0 && tes:rend_fecha == common:system_date)
+            if (siaf:auximp_vec[mp] != 0 || siaf:aux1imp_vec[mp] != 0 || siaf:auxcant_vec[mp] != 0)
+                // Tiene saldo en la caja
+                cds endselect dsc:tlr:CONtots_temp
+                return (0)
+            end if
+        else 
+            total_ayer = siaf:aux1imp_vec[mp] + siaf:auximp_vec[mp]
+            if (total_ayer > 0)
+                ;si esta abierta de dias anteriores solo me interesa el
+                ;saldo final
+                cds endselect dsc:tlr:CONtots_temp
+                return (0)
+            end if 
+        end if
+        cds findnext dsc:tlr:CONtots_temp nolock
+        let lib:err_retval = cdsretval
+    loop
+    ;Me fijo el saldo del tesoro
+    call MISCsaldo_tesoro_mp(mp)
+    if (retval == 0)
+        return (0)
+    end if
+    call MISCsaldo_buzon_mp(mp)
+    if (retval == 0)
+        return (0)
+    end if
+    call MISCsaldo_subt_mp(mp)
+    if (retval == 0) 
+    	return (0)
+    end if
+    
+    return (-2)
+end sub
+
+/*******/

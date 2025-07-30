@@ -1,0 +1,60 @@
+/****o* Transferencias Bancarias/OFB:post:post:MISCVerSi_AdelTB_CM
+* NOMBRE
+*   OFB:post:MISCVerSi_AdelTB_CM
+* DESCRIPCION
+* Esta rutina ordena el picklist de facturas por fecha de vto mas antigua.
+* Luego controla que el monto de las transferencias bancarias pueda aplicarse acomo adelantos. 
+* ENTRADAS
+* SALIDAS
+*   RETURN (-2): Las Transferencias Bancarias se deberá aplicar a la Cancelacion de Facturas Venciadas CM.
+*   RETURN (-2): No pueden aplicarse Transferencias Bancarias, el cliente medio posee modo diferido.
+* IMPACTOS
+*   post:MISCSel_FactCobro
+* REFERENCIADO POR
+*   OFB:post:PCOL99453
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+		
+#include "postmisc.h"
+
+SUB post:MISCVerSi_AdelTB_CM
+    LOCAL idx like siaf:i
+    LOCAL limp_fact like siaf:importe
+
+    //cgw: NI50244 - Adelanto por Transferencias Bancarias.
+
+	//CALL csr:PickOp PICKOP_SORT dsc:facturas_cliente "0,10"
+	//PS 10247 - Ordeno el Picklist por fecha de vencimiento - tipo y nro de factura
+	call csr:PickOp PICKOP_SORT dsc:facturas_cliente "0,10" "11,1" "13,15"
+	idx = PL_GETITEM
+	CLEARFIELD common:csr_string
+	//Obtengo la factura vencida mas antigua.
+	CALL csr:myPickcontrol(dsc:facturas_cliente,common:csr_string,idx)
+	IF (RETVAL < 0) THEN
+	    limp_fact = 0
+	ELSE
+	    //Recupero el monto de la factura
+	    limp_fact = substr(common:csr_string,29,16)
+    END IF
+
+	//Verifico si puede realizarse el Adelanto por Transferencias Bancarias.
+	//El importe total de las facturas (post:Imp_TotFactVenc) debera ser igual a cero o el importe de
+	//las transf. bancarias  (limp_fact) sea menor al importe de la factura vencida mas antigua.
+	IF (post:Imp_TotFactVenc == 0 || post:monto_TB < limp_fact) THEN
+		IF (!ModalidadCD) THEN
+			//No es modalidad de Cobro Diferido. Se puede realizar Adelanto por Transferencias Bancarias.
+		    RETURN 0
+		ELSE
+		    ERRMSG common:errmsg_list,"No pueden aplicarse Transferencias Bancarias, el cliente posee modo diferido"
+		    RETURN (-2)
+		END IF
+    ELSE
+        ERRMSG common:errmsg_list,"Las Transferencias Bancarias se deberán aplicar a la Cancelación de Facturas Vencidas CM"
+	    RETURN (-2)
+	END IF
+
+END SUB
+
+/*******/

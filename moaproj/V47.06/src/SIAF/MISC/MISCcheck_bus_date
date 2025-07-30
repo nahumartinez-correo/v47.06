@@ -1,0 +1,174 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCcheck_bus_date
+* NOMBRE
+*   OFB:siaf:MISCcheck_bus_date
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCcheck_bus_date
+    local retval_fecha like lib:err_retval
+
+
+   CALL post:MISCcheckEstadoPresu
+
+   // FGB 7.4.2002: verificacion para Venta a UP's con cheque Diferido
+   call post:MISCchk_pag_dif_up
+
+    /* verifico que para realizar cualquier apertura la fecha de totales no
+       pueda ser posterior a la actual (retval != 1) */
+    call csr:date_compare(tlr:bus_date,common:system_date)
+    let retval_fecha = retval
+    if (retval_fecha == 1) then
+    let common:csr_string = "Fecha de Totales incorrecta"
+    errmsg common:errmsg_list,FLD:common:csr_string
+    call APPLterm
+    end if
+    IF (drv:dt_app == 2) then /* es cajero => se relaciona con el tesoro */
+        call post:MISCBot_estado_presu
+    call siaf:MISCopen_day_tlr(retval_fecha)
+    ELSEIF (drv:dt_app == 3) /* es merchand. => verif.si es cajero tambien*/
+        call post:MISCBot_estado_presu
+    call siaf:MISCopen_day_merch(retval_fecha)
+    ELSE /* es tesoro drv:dt_app == 4 */
+        if (drv:dt_app == 4) then
+            call siaf:MISCopen_day_tes(retval_fecha)
+        else
+                /* Apertura de sucursal drv:dt_app = 5 */
+                call siaf:MISCopen_day_suc(retval_fecha)
+        ENDIF
+    END IF
+
+    /* Restauro los campos de la transaccion (comunes a todo modulo) */
+    let siaf:posible_off = "S"
+        LET drv:INDscreen[2] = SCR:drv:menu
+        LET drv:INDscreen[3] = SCR:drv:menu
+        LET drv:INDscreen[4] = SCR:drv:menu
+        LET drv:flags = "00000000000001000000000000OCMMMCC0000000000000000000"
+        LET drv:data_collect = "CCMMMM000000000"
+
+
+    resetflag drv:mode_flags,no_stack_list
+    let drv:screen_active = 2 /* ? */
+    if (testflag(siaf:siaf_flags,cajero)) then
+        let drv:new_app = 2
+    elseif (testflag(siaf:siaf_flags,retaguardia)) then
+        let drv:new_app = 3
+       else
+        /* Pregunto por el dt_app para ver si es tesoro o sucursal
+           porque el siaf:siaf_flags,req_tes viene cargado */
+          if (drv:dt_app == 4) then 
+                let drv:new_app = 4 // tesoro
+          else
+                let drv:new_app = 5// sucursal
+          endif      
+    end if
+    let drv:INDcur_list = LST:drv:TRAN_desktop
+    if (testflag(siaf:siaf_flags,cajero))
+    /* Restauro los campos de la transaccion de teller */
+    
+            LET drv:INDscreen[1] = SCR:tlr:SCRNopen_day
+            LET drv:INDpre_dis_rtn  = ofb:tlr:PDISteller
+            LET drv:INDpre_col_rtn  = ofb:tlr:PCOLteller
+            LET drv:INDesc_rtn      = ofb:tlr:ESCteller
+            LET drv:INDsend_rtn     = ofb:tlr:SENDteller
+            LET drv:INDrestore_rtn  = ofb:tlr:RESTteller
+            LET drv:side_bar[1] = "Open Day"
+            LET drv:side_bar[2] = "Speed Key1"
+            LET drv:side_bar[3] = "Speed Key2"
+            LET drv:side_bar[4] = "Main Menu"
+            LET drv:INDbut_list[2] = LST:siaf:speed_key1
+            LET drv:INDbut_list[3] = LST:siaf:speed_key2
+            LET drv:INDbut_list[4] = LST:tlr:MENUteller_actv
+
+            LET drv:INDstack_funct[drv:dt_app][drv:stack_cnt] = \
+                LST:tlr:TRAN_teller
+    
+    elseif (testflag(siaf:siaf_flags,retaguardia))
+    /* Restauro los campos de la transaccion de administrativo */
+    
+            LET drv:INDscreen[1] = SCR:tlr:SCRNopen_day
+            LET drv:INDpre_dis_rtn  = ofb:tlr:PDISadmin
+            LET drv:INDpre_col_rtn  = ofb:tlr:PCOLteller
+            LET drv:INDesc_rtn      = ofb:tlr:ESCteller
+            LET drv:INDsend_rtn     = ofb:tlr:SENDteller
+            LET drv:INDrestore_rtn  = ofb:tlr:RESTteller
+            LET drv:side_bar[1] = "Open Day"
+            LET drv:side_bar[2] = "Speed Key1"
+            LET drv:side_bar[3] = "Speed Key2"
+            LET drv:side_bar[4] = "Main Menu"
+            LET drv:INDbut_list[2] = LST:siaf:speed_key2
+            LET drv:INDbut_list[3] = LST:siaf:speed_key2
+            LET drv:INDbut_list[4] = LST:siaf:main_menu2
+
+            LET drv:INDstack_funct[drv:dt_app][drv:stack_cnt] = \
+                LST:tlr:TRAN_admin
+     
+    else 
+        if (drv:dt_app == 4)
+
+        /* esta en el modulo de tesoro */
+        /* Restauro los campos de la transaccion de tesoro */
+        LET drv:INDscreen[1] = SCR:tes:SCRNapertura_dia
+        LET drv:INDpre_dis_rtn  = ofb:tes:PDIStesoro
+        LET drv:INDpre_col_rtn  = ofb:tes:PCOLtesoro
+        LET drv:INDesc_rtn      = ofb:tes:ESCtesoro
+        LET drv:INDsend_rtn     = ofb:tes:SVALtesoro
+        LET drv:side_bar[1] = "Apertura de Dia de Tesoro"
+        LET drv:side_bar[2] = "Teclas Rapidas"
+        LET drv:side_bar[3] = "Teclas Rapidas"
+        LET drv:side_bar[4] = "Teclas Rapidas"
+        LET drv:INDbut_list[2] = LST:tes:teclas_rapidas
+        LET drv:INDbut_list[3] = LST:tes:teclas_rapidas
+        LET drv:INDbut_list[4] = LST:tes:teclas_rapidas
+
+            LET drv:INDstack_funct[drv:dt_app][drv:stack_cnt] = \
+                LST:tes:TRAN_tesoro
+        else
+             /* mld 30/11/1998 */
+             /* esta en el modulo de sucursal */
+             /* Restauro los campos de la transaccion de sucursal */
+              LET drv:INDscreen[1] = SCR:tes:SCRNapertura_dia
+              LET drv:INDpre_dis_rtn  = ofb:tes:PDISsucursal
+              LET drv:INDpre_col_rtn  = ofb:tes:PCOLsucursal
+              LET drv:INDesc_rtn      = ofb:tes:ESCtesoro
+              LET drv:INDsend_rtn     = ofb:tes:SVALsucursal
+              LET drv:side_bar[1] = "Apertura de Dia de Sucursal"
+              LET drv:side_bar[2] = "Teclas Rapidas"
+              LET drv:side_bar[3] = "Teclas Rapidas"
+              LET drv:side_bar[4] = "Teclas Rapidas"
+              LET drv:INDbut_list[2] = LST:tes:teclas_rap_suc
+              LET drv:INDbut_list[3] = LST:tes:teclas_rap_suc
+              LET drv:INDbut_list[4] = LST:tes:teclas_rap_suc
+
+              LET drv:INDstack_funct[drv:dt_app][drv:stack_cnt] = \
+                LST:tes:TRAN_sucursal
+                
+        endif
+    endif
+    let drv:button = TFB2
+    CALL  drv:but_enable
+    let drv:button = TFB3
+    CALL  drv:but_enable
+    let drv:button = LFB3
+    CALL  drv:but_enable  /* Agrego el boton de sucursal */
+    let drv:button = SFB3
+    CALL  drv:but_enable
+    if (retval_fecha < 0) then
+    return (-2)
+    end if
+
+END SUB
+
+/*******/

@@ -1,0 +1,71 @@
+/****o* Pago en Destino/OFB:post:CDSpresupag_save_ped
+* NOMBRE
+*   OFB:post:CDSpresupag_save_ped
+* DESCRIPCION
+*   Actualiza la tabla PresuPag 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCAuxIngBr_fld_ped ,post:MISCAuxIngBr_vec_ped
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpresupag_save_ped(Moneda,Imp)
+	/*Rutina modificada por Gabriel Falciola. La cumulación de los distintos medios de pago, ahora
+	se realizan a medida que se van realizando las transacciones*/
+	LOCAL moneda_aux LIKE siaf:moneda
+
+	//Modificado para la Version 14 si la moneda(Medio Pago ) o la moneda anterior estan vacias asumo 99
+	common:csr_string = Moneda
+	CALL csr:trimfield(common:csr_string)
+	IF (common:csr_string == ""  && common:csr_string.NUMCHARS == 0) THEN
+		Moneda = 99
+	END IF
+
+	moneda_aux = siaf:moneda
+	siaf:moneda = Moneda
+	
+	post:adt_mp_cod = Moneda
+	CALL post:CDSadt_MedPago_load
+	siaf:desc_moneda = post:adt_mp_desc
+	CDS SELECT FROM DSC:post:TABPresuPago BECOMES DSC:post:CONPresuPago \
+		WHERE (FLD:post:fecha == FLD:post:fecha) && \
+		(FLD:post:op_operator_id == FLD:post:op_operator_id) && \
+		(FLD:post:PresNro == FLD:post:PresNro) && \
+		(FLD:siaf:moneda == FLD:Moneda)
+		
+	CDS FINDFIRST DSC:post:CONPresuPago LOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:post:CONPresuPago \
+			post:PrePImp \
+			post:PrePNroPag
+		
+		IF (siaf:adt_tran_afec_efvo == "+") THEN
+			PrePImp = PrePImp + Imp
+		ELSE
+			PrePImp = PrePImp - Imp
+		END IF
+			
+		CDS APPEND DSC:post:CONPresuPago \
+			FLD:post:PrePImp
+		CDS UPDATE DSC:post:CONPresuPago LOCK
+	ELSE
+		post:adt_mp_cod = Moneda
+		CALL post:CDSadt_MedPago_load
+		siaf:desc_moneda = post:adt_mp_desc
+		CALL post:CDSinsert_PresuPag(Imp)
+	END IF
+					
+	CDS UNLOCK DSC:post:CONPresuPago
+	CDS ENDSELECT DSC:post:CONPresuPago
+	siaf:moneda = moneda_aux
+END SUB
+
+/*******/

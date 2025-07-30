@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:post:MISCtermina_anula
+* NOMBRE
+*   OFB:post:MISCtermina_anula
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCtermina_anula
+
+	// FGB (reingenieria): verifica si tiene que terminar con la confirmacion del presupuesto.
+	IF (plataf:current_state == RECOVERY) THEN
+		CALL plataf:recovery_confirma
+	ELSE
+		/*Chequeo si termino bien la transaccion de Anulacion, en caso contrario
+		termino de procesarla - Gabriel Falciola*/
+		CALL CDScheq_tran_anula
+		post:err_retval = RETVAL
+		; 0 - nada
+		; 1 - anulacion
+		; 2 - fin de sesion
+		IF (post:err_retval == 0) THEN
+			RETURN (0)
+		END IF
+	
+		STARTTRAN
+		sistCaido = "S"
+		recienCaido = "S"
+		sistCaidoGlobal = "S"
+		siaf:fecha = common:system_date
+		siaf:hora = common:time_of_day
+		// Se abre el Contexto para Jouranlizar las Transacciones
+		CALL tlr:JNLinitialize
+		DISPLAY SCR:post:SCRNanulacion_inc
+	
+		IF (post:err_retval == 1) THEN
+			DISPLAY SCR:post:SCRNerror_anulacion
+		ELSE
+			DISPLAY SCR:post:SCRNerror_finses
+		END IF
+		
+		GETKEY
+		COLLECT
+		/*Proceso que realiza las reversas, directas e impresiones*/
+		IF (post:err_retval == 1) THEN
+			CALL MISCanulParcial
+		ELSE
+			IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos)) THEN
+				SETFLAG giros:giros_masivos,proc_anul_masivos
+			ELSE
+				RESETFLAG giros:giros_masivos,proc_anul_masivos
+			END IF
+			CALL PRESimpre_fiscal
+			CALL PCOLimpresion_fiscal
+			
+			//gpb:NI50479
+			//Si estoy en una Nota de Credito PED o en una Refacturacion PED
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+				//Me aseguro que sea Fin de Sesion
+				IF (siaf:codigo_siaf == 99023) THEN
+					SETFLAG post:sesion_ped_flags,termina_anula_ped
+					CALL post:CDSactPresuPed_flags
+				END IF
+			END IF
+			
+			CALL SVALimpre_fiscal
+		END IF
+		
+		UNDISPLAY SCR:post:SCRNerror_anulacion
+		UNDISPLAY SCR:post:SCRNanulacion_inc
+		// Cierre el Contexto
+		CALL tlr:JNLterminate
+		/*Se limpia ese campo, ya que después de journalizar puede quedar algo
+		  seteado que no corresponde al inicio del Sistema - Gabriel Falciola*/
+		drv:mode_flags = 0
+		UNGETKEY RT_ESC
+		ENDTRAN
+		CALL MISCrestauroNC
+
+		IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+			RESETFLAG giros:giros_masivos,proc_anul_masivos
+		END IF
+	
+		CLEARFIELD post:consulta_excepcionCM
+		CLEARFIELD post:consulta_ordenCM
+		//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+		//    y en consulta y venta por OC.
+		CLEARFIELD post:cliente_inhibido
+		CLEARFIELD post:cliente_pagodiferido
+  END IF
+
+END SUB
+
+/*******/

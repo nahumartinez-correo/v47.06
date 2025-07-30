@@ -1,0 +1,246 @@
+/****o* Pendientes de agrupación/OFB:siaf:COMMenvio_transac
+* NOMBRE
+*   OFB:siaf:COMMenvio_transac
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCOMM.h"
+
+SUB siaf:COMMenvio_transac
+let cant = 0
+let moneda_cr = moneda
+do
+
+	if (cod_tran_mult[cant] == 0 ) then
+	    /* no tengo mas registros */
+	    /* llamo a esta rutina si termine de enviar todos los registros */
+            call siaf:hay_aceptados	
+	    break
+	endif
+	if (importes[cant].numchars + 0 == 0)
+	   /* si el importe esta en 0 no necesito enviar el registro, */
+	   /* por lo tanto voy a buscar otro */
+           goto finloop
+	endif
+	if (testflag(tlr:tran_flags,correction))
+	    if (aceptado[cant] != 1)
+		/* si estoy en reverso y el registro no fue aceptado en la 
+		   directa, no necesito enviarlo ===> voy a buscar otro */
+		goto finloop 
+	    endif
+	else /* no estoy en reverso */
+	    if (recibido[cant] == 1)
+		/* si el registro fue recibido en la directa no necesito 
+		   enviarlo, esto se pregunta para el caso de reentry */
+		goto finloop 
+	    endif
+	endif
+	/* verifico el estado de la linea */
+       	call hcomm:COMM_stat_init
+
+	if (!testflag(hcomm:state_flags,on_line))
+	    if (!testflag(tlr:tran_flags,correction))
+		/* si estoy fuera de linea marco todos como aceptados, esto
+		   es por si hace el reverso fuera de linea */
+		i = cant
+		do
+		  if ( cod_tran_mult[i] == 0 )
+			/* si tengo un registro con codigo de transaccion 
+			   0 significa que la transaccion no tiene mas 
+			   registros entonces me voy */
+		    break
+		  endif
+		  aceptado[i] = 1
+		  i = i+1
+		loop
+	    endif
+	    /* modifico el estado de la transaccion general como sin envio */
+	    /* porque estoy fuera de linea, ok?? */
+	    let hcomm:tran_status = UNPOSTED
+	    break
+	endif /* fin on/off_line */
+enviar:
+/* asigno como rutina de send, la correspondiente del registro que estoy
+   enviando, y que la debe tomar de la rutina de pre-transac. o del journal,
+   segun sea modo normal o reentry */
+let hcomm:INDhost_sndrt = send_tran_mult[cant]
+/* el codigo siaf del registro correspondiente, idem anterior */
+let codigo_siaf = cod_tran_mult[cant] 
+;if (testflag(tlr:tran_flags,correction))
+	   /* si estoy en reverso le sumo uno al codigo de tr. del registro */
+;	   let codigo_siaf = codigo_siaf + 1
+;endif
+call ofb:hcomm:COMM_stat_init /* Verifico estado de la linea */
+call ofb:hcomm:COMM_host_tran /* Envio el registro Correspondiente */
+
+if (!testflag(hcomm:state_flags,on_line))
+     if (!testflag(tlr:tran_flags,correction))
+	/* Me quede sin linea en algun momento del envio, entonces        */
+	/* marco todos desde el actual como aceptados, para contemplar el */
+	/* reverso fuera de linea 					  */
+	i = cant
+	do
+	  if ( cod_tran_mult[i] == 0 )
+	     /* si ya termine de marcar todos me voy */
+	     break
+	  endif
+	  aceptado[i] = 1
+	  i = i+1
+	loop
+     endif
+	/* marco la transaccion general como sin envio y finalizo la misma */
+	/* para que puedan hacer el reentry y enviar los registros que no  */
+	/* estan recibidos */
+     let hcomm:tran_status = UNPOSTED
+     break
+else /* estoy en linea */
+     if (hcomm:tran_status < HOST_REJECTED)
+		/* Si el registro fue aceptado normalmente, lo marco como
+		   recibido y aceptado y voy a ver si envio otro */
+		let recibido[cant] = 1
+		let aceptado[cant] = 1
+ 		goto finloop
+     else /* transaccion rechazada por host */
+	if (testflag(common:rt_flags,reentry_active))
+		/* Pregunto si estoy en reentry para contemplar el caso
+		   del corte de linea cuando estaba enviando una transaccion */
+		   if (cod_msg_host == 078) 
+			/* si es ya efectuada considero el registro como 
+			   aceptado lo marco como tal y busco otro */
+			recibido[cant] = 1
+		        aceptado[cant] = 1
+ 	         	goto finloop
+		   else /* no es tr. ya efectuada */
+			 if (testflag(tlr:tran_flags,correction))
+				/* si entro por aca es porque anduvo mal
+				   en el siaf, lo marco como recibido y 
+				   rechazado y voy a buscar otro registro */
+				recibido[cant] = 1
+			        aceptado[cant] = 0
+				goto finloop
+          		        break
+			 else /* no estoy en reverso */
+			      /* pregunto si la general esta reversada     */
+			      /* para ir a buscar el reverso en el journal */
+			     call siaf:MISCgral_reversada
+				if (retval == 0 ) 
+				    /* llamo a esta rutina si termine 
+				       de enviar todos los registros */
+					call ofb:siaf:hay_aceptados 
+				else /* no es general General reversada */
+				   if (cant == 0)  /* es primer registro */
+					/* Si me rechazo el primero, entonces
+					   marco el registro como recibido y
+					   rechazado, y el estado de la tr.
+					   gral. como RECHAZADA, y finalizo */
+				   	recibido[cant] = 1
+					aceptado[cant] = 0
+				        let hcomm:tran_status = HOST_REJECTED
+				   else 	/* no es primer registro */
+					/* si me rechazo despues del primero
+					   lo marco a partir del registro
+					   donde estoy parado como rechazado
+					   y me voy a la rutina de reverso
+					   automatico */
+						
+				        recibido[cant] = 1
+			                aceptado[cant] = 0
+					siaf:i = cant
+					do
+					if (siaf:i > 14)
+						break
+					endif
+					siaf:aceptado[siaf:i] = 0
+					siaf:i = siaf:i + 1
+					loop
+					/* Verifico si debo reversar */
+				        call ofb:siaf:veo_si_reverso
+					if (retval == 0 )
+						/* significa que tengo que 
+						   reversar automaticamente */
+                fprint secuencia_aux,"%.*d",tlr:jnl_sequence.length, \
+                tlr:jnl_sequence
+						let tran_status_aux = \
+							     hcomm:tran_status
+						/* Genero el reverso a mano */
+				 		call ofb:siaf:reverso_a_mano	
+                fprint tlr:jnl_sequence,"%.*d",secuencia_aux.length, \
+                secuencia_aux
+					let hcomm:tran_status = \
+							tran_status_aux
+					endif
+				   endif        /* es el primer registro */
+			       endif            /* General reversada */
+			       break            /* Finalizo la transaccion */
+			 endif                  /* estoy o no en reverso */
+		     endif                      /* si es o no efectuada */
+	else /* no estoy en reentry */
+		      if (testflag(tlr:tran_flags,correction))
+			  call ofb:siaf:hay_aceptados
+          		  break
+		      else /* no estoy en reverso */
+			     /* pregunto si la general esta reversada */
+				call siaf:MISCgral_reversada
+				if (retval == 0)
+					call ofb:siaf:hay_aceptados
+			        else
+		                   if (cant == 0)  /* Es el primer registro */
+				       recibido[cant] = 1
+				       aceptado[cant] = 0
+				       let hcomm:tran_status = HOST_REJECTED
+			           else  /* no es el primer registro */
+					/* Marco a partir del registro en que
+					   estoy parado como rechazados */
+				        recibido[cant] = 1
+			                aceptado[cant] = 0
+					do
+					if (siaf:i > 14)
+						break
+					endif
+					siaf:aceptado[siaf:i] = 0
+					siaf:i = siaf:i + 1
+					loop
+			               /* verifico si debo reversar 
+					automaticamente */
+				       call ofb:siaf:veo_si_reverso
+			           endif  /* primer registro */
+			       endif /* General Reversada */
+			       break
+			endif /* fin estoy o no en reverso */
+	endif /* estoy o no en reentry */
+    endif /* rechazada o no por host */
+ endif /*  estoy o no en linea */
+	     
+finloop: 
+	cant = cant + 1
+loop
+let moneda = moneda_cr
+/* armo la linea de pantalla */
+if (importe == 0)
+	let importe = 0.00
+endif
+if (importe2 == 0)
+	let importe2 = 0.00
+endif
+if (moneda == 02)
+	fprint lineas_pantalla[0], "IMPORTE U$S:%s $: %s" \
+			,importe2,importe
+else
+	fprint lineas_pantalla[0], "IMPORTE $:%s",importe
+endif
+fprint lineas_pantalla[1],"%s %s",adt_tran_desc,desc_moneda
+
+END SUB
+
+/*******/

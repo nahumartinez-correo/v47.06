@@ -1,0 +1,92 @@
+/****o* Servicios Telegráficos/OFB:tele:SVALtele_gral
+* NOMBRE
+*   OFB:tele:SVALtele_gral
+* DESCRIPCION
+*   SVAL que se ejecuta para la venta de servicios telegraficos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2223
+* SOURCE
+*/
+#include "telesval.h"
+
+SUB tele:SVALtele_gral
+;AUT-2223 MGI variable que se usará para mostrar cantidad de telegramas
+local l_mensaje like common:csr_string 
+;AUT-2223 Filtra para que se realice mientras no se esté confirmando una transacción
+	if (post:estado_presu != 4)
+		;AUT-2223 MGI Busca en la tabla Servicio el telegrama seleccionado en el combo categoria
+            CDS SELECT FROM DSC:post:Servicio_tbl BECOMES DSC:post:Servicio_ctx WHERE \
+            post:adt_serv_tipo == "TE" && \
+            post:adt_serv_serv == post:tipo_produc2 
+            CDS FINDFIRST DSC:post:Servicio_ctx NOLOCK 
+;AUT-2223 MGI Del contecto formado por la seleccion de la tabla servicio extrae 2 campos
+            CDS EXTRACT DSC:post:Servicio_ctx \
+            post:adt_serv_ctrl_cant \
+            post:adt_serv_cantidad 
+            CDS ENDSELECT DSC:post:Servicio_ctx 
+;AUT-2223 MGI pregunta si controla cantidad y si la cantidad escrita es mayor a la parametrizada
+                 IF (post:adt_serv_ctrl_cant == "S") THEN 
+                      IF (post:cantidad > post:adt_serv_cantidad) THEN 
+;AUT-2223 MGI Mensaje de alerta. Advierte la cantidad ingresada
+                           FPRINT l_mensaje,"HA INGRESADO LA CANTIDAD DE TELEGRAMAS: %s %s",post:cantidad, "¿ESTA SEGURO QUE DESEA CONFIRMAR?"; 
+                           MSGBOX l_mensaje,OFB_YESNO2,"Atencion" 
+                      END IF 
+;AUT-2223 MGI se presion NO. foco en cantidad para cambiarla
+                      IF (RETVAL == 7) THEN 
+                           NEXTFIELD post:cantidad 
+                           RETURN (-2) 
+                           ELSE 
+;AUT-2223 MGI se presion SI. Se sigue con la transacción
+                      END IF 
+                 END IF
+		
+		//Paso los opcionales al vector de opcionales
+		Call MISCcarga_vec_opc
+		if (retval < 0)
+			return -2
+		end if
+		
+		//Si es una imposicion de OC, consulto si el producto fue vendido con los datos pactados en la OC
+		if (post:consulta_ordenCM == "S" && post:estado_presu != 4) then
+			call post:MISCValido_Datos_OC
+			if (retval < 0) then
+				call tele:PRESopc_gral
+				return -2
+			endif
+		endif
+		
+		//cgw:carga nemonico sap para destino y opcionales
+		Call tele:MISCnemonic_sap
+	
+	end if
+	
+	//Obtengo los datos del servicio paras saber el tipo del secuenciador
+	Call post:CDSserv_desc_load
+		
+	siaf:importe_tot_serv = siaf:importe
+	Call tele:SVALgral_tele
+	if (retval < 0)
+		return (-2)
+	end if
+	
+	// FGB: la impresion se realizo dentro de la SVALgral, entonces borro
+	//      la rutina de la lista, para que no vuelva a imprimir.
+	clearfield drv:INDspc_rtn[2]	
+
+   	post:cant_opc = 0
+    OpcInd_idx = 0	
+	Call MISClimpia_opc
+	//Defino las fechas con su valor anterior
+	call MISCflecha_opc_rest
+	init 33,0
+END SUB 
+
+/*******/

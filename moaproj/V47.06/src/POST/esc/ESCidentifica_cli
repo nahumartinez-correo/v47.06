@@ -1,0 +1,120 @@
+/****o* Pendientes de agrupación/OFB:post:ESCidentifica_cli
+* NOMBRE
+*   OFB:post:ESCidentifica_cli
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postesc.h"
+
+SUB post:ESCidentifica_cli
+	LOCAL l_estado LIKE post:stockp_ped_estAct
+		
+	IF (consulta_excepcion == "S" || consulta_excepcionCM == "S") THEN
+		MSGBOX "Desea salir de la venta por excepción?", 0x04, "AVISO"
+		IF (RETVAL != 6) THEN //NO
+			SETFLAG tlr:state_flags,tran_active 
+			RETURN -2
+		END IF
+	
+		/*Limpio datos*/    
+		consulta_excepcion = "N"
+		consulta_excepcionCM = "N"
+		//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+		//    y en consulta y venta por OC.
+		CLEARFIELD post:cliente_inhibido
+		CLEARFIELD post:cliente_pagodiferido
+
+		CLEARFIELD drv:dis_customer_name
+		REFRESH    drv:dis_customer_name
+		/*Limpio los campos de pantalla*/
+		CALL CSR:proc_list(F_CLEAR,LST:LISTcampos_excep)
+		CALL CSR:proc_list(F_REFRESH,LST:LISTcampos_excep)                          
+		CALL CSR:proc_list(F_CLEAR,LST:LISTcampos_excepCM)
+		CALL CSR:proc_list(F_REFRESH,LST:LISTcampos_excepCM)  
+	END IF
+
+	IF (consulta_ordenCM == "S") THEN
+		MSGBOX "Desea salir de la Venta por Orden de Compra?", 0x04, "AVISO"
+		IF (RETVAL != 6) THEN //NO
+			SETFLAG tlr:state_flags,tran_active 
+			RETURN -2
+		END IF
+	
+		/*Limpio datos de orden de compra*/
+		post:consulta_ordenCM = "N"
+		//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+		//    y en consulta y venta por OC.
+		CLEARFIELD post:cliente_inhibido
+		CLEARFIELD post:cliente_pagodiferido
+		
+		CLEARFIELD drv:dis_customer_name
+		REFRESH    drv:dis_customer_name
+		/*Limpio los campos de pantalla*/
+		CALL CSR:proc_list(F_CLEAR,LST:LISTcampos_ordenCM)
+		CALL CSR:proc_list(F_REFRESH,LST:LISTcampos_ordenCM)
+	END IF
+
+	CLEARFIELD post:convenioAnticipo
+	RESETFLAG post:IdentCli_flags,screen1
+	RESETFLAG post:IdentCli_flags,screen2
+	RESETFLAG post:IdentCli_flags,cambia_scr
+	/*Libero la memoria utilizada para el picklist de incripción de
+	Ingresos Brutos - Gabriel Falciola*/
+	CALL csr:f_sadroppl dsc:PICInscIngBr
+
+	// FGB: Cierro conexion con SAP
+	// Como esta rutina siempre devuelve 0 la ejecuto siempre 
+	// (cualquiera sea el tipo de cliente y exista o no conexion)
+	// call sap_logoff
+
+	//gpb:NI50479
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+		//Registro pendiente de imposicion (tabla sesion_ped)
+		CALL post:MISCupdateRegSesPed("I")
+		
+		//Fuerzo para que vuelva a la tx de Imposicion PED
+		LET drv:INDrun_funct = LST:post:TRAN30020
+		CALL drv:do_mode
+	ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+		//dejo la pieza disponible para que pueda ser usada por otro operador
+		l_estado = "RECI"
+		//Si existe en la stockp,actualiza estado
+		CALL post:CDSstockp_upd_estAct(l_estado,post:pieza_ped)
+		IF (RETVAL < 0) THEN
+			post:Pieza = post:pieza_ped
+			//Si existe en la PEDpend,actualiza estado
+			l_estado = "PEND"
+			CALL post:CDSupd_PEDpend(l_estado)
+			CLEARFIELD post:Pieza
+		END IF	
+		
+		//"RECI" - Pieza Recibida
+		CALL post:CDSupd_est_NCped("RECI")
+		
+		//Fuerzo para que vuelva a la tx de Generacion de NC PED
+		LET drv:INDrun_funct = LST:post:TRAN30030
+		CALL drv:do_mode
+	ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		//dejo la pieza disponible para que pueda ser usada por otro operador
+		//"NTCR" - Pieza con Nota de Credito generada
+		CALL post:CDSupd_est_NCped("NTCR")
+		
+		//Fuerzo para que vuelva a la tx de Refacturacion PED
+		LET drv:INDrun_funct = LST:post:TRAN30040
+		CALL drv:do_mode
+	END IF
+
+END SUB
+
+/*******/

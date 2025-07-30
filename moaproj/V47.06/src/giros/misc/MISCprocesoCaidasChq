@@ -1,0 +1,90 @@
+/****o* Lista de Giros/OFB:giros:MISCprocesoCaidasChq
+* NOMBRE
+*   OFB:giros:MISCprocesoCaidasChq
+* DESCRIPCION
+*   Se verifica la tabla CaidasChq(esta tabla guarda los cheques que se imprimieron en la sesion de emision de lista
+*	de giros). En el caso de existir registros se debe controlar si se continua con el proceso de impresión.
+* ENTRADAS
+* 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:MISCtrat_post_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCprocesoCaidasChq
+
+LOCAL l_nro_trx_lg	LIKE giros:nro_trx_lg
+LOCAL l_Serie_fld	LIKE giros:Serie_fld
+LOCAL l_NroGiro_fld	LIKE giros:NroGiro_fld 
+LOCAL l_digito_fld  LIKE giros:digito_fld
+LOCAL l_cheque 		LIKE giros:lg_cheque
+	
+	CDS SELECT FROM DSC:CaidasChq_tbl BECOMES DSC:CaidasChq_ctx WHERE \
+	(post:op_operator_id == op:op_operator_id && \
+	post:fecha == common:system_date && \
+	giros:nro_sesion_lg == giros:nro_sesion_lg)
+
+	CDS FINDFIRST DSC:CaidasChq_ctx  LOCK
+	lib:err_retval = CDSRETVAL
+	
+	IF (lib:err_retval == -801)
+		CDS UNLOCK DSC:CaidasChq_ctx
+		CDS ENDSELECT DSC:CaidasChq_ctx
+		RETURN (lib:err_retval)
+	ENDIF
+	
+	WHILE (lib:err_retval == 0)
+	
+		CDS EXTRACT DSC:CaidasChq_ctx \
+		giros:nro_trx_lg INTO l_nro_trx_lg \
+		giros:Serie_fld INTO l_Serie_fld \
+		giros:NroGiro_fld INTO l_NroGiro_fld \
+		giros:digito_fld INTO l_digito_fld \
+		giros:lg_cheque INTO l_cheque
+		
+		IF (l_cheque == "AN" && l_nro_trx_lg == "") THEN
+			//VERIFICO SI EL GIRO SE ENCUENTRA EN LA ANUL_CHQ
+			CALL CDSVerif_caidas_anul(l_Serie_fld,l_NroGiro_fld,l_digito_fld)
+			IF (RETVAL == 0) THEN
+				//SI EXISTE EN LA ANUL_CHQ LO BORRO DE LA CAIDASCHQ
+				CDS DELETE DSC:CaidasChq_ctx
+			ENDIF
+		ELSE
+			//VERIFICO SI EL GIRO SE ENCUENTRA EN LA SESION_LG
+			CALL CDSVerif_caidas_lg(l_nro_trx_lg,l_Serie_fld,l_NroGiro_fld,l_digito_fld)
+			IF (RETVAL == 0) THEN
+				//SI EXISTE EN LA SESION_LG LO BORRO DE LA CAIDASCHQ
+				CDS DELETE DSC:CaidasChq_ctx
+			ENDIF
+		ENDIF
+		CDS FINDNEXT DSC:CaidasChq_ctx LOCK
+		lib:err_retval = CDSRETVAL
+		
+	END WHILE
+	
+	CDS UNLOCK DSC:CaidasChq_ctx
+	CDS ENDSELECT DSC:CaidasChq_ctx
+	
+	//Despues del proceso vuelvo a chequear si quedaron registros
+	CDS SELECT FROM DSC:CaidasChq_tbl BECOMES DSC:CaidasChq_ctx WHERE \
+	(post:op_operator_id == op:op_operator_id && \
+	post:fecha == common:system_date && \
+	giros:nro_sesion_lg == giros:nro_sesion_lg)
+
+	CDS FINDFIRST DSC:CaidasChq_ctx  NOLOCK
+	lib:err_retval = CDSRETVAL
+	CDS ENDSELECT DSC:CaidasChq_ctx
+	RETURN (lib:err_retval)
+
+END SUB
+
+
+/*******/
+

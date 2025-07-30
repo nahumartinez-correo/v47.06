@@ -1,0 +1,63 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcancelaSesionPP
+* NOMBRE
+*   OFB:post:MISCcancelaSesionPP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcancelaSesionPP
+	local l_codigoSiaf like siaf:codigo_siaf
+
+	if (rechazoDiferido)
+		l_codigoSiaf = siaf:codigo_siaf
+
+		CDS SELECT FROM "journal" BECOMES dsc:Jounarl_anul_Ctx	\
+			where post:PresNro == post:PresNro && 				\
+				tlr:jnl_status <= STATUS_UP_INTERMEDIO && 			\
+				tlr:jnl_bus_date == common:system_date && 		\
+				tlr:jnl_operator == op:op_operator_id && 		\
+				tlr:jnl_branch == common:sucursal_activa && \
+				siaf:cancelacion == ""
+
+		CDS FINDFIRST dsc:Jounarl_anul_Ctx LOCK
+		while (cdsretval == 0)
+			CDS EXTRACT dsc:Jounarl_anul_Ctx ALL
+
+			; marco status completado
+			tlr:jnl_status = STATUS_UP_ANULADO
+
+			; marco tx reversada automáticamente
+			SETFLAG tlr:jnl_tran_flags,rev_automatica
+			FPRINT siaf:mensaje, "%sSESION CANCELADA POR EL OPERADOR", siaf:mensaje
+
+			CDS APPEND dsc:Jounarl_anul_Ctx tlr:jnl_status siaf:mensaje tlr:jnl_tran_flags
+			CDS UPDATE dsc:Jounarl_anul_Ctx LOCK
+			CDS UNLOCK dsc:Jounarl_anul_Ctx
+
+			CDS FINDNEXT dsc:Jounarl_anul_Ctx lock
+		end while
+		clearfield post:importe_sesion
+		clearfield post:Importe_sin_iva
+		clearfield post:pago_diferido //no se si vale la pena
+		//call post:CDSGraboImp_Presu
+		ungetkey RT_SEND
+
+		siaf:codigo_siaf = l_codigoSiaf
+		; demarco tx reversada automáticamente
+		RESETFLAG tlr:jnl_tran_flags,rev_automatica
+	endif
+END SUB
+
+/*******/

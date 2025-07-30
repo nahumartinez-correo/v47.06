@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:post:CDSrep_bloques
+* NOMBRE
+*   OFB:post:CDSrep_bloques
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSrep_bloques
+LOCAL desde like post:adt_despost_serv	
+LOCAL hasta like post:adt_despost_serv
+LOCAL bloques like common:csr_string
+	
+	clearfield common:csr_string
+	
+	CALL csr:f_sanewpl "BLOQUES" PIC:PICrep_bloques
+	
+	//Si esta seleccionada la opcion de todas las tx
+	if (TESTFLAG(Rep_Comercial,RPtransac_todos)) then
+		//Si esta seleccionada la opcion de todos los destinos
+		if (TESTFLAG(Rep_Comercial,RPdestino_todos) ) then
+			//Levanto todos los rangos de la tabla de bloques adicionales
+			CDS SELECT FROM DSC:adt_bloques_tbl  BECOMES DSC:adt_bloques_ctx   
+		else
+			//si seleccionó un destino
+			if (rep_destino.numchars == 0) then
+				MSGBOX "DEBE INGRESAR UN DESTINO.",0x0190,"ERROR"
+    	    	CALL csr:f_sadroppl "BLOQUES"
+    	    	RETURN -2
+    	    endif
+			//Levanto todos los rangos de la tabla de bloques cuyo destino coincida con el seleccionado
+			CDS SELECT FROM DSC:adt_bloques_tbl  BECOMES DSC:adt_bloques_ctx   \
+			WHERE post:adt_bloque_dest == rep_destino
+		endif
+	else
+	
+		IF (rep_transac_desde.numchars != 0 && rep_transac_hasta.numchars != 0) THEN
+			
+			desde = rep_transac_desde
+			hasta = rep_transac_hasta
+			
+			while (desde.numchars != hasta.numchars) then
+					fprint desde "%1.1s%s", " ", desde
+			end while			
+			
+			//Si esta seleccionada la opcion de todos los destinos
+			if (TESTFLAG(Rep_Comercial,RPdestino_todos) ) then
+				//Levanto los rangos de la tabla de bloques que cumplan con la condicion
+				CDS SELECT FROM DSC:adt_bloques_tbl  BECOMES DSC:adt_bloques_ctx  \
+				WHERE post:adt_bloque_serv >= desde && \
+				post:adt_bloque_serv <= hasta
+					
+    		else
+    			if (rep_destino.numchars == 0) then
+					MSGBOX "DEBE INGRESAR UN DESTINO.",0x0190,"ERROR"
+    	    		CALL csr:f_sadroppl "BLOQUES"
+    	    		RETURN -2
+    	    	endif
+    	    	
+    	    	//Levanto todos los rangos de la tabla de bloques que cumplan con la condiciion
+				CDS SELECT FROM DSC:adt_bloques_tbl  BECOMES DSC:adt_bloques_ctx  \
+				WHERE post:adt_bloque_serv >= desde && \
+				post:adt_bloque_serv <= hasta && \
+				post:adt_bloque_dest == rep_destino
+			
+	   		endif
+		ELSE
+			MSGBOX "DEBE INGRESAR UN RANGO DE TRANSACCIONES.",0X00,"ERROR"
+			CALL csr:f_sadroppl "BLOQUES"
+			RETURN -2
+		ENDIF
+	endif
+
+	CDS FINDFIRST DSC:adt_bloques_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+
+	WHILE (CDSRETVAL == 0) THEN
+		clearfield adt_bloque_serv
+		clearfield adt_bloque_dest
+		clearfield adt_bloque_desc
+		CDS EXTRACT DSC:adt_bloques_ctx adt_bloque_serv adt_bloque_dest adt_bloque_desc
+		FPRINT bloques "%-5.5s %-20.20s %-30.30s" adt_bloque_serv adt_bloque_dest adt_bloque_desc
+		CALL  csr:f_sadopv ("BLOQUES",bloques,0)
+		If (RETVAL < 0) Then/*Quiere decir que el destino no esta en la lista*/
+			CALL csr:f_saaddpl "BLOQUES" bloques
+		Endif
+		CDS FINDNEXT DSC:adt_bloques_ctx NOLOCK
+	END WHILE
+
+	CDS ENDSELECT DSC:DEST_CTX
+	
+	IF (lib:err_retval == -801) THEN
+		clearfield rep_bloques
+		MSGBOX "NO EXISTEN BLOQUES ASOCIADOS A LAS TRANSACCIONES SELECCIONADAS.",0X00,"AVISO"
+       	RETURN 0
+    END IF
+	
+	/*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+	/*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl "BLOQUES" common:csr_string
+	LET lib:err_retval = RETVAL
+	/*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+	IF (lib:err_retval >= 0) THEN
+		post:rep_bloques = substr (common:csr_string,0,26)
+		post:rep_bloques_desc = substr (common:csr_string,28,30)
+    ELSE
+    	CLEARFIELD rep_bloques
+    	CLEARFIELD rep_bloques_desc
+    ENDIF
+    REFRESH rep_bloques
+    REFRESH rep_bloques_desc
+	CALL csr:f_sadroppl "BLOQUES"
+	
+END SUB
+
+/*******/

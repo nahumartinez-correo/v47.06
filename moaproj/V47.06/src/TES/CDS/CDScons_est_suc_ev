@@ -1,0 +1,167 @@
+/****o* Pendientes de agrupación/OFB:tes:CDScons_est_suc_ev
+* NOMBRE
+*   OFB:tes:CDScons_est_suc_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDScons_est_suc_ev(suc,opcion,operador)
+	LOCAL no_esta             LIKE siaf:cant
+	LOCAL abrio               LIKE rend_marca_cierre
+ 
+	siaf:lineas_cl = 0
+	siaf:indica_calcu = 0
+	siaf:primer_reg = "S"
+    
+	CALL MISCencab_est_suc_ev
+    
+	SELECT (opcion)
+		CASE "SUCURSAL"                    
+			//con el codigo de sucursal
+			CDS SELECT UNIQUE adt_espv_suc adt_espv_es_tesoro adt_espv_id \
+			FROM DSC:TesEspV BECOMES "Tes1" WHERE adt_espv_suc == suc 
+			break
+			            
+		CASE "TESORO"
+			//con el codigo de sucursal + si la especie esta en tesoro
+			CDS SELECT UNIQUE adt_espv_suc adt_espv_es_tesoro adt_espv_id \
+			FROM DSC:TesEspV BECOMES "Tes1" WHERE adt_espv_suc == suc  && \
+			adt_espv_es_tesoro == "S" 
+			break
+        
+		CASE "OPERADORES"
+			//con el codigo de sucursal + si la especie esta en caja (o sea != de tesoro)
+			CDS SELECT UNIQUE adt_espv_suc adt_espv_es_tesoro adt_espv_id \
+			FROM DSC:TesEspV BECOMES "Tes1" WHERE adt_espv_suc == suc  && \
+			adt_espv_es_tesoro == "N" 
+			break
+
+		CASE "OPERADOR"
+			//con el codigo de sucursal + si la especie esta en caja (!= tesoro) + el codigo de operador ingresado por pantalla
+			CDS SELECT UNIQUE adt_espv_suc adt_espv_es_tesoro adt_espv_id \
+			FROM DSC:TesEspV BECOMES "Tes1" WHERE adt_espv_suc == suc  && \
+			adt_espv_es_tesoro == "N" && adt_espv_id == operador 
+			break
+            
+	END SELECT
+   
+	CDS FINDFIRST "Tes1" NOLOCK
+	if (cdsretval == -801 && siaf:modo == "CLOSESUC")
+		return -8
+	end if
+	DO
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+        
+		//Si es por impresora empieza a contar las lineas que no superen las 60
+		if (siaf:pantalla_impreso ==  "I") then
+			IF (siaf:primer_reg != "S") THEN        
+				//a partir de la segunda verifica el contador de lineas que no superen las 60 e imprime una linea en blanco??? 
+				while (siaf:lineas_cl < 60)
+					common:csr_string = "   "
+					call tes:MISCwrite_file1(1,fld:common:csr_string)
+				end while
+			else
+				//viene por aca la primera vez
+				siaf:primer_reg = "N"
+			END IF
+		END IF
+		CDS EXTRACT "Tes1" FLD:adt_espv_es_tesoro FLD:adt_espv_id
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF 
+
+		no_esta = 0
+		abrio = "S"
+
+		FPRINT common:csr_string," "
+		CALL MISCwrite_file1(1,common:csr_string)
+
+		//consulta en la tabla tesoro, los datos para esa nis
+		op:adt_operator_id = adt_espv_id
+		CALL CDScons_tesor_id
+
+		IF (adt_espv_es_tesoro == "S") THEN
+			//verifico que el operador de la TesEspV no este con borrado logico en la profiles
+			CALL op:CDSadt_op_teso_load
+			FPRINT common:csr_string,"Tesoro: %s Id: %s Nombre: %s", \
+			op:adt_login_id,adt_espv_id,op:adt_title
+
+			CDS SELECT tes_fecha FROM DSC:tesoro_table BECOMES DSC:tesoro_context \
+				WHERE tes_suc_id == suc
+			CDS FINDFIRST DSC:tesoro_context NOLOCK
+			CDS EXTRACT DSC:tesoro_context ALL
+			//si no abrio el tesoro seteo la variable abrio = N
+			IF (tes_fecha != siaf:fecha_proceso) THEN
+				abrio = "N"
+			END IF
+		ELSE
+			//verifica que el operador de la TesEspV exista en la profiles y no este con borrado logico en la profiles
+			CALL op:CDSadt_op_opid_load
+			IF (RETVAL < 0) THEN
+				no_esta = 1 //operador no existe en la profiles o tiene borrado logico
+			ELSE
+				//imprime nombre cajero
+				FPRINT common:csr_string,"Cajero: %s Id: %s Nombre: %s", \
+				op:adt_login_id,adt_espv_id,op:adt_title
+				CDS SELECT FROM DSC:rend_caj_table BECOMES DSC:rend_caj_context  \
+					WHERE rend_suc_id == suc && \
+				rend_op_id == FLD:op:adt_operator_id
+				CDS FINDFIRST DSC:rend_caj_context NOLOCK
+				lib:err_retval = CDSRETVAL
+				//verifica que el cajero haya abierto la caja
+				IF (lib:err_retval == 0) THEN
+					CDS EXTRACT DSC:rend_caj_context ALL
+					CDS ENDSELECT DSC:rend_caj_context
+					FPRINT common:csr_string,"Cajero: %s Id: %s Nombre: %s", \
+					op:adt_login_id,adt_espv_id,op:adt_title
+					/* Comparo con fecha proceso*/
+					IF (rend_fecha != siaf:fecha_proceso) THEN
+						abrio = "N"
+					END IF
+				ELSE
+					no_esta = 1
+				END IF
+			END IF
+		END IF
+        
+		//si el cajero o tesorero estan habilitados en la profiles ==> 
+		IF (no_esta == 0) THEN
+			IF (list_espv == "1")
+				//Lista solo las especies que tuvieron movimientos
+				CALL MISCestSuc_ev_mov(suc,abrio)
+			ELSE
+				//Lista todas las especies
+				CALL MISCestSuc_ev(suc,abrio)
+			END IF
+		END IF
+		CDS FINDNEXT "Tes1" NOLOCK
+	LOOP
+	cds endselect "Tes1"
+
+	//Total de hojas
+	if (siaf:pantalla_impreso ==  "I") then
+		clearfield common:csr_string
+		While (siaf:lineas_cl < 59)
+			call MISCwrite_file1(1,fld:common:csr_string)
+		end while
+		fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:indica_calcu
+		call MISCwrite_file1(1,fld:common:csr_string)
+	End if
+  
+END SUB
+
+/*******/

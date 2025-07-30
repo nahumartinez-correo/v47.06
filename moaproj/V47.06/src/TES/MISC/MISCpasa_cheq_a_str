@@ -1,0 +1,258 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCpasa_cheq_a_str
+* NOMBRE
+*   OFB:tes:MISCpasa_cheq_a_str
+* DESCRIPCION
+* 	ESTADO DE LOS CHEQUES 			
+* 		"O" = OPERADOR						
+* 		"T" = TESORO					
+* 		"B" = CAJA BUZON				
+* 		" " = EN UN PASE				
+* 		"P" = CUENTA PROPIA				
+* 		"R" = CUENTA RECAUDADORA		
+* 		"F" = PASE FORZADO				
+* 		"S" = TESORERIA PROVINCIAL		
+* 		"A" = ADMINISTRACION REGIONAL   
+*		"C" = CHEQUE ROBADO				
+*		"Z"	= CHEQUE REEMPLAZADO		
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCpasa_cheq_a_str
+	LOCAL moneda_ant LIKE tes:teso_cheq_moneda
+	LOCAL estado_ant LIKE tes:teso_cheq_estado
+	LOCAL op_ant LIKE tes:teso_cheq_id
+	LOCAL total_op LIKE siaf:importe
+	LOCAL total_moneda LIKE siaf:importe
+	LOCAL loc_err_retval LIKE lib:err_retval
+
+	IF (siaf:pantalla_impreso != "P") THEN 
+		LET FLD:tes:INDsheet_header = OFB:tes:MISCencab_cons_cheq
+		;CALL tes:MISCencab_simple
+		CALL tes:MISCencab_cons_cheq
+	ELSE
+		LET FLD:tes:INDsheet_header = OFB:tes:MISCencab_cons_cheqP
+		;CALL tes:MISCencab_simple
+		CALL tes:MISCencab_cons_cheqP
+	END IF
+
+	SELECT (siaf:modo)
+		CASE "OPERADOR"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa \
+				&& (tes:teso_cheq_estado == "O" && tes:teso_cheq_id == op:op_operator_id) SORT "Cheq_ord"
+		BREAK
+		CASE "SUCURSAL"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa \
+				&& (tes:teso_cheq_estado == "O" || tes:teso_cheq_estado == "T" || tes:teso_cheq_estado == "B") SORT "Cheq_ord"
+		BREAK
+		CASE "CLOSETES"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa && (tes:teso_cheq_estado == "T") SORT "Cheq_ord"
+		BREAK
+		CASE "CLOSESUC"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa \
+				&& (tes:teso_cheq_estado == "O" || tes:teso_cheq_estado == "T") SORT "Cheq_ord"
+		BREAK
+	END SELECT
+
+	CDS FINDFIRST DSC:TesoCheq_ctx NOLOCK
+	LET loc_err_retval = CDSRETVAL
+	IF (loc_err_retval == 0) THEN
+		CDS EXTRACT DSC:TesoCheq_ctx ALL
+		LET moneda_ant = tes:teso_cheq_moneda
+		LET estado_ant = tes:teso_cheq_estado
+		LET op_ant = tes:teso_cheq_id
+	END IF
+
+	WHILE (loc_err_retval == 0)
+		SELECT (tes:teso_cheq_estado)
+			CASE "O"
+				FPRINT common:csr_string "OPERADORES"
+			BREAK
+			CASE "T"
+				FPRINT common:csr_string "TESORO"
+			BREAK
+			CASE "B"
+				FPRINT common:csr_string "CAJA BUZON"
+			BREAK
+		END SELECT
+        
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		FPRINT common:csr_string " "
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+        
+		WHILE (loc_err_retval == 0 && tes:teso_cheq_estado == estado_ant)
+			SELECT (tes:teso_cheq_estado)
+				CASE "O"
+					LET op:adt_operator_id = tes:teso_cheq_id
+					LET op:adt_branch_id = tes:teso_cheq_suc
+					CALL op:CDSadt_op_opids_load
+					IF (RETVAL < 0) THEN
+						LET op:adt_operator_id = "DESCONOCIDO"
+					END IF
+					FPRINT common:csr_string "Operador: %5s-%-s",tes:teso_cheq_id,op:adt_login_id
+					//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+					CALL post:MISCwrite_teso_cheq
+				BREAK
+				CASE "B"
+					FPRINT common:csr_string "Nro Buzon: %5s",tes:teso_cheq_id
+					//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+					CALL post:MISCwrite_teso_cheq
+				BREAK
+			END SELECT
+			
+			FPRINT common:csr_string " "
+			//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+			CALL post:MISCwrite_teso_cheq
+			LET total_op = 0
+            
+			WHILE (loc_err_retval == 0 && tes:teso_cheq_estado == estado_ant && tes:teso_cheq_id == op_ant) THEN
+				/*Busco en la tabla MedPago para ver si se trata de un cheque*/ 
+				CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX  \
+					WHERE post:adt_mp_cod == tes:teso_cheq_moneda
+				
+				CDS FINDFIRST DSC:post:MEDIOS_CTX LOCK
+				IF (CDSRETVAL >= 0) THEN
+					CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+				END IF
+				CDS UNLOCK DSC:post:MEDIOS_CTX
+				CDS ENDSELECT DSC:post:MEDIOS_CTX
+                
+				IF (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") THEN  /*es cheque*/
+					FPRINT common:csr_string "           %2s       %3s    %20.20e   %8s   %13e  ",teso_cheq_moneda,teso_cheq_banco,teso_cheq_cuenta,teso_cheq_nro,teso_cheq_importe
+					//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+					CALL post:MISCwrite_teso_cheq
+					LET total_op = tes:teso_cheq_importe + total_op
+				END IF
+              
+				CDS FINDNEXT DSC:TesoCheq_ctx NOLOCK
+				LET loc_err_retval = CDSRETVAL
+				IF (loc_err_retval == 0) THEN
+					CDS EXTRACT DSC:TesoCheq_ctx ALL
+				END IF
+			END WHILE
+            
+			LET op_ant = tes:teso_cheq_id
+			FPRINT common:csr_string "                    --------------------------------------------------------"
+			//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+			CALL post:MISCwrite_teso_cheq
+			FPRINT common:csr_string "                    TOTAL                                    %13e",total_op
+			//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+			CALL post:MISCwrite_teso_cheq
+			
+			FPRINT common:csr_string "  "
+			//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+			CALL post:MISCwrite_teso_cheq
+		END WHILE
+		LET estado_ant = teso_cheq_estado
+	END WHILE
+	CDS ENDSELECT DSC:TesoCheq_ctx
+	
+	;El tratamiento de cheque robado se hace por separado por estar ordenado por moneda y no por operador.
+	SELECT (siaf:modo)
+		CASE "OPERADOR"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa \
+				&& (tes:teso_cheq_estado == "C" && tes:teso_cheq_id == op:op_operator_id) SORT "CheqIdx2"
+		BREAK
+		CASE "SUCURSAL"
+		CASE "CLOSETES"
+		CASE "CLOSESUC"
+			CDS SELECT FROM tes:TesoCheq_tbl BECOMES tes:TesoCheq_ctx \
+				WHERE tes:teso_cheq_suc == common:sucursal_activa \
+				&& tes:teso_cheq_estado == "C" SORT "CheqIdx2"
+		BREAK
+	END SELECT  
+	      
+	CDS FINDFIRST DSC:TesoCheq_ctx NOLOCK
+	LET loc_err_retval = CDSRETVAL        
+	IF (loc_err_retval == 0) THEN
+		FPRINT common:csr_string "CHEQUE ROBADO"
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		FPRINT common:csr_string " "
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		CDS EXTRACT DSC:TesoCheq_ctx ALL
+		LET moneda_ant = tes:teso_cheq_moneda
+	END IF
+	
+	WHILE (loc_err_retval == 0)
+		CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX  \
+			WHERE post:adt_mp_cod == tes:teso_cheq_moneda
+		
+		CDS FINDFIRST DSC:post:MEDIOS_CTX LOCK
+		IF (CDSRETVAL >= 0) THEN
+			CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+		END IF
+		CDS UNLOCK DSC:post:MEDIOS_CTX
+		CDS ENDSELECT DSC:post:MEDIOS_CTX
+		
+		FPRINT common:csr_string "Moneda: %s",post:adt_mp_desc
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		FPRINT common:csr_string " "
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		LET total_moneda = 0
+		
+		WHILE (loc_err_retval == 0 && (moneda_ant == tes:teso_cheq_moneda))
+			/*Busco en la tabla MedPago para ver si se trata de un cheque*/ 
+			IF (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") THEN  /*es cheque*/
+				FPRINT common:csr_string "           %2s       %3s    %20.20e   %8s   %13e  ",teso_cheq_moneda,teso_cheq_banco,teso_cheq_cuenta,teso_cheq_nro,teso_cheq_importe
+				//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+				CALL post:MISCwrite_teso_cheq
+				LET total_moneda = total_moneda + tes:teso_cheq_importe
+			END IF
+		
+			CDS FINDNEXT DSC:TesoCheq_ctx NOLOCK
+			LET loc_err_retval = CDSRETVAL
+			IF (loc_err_retval == 0) THEN
+				CDS EXTRACT DSC:TesoCheq_ctx ALL
+			END IF    
+		END WHILE
+	    
+		LET moneda_ant = tes:teso_cheq_moneda
+		FPRINT common:csr_string "                    --------------------------------------------------------"
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		FPRINT common:csr_string "                    TOTAL                                    %13e",total_moneda
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+		
+		FPRINT common:csr_string "  "
+		//CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		CALL post:MISCwrite_teso_cheq
+	END WHILE
+    
+	CDS ENDSELECT DSC:TesoCheq_ctx
+	
+	IF (siaf:pantalla_impreso == "I") THEN
+		DO
+			IF (siaf:lineas_cl < siaf:lineas_cl_gral - 1) THEN
+				LET common:csr_string = "    "
+				CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+			ELSE
+				BREAK
+			END IF
+		LOOP
+	END IF
+    
+END SUB
+
+/*******/

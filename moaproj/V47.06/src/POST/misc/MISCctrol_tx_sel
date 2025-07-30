@@ -1,0 +1,154 @@
+/****o* Sesión Correo/OFB:post:MISCctrol_tx_sel
+* NOMBRE
+*   OFB:post:MISCctrol_tx_sel
+* DESCRIPCION
+*  Se controla en la PresuDet, que la tx que se selecciona esté en condiciones
+*  para ser borrada.
+*  Extraigo el código_siaf de la tx en cuestion. Ojo... los campos que se extraigan    
+*  de la PresuDet deberán ser los necesarios para cada control en particular ya que     
+*  después de dicho control hay que limpiarlos porque en ningun momento se está         
+*  ejecutando la drv:end_tran que los limpia automáticamente, y si quedan sucios pueden 
+*  perjudicar a la nueva tx que se desee ejecutar
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCsel_tx_ses
+* DOCUMENTACION
+*  http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCctrol_tx_sel
+	//Controlo en la PresuDet, que la tx que se selecciona esté en condiciones
+	//para ser borrada.
+	
+	/***************** LEER CON ATENCION ****************************************************/
+	/* Extraigo el código_siaf de la tx en cuestion. Ojo... los campos que se extraigan     */
+	/* de la PresuDet deberán ser los necesarios para cada control en particular ya que     */
+	/* después de dicho control hay que limpiarlos porque en ningun momento se está         */
+	/* ejecutando la drv:end_tran que los limpia automáticamente, y si quedan sucios pueden */
+	/* perjudicar a la nueva tx que se desee ejecutar                                       */
+	/****************************************************************************************/
+	CALL CDSselPresuDetModif
+	IF (RETVAL < 0) THEN
+		MSGBOX "No se pueden encontrar los datos de la transacción seleccionada",0x00,"Error"
+		RETURN (-2)
+	END IF
+
+	// Toque que no permite Borrar los Aceptados PJM 20-4-1998
+	CDS EXTRACT DSC:CONPresuDeta PreDEst INTO modif_PreDEst
+	IF (modif_PreDEst == ACEPTADO) THEN
+		MSGBOX ERROR_BORRADO,OFB_OK,"Aviso"
+		RETURN -2
+	ELSE
+		CDS EXTRACT DSC:CONPresuDeta PrePEst INTO modif_PrePEst
+		IF (modif_PrePEst != 1) THEN
+			MSGBOX "Medio de Pago Confirmado, No puede Eliminarse Transacción",OFB_OK,"Aviso"
+		ELSE
+			CDS EXTRACT DSC:CONPresuDeta siaf:codigo_siaf INTO modif_codigo_siaf
+            
+			SELECT (modif_codigo_siaf)
+				CASE 99024
+				CASE 99027
+				CASE 99029
+				CASE 70610 // Trx.Giros Masivos.
+				CASE 70630 // Excedente de Cheq.Acreditado para giros masivos
+				CASE 99300
+				CASE 99006
+				CASE 99095
+				CASE 99025
+				CASE 99028
+				CASE 99019
+				CASE 70620 // Faltante  de Cheq.Acreditado para giros masivos.
+				CASE 99160
+				CASE 99410
+				CASE 99007
+				CASE 99130
+				CASE 6690
+				CASE 6890
+				CASE 6860
+				CASE 6650
+				CASE 6640
+				CASE 99458 // Consumo de Anticipo Monetario
+				CASE 70650 //Emision Lista de Giros.
+				CASE 70640 //Importacion Lista de Giros.
+				CASE 30300 //gpb:NI50479
+					//cgw:NI50295 - controla que no pueda seleccionar para eliminar la Importacion LG (70640).
+					//Solamente puede darse que este la trx en la grilla, al acceder a la sesion pendiente luego
+					//de una caida de RT producida en la sesion de Importacion LG con el siguiente estado:
+					//en post:estado_presu = 2 y luego de grabar en la PresuDet.
+					MSGBOX "La Transacción no puede Eliminarse",OFB_OK,"Aviso"
+					RETURN -2
+			END SELECT
+
+			/*MLD No dejo Borrar transacciones asociadas a una original */
+			IF (modif_codigo_siaf == 40002)
+				CDS EXTRACT DSC:CONPresuDeta post:tran_original INTO modif_tran_orig
+			END IF
+
+			CDS EXTRACT DSC:CONPresuDeta cod_agrupacion INTO modif_cod_agrup
+			IF ((modif_codigo_siaf == 8500) || \
+				(modif_codigo_siaf == 40002 && modif_tran_orig == "N")) THEN
+				IF (modif_cod_agrup != 0) THEN
+					MSGBOX "No se Puede Eliminar. Transacción asociada a Otra",OFB_OK,"Aviso"
+					RETURN -2
+				END IF
+			END IF
+
+			IF (modif_codigo_siaf == 8500) THEN
+				tes:adt_evaux_prestran = post:PreDNroTrn
+				CALL post:CDSevaux_aceptada
+				IF (RETVAL < 0) THEN
+					;msgbox "La Transaccion no puede Eliminarse",OFB_OK,"Aviso"
+					MSGBOX ERROR_BORRADO,OFB_OK,"Aviso"
+					RETURN -2
+				END IF
+			END IF
+
+			IF (modif_codigo_siaf == 99120) THEN
+				post:adt_pmaux_presu = post:PresNro
+				CALL post:CDSpmaux_aceptada
+				IF (RETVAL < 0) THEN
+					;msgbox "La Transaccion no puede Eliminarse",OFB_OK,"Aviso"
+					MSGBOX ERROR_BORRADO,OFB_OK,"Aviso"
+					RETURN -2
+				END IF
+			END IF
+
+			//FGB 13.6.2001: Como las transacciones de giros no siguen la misma logica que las postales, antes
+			//de borrar una emision, no solo verifico el estado, sino hasta donde llego a ejecutarse
+			CDS FINDAGAIN DSC:CONPresuDeta NOLOCK
+			CDS EXTRACT DSC:CONPresuDeta siaf:adt_tran_fliatran INTO modif_flia_tran
+			IF (modif_flia_tran == "CSM") THEN
+				CDS EXTRACT DSC:CONPresuDeta \
+					giros:es_envio_WU INTO modif_envio_WU \
+					giros:es_emision_postal INTO modif_emis_post \
+					giros:es_emision_tele INTO modif_emis_tele
+				IF (modif_envio_WU == "S" || modif_emis_post == "S" || modif_emis_tele == "S") THEN
+					CDS EXTRACT DSC:CONPresuDeta \
+						giros:checkpoint_emision INTO modif_checkp_emis
+					CALL giros:MISCverif_checkpoint(modif_checkp_emis)
+					IF (RETVAL < 0) THEN
+						MSGBOX "No se puede cancelar una operacion que ya realizó el viaje!!!",OFB_OK,"Aviso"
+						RETURN -2
+					END IF
+				END IF //si es emision
+			END IF //si es de giros
+			
+			//Las transacciones de Cobranza Cliente Medio (ella y sus correspondidas)
+			//No pueden borrarse
+			CALL post:CDSflagsCob_load
+			IF (post:OperacionCob || post:OperacionAut || post:OperacionInt) THEN
+				MSGBOX "La Transacción no puede Eliminarse.",OFB_OK,"Aviso"
+				RETURN -2
+			END IF
+		END IF
+	END IF
+END SUB
+
+/*******/

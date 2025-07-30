@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:post:CDScargaDetTmpSPost
+* NOMBRE
+*   OFB:post:CDScargaDetTmpSPost
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaDetTmpSPost
+    /* Carga DetTmp con las piezas que tienen */
+    /* jnl_expedic_rapida = "S"		    */
+    /* Sept. 1998 - B. Petrella -             */
+    /* Resguardo peso_en_kgs */
+    swapdup peso_en_kgs
+    swapdup siaf:jnl_codigo_siaf
+
+
+/* REQ.126 reimpresión guía de despacho Ene. 1999*/
+    IF (post:reimpresion != "S")
+       clearfield post:adt_codseq_nro
+    ENDIF
+
+
+    clearfield tlr:jnl_sequence_corr
+    let post:jnl_flia_tran = "CSE"
+    clearfield siaf:jnl_codigo_siaf
+
+    /* Selecciona los jnl. de la sucursal, que sean de expedicion rapida,   */
+    /* con el mismo cod. de corte op. y que la saca este   */
+    /* vacia y que la transaccion no este reversada.                        */
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	 (tlr:jnl_branch == op:op_branch_id && \
+        tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+        tlr:jnl_status < 100 && \
+        post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+        post:jnl_corteop_cod == post:adt_corteop_cod && \
+        post:jnl_guia_saca == post:adt_codseq_nro && \
+	post:jnl_expedic_rapida == post:adt_corteop_exprap && \
+	((post:adt_serv_piezacont == "T" && post:track_trace != "") || \
+	(post:adt_serv_piezacont == "F")))
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+	IF (CDSRETVAL != 0) THEN
+		CDS UNLOCK DSC:tlr:jnl_context
+		CDS ENDSELECT DSC:tlr:jnl_context
+		/* Recupero peso_en_kgs */
+		swapdup peso_en_kgs
+		swapdup siaf:jnl_codigo_siaf
+		RETURN (-2)
+	END IF
+    /* Para controlar que por lo menos haya encontrado una pieza */
+	LET idx = 0
+	LET orden = 1
+	DO
+        IF (CDSRETVAL != 0) THEN
+            BREAK
+        END IF
+	  /* Extrae le clave del journal */
+        CDS EXTRACT DSC:tlr:jnl_context tlr:jnl_sequence \
+            tlr:jnl_date tlr:jnl_branch tlr:jnl_operator \
+		tlr:jnl_time tlr:jnl_bus_date
+
+	  CDS EXTRACT DSC:tlr:jnl_context \
+             post:track_trace siaf:jnl_codigo_siaf
+
+        LET MarcaBorrado = " "
+        let idx = idx + 1
+        call CDSgrabaDetSPost
+
+        CDS FINDNEXT DSC:tlr:jnl_context LOCK
+	LOOP
+
+	CDS UNLOCK DSC:tlr:jnl_context
+	CDS ENDSELECT DSC:tlr:jnl_context
+
+	CDS UNLOCK DSC:post:DetTmp_ctx
+	CDS ENDSELECT DSC:post:DetTmp_ctx
+
+	/* Recupero peso_en_kgs */
+	swapdup peso_en_kgs
+	swapdup siaf:jnl_codigo_siaf
+
+	IF (idx == 0)
+        return (-2)
+	END IF
+END SUB
+
+/*******/

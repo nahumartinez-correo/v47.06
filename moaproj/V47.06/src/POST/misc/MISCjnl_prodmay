@@ -1,0 +1,126 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_prodmay
+* NOMBRE
+*   OFB:post:MISCjnl_prodmay
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_prodmay   //tes:MISCjnl_venta_ev
+    local aux_PresNro like post:PresNro
+    
+    tes:aux_sequence_mov = tlr:jnl_sequence
+    let drv:INDscr = SCR:post:SCRNprod_mayorista //SCR:post:SCRNmov_pm
+
+    /* 
+    Recupera de la tabla de Especies el Formulario Fiscal. Esto se pidio
+    para teclas rapidas 
+    */
+    /*
+    cds select from Especie becomes Especie where\
+    adt_espv_cod == fld:espv_cod
+    cds findfirst Especie nolock
+    lib:err_retval = cdsretval
+    if (lib:err_retval == 0) then
+        cds extract Especie adt_espv_formfiscal
+        if (adt_espv_formfiscal.numchars == 0) then
+            post:PreDForFis = ""
+        else
+            post:PreDForFis = adt_espv_formfiscal
+        end if
+    end if
+    */
+
+    if (post:Modo == "R") && (post:estado_presu == 1) then
+        CALL post:CDSobtiene_secuen("TICKE")
+        post:nro_impre = post:adt_codseq_nro
+    end if
+
+    if (post:estado_presu == 1) then    	
+    	cds select FROM DSC:auxProdMay_tbl becomes DSC:auxProdMay_ctx where \
+        adt_pmaux_fecha  == common:system_date && \
+        adt_pmaux_suc    == op:op_branch_id    && \
+        adt_pmaux_op     == op:op_operator_id  && \
+        adt_pmaux_acepta == "N"                && \
+        adt_pmaux_presu  == 0            
+    else        
+        cds select FROM DSC:auxProdMay_tbl becomes DSC:auxProdMay_ctx where \
+        adt_pmaux_fecha  == common:system_date && \
+        adt_pmaux_suc    == op:op_branch_id    && \
+        adt_pmaux_op     == op:op_operator_id  && \
+        adt_pmaux_acepta == "N"                && \
+        adt_pmaux_presu  == post:PresNro
+    end if
+
+    clearfield drv:INDspc_rtn[2]
+    /*
+    SubImporte = 0
+    clearfield post:TotalSinIva
+    post:importe = siaf:importe
+    */
+    cds findfirst DSC:auxProdMay_ctx LOCK
+    let lib:err_retval = CDSRETVAL
+
+    do
+	    if (lib:err_retval != 0) then
+	        break
+	    end if
+
+		cds extract DSC:auxProdMay_ctx ALL		
+		//move adt_pmaux_cant to siaf:cantidad
+		let tes:es_tesoro = "S"
+
+        let siaf:codigo_siaf = 99120
+        let siaf:nombre_transac = "PRODUCTOS MAYORISTAS"
+        move "PRODMAY" to tlr:tran_mnemonic
+        /*
+        let post:SobreTasaIva  = 0
+        let post:ImporteIva    = 0
+        let post:ImporteSinIva = 0
+        let post:TasaIva       = 0
+        */
+
+		FLD:drv:INDjnl_rtn = OFB:JNLprodmay		
+		
+		ungetkey 0x190
+		call siaf:MISClleno_modalidad
+		call tlr:JNLtran
+
+        /* Guardo un campo en la AuxProdMay para saber si llegó a journalizarse
+        o no la subespecie.*/
+        adt_pmaux_acepta = "S"
+        cds clearbuffer DSC:auxProdMay_ctx
+        cds append DSC:auxProdMay_ctx adt_pmaux_acepta
+        cds update DSC:auxProdMay_ctx lock
+
+		if (post:estado_presu == 1) then
+	        call tes:CDSrecupero_PresuDet(0)
+	    end if
+		cds unlock DSC:auxProdMay_ctx
+		cds findnext DSC:auxProdMay_ctx LOCK
+		let lib:err_retval = CDSRETVAL
+    loop
+    ;siaf:importe = post:importe
+    cds unlock DSC:auxProdMay_ctx
+    cds endselect DSC:auxProdMay_ctx
+    CLEARFIELD drv:INDjnl_rtn
+    INIT 33,0
+    let drv:INDspc_rtn[2] = ofb:tes:TRANprint_venta_ev
+
+    /* Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+    Gabriel Falciola*/
+    ;post:INDticket_laser = ofb:post:PRT_Ticket_VentaEv
+END SUB
+
+/*******/

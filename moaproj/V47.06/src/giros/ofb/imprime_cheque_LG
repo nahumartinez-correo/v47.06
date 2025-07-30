@@ -1,0 +1,388 @@
+/****o* Lista de Giros/OFB:giros:imprime_cheque_LG
+* NOMBRE
+*   OFB:giros:imprime_cheque_LG
+* DESCRIPCION
+*   Rutina que completa los datos de la plancha de cheques
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:PBImpLG_Emitidos
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:imprime_cheque_LG
+// sba 20031126 - Se modifica la impresion del cheque
+    LOCAL COMANDO LIKE common:csr_string
+    LOCAL COMANDO1 LIKE common:csr_string
+    LOCAL COMANDO2 LIKE common:csr_string
+    LOCAL anio LIKE common:csr_string
+    LOCAL mes LIKE common:csr_string
+    LOCAL dia LIKE common:csr_string
+    LOCAL l_cont LIKE siaf:i
+    LOCAL line_csr LIKE common:csr_string
+    LOCAL line_csr_cheque LIKE common:csr_string
+    LOCAL line_csr_cheque_sel LIKE common:csr_string
+    LOCAL idx_item LIKE siaf:i
+    LOCAL l_anulado LIKE common:csr_string 
+    LOCAL l_nro_trx_lg LIKE common:csr_string
+    LOCAL l_cheque_lg LIKE common:csr_string
+
+   	/* sba 20031126 - Esto no va mas
+    CALL post:TMU950calc_X(giros:ImporteNeto,COMANDO)
+	PRT TRANSPARENT COMANDO
+	*/
+	
+	l_cont = 0
+	idx_item = PL_GETITEM
+		
+    DO
+        //Leer picklist de cheques emitidos
+        CALL csr:magic_myPickcontrol "cheques_emitidos_LG" line_csr idx_item
+        
+        IF (RETVAL < 0)
+            BREAK
+        END IF
+		
+		l_cont = l_cont + 1
+		
+		//Lo hago para situar la linea de impresion en el proximo cheque
+        IF (l_cont > 1) THEN
+            COMANDO = "\eJ\x39"
+    	    PRT TRANSPARENT COMANDO
+    	    COMANDO = "\eJ\x39"
+    	    PRT TRANSPARENT COMANDO
+    	    COMANDO = "\eJ\x29"
+    	    PRT TRANSPARENT COMANDO
+    	    COMANDO = "\eJ\x11"
+    	    PRT TRANSPARENT COMANDO
+    	    IF (l_cont > 2) THEN
+                COMANDO = "\eJ\x03"
+                PRT TRANSPARENT COMANDO
+    	    END IF
+    	ELSE
+    	    //por mejora
+    	    //MSGBOX "Inserte la plancha de cheques para su impresión",OFB_OK,"Atención"
+    	    
+    		/* limpio el buffer de la docprt */
+	        PRT TRANSPARENT SETEODOC
+        END IF
+		
+    	CLEARFIELD giros:ImporteNeto 
+        CLEARFIELD giros:CodSucBenef_fld 
+        CLEARFIELD giros:NombreBenef_fld 
+        CLEARFIELD giros:ApellidoBenef_fld
+        CLEARFIELD l_anulado 
+        CLEARFIELD giros:nro_sesion_lg
+        CLEARFIELD giros:nro_trx_lg
+        
+        REFRESH giros:ImporteNeto 
+        REFRESH giros:CodSucBenef_fld 
+        REFRESH giros:NombreBenef_fld 
+        REFRESH giros:ApellidoBenef_fld
+        REFRESH l_anulado 
+        REFRESH giros:nro_sesion_lg
+        REFRESH giros:nro_trx_lg
+        
+        line_csr_cheque = ""
+        line_csr_cheque_sel = ""
+        l_nro_trx_lg = ""
+
+		giros:ImporteNeto = SUBSTR(line_csr,0,14)
+        giros:CodSucBenef_fld = SUBSTR(line_csr,15,5)
+        giros:NombreBenef_fld = SUBSTR(line_csr,21,20)
+        CALL post:MISCFtrim(giros:NombreBenef_fld)
+        giros:ApellidoBenef_fld = SUBSTR(line_csr,42,20)
+        CALL post:MISCFtrim(giros:ApellidoBenef_fld)
+        
+        l_anulado = SUBSTR(line_csr,63,7)
+        giros:nro_sesion_lg  = SUBSTR(line_csr,71,9)
+        giros:nro_trx_lg = SUBSTR(line_csr,81,5)
+        
+        //Traigo los datos del cheque y lo cargo en el picklist
+        MOVE giros:F_Serie_fld TO SUBSTR(line_csr_cheque,1,1)
+        CALL post:MISCFtrim(giros:F_NroGiro_fld)
+        CALL post:MISCpadNmb(giros:F_NroGiro_fld,6,"0")
+        MOVE giros:F_NroGiro_fld TO SUBSTR(line_csr_cheque,3,6)
+        CALL giros:digito_verificador (giros:F_Serie_fld,giros:F_NroGiro_fld,giros:F_digito_fld)
+        MOVE "-" TO SUBSTR(line_csr_cheque,9,1)
+        CALL post:MISCFtrim(giros:F_digito_fld)
+        MOVE giros:F_digito_fld TO SUBSTR(line_csr_cheque,10,1)
+        
+        MOVE SUBSTR(line_csr_cheque,1,10) TO SUBSTR(line_csr_cheque_sel,1,10)
+       
+        IF (l_anulado == "ANULADO") THEN
+            MOVE l_anulado TO SUBSTR(line_csr_cheque,24,7)
+            
+            MOVE l_anulado TO SUBSTR(line_csr_cheque_sel,87,7)
+            MOVE giros:nro_sesion_lg TO SUBSTR(line_csr_cheque_sel,71,9)
+        ELSE
+            MOVE "$" TO SUBSTR(line_csr_cheque,24,1)
+            MOVE giros:ImporteNeto TO SUBSTR(line_csr_cheque,26,14)
+            
+            MOVE giros:nro_sesion_lg TO SUBSTR(line_csr_cheque_sel,71,9)
+            MOVE giros:nro_trx_lg TO SUBSTR(line_csr_cheque_sel,81,5)
+            MOVE  "       " TO SUBSTR(line_csr_cheque_sel,87,7)
+            
+            l_nro_trx_lg = giros:nro_trx_lg
+        END IF
+        
+        MOVE giros:CodSucBenef_fld TO SUBSTR(line_csr_cheque,40,5)
+        MOVE giros:nro_sesion_lg TO SUBSTR(line_csr_cheque,71,9)
+        MOVE giros:nro_trx_lg TO SUBSTR(line_csr_cheque,81,5)
+        
+        //Aca cargo los datos del giro 
+        CALL CSR:f_saaddpl dsc:post:PICanulacion_tran line_csr_cheque
+        
+        //Aca cargo los cheques anulados
+        CALL CSR:f_saaddpl dsc:post:PICtran_sel line_csr_cheque_sel
+
+        //Grabo en CaidasChq
+        CALL CDSsaveCaidasChq (giros:nro_sesion_lg,l_nro_trx_lg,giros:F_Serie_fld,giros:F_NroGiro_fld,giros:F_digito_fld,l_anulado,giros:ImporteNeto,giros:CodSucBenef_fld,giros:NombreBenef_fld,giros:ApellidoBenef_fld)
+        
+        //AUT-1217
+        FPRINT l_cheque_lg "%s %s-%s" giros:F_Serie_fld giros:F_NroGiro_fld giros:F_digito_fld
+        
+        giros:F_NroGiro_fld = (giros:F_NroGiro_fld * 1) + 1
+
+	    /********************************** INICIO DEL REPORTE *******************************************/
+        IF (l_anulado == "ANULADO") THEN
+            COMANDO = "\eJ\x39"
+            PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x39"
+            PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x39"
+            PRT TRANSPARENT COMANDO
+
+            CALL post:TMU950pos_x(200,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "  *    *   *  *   *  *        *    ****    *** "
+            PRT TRANSPARENT COMANDO
+            
+            COMANDO = "\eJ\x13"
+            PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(200,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "*   *  * * *  *   *  *      *   *  *   *  *   *"
+            PRT TRANSPARENT COMANDO
+            
+            COMANDO = "\eJ\x13"
+            PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(200,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "* * *  *   *  *   *  *      * * *  *   *  *   *"
+            PRT TRANSPARENT COMANDO
+            
+            COMANDO = "\eJ\x13"
+            PRT TRANSPARENT COMANDO          
+            CALL post:TMU950pos_x(200,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "*   *  *   *   ***   *****  *   *  ****    *** "
+            PRT TRANSPARENT COMANDO
+            
+            COMANDO = "\eJ\x19"
+            PRT TRANSPARENT COMANDO
+              
+    	ELSE
+    	    COMANDO = "\eJ\x06"      //
+        	PRT TRANSPARENT COMANDO  //
+        	
+            COMANDO = "\e \x13"
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(1040,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"%07.7s",giros:ImporteNeto
+        	COMANDO1 = SUBSTR(COMANDO,0,6)
+        	COMANDO2 = SUBSTR(COMANDO,6,1)
+        	PRT TRANSPARENT COMANDO1
+        	COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+        	PRT TRANSPARENT COMANDO2
+            COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+            
+            COMANDO = "\eJ\x20"      //
+        	PRT TRANSPARENT COMANDO  // 
+            
+            IF (siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) THEN
+                COMANDO = "\eJ\x14"
+        	    PRT TRANSPARENT COMANDO
+                FPRINT COMANDO "Liq. contra reembolso"
+        	    PRT TRANSPARENT COMANDO
+            END IF
+        
+            //COMANDO = "\eJ\x17"
+            COMANDO = "\eJ\x11" //
+            
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950mes(anio,mes,dia)
+            //FPRINT COMANDO "%2s DE %s DE %4s" dia mes anio
+            //AUT-1217
+            FPRINT COMANDO "%2s DE %s DE %4s                     %s" dia mes anio l_cheque_lg
+        	PRT TRANSPARENT COMANDO
+        	
+        	COMANDO = "\eJ\x06"     //
+        	PRT TRANSPARENT COMANDO //
+        	
+            COMANDO = "\eJ\x20"
+        	PRT TRANSPARENT COMANDO
+        	
+        	//
+            CALL post:TMU950pos_x(430,COMANDO)
+        	PRT TRANSPARENT COMANDO
+        	admin:adt_br_branch = common:sucursal_activa
+        	call MISCbusco_loc
+            FPRINT COMANDO,"%-20s",LocEmis_fld
+        	PRT TRANSPARENT COMANDO
+        	//
+        	
+            //COMANDO = "\eJ\x04"
+            COMANDO = "\eJ\x01"
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(210,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\e \x10"
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"%05s",common:sucursal_activa
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+        
+        	/* sba 20031118 - Se cambia de lugar por las nuevas adecuaciones
+            CALL post:TMU950pos_x(920,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"NRO.CONTROL:%012d",giros:clave_hdr_giros
+        	PRT TRANSPARENT COMANDO
+        	*/
+        
+            COMANDO = "\eJ\x20"
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(430,COMANDO)
+        	PRT TRANSPARENT COMANDO
+        	admin:adt_br_branch = giros:CodSucBenef_fld
+        	call MISCbusco_loc
+            FPRINT COMANDO,"%-20s",giros:LocEmis_fld
+        	PRT TRANSPARENT COMANDO
+        
+        	/* sba 20031119 - Se cambia de lugar por las nuevas adecuaciones
+        	IF (post:cod_opc[0] == "AVPP" || post:cod_opc[1] == "AVPP" || \
+        		post:cod_opc[2] == "AVPP" || post:cod_opc[3] == "AVPP" || post:cod_opc[4] == "AVPP") THEN
+        	        FPRINT COMANDO "%30s" "AVISO PAGADO"
+        		    PRT TRANSPARENT COMANDO
+        	END IF
+        	*/
+        
+            //COMANDO = "\eJ\x06"
+            COMANDO = "\eJ\x01"
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\e \x10" 
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(210,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"%5s",giros:CodSucBenef_fld
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x19"
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+        
+            CALL post:TMU950pos_x(210,COMANDO)
+        	PRT TRANSPARENT COMANDO
+        
+            //cgw:SC50274 - Si es Liq. contra reemboso o Liq. contra reembolso Contingencia para Persona Juridica,
+            //    imprime la razon social con su totalidad de caracteres.
+            IF ((siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) && \
+                 TESTFLAG(giros:pjurid_benef_flag,persona_juridica))
+                 FPRINT COMANDO,"%s",post:CliRaz
+            ELSE
+                 FPRINT COMANDO,"%s %s",giros:NombreBenef_fld,giros:ApellidoBenef_fld
+            END IF
+                
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x22"
+        	PRT TRANSPARENT COMANDO
+            CALL CSR:nro_a_letras(giros:ImporteNeto,post:medio_pago_desc, \
+                                    giros:linea_letras1,giros:linea_letras2,giros:linea_letras3)
+        
+            CALL post:TMU950pos_x(155,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"%-70s",giros:linea_letras1
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x23"
+        	PRT TRANSPARENT COMANDO
+            CALL post:TMU950pos_x(155,COMANDO)
+        	PRT TRANSPARENT COMANDO
+            FPRINT COMANDO,"%-32s",giros:linea_letras2
+        	PRT TRANSPARENT COMANDO
+            COMANDO = "\eJ\x20"
+        	PRT TRANSPARENT COMANDO
+        
+            /* sba 20031125 - quiero que imprima al comienzo del renglon
+            CALL post:TMU950pos_x(90,COMANDO)
+        	PRT TRANSPARENT COMANDO
+        	*/
+        	
+        	/* sba 20031125 - No cambio el tipo de letra para ganar espacio	
+            COMANDO = "\e \x08"
+        	PRT TRANSPARENT COMANDO
+        	*/
+        	
+        	// sba 20031125 - Seteo la letra chica
+        	COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+        	//
+        
+        	IF (es_emision_postal == "S") THEN
+        	    COMANDO = ""
+        	ELSE
+        	    COMANDO = "DUPLICADO"
+        	END IF
+        	PRT TRANSPARENT COMANDO
+        	COMANDO = "\e \x01"
+        	PRT TRANSPARENT COMANDO
+        
+        	// sba 20031119 - Imprimo aqui el Nro de Control
+            CALL post:TMU950pos_x(200,COMANDO)
+        	PRT TRANSPARENT COMANDO
+        	
+            //FPRINT COMANDO,"NRO.CTRL:%012d",giros:clave_hdr_giros
+            FPRINT COMANDO,"                     "
+        	PRT TRANSPARENT COMANDO
+        	//
+        
+        	// sba 20031125 - Impresion de Aviso de Pago
+        	// sba 20031216 - Se agrega el opcional AVTP (Aviso Telegrafico de Pago)
+        	// Agrego el flag aviso_pago para Duplicacion de Giros
+        	IF (post:cod_opc[0] == "AVPP" || post:cod_opc[1] == "AVPP" || \
+        		post:cod_opc[2] == "AVPP" || post:cod_opc[3] == "AVPP" || \
+        		post:cod_opc[4] == "AVPP" || post:cod_opc[0] == "AVTP" || \
+        		post:cod_opc[1] == "AVTP" || post:cod_opc[2] == "AVTP" || \
+        		post:cod_opc[3] == "AVTP" || post:cod_opc[4] == "AVTP" || \
+        		TESTFLAG(flags_back,aviso_pago)) THEN
+        	        FPRINT COMANDO "%15s" "AVISO PAGADO"
+        		    PRT TRANSPARENT COMANDO
+        	END IF
+        	//
+        	
+        END IF
+	    /*********************************** FIN DEL REPORTE *********************************************/
+
+        idx_item = idx_item + 1
+
+	LOOP
+
+    COMANDO = "\r\n\f"
+    PRT TRANSPARENT COMANDO
+    COMANDO = "\e@"
+    PRT TRANSPARENT COMANDO
+    PRT TRANSPARENT SETEODEFAULT
+
+END SUB
+
+/*******/

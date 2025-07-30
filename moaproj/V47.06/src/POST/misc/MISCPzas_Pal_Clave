@@ -1,0 +1,117 @@
+/****o* Recepción de Piezas/OFB:post:MISCPzas_Pal_Clave
+* NOMBRE
+*   OFB:post:MISCPzas_Pal_Clave
+* DESCRIPCION
+*  SE TIENE QUE CONSULTAR SI HAY PIEZAS EN STOCKP CON DESTINO ECOMMERCE/CERRADAS CON AVISO/ENTREGA EN SUCURSAL QUE NO SE SEPA SI TIENEN PALABRA CLAVE (X)
+*  SE ENVIA POR CADA UNA, UNA CONSULTA A T&T PARA SABER SI TIENEN PALABRA CLAVE Y SI FUERON ENTREGADAS POR HANDHELD Y ASI REALIZAR LA ACTUALIZACION
+*  CORRESPONDIENTE EN LA STOCKP (BAJA = "S" / FECHA DE ENTREGA DEL DIA DE LA CONSULTA) 
+* ENTRADAS
+* 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*      OFB:tes:SVALaper_suc, OFB:tes:SVALcierre_suc
+* DOCUMENTACION
+*
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:MISCPzas_Pal_Clave
+	LOCAL loc_retval LIKE lib:err_retval
+//	LOCAL l_destino LIKE post:adt_stockp_destino
+ //se hace la consulta de las piezas en stock con destino ECCOMERCE/CERRADAS EN SUCURSAL/ENTREGA EN SUCURSAL, sin devol rtte, que no se sabe si tienen palabra clave 
+    CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+   	WHERE ((post:adt_stockp_ecom_clav == "X" || post:adt_stockp_ecom_clav == "S") &&  \
+   	 post:adt_stockp_entrega_f == 0  &&  \
+   	 post:adt_stockp_en_devol != "S"  &&   \
+   	 post:adt_stockp_destino == DSC:post:ECOM_desc)
+   	 /* ||  \
+   	 post:adt_stockp_destino == "CERRADAS CON AVISO"  ||  \
+   	 post:adt_stockp_destino == "ENTREGA EN SUCURSAL"))*/
+
+   	 
+    CDS FINDFIRST DSC:stockp_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+		do
+					if (lib:err_retval < 0) THEN
+						CDS UNLOCK DSC:stockp_ctx
+						CDS ENDSELECT DSC:stockp_ctx
+						break
+					END IF
+				
+				  CDS EXTRACT DSC:stockp_ctx post:adt_stockp_pieza INTO post:stockp_pieza 
+				  /*\
+				   post:adt_stockp_destino INTO l_destino*/
+					    
+				//LLAMAR A LA RUTINA QUE ENVIA MENSAJE A T&t
+					CALL post:OFBcons_tyt_PC
+					LET loc_retval = RETVAL
+					
+					SELECT (loc_retval)
+						CASE 0
+								//DPRINT "**** PIEZA [SI] PALABRA CLAVE\n"
+								post:adt_stockp_ecom_clav = "S"
+								BREAK
+						CASE 1
+								//DPRINT "**** PIEZA [NO] PALABRA CLAVE\n"
+								post:adt_stockp_ecom_clav = "N"
+								BREAK
+						CASE -1 // "Falta la unidad de negocio"
+								//DPRINT "**** FALTA UNIDAD DE NEGOCIO\n"
+								post:adt_stockp_ecom_clav = "X"
+								break
+						case -2 // SIN RTA DE T&T
+								post:adt_stockp_ecom_clav = "X"
+								BREAK
+						case -3
+								//DPRINT "**** [NO] EXISTE LA PIEZA\n"
+								post:adt_stockp_ecom_clav = "X"
+								BREAK
+					CASE 99
+									//DPRINT "**** OTRO TIPO DE ERROR NO CONTEMPLADO [%s][%s]\n" post:tyt_img_code post:tyt_img_msg
+						 			post:adt_stockp_ecom_clav = "X"
+        					break
+						END SELECT
+						
+				   CDS CLEARBUFFER DSC:stockp_ctx
+
+				// SI LA PIEZA FUE ENTREGADA POR HAND HELD SE DEBERA DAR DE BAJA EN STOCKP
+					 if (post:stockp_ecom_entrega == "TRUE") 
+						   post:adt_stockp_Baja = "S"
+						   post:adt_stockp_entrega_f = common:system_date
+						   post:adt_stockp_entrega_h = common:time_of_day
+						   post:adt_stockp_entrega_o = op:op_operator_id
+						   
+						   CDS APPEND DSC:stockp_ctx post:adt_stockp_Baja \
+						    post:adt_stockp_entrega_f  \
+								post:adt_stockp_entrega_h  \
+								post:adt_stockp_entrega_o  
+
+						endif
+						//if (post:adt_stockp_ecom_clav != "X") THEN //este dato puede venir modificado luego de la consulta  	
+						    /*Actualizo los  campos de Palabra Clave */
+						  //  IF (l_destino == DSC:post:ECOM_desc) THEN
+										CDS APPEND DSC:stockp_ctx \
+										 post:stockp_ecom_tn AS post:adt_stockp_ecom_tn 
+								//END IF
+						    CDS APPEND DSC:stockp_ctx post:adt_stockp_ecom_clav \
+						   	post:stockp_ecom_pclave AS post:adt_stockp_ecom_pal \
+								post:stockp_ecom_shipID AS post:adt_stockp_ecom_ship  \
+								post:stockp_ecom_entrega AS post:adt_stockp_ecom_ent 
+								//Se graba el codigo de respuesta del mensaje de T&T
+								CDS APPEND DSC:stockp_ctx post:tyt_pc_code
+											
+						//ENDIF  
+					//	if (post:stockp_ecom_entrega == "TRUE" || post:adt_stockp_ecom_clav != "X")  THEN
+						 CDS UPDATE DSC:stockp_ctx LOCK
+						//ENDIF
+						CDS FINDNEXT DSC:stockp_ctx LOCK
+						LET lib:err_retval = CDSRETVAL
+			LOOP	  
+  
+END SUB
+
+/*******/

@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCacumulo_opc
+* NOMBRE
+*   OFB:giros:MISCacumulo_opc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+/* Rutinas para Facturacion */
+SUB giros:MISCacumulo_opc 
+    LOCAL Indice LIKE post:cant_opc
+    LOCAL TOTAL LIKE post:cant_opc
+    local valor like lib:err_retval
+    local nro_trn like post:PreDNroTrn
+    TOTAL = post:cant_opc
+    Indice = 0
+    clearfield giros:Importe_fld
+    clearfield giros:ImporteIva_fld
+    clearfield cantidad
+    nro_trn = post:PreDNroTrn
+    DO
+      IF (Indice == TOTAL) THEN
+        BREAK 
+      end if 
+      
+      post:adt_opc_opci = post:cod_opc[Indice]
+      post:adt_tarif_modo = post:cal_opc[Indice]
+      post:valor_dec = post:vec_opc2[Indice]
+      post:porcentaje_opc = post:val_opc[Indice]
+      post:info_opc_impre = post:inf_opc[Indice]
+      cds select from OpcFact_tab becomes OpcFact_ctx \
+          where post:adt_opc_opci == post:adt_opc_opci && \
+                servicio == post:adt_serv_serv && \
+                post:adt_tarif_desde == post:adt_tarif_desde && \
+                post:adt_tarif_hasta == post:adt_tarif_hasta && \
+                post:op_operator_id == op:op_operator_id
+      cds findfirst OpcFact_ctx lock
+      valor = cdsretval
+      if (cdsretval == 0) then
+      		cds extract OpcFact_ctx all
+     		giros:cantidad = giros:cantidad + 1
+     		Importe_fld = Importe_fld + post:cos_opc[Indice] 
+     		//SC 50170
+     		call post:MISCdesglosaIva(post:cos_opc[Indice],post:ali_opc[Indice],1,0)
+     		ImporteIva_fld = ImporteIva_fld + post:ImporteIva
+     		CALL post:CDSopc_desc_load
+      else
+      		cantidad = 1
+      		Importe_fld = post:cos_opc[Indice]
+      		//SC 50170
+      		call post:MISCdesglosaIva(post:cos_opc[Indice],post:ali_opc[Indice],1,0)
+      		ImporteIva_fld = post:ImporteIva
+      		servicio = post:adt_serv_serv
+      		CALL post:CDSopc_desc_load
+      		post:PreDNroTrn = nro_trn
+      		
+      end if
+      let post:op_operator_id = op:op_operator_id
+      cds append OpcFact_ctx cantidad Importe_fld ImporteIva_fld \
+                             post:adt_opc_opci servicio post:adt_opc_desc \
+                             post:adt_tarif_desde post:adt_tarif_hasta \
+                             post:PreDNroTrn post:op_operator_id
+      if (valor == -801) then
+      	cds insert OpcFact_ctx lock
+      else
+      	cds replace OpcFact_ctx lock  
+      end if
+      cds unlock OpcFact_ctx  
+        Indice = Indice + 1
+      cds endselect OpcFact_ctx
+    LOOP 
+END SUB 
+
+/*******/

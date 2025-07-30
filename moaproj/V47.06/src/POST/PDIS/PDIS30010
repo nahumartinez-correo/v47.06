@@ -1,0 +1,168 @@
+/****o* Pago en Destino/OFB:post:PDIS30010
+* NOMBRE
+*   OFB:post:PDIS30010
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRAN30010
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPDIS.h"
+
+SUB post:PDIS30010
+	siaf:codigo_siaf        = 30010
+	siaf:adt_tran_codigo    = siaf:codigo_siaf
+	CALL siaf:CDSadt_tran_load 
+	siaf:nombre_transac     = siaf:adt_tran_desc
+	tlr:tran_mnemonic       = siaf:adt_tran_mnemonic
+	siaf:afecta_efectivo    = siaf:adt_tran_afec_efvo
+	siaf:tiene_reverso      = siaf:adt_tran_tiene_rev
+	siaf:posible_off        = siaf:adt_tran_posoff
+	
+	IF (common:br_imponePED != "S") THEN
+		ERRMSG common:errmsg_list,"Esta sucursal no esta habilitada para imponer servicios PED."
+		RETURN (-2)
+	END IF
+
+	IF (post:estado_presu != 2 && post:estado_presu != 3 && post:estado_presu != 4) THEN
+		//ERRMSG common:errmsg_list,"Inicie una Sesión con Cliente Medio o Minorista para poder ingresar a la transacción."
+		ERRMSG common:errmsg_list,"Inicie una Sesión con Cliente Medio para poder ingresar a la transacción."
+		RETURN (-2)
+	END IF
+	
+	CALL siaf:PRESfecha_hora
+	IF (RETVAL < 0) THEN
+		UNGETKEY RT_ESC
+		RETURN
+	END IF
+	
+	IF (post:cli_tipo == 2) THEN
+;    IF (post:CloTipDoc == "96" && post:CloCuit == "99999999999") THEN
+;			ERRMSG common:errmsg_list,"No puede ingresar a la transaccion con el cliente 'CONSUMIDOR FINAL'"
+;			RETURN (-2)
+;  	END IF
+			ERRMSG common:errmsg_list,"Inicie una Sesión con Cliente Medio para poder ingresar a la transacción."
+			RETURN (-2)		
+	END IF 
+	
+	IF (post:cli_tipo == CLIMED) THEN
+		CALL CSR:fld_to_upper (post:CliMed_Ped)
+		IF (post:CliMed_Ped != "S") THEN
+			ERRMSG common:errmsg_list,"El cliente no esta habilitado para imponer servicios PED."
+			RETURN (-2)		
+		END IF
+		
+		//gpb:Valido que no consuma ni credito ni adelanto
+		CALL post:MISCAdelCredCM		
+		IF (RETVAL == -2) THEN	
+			MSGBOX "No se permite el consumo de Credito/Adelanto de Clientes Medios en la Importacion de Pagos en Destino.\nVuelva a iniciar la sesion sin consumir Credito/Adelanto.",0x00,"Mensaje"
+			RETURN (-2)
+		ELSEIF (RETVAL == -1) THEN
+			MSGBOX "NO EXISTE DATOS EN LA TABLA PRESU",0x00,"ERROR"
+			RETURN (-2)
+		END IF
+		
+		CDS SELECT FROM DSC:post:TABPresu BECOMES DSC:post:CONPresu \
+			WHERE (FLD:post:op_operator_id == FLD:post:op_operator_id ) && \
+			(FLD:post:fecha == FLD:common:system_date ) && \
+			(FLD:post:PresNro == FLD:post:PresNro)
+		
+		CDS FINDFIRST DSC:post:CONPresu LOCK
+		LET lib:err_retval = CDSRETVAL
+		IF (lib:err_retval == 0) THEN
+			CDS EXTRACT DSC:post:CONPresu post:nisDep_CM post:bloqueo_CM
+		END IF		
+	END IF
+	
+	//Validaciones
+	IF (post:estado_presu != 4) THEN
+		IF (post:cli_tipo != CLIMED && post:cli_tipo != 2)
+			ERRMSG common:errmsg_list,"El cliente no está habilitado para realizar la Importación de Envios con PED."
+			RETURN (-2)
+		END IF
+		
+		IF (post:cli_tipo == CLIMED) THEN
+			IF (post:bloqueo_CM == "S") THEN
+				ERRMSG common:errmsg_list,"El cliente está bloqueado. No podrá realizar la Importación de Envios con PED."
+				RETURN (-2)
+			END IF
+		
+			IF (post:nisDep_CM != common:sucursal_activa) THEN
+				ERRMSG common:errmsg_list,"El cliente no pertenece a la sucursal. No podrá realizar la Importación de Envios con PED."
+				RETURN (-2)
+			END IF
+			IF (post:consulta_excepcionCM == "S") THEN
+				ERRMSG common:errmsg_list,"Ud.se encuentra en una venta por excepción.\nNo podrá realizar la Importación de Envios con PED."
+				RETURN (-2)
+			END IF 
+			IF (post:consulta_ordenCM == "S") THEN
+				ERRMSG common:errmsg_list,"Ud.se encuentra en una venta por Orden de Compra.\nNo podrá realizar la Importación de Envios con PED."
+				RETURN (-2)
+			ENDIF 		  
+			IF (post:cli_tipo != CLIMED && post:cli_tipo != 2) THEN
+				ERRMSG common:errmsg_list,"El cliente no está habilitado para realizar una Importación de Envios con PED."
+				RETURN (-2)
+			END IF
+		END IF
+	
+		IF (post:ExcepSinLinea) THEN
+			ERRMSG common:errmsg_list,"La sesión se ha iniciado fuera de línea.\nPara realizar una Importación deberá iniciar la sesión nuevamente."
+			RETURN (-2)
+		END IF
+		
+		IF (post:estado_presu == 2) THEN
+			CALL post:CDSBusca_TxPresuDet
+			IF (RETVAL < 0) THEN
+				ERRMSG common:errmsg_list,"La transacción de Importacion debe ser la única del Presupuesto."
+				RETURN (-2)
+			END IF
+		END IF	
+	END IF
+
+	CLEARFIELD post:PreDForFis
+	CLEARFIELD post:TipoDocEmisPED_Cuit
+	CLEARFIELD post:NroDocEmisPED_Cuit
+
+	CALL post:MISCemisor_ped_clr
+	CALL post:CDSPresuLoadPED
+	IF (RETVAL != -1) THEN
+		CALL post:CDSClientLoadPED
+		CALL post:CDSClientSucuLoadPED
+		CALL post:FVALProvEmisPED
+	END IF
+	CALL post:MISCemisor_ped_ref
+	
+	IF (post:TipoDocEmisPED == "80" || post:TipoDocEmisPED == "99" || \
+		post:TipoDocEmisPED == "86" || post:TipoDocEmisPED == "87") THEN
+		//80(CUIT),86 (CUIL),87(CDI),99(SIN IDENTIFICAT/VENTA GLOB.DIA) 
+		post:NroDocEmisPED  = SUBSTR(post:CloCuit,2,8)
+		post:CuitEmisPED = post:CloCuit
+	ELSE
+		//Tipo de documento sin formato de CUIT
+		post:NroDocEmisPED = post:CloCuit * 1
+		CLEARFIELD post:CuitEmisPED
+	END IF
+
+	//cgw: AUT-1194 - Asigna Codigo de Pais AR (Argentina).
+	//Se mostrara como codigo "AR" extrayendola de la tabla Paises.
+	CALL giros:CDSbusca_primer_pais(post:CodPaisResidEmisPED,post:PaisResidEmisPED)
+	IF (post:CodPaisResidEmisPED.NUMCHARS == 0) THEN
+		//Si no existe en la parametria, sers fijado con codigo "AR".
+		//La descripción se mostrara en blanco, como para que se note que no existe en la parametria
+		//y pueda así ser cargado en la misma.
+		post:CodPaisResidEmisPED = "AR"
+		CLEARFIELD post:PaisResidEmisPED
+	END IF
+	REFRESH post:CodPaisResidEmisPED
+	REFRESH post:PaisResidEmisPED
+END SUB
+
+/*******/

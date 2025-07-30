@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCupdt_imp_con_jnl
+* NOMBRE
+*   OFB:tes:MISCupdt_imp_con_jnl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCupdt_imp_con_jnl(prm_moneda,prm_dia)
+    local i like siaf:i
+
+    call csr:cleararray tes:importes
+    clearfield siaf:importe
+
+    call csr:date_compare(prm_dia,common:system_date)
+    select (retval)
+    case 0
+/* si en el mismo dia ya se hizo backup, solo tomo las transacciones que
+fueron hechas despues de la hora de cierre (tes_hora_bakcup). Dicho
+campo toma valor en CDSvuelco_tabla */
+    CDS SELECT FROM "journal" BECOMES "journal_ctx2" \
+    WHERE (tlr:jnl_branch == FLD:op:op_branch_id && \
+    tlr:jnl_bus_date == prm_dia && tlr:jnl_sequence_corr == 0 && \
+    tlr:jnl_time > tes:tes_hora_backup &&  siaf:moneda == prm_moneda \
+    && ((siaf:codigo_siaf >= 8630) && (siaf:codigo_siaf <= 9970)))
+    break
+    case 2
+    /* selecciono los registros que involucren al tesoro ( a traves del cod.
+    siaf) y que sean no reversados y del dia de hoy */
+    CDS SELECT FROM "journal" BECOMES "journal_ctx2" \
+    WHERE tlr:jnl_branch == FLD:op:op_branch_id && \
+          tlr:jnl_bus_date == common:system_date &&  \
+          tlr:jnl_status < 100 && \
+          tlr:jnl_sequence_corr == 0 && \
+          siaf:moneda == prm_moneda && \
+          ((siaf:codigo_siaf >= 8630) && (siaf:codigo_siaf <= 9970))
+    break
+    case else
+    /* el dia del tesoro es mayor, o alguna  de las fechas es erronea */
+    let common:csr_string = "Error de Fechas en Tabla: journal o teso_bak"
+    errmsg common:errmsg_list,FLD:common:csr_string
+    return (-2)
+    end select
+    IF (CDSRETVAL != 0) THEN
+      ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+      return (-2)
+    END IF
+
+    CDS FINDFIRST "journal_ctx2" NOLOCK
+    LET lib:err_retval = CDSRETVAL
+    IF (lib:err_retval == -801)
+           return
+    end if
+    do
+    /* extraigo el registro y lo guardo en el buffer */
+    CDS EXTRACT "journal_ctx2" ALL
+    let i = 0
+    select (siaf:codigo_siaf)
+        case 8830 // entrada de tesoro (suma)
+        /* Si es un rechazo no totaliza */
+        if (tes:es_reenvio != "S") then
+        do
+            if (i > 13) then
+            break
+            end if
+            let importes_aux1[i] = importes_aux1[i] + importes[i]
+            let importes_aux3[i] = importes_aux3[i] + importes[i]
+            let i = i + 1
+        loop
+        let imp_aux1 = imp_aux1 + siaf:importe
+        let imp_aux3 = imp_aux3 + siaf:importe
+        end if
+        break
+        case 8840 // entrada externa de tesoro (suma)
+        case 9200 // entrada efvo a tes de tes pcial (suma)
+        case 9210 // entrada efvo a otra suc (suma)
+        do
+            if (i > 13) then
+            break
+            end if
+            let importes_aux1[i] = importes_aux1[i] + importes[i]
+            let importes_aux3[i] = importes_aux3[i] + importes[i]
+            let i = i + 1
+        loop
+        let imp_aux1 = imp_aux1 + siaf:importe
+        let imp_aux3 = imp_aux3 + siaf:importe
+        break
+        case 8630 // salida de tesoro (resta)
+        case 8640 // salida de tesoro externa (resta)
+        case 8940 // Deposito de Efectivo de tesoro en Caja Buzon
+        case 8700 // Salida efvo de tes a tes pcial (resta)
+        case 8710 // Salida efvo de tes a otra suc (resta)
+        do
+            if (i > 13) then
+            break
+            end if
+            let importes_aux1[i] = importes_aux1[i] - importes[i]
+            let importes_aux2[i] = importes_aux2[i] + importes[i]
+            let i = i + 1
+        loop
+        let imp_aux1 = imp_aux1 - siaf:importe
+        let imp_aux2 = imp_aux2 + siaf:importe
+        break
+        case 8970 // Deposito de Cheques de tesoro en Caja Buzon
+        case 8726 // Salida de cheques a tesoreria prvovincial
+                let imp_aux1 = imp_aux1 - siaf:importe
+                let imp_aux2 = imp_aux2 + siaf:importe
+                break
+        case 8906 // Entrada de cheques a tesoro
+        if (tes:es_reenvio != "S") // Si es rechazo, no va
+               let imp_aux1 = imp_aux1 + siaf:importe
+               let imp_aux3 = imp_aux3 + siaf:importe
+        end if
+               break
+    end select
+
+    /* limpio el vector para que no deje basura en la proxima vuelta */
+    call csr:cleararray tes:importes
+    clearfield siaf:importe
+
+    CDS FINDNEXT "journal_ctx2" NOLOCK
+    let lib:err_retval = cdsretval
+    IF (lib:err_retval == -801)
+        break
+    end if
+    loop
+    CDS ENDSELECT "journal_ctx2"
+END SUB
+
+/*******/

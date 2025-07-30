@@ -1,0 +1,109 @@
+/****o* Uso General/OFB:tes:MISCreverso_sesion
+* NOMBRE
+* OFB:tes:MISCreverso_sesion
+* DESCRIPCION
+* Reversa la transaccion.
+* REFERENCIADO POR
+* OFB:siaf:SVALtran_ie
+* OFB:tes:SVALcarga_inic_ev
+* OFB:tes:SVALempresa_recaud
+* OFB:tes:SVALent_cheque
+* OFB:tes:SVALentrada_chq
+* OFB:tes:SVALentrada_espv
+* OFB:tes:SVALentrada_ev
+* OFB:tes:SVALespv_caj_OSuc
+* OFB:tes:SVALespv_caj_tespcia
+* OFB:tes:SVALespv_tes_OSuc
+* OFB:tes:SVALespv_tes_tespcia
+* OFB:tes:SVALorden_no_pagar
+* OFB:tes:SVALrecep_cheq
+* OFB:tes:SVALrendi_caja
+* OFB:tes:SVALsal_val_AR_caj
+* OFB:tes:SVALsal_val_AR_tes
+* OFB:tes:SVALsalida 
+* OFB:tes:SVALsalida_cheques 
+* OFB:tes:SVALsalida_Chk
+* OFB:tes:SVALsalida_especies
+* OFB:tes:SVALsalida_espv
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCreverso_sesion
+    local loc_err_retval like lib:err_retval
+
+    post:ovr_sup_id_aux  = ovr:ovr_sup_id
+    post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+    // PJM 5-10-1998
+    // Me fijo si hay transacciones de Galicia
+    ovr:ovr_sup_id = post:ovr_sup_id_aux
+    siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+    post:siaf_flags_aux = siaf:siaf_flags
+    Call CDSinic_tabla_jou("journal",dsc:tes:Journal_anul_Ctx)
+    Call siaf:MISClleno_modalidad
+    UngetKey RT_SEND
+    CALL tlr:JNLtran
+    Call post:CDSbusca_tabla(dsc:tes:Journal_anul_Ctx )
+    While (Retval >= 0)
+    	   CALL csr:trimfield post:jnl_flia_tran
+           siaf:adt_tran_codigo = siaf:codigo_siaf
+           ovr:ovr_sup_id = post:ovr_sup_id_aux
+           siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+
+           let loc_err_retval = 0
+           select (siaf:codigo_siaf)
+                   case 7506
+                        call CDSchequera_load(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,siaf:nro_cheque)
+                        if (adt_chequera_stat != NUEVA)
+                            let loc_err_retval = 1
+                        end if
+                        break
+	           case 9906
+		        LET giros:adt_chk_fecha = adt_chk_fecha
+		        LET giros:adt_chk_hora  = adt_chk_hora
+		        LET giros:adt_chk_op = adt_chk_op_orig
+		        LET giros:adt_chk_tesoro = "S"
+		        LET giros:adt_chk_estado = 0
+
+		        //cgw:si vuelve al estado RECIBIDA CAJERO se invierte los operadores origen y destino.
+	                LET adt_chk_orig    = adt_chk_dest
+	                LET adt_chk_op_orig = adt_chk_op_dest		    		    
+		        LET adt_chk_dest    = op:op_login_id
+	                LET adt_chk_op_dest = op:op_operator_id
+
+		        LET adt_chk_tesoro = giros:adt_chk_tesoro
+		        LET adt_chk_marca_ing = "T"
+		        call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+		        call CDSupd_habilitador
+		        call CDSgraba_TesChkVMov
+		        break
+                   case 9926
+		        LET giros:adt_chk_fecha = adt_chk_fecha
+		        LET giros:adt_chk_hora  = adt_chk_hora
+		        LET giros:adt_chk_op = adt_chk_op_orig
+
+		        //cgw:si vuelve al estado de HABILITADA, se invierte los operadores origen y destino.
+                        LET adt_chk_orig    = adt_chk_dest
+	                LET adt_chk_op_orig = adt_chk_op_dest		    		    
+		        LET adt_chk_dest    = op:op_login_id
+	                LET adt_chk_op_dest = op:op_operator_id
+
+		        LET giros:adt_chk_tesoro = "N"
+		        LET giros:adt_chk_estado = 2
+		        LET adt_chk_tesoro = giros:adt_chk_tesoro
+		        LET adt_chk_marca_ing = "C"
+		        call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+		        call CDSupd_habilitador
+		        call CDSgraba_TesChkVMov
+		        break
+           end select
+           if (loc_err_retval == 0)
+               call  post:MISCreversa_transac
+           end if
+           Call post:CDSbusca_tabla(dsc:tes:Journal_anul_Ctx )
+    End While
+    Call post:CDSfin_tabla(dsc:tes:Journal_anul_Ctx )
+    Call post:MISCclear_campos_jou
+    Resetflag lib:state_flags,scan_mode
+End Sub
+/*******/

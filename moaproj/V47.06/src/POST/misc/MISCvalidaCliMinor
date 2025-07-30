@@ -1,0 +1,174 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalidaCliMinor
+* NOMBRE
+*   OFB:post:MISCvalidaCliMinor
+* DESCRIPCION
+*   Realiza la validacion de la evaluacion de cambio 50260
+* ENTRADAS
+*   p_codigo_siaf = codigo de la transaccion
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PBalta_cli_ident
+*		post:PBalta_clie_gm
+*		giros:SVALalta_clie_gm
+*		post:SVALdatos_cliente
+*		post:SENDclient
+*		post:PBalta_cli_crem
+*	
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-518
+*	SC 50260
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalidaCliMinor(p_codigo_siaf)
+	LOCAL l_codigo_siaf LIKE common:csr_string
+	LOCAL l_es_juridica LIKE common:csr_string
+	LOCAL l_CliRazon LIKE common:csr_string
+	LOCAL l_CliNombre LIKE common:csr_string
+	LOCAL l_CliApellido LIKE common:csr_string
+	LOCAL l_IvaCod LIKE common:csr_string
+	LOCAL l_TipoDoc LIKE common:csr_string
+	LOCAL l_CloCuit LIKE common:csr_string
+	LOCAL l_adt_emp_cuit LIKE post:adt_emp_cuit
+	LOCAL strError LIKE common:csr_string
+	LOCAL l_mensaje_err_1 LIKE common:csr_string
+	LOCAL l_mensaje_err_2 LIKE common:csr_string
+	LOCAL l_mensaje_err_3 LIKE common:csr_string
+	
+	//asigno los mensajes
+	LET l_mensaje_err_1 = "No se permiten altas de clientes con este Nombre y Apellido / Razón Social"
+	LET l_mensaje_err_2 = "El número de Documento debe tener entre 5 y 8 caracteres"
+	LET l_mensaje_err_3 = "Numero de CUIT exclusivo de CORASA.\No lo puede utilizar"
+	
+	//asigno los valores a las variables locales
+	LET l_codigo_siaf = p_codigo_siaf
+	LET l_es_juridica = post:es_juridica
+	LET l_IvaCod = post:IvaCod
+	LET l_CloCuit = post:CloCuit
+	
+	//segun el codigo siaf asigno el valor correspondiente 
+	//a las variables locales
+	IF (l_codigo_siaf == "99021" || l_codigo_siaf == "70610" || l_codigo_siaf == "99000" || \
+		l_codigo_siaf == "99091" || l_codigo_siaf == "99003" || l_codigo_siaf == "95015") THEN
+			LET l_CliRazon = post:CliRazon
+			LET l_CliNombre = post:CliNombre
+			LET l_CliApellido = post:CliApellido
+			LET l_TipoDoc = post:adt_TipoDoc_tipo
+	ELSEIF (l_codigo_siaf == "99023" || l_codigo_siaf == "NONE") THEN
+			LET l_CliNombre = post:CloNombre
+			LET l_CliApellido = post:CloApellido
+			
+			IF (l_codigo_siaf == 99023) THEN
+				LET l_TipoDoc = post:adt_TipoDoc_tipo
+				LET l_es_juridica = "N"
+			ELSEIF (l_codigo_siaf == "NONE") THEN
+				LET l_TipoDoc = post:CloTipDoc
+				LET l_CliRazon = post:CloRazon
+			END IF
+	END IF
+	
+	//transformo a mayusculas
+	CALL csr:fld_to_upper(l_es_juridica) 
+	CALL csr:fld_to_upper(l_CliRazon) 
+	CALL csr:fld_to_upper(l_CliNombre) 
+	CALL csr:fld_to_upper(l_CliApellido) 
+	CALL csr:fld_to_upper(l_IvaCod) 
+	CALL csr:fld_to_upper(l_TipoDoc) 
+	CALL csr:fld_to_upper(l_CloCuit) 
+	
+	//hago un trim
+	CALL post:MISCFtrim (l_es_juridica)
+	CALL post:MISCFtrim (l_CliRazon)
+	CALL post:MISCFtrim (l_CliNombre)
+	CALL post:MISCFtrim (l_CliApellido)
+	CALL post:MISCFtrim (l_IvaCod)
+	CALL post:MISCFtrim (l_TipoDoc)
+	CALL post:MISCFtrim (l_CloCuit)
+	
+	//realizo la validacion de la sc 50260
+	IF (l_es_juridica == "N") THEN
+		IF (l_CliNombre == "CONSUMIDOR") THEN
+				strError = "CliNombre"
+				GOTO error 
+		ELSEIF (l_CliApellido == "FINAL") THEN
+				strError = "CliApellido"
+				GOTO error 
+		END IF
+	ELSE
+		IF (l_CliRazon == "CONSUMIDOR FINAL") THEN
+			strError = "CliRazon"
+			GOTO error 
+		END IF	
+	END IF
+	
+	IF (l_TipoDoc == "96") THEN
+		IF (l_CloCuit.NUMCHARS > 8 || l_CloCuit.NUMCHARS < 5) THEN
+			strError = "CloCuit"
+			GOTO error 
+		END IF
+	END IF
+	
+	//gpb:NI17308
+	LET l_adt_emp_cuit = post:adt_emp_cuit
+	CALL post:CDScuit_corasa
+	IF (l_CloCuit == post:adt_emp_cuit) THEN
+			strError = "CuitCorasa"
+			post:adt_emp_cuit = l_adt_emp_cuit
+			GOTO error 		
+	END IF
+	post:adt_emp_cuit = l_adt_emp_cuit
+			
+  RETURN (0)
+    		
+error:	
+	//tratamiento del error 
+	IF (strError == "CliNombre" || strError == "CliApellido" || strError == "CliRazon") THEN
+		
+		MSGBOX l_mensaje_err_1,0x00,"ERROR"
+		
+		IF (l_codigo_siaf == "99021" || l_codigo_siaf == "70610" || l_codigo_siaf == "99000" || \
+			l_codigo_siaf == "99091" || l_codigo_siaf == "99003" || l_codigo_siaf == "95015") THEN
+		
+			IF (strError == "CliNombre") THEN	
+				NEXTFIELD post:CliNombre
+			ELSEIF (strError == "CliApellido") THEN
+				NEXTFIELD post:CliApellido		 
+			ELSEIF (strError == "CliRazon") THEN
+				NEXTFIELD post:CliRazon
+			END IF
+		ELSEIF (l_codigo_siaf == "99023" || l_codigo_siaf == "NONE") THEN
+		
+			IF (strError == "CliNombre") THEN	
+				NEXTFIELD post:CloNombre
+			ELSEIF (strError == "CliApellido") THEN
+				NEXTFIELD post:CloApellido	
+			END IF
+			
+			IF (l_codigo_siaf == "NONE") THEN
+				IF (strError == "CliRazon") THEN
+					NEXTFIELD post:CloRazon
+				END IF			
+			END IF
+		END IF
+		
+	ELSEIF (strError == "CloCuit") THEN
+		MSGBOX l_mensaje_err_2,0x00,"ERROR"
+		
+		NEXTFIELD post:CloCuit
+		
+	ELSEIF (strError == "CuitCorasa") THEN
+		MSGBOX l_mensaje_err_3,0x00,"ERROR"
+		
+		NEXTFIELD post:CloCuit
+		
+	END IF	
+
+	RETURN (-2)
+	
+END SUB
+
+/*******/

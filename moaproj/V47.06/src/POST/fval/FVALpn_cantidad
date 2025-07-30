@@ -1,0 +1,265 @@
+/****o* Servicios Postales/OFB:post:FVALpn_cantidad
+* NOMBRE
+*   OFB:post:FVALpn_cantidad
+* DESCRIPCION
+*   Rutina de validacion del campo cantidad de la pantalla de Servicio Postales y Telegraficos
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*    post:MISCcombo_tx_dataval,post:SCRN_GestionesVs,post:SCRNpn_lista,
+*    post:DRAWcantidad,post:draw_pn_cantidad,OFB:post:draw_pi_cantidad
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpn_cantidad
+    LOCAL peso_limi LIKE peso_en_grs
+	LOCAL x LIKE post:cantidad
+	LOCAL l_cant_opc like post:cant_opc
+
+    /*Pedido por PJM para facturacion. El campo cantidad no puede tener mas de
+    3 digitos*/
+    IF (cantidad > 9999)
+        MSGBOX "DEBE INGRESAR UNA CANTIDAD MENOR A 10000",0x00,"ERROR"
+        RETURN (-2)
+    END IF
+
+	/*Controlo que la cantidad no sea menor de lo que el cliente se trae*/
+    if (codesp_prod.numchars > 0) then
+	    IF (cantidad < cant_cinta_prev)
+	        MSGBOX "DEBE INGRESAR UNA CANTIDAD MAYOR O IGUAL QUE LA CANTIDAD DE ESPECIES",0x00,"ERROR"
+	        RETURN (-2)
+	    END IF
+	end if
+    if (prod_serv.numchars > 0) then
+	    IF (consulta_ordenCM != "S")
+	    	IF (cantidad < cant_caja_prev)
+	        	MSGBOX "DEBE INGRESAR UNA CANTIDAD MAYOR O IGUAL QUE LA CANTIDAD DE PRODUCTOS",0x00,"ERROR"
+	        	RETURN (-2)
+	    	END IF
+	    END IF
+	end if
+
+
+	//Reingenieria
+	IF (post:cantidad > 1 && post:track_trace.numchars != 0)
+		CLEARFIELD track_trace
+		REFRESH track_trace
+	END IF
+
+
+	/*Verifico que el descuento ingresado sea multiplo de la cantidad
+    de piezas a expedir*/
+    CALL post:MISCvalilda_dcto(descuento,cantidad)
+    IF (RETVAL < 0)
+        MSGBOX "EL DESCUENTO INGRESADO NO ES MULTIPLO DE LA CANTIDAD DE PIEZAS. VUELVA A INGRESARLO",0x00,"Error"
+        RETURN (-2)
+    END IF
+
+    /*Se agregan estas validaciones para que cargue los datos en la imposicion con el siguiente
+    orden: tipo de caja, destino, cantidad, peso. Diego Priore 23/02/2000*/
+
+     /* Se elimina la pregunta por codigos de servicios y a partir de ahora se realizará de acuerdo
+    ala marca en la tabla servicio del campo adt_serv_usa_caja. Si esta en S la carga del tipo
+    de caja es obligatoria antes que el destino - Maricel 6/7/2000 */
+
+
+    IF (post:adt_serv_usa_caja == "S" || post:adt_serv_usa_formu == "S") THEN
+
+        IF (post:tipo_caja.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL TIPO DE CAJA.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+        IF (post:destino.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL DESTINO.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+    END IF
+
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+        peso_limi = post:adt_serv_limite * 1000
+        IF (post:cantidad <= 0) THEN
+            MSGBOX "LA CANTIDAD DEBE SER MAYOR A CERO",0x00,"ERROR"
+            RETURN (-2)
+        ELSE
+            IF (post:adt_serv_umstd == "KGS") THEN
+                /* Si el Servicio lo estaba pesando en */
+                /* Kilos lo paso primero a gramos */
+                post:peso_en_grs = post:peso_en_kgs * 1000
+            END IF
+
+            CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx WHERE \
+            post:adt_serv_serv == adt_serv_serv
+            CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+            LET lib:err_retval = CDSRETVAL
+            IF (CDSRETVAL == 0)
+                    CDS EXTRACT DSC:Servicio_ctx post:adt_serv_tole
+            END IF
+
+            /*IF ((siaf:codigo_siaf == 12705) || (siaf:codigo_siaf == 12505) || (siaf:codigo_siaf == 12506) || (siaf:codigo_siaf == 12706) || \
+                (siaf:codigo_siaf == 12507) || (siaf:codigo_siaf == 12707) || (siaf:codigo_siaf == 12401) || (siaf:codigo_siaf == 12402)) || \
+                (siaf:codigo_siaf == 12601) || (siaf:codigo_siaf == 12801) THEN */
+             /* Modifico la pregunta, para no atarnos a los codigos de servicio, El calculo con
+             tolerancia se hará solo si esta es distinta de cero - Maricel 6/7/2000 */
+            IF ( post:adt_serv_tole != 0 )  THEN
+
+                IF (peso_en_grs > (peso_limi + ((peso_limi * adt_serv_tole) / 100))) THEN
+                    MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+                    RETURN (-2)
+                END IF
+            ELSE
+                IF (peso_en_grs > peso_limi) THEN
+                    MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+                    RETURN (-2)
+                END IF
+            END IF
+        END IF
+        /*Cuando es Cliente Interno la tarifa debe ser $0,00*/
+        IF (!TESTFLAG(uso_int_flag,uso_interno))
+            /***Agregado por MFM - Feb 2000***/
+            IF (post:adt_serv_pesable == "F" || (post:peso_en_grs != 0) || (post:peso_en_kgs != 0)) THEN
+                CALL MISCactualizo_tarifa
+                IF (RETVAL < 0)
+                    RETURN (-2)
+                END IF
+                CALL MISCactualizo_opc
+                //post:calculaBonifOpc = "S"
+                //clearfield promo_imp_tot_opc
+                CALL MISCactualizo_1opc
+            END IF
+        ELSE
+            // No entiendo porque esta esta pregunta... Probe sin y funciona
+            IF (siaf:codigo_siaf == 11203) //Promo Mailing
+  	            CDS SELECT from dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx \
+  		            WHERE (adt_tarif_serv == tipo_produc2) && \
+  		            (adt_tarif_desde <= cantidad) && (adt_tarif_hasta >= cantidad) && \
+  		            (adt_tarif_dest == destino) && (adt_tarif_um == adt_serv_umstd)
+                CDS FINDFIRST DSC:Tarifas_ctx NOLOCK
+                IF (CDSRETVAL < 0)
+                    CDS ENDSELECT DSC:Tarifas_ctx
+                    MSGBOX "EXISTEN INCONGRUENCIAS EN LOS DATOS INGRESADOS",0X00,"Error"
+                    RETURN (-2)
+                END IF
+                CDS ENDSELECT DSC:Tarifas_ctx
+            END IF
+        END IF
+        /*Fin Carina*/
+    END IF
+
+    /*Carina - Se protege el campo track_trace cuando cantidad > 1 para que no se lo pueda
+    ingresar si no es en la pantalla  Ingresa T&T*/
+    IF (cli_tipo != 1 && !OperacionCob && !OperacionAut)
+    	IF (estado_presu == 1 || estado_presu == 2 || estado_presu == 3) THEN
+    	    IF (cantidad > 1)
+		        IF (post:adt_serv_piezacont == "T")
+    	            CLEARFIELD track_trace
+    	            PROTFIELD track_trace
+    	            CLEARFIELD cod_ctrol
+    	            PROTFIELD cod_ctrol
+    	        END IF
+    	    ELSE
+    	        IF (post:adt_serv_piezacont == "T")
+    	            UNPROTFIELD track_trace
+    	            UNPROTFIELD cod_ctrol
+    	        END IF
+    	    END IF
+    	END IF
+    END IF
+
+
+
+    /*Si cancela pantalla tt puede volver a ingresar codigo postal*/
+    UNPROTFIELD ingresa_cpost
+    /*Elimino los ceros de la izquierda*/
+    FPRINT cantidad "%d",cantidad
+    REFRESH cantidad
+
+    //CLIENTE MEDIO
+	if (cli_tipo == CLIMED) then
+		//Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+		if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+			post:bonificaCM = "S"
+		endif
+		If (bonificaCM == "S") Then
+			CALL MISCTratamientoCM
+			if (retval < 0) then
+				return -2
+			end if
+
+		else
+			if (ExcepProducto) then
+				//chequeo que la cantidad sea la pactada
+				call CDSSelExcep_Producto (post:cantidad)
+				if (retval < 0) then
+					return -2
+				endif
+				 /*o directamente no dejo vender(return -2)?
+				MSGBOX "El servicio-rango no admite bonificacion. No se permite la venta.",0X00,"AVISO"
+				RETURN -2*/
+			end if
+			clearfield post:Dcto_CliMed
+			refresh  post:Dcto_CliMed
+		endif
+		;Si post:Dcto_CliMed > 0 porque se acaba de actualizar, hay que limpiar
+		;las bonificaciones locales y actualizar los totales.
+		call post:MISCaplicaBonif(TIPO_SERVICIO)
+		IF (post:aplica_bonif_serv == "N") THEN
+			promo_imp_srv_tot = 0
+			CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+			clearfield promoSrvTipoBon
+			clearfield promo_srv_bon
+			clearfield promo_cod
+			clearfield promo_inhibeUpServ
+			clearfield promo_imp_srv_ind
+			clearfield promo_imp_srv
+			clearfield promo_imp_srv_tot
+			clearfield promo_imp_tot_ind
+		END IF
+		if (post:cant_opc > 0)
+			l_cant_opc = post:cant_opc
+			post:cant_opc = 1
+			WHILE (post:cant_opc < (l_cant_opc + 1))
+				x = post:cant_opc - 1
+				call post:CDSopcBonifCM_load(siaf:codigo_siaf,post:cod_opc[x])
+				call post:MISCaplicaBonif(TIPO_OPCIONAL)
+				IF (post:aplica_bonif_opc == "N") THEN
+					if (promo_imp_opc_tot[x] > 0) then
+						call post:MISCRestaBonifOpc(x)
+						clearfield promo_imp_opc[x]
+    			   		clearfield promo_imp_opc_tot[x]
+    			   		clearfield promo_imp_opc_ind[x]
+    			   		clearfield promo_opc_bon[x]
+    			   	end if
+				ELSE
+					if (!(promo_imp_opc_tot[x] > 0)) then
+						post:calculaBonifOpc = "S"
+						CALL post:MISCSumaBonifOpc()
+					end if
+				END IF
+				post:cant_opc = post:cant_opc + 1
+			END WHILE
+			post:cant_opc = l_cant_opc
+		END IF
+		promo_tot_Serv = promo_imp_blq_tot + promo_imp_tot_opc + promo_imp_srv_tot
+		if (promo_tot_Serv == 0)
+			clearfield promo_desc
+		end if
+	end if
+
+	IF (consulta_ordenCM == "S")
+		cant_caja_prev = cantidad
+		protfield cant_caja_prev
+		refresh cant_caja_prev
+	END IF
+	/*Calcula la tarifa total del servicio*/
+    CALL MISCact_tarif_serv
+    RETURN (0)
+END SUB
+
+/*******/

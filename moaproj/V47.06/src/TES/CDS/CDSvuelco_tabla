@@ -1,0 +1,82 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSvuelco_tabla
+* NOMBRE
+*   OFB:tes:CDSvuelco_tabla
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+/* hace un vuelco de la tabla que se paso por parametro como origen y se la
+graba tal cual en la tabla que se paso por parametro como destino*/
+SUB tes:CDSvuelco_tabla(tbl_orig,tbl_orig_ctx,tbl_dest,tbl_dest_ctx)
+	CDS SELECT FROM tbl_dest BECOMES tbl_dest_ctx \
+	WHERE tes:tes_suc_id == op:op_branch_id
+	CDS SELECT FROM tbl_orig BECOMES tbl_orig_ctx \
+	WHERE tes:tes_suc_id == op:op_branch_id
+	CDS FINDFIRST tbl_orig_ctx LOCK
+	let lib:err_retval = cdsretval
+	if (lib:err_retval == -801) then
+		fprint common:csr_string "la tabla %s no tiene registros" \
+		       tbl_orig
+		errmsg lst:common:errmsg_list,fld:common:csr_string
+		return (-2)
+	end if
+	do
+	    CDS EXTRACT tbl_orig_ctx ALL
+
+	    let lib:err_retval = cdsretval
+	    if (lib:err_retval < 0) then
+		fprint common:csr_string \
+		  "No se puede extraer los campos del archivo %s" tbl_orig
+		errmsg lst:common:errmsg_list,fld:common:csr_string
+		return (-2)
+	    end if
+	    CDS CLEARBUFFER tbl_dest_ctx
+	    if (tbl_dest == "teso_bak") then // en caso de backup
+		CDS APPEND tbl_dest_ctx  tes_suc_id,tes_tes_id,tes_moneda \
+			tes_fecha,tes_marca_cierre,ARRAY tes_importes, \
+			tes_total \
+			common:time_of_day AS tes_hora_backup
+	    else  // en caso de reconstruccion
+		CDS APPEND tbl_dest_ctx  tes_suc_id,tes_tes_id,tes_moneda \
+			tes_fecha,tes_marca_cierre,ARRAY tes_importes \
+			tes_total
+	    end if
+	    let lib:err_retval = cdsretval
+	    if (lib:err_retval != 0) then
+		fprint common:csr_string \
+		  "No se puede armar el buffer del archivo %s" tbl_dest
+		errmsg lst:common:errmsg_list,fld:common:csr_string
+		return (-2)
+	    end if
+	    CDS INSERT tbl_dest_ctx LOCK
+	    let lib:err_retval = cdsretval
+	    if (lib:err_retval == -836) then
+		fprint common:csr_string \
+		  "Se intento insertar un registro con clave repetida en %s" \
+		  tbl_dest
+		errmsg lst:common:errmsg_list,fld:common:csr_string
+		return (-2)
+	    end if
+	    CDS FINDNEXT tbl_orig_ctx LOCK
+	    let lib:err_retval = cdsretval
+	    if (lib:err_retval == -801) then
+		break
+	    end if
+	loop
+	CDS ENDSELECT tbl_dest_ctx
+	CDS ENDSELECT tbl_orig_ctx
+END SUB
+
+/*******/

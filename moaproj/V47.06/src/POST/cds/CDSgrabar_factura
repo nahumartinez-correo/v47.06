@@ -1,0 +1,72 @@
+/****o* Clientes Medios/OFB:post:CDSgrabar_factura
+* NOMBRE
+*   OFB:post:CDSgrabar_factura
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBclimed_act_fact
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSgrabar_factura
+
+	if ( hcomm:tran_status > HOST_REJECTED )
+
+		CDS SELECT FROM dsc:post:jnl_facturas becomes DSC:post:jnl_facturas_ctx
+		CDS CLEARBUFFER DSC:post:jnl_facturas_ctx
+
+		CDS APPEND DSC:post:jnl_facturas_ctx \
+			tlr:jnl_branch \
+			tlr:jnl_operator \
+			tlr:jnl_date \
+			tlr:jnl_time \
+			tlr:jnl_bus_date 
+			//50249
+			if (post:reimpresion == "S") then
+				CDS APPEND DSC:post:jnl_facturas_ctx tlr:jnl_sequence 
+			else
+				CDS APPEND DSC:post:jnl_facturas_ctx tlr:aux_sequence  as tlr:jnl_sequence 
+			endif
+			CDS APPEND DSC:post:jnl_facturas_ctx \
+			hcomm:tran_status as tlr:jnl_status \
+			siaf:adt_tran_fliatran \
+			post:datos_msg108 \
+			post:climed_tipo \
+			post:climed_numero 
+
+		CDS INSERT DSC:post:jnl_facturas_ctx lock
+		CDS ENDSELECT DSC:post:jnl_facturas_ctx
+
+		/* Actualizo la marca de caida en vuelo del operador */
+		cds select from dsc:op:adt_op_table  becomes  dsc:op:adt_op_context \
+		where op:op_operator_id == fld:op:op_operator_id
+
+		cds findfirst dsc:op:adt_op_context lock
+		if (cdsretval == 0 )
+			if ( hcomm:tran_status > HOST_REJECTED || \
+			     testflag(tlr:controla_marca,mayor_cien)) then
+				cds extract dsc:op:adt_op_context tlr:controla_marca
+				setflag tlr:controla_marca,mayor_cien
+			else
+				cds extract dsc:op:adt_op_context tlr:controla_marca
+				resetflag tlr:controla_marca,mayor_cien
+			end if
+			cds append dsc:op:adt_op_context tlr:controla_marca
+			cds update dsc:op:adt_op_context lock
+		end if
+		cds endselect dsc:op:adt_op_context
+
+	end if
+
+END SUB
+
+/*******/

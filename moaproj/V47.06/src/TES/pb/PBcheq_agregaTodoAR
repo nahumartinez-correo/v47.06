@@ -1,0 +1,229 @@
+/****o* Pendientes de agrupación/OFB:tes:PBcheq_agregaTodoAR
+* NOMBRE
+*   OFB:tes:PBcheq_agregaTodoAR
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBcheq_agregaTodoAR
+	LOCAL l_last_button LIKE drv:last_button
+	LOCAL l_retval LIKE lib:err_retval 
+	LOCAL l_cant_total LIKE siaf:i
+	
+	INIT 33,0
+	
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	
+	IF (siaf:moneda.NUMCHARS == 0) THEN
+		MSGBOX "Falta ingresar algún campo",0x00,"ERROR"
+		
+		CALL drv:back_but_status 
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+
+		RETURN -1
+	END IF
+
+	LET teso_cheq_estado = estado_cheque
+	LET teso_cheq_moneda = teso_cheq_moneda
+	LET teso_cheq_suc = op:op_branch_id
+	
+	IF (drv:dt_app == 4) THEN
+		/* Tesoro */
+		teso_cheq_id = op:op_tesoro_id
+		teso_cheq_estado = "T"
+		adt_cheqaux_tesoro = "S"
+		adt_cheqaux_op = op:op_tesoro_id
+	ELSE
+		/* Operador */
+		teso_cheq_id = op:op_operator_id
+		teso_cheq_estado = "O"
+		adt_cheqaux_tesoro = "N"
+		adt_cheqaux_op = op:op_operator_id
+	END IF
+	
+	IF (post:adt_mp_admban == "S") THEN
+		//Esta consulta carga la barra de progreso
+		CDS SELECT FROM DSC:TesoCheq_tbl BECOMES "TesoCheq2_ctx" \
+			WHERE teso_cheq_suc == FLD:teso_cheq_suc \
+			&& teso_cheq_moneda == FLD:siaf:moneda \
+			&& teso_cheq_estado == FLD:teso_cheq_estado \
+			&& teso_cheq_id == FLD:teso_cheq_id \
+			&& teso_cheq_recep != "S" SORT "primary"
+		
+		//Esta consulta me trae los datos de todos los cupones para efectuar la salida a Adm.Reg
+		CDS SELECT FROM DSC:TesoCheq_tbl BECOMES DSC:tes:TesoCheq_ctx \
+			WHERE teso_cheq_suc == FLD:teso_cheq_suc \
+			&& teso_cheq_moneda == FLD:siaf:moneda \
+			&& teso_cheq_estado == FLD:teso_cheq_estado \
+			&& teso_cheq_id == FLD:teso_cheq_id \
+			&& teso_cheq_recep != "S" SORT "primary"
+	ELSE 
+		//Esta consulta carga la barra de progreso
+		CDS SELECT FROM DSC:TesoCheq_tbl BECOMES "TesoCheq2_ctx" \
+			WHERE teso_cheq_suc == FLD:teso_cheq_suc \
+			&& teso_cheq_moneda == FLD:siaf:moneda \
+			&& teso_cheq_estado == FLD:teso_cheq_estado \
+			&& teso_cheq_id == FLD:teso_cheq_id SORT "primary"
+	
+		//Esta consulta me trae los datos de todos los cupones para efectuar la salida a Adm.Reg
+		CDS SELECT FROM DSC:TesoCheq_tbl BECOMES DSC:tes:TesoCheq_ctx \
+			WHERE teso_cheq_suc == FLD:teso_cheq_suc \
+			&& teso_cheq_moneda == FLD:siaf:moneda \
+			&& teso_cheq_estado == FLD:teso_cheq_estado \
+			&& teso_cheq_id == FLD:teso_cheq_id SORT "primary"
+	END IF
+
+	CDS FINDFIRST "TesoCheq2_ctx" NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS AGGREGATE "TesoCheq2_ctx" COUNT tes:adt_cheqaux_cuenta
+		CDS EXTRACT "TesoCheq2_ctx" tes:adt_cheqaux_cuenta INTO l_cant_total
+	END IF
+	CDS ENDSELECT "TesoCheq2_ctx"
+	
+	CALL post:MISCinicProgressBar("CARGANDO CUPONES    - ", l_cant_total)
+	
+	CDS FINDFIRST DSC:tes:TesoCheq_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+	WHILE (lib:err_retval == 0)  
+	
+		IF (post:adt_mp_admban == "S") THEN
+			CALL CDSteso_cheq_list
+		ELSE 
+			CALL CDSteso_cheq_list2
+			
+			LET post:codigo_interno = siaf:cheqcuenta
+		END IF
+		
+		CDS EXTRACT DSC:tes:TesoCheq_ctx ALL
+		LET post:vpi_merchantCode = tes:teso_cheq_comercio
+		LET post:importe_origen = tes:teso_cheq_importe
+	
+		//Inicio - Validaciones
+		/* Agrega registros a la tabla AuxCheq */
+		IF (post:adt_mp_admban == "S") THEN /* Administración Bancaria */
+			IF (siaf:cod_banco.NUMCHARS == 0 || siaf:nro_cupcheq.NUMCHARS == 0) THEN
+				MSGBOX "Falta ingresar algún campo",0x00,"ERROR"
+				l_retval = -1
+			ELSE
+				IF (siaf:cod_banco.NUMCHARS > 0) THEN
+					CDS SELECT FROM siaf:adt_banco_table BECOMES siaf:adt_banco_context \
+						WHERE siaf:adt_banco_codigo == siaf:cod_banco
+	
+					CDS FINDFIRST siaf:adt_banco_context NOLOCK
+					LET lib:err_retval = CDSRETVAL
+					CDS ENDSELECT siaf:adt_banco_context
+					IF (lib:err_retval == -801) THEN
+						MSGBOX "BANCO DEL CHEQUE INEXISTENTE",0x00,"ERROR"
+						l_retval = -1
+					END IF
+				END IF
+			END IF        
+		ELSE        
+			IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+				IF (post:codigo_interno.NUMCHARS == 0 || siaf:nro_cupcheq.NUMCHARS == 0) THEN
+					MSGBOX "Falta ingresar algún campo",0x00,"ERROR"
+					l_retval = -1
+					BREAK
+				ELSE
+					IF (post:codigo_interno.NUMCHARS != 0) THEN
+						/* Validar si existe ese codigo con tabla de codigos internos */
+						CALL CDSexiste_codint(post:codigo_interno)
+						IF (RETVAL < 0) THEN
+							MSGBOX "Codigo interno No válido",0x00,"ERROR"
+							l_retval = -1
+						END IF
+					END IF
+				END IF
+			END IF
+		END IF		
+		//Fin - Validaciones
+		
+		//Si NO hubo algun error
+		IF (l_retval != -1) THEN
+			tes:adt_cheqaux_moneda = siaf:moneda
+			tes:adt_cheqaux_suc = op:op_branch_id
+			tes:teso_cheq_suc = op:op_branch_id
+			tes:adt_cheqaux_comerc = ""
+			teso_cheq_termi_win = tes:termi_win
+		    
+			IF (post:adt_mp_admban == "S") THEN    	
+				tes:teso_cheq_banco = siaf:cod_banco
+				tes:teso_cheq_cuenta = siaf:cheqcuenta
+			ELSE
+				tes:teso_cheq_banco = 0
+				IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+					tes:teso_cheq_cuenta = post:codigo_interno
+					tes:adt_cheqaux_comerc = post:vpi_merchantCode
+				ELSE
+					tes:teso_cheq_cuenta = 0
+				END IF
+			END IF
+		    
+			LET tes:teso_cheq_nro = siaf:nro_cupcheq
+			LET tes:teso_cheq_importe = post:importe_origen
+			LET tes:teso_cheq_moneda = siaf:moneda
+			LET post:importe_origen = tes:teso_cheq_importe
+			REFRESH post:importe_origen
+
+			//Si NO hubo algun error
+			IF (l_retval != -1) THEN
+				IF (post:adt_mp_admban == "S") THEN /* Administración Bancaria */ 
+					adt_cheqaux_banco = siaf:cod_banco
+					adt_cheqaux_cuenta = siaf:cheqcuenta
+				ELSE 
+					adt_cheqaux_banco  = 0
+					IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+						adt_cheqaux_cuenta = post:codigo_interno
+					ELSE
+						adt_cheqaux_cuenta = 0
+					END IF
+				END IF
+				adt_cheqaux_nro = siaf:nro_cupcheq
+				
+				CALL CDScheques_load
+				IF (RETVAL != 0) THEN    
+					LET adt_cheqaux_importe = post:importe_origen
+					CALL CDScheques_save
+					CALL MISCdisplay_cheques
+					CALL ABMcheques_clear
+					CALL ABMcheques_refresh
+					
+					CALL post:MISCactProgressBar("CARGANDO CUPONES    - ", 1, BARRAPORCENT, 1)
+					NAP 500
+				END IF
+			END IF
+		END IF
+   	CDS FINDNEXT DSC:tes:TesoCheq_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT DSC:tes:TesoCheq_ctx    
+	
+	CALL post:MISCfinProgressBar
+	
+	CALL drv:back_but_status 
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+	
+	NEXTFIELD siaf:cod_banco
+	SETVALDONE siaf:nro_cupcheq
+	SETVALDONE post:codigo_interno
+    
+END SUB
+
+/*******/

@@ -1,0 +1,127 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBconsulta_simple
+* NOMBRE
+*   OFB:giros:OFBconsulta_simple
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBconsulta_simple 
+
+	// Se envia TRAN por primera vez,No actualiza en HOST.
+	// Tengo Instanciados los Campos Indirectos para enviar
+	// Mensaje.
+    if ((post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) && \
+    (drv:dt_app == 2 && siaf:adt_tran_consulta == "S")) || (drv:dt_app == APP_BACK && post:estado_presu == 4 && siaf:adt_tran_consulta == "S") then
+	hcomm:INDhost_sndrt = drv:INDhcomm_rtn
+	hcomm:INDhost_rcvrt = drv:INDspc_rtn[1]
+	call hcomm:COMM_stat_init
+
+	if (!testflag(hcomm:state_flags,on_line) \
+				&& siaf:posible_off == "N")
+       		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		return -2
+	end if
+	//hcomm:INDhost_sndrt = drv:INDhcomm_rtn
+	//hcomm:INDhost_rcvrt = drv:INDspc_rtn[1]
+
+	call post:CDSobtiene_secuen("STAN")
+	clave_hdr_giros = 0
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje = common:system_date
+
+	call hcomm:COMM_host_tran
+	if (retval < 0) then
+       common:trap_reset = OFB:lib:KEYSreset_esc 
+       return -2
+	end if       
+	//call tlr:JNLtran
+	
+	// Reseteo flag de consulta. 
+	resetflag  tran_send_mode,consulta_simple
+
+	//if (hcomm:tran_status == HOST_ACCEPTED ) 
+	if (giros:CodRespuesta_comm == "00") then
+	       // Llamar a Campo Indirecto (OFB),para Guardar Campos de RCVE;
+	       //  y refresh de los mismos.
+	       call FLD:giros:INDgiro_simple
+	       setflag  tran_send_mode,mensaje
+	       if (drv:dt_app == 2) then
+	       		msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+	       		if (retval == 6) then
+	       			clearfield lib:stat_message
+	       			clearfield lib:stat_msg_line
+	       			refresh lib:stat_message
+	       			refresh lib:stat_msg_line
+	       			return (2)
+	       		else
+	       			return (1)
+	       		end if
+	       else
+	       		IF (testflag(flags_back,vencido) && siaf:codigo_siaf == "70730") THEN
+	       			msgbox "La reválida fue realizada",OFB_OK,"Atención"
+	       		ELSE
+	       			msgbox "La transacción ya fue realizada",OFB_OK,"Atención"
+	       		ENDIF
+	       		return (2)
+	       end if
+	       clearfield lib:stat_message
+	       clearfield lib:stat_msg_line
+	       refresh lib:stat_message
+	       refresh lib:stat_msg_line
+	else
+	       //if (hcomm:tran_status == HOST_REJECTED )
+		if (drv:dt_app == 2) then
+			MSGBOX "¿Desea realizar la transacción de nuevo?",OFB_YESNO,"Error"
+			if (retval == 6) then
+				clearfield lib:stat_message
+	       			clearfield lib:stat_msg_line
+	       			refresh lib:stat_message
+	       			refresh lib:stat_msg_line
+				return (-2)
+			else
+				return (1)
+			end if
+		else
+			msgbox "La consulta fue rechazada.¿Desea seguir de todas formas?",OFB_YESNO,"Atención"
+			clearfield lib:stat_message
+	       		clearfield lib:stat_msg_line
+	       		refresh lib:stat_message
+	       		refresh lib:stat_msg_line
+			if (retval == 6) then
+				return (1)
+			else
+				return (-2)
+			end if
+		end if
+	       //end if
+
+	       clearfield lib:stat_message
+	       clearfield lib:stat_msg_line
+	       refresh lib:stat_message
+	       refresh lib:stat_msg_line
+
+	       // Permitir la tecla RT_ESC.
+               common:trap_reset = OFB:lib:KEYSreset_esc 
+
+	       return -2
+
+	end if
+    else
+    	siaf:siaf_status = 3
+    	consulta = 0
+    end if
+END SUB
+
+/*******/

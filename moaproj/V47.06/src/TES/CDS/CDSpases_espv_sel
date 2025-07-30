@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSpases_espv_sel
+* NOMBRE
+*   OFB:tes:CDSpases_espv_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSpases_espv_sel
+local idx like siaf:i
+local especie like tes:adt_evaux_codigo
+local operador like tes:login_dest
+local esp_aux like tes:adt_evaux_codigo
+local ope_aux like tes:login_dest
+LOCAL csr_string_aux LIKE common:csr_string
+
+	ope_aux = tes:login_dest
+	esp_aux = tes:espv_cod
+	
+	CDS SELECT FROM DSC:AuxEspV_tbl BECOMES DSC:AuxEspV_ctx \
+	WHERE adt_evaux_suc == fld:adt_evaux_suc && \
+	adt_evaux_op == fld:adt_evaux_op && \
+	adt_evaux_tesoro == fld:adt_evaux_tesoro && \
+    adt_evaux_es_venta == "N"
+		  
+	CDS FINDFIRST DSC:AuxEspV_ctx nolock
+	LET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval != 0) then
+		errmsg lst:common:errmsg_list,"No hay pases ingresados."
+		CDS ENDSELECT dsc:AuxEspV_ctx
+		return (-2)
+	ELSE
+		/*Creo un picklist auxiliar, para ordenarlo*/
+		CALL csr:f_sadroppl dsc:analitico
+		CALL csr:f_sanewpl dsc:analitico pic:analitico
+	END IF
+	DO
+		if (lib:err_retval != 0) then
+			break
+    	end if
+    	CDS EXTRACT DSC:AuxEspV_ctx all
+		
+		FPRINT common:csr_string,"%-20s     %-14s",adt_evaux_codigo,login_dest
+	    CALL csr:f_saaddpl dsc:analitico common:csr_string
+    	
+    	CDS FINDNEXT DSC:AuxEspV_ctx nolock
+    	LET lib:err_retval = CDSRETVAL
+    LOOP
+    CDS ENDSELECT dsc:AuxEspV_ctx
+	
+	/*Ordeno el picklist, por denominacion y operador*/
+    CALL csr:PickOp 4 dsc:analitico "0,20" "25,14"
+	
+	//Creo el picklist
+    CALL csr:f_sadroppl dsc:pases
+    CALL csr:f_sanewpl dsc:pases pic:pic_pases_espv
+	especie = ""
+	operador = ""
+	idx = PL_GETITEM
+	do
+		call csr:myPickcontrol(dsc:analitico,common:csr_string,idx)
+
+		if (retval < 0)
+			break
+		end if
+		
+		//Inicio
+		//gpb:AUT-1563
+		CLEARFIELD csr_string_aux
+
+		IF (especie != SUBSTR(common:csr_string,0,20) || operador != SUBSTR(common:csr_string,25,14)) THEN
+			
+			MOVE SUBSTR(common:csr_string,0,20) TO SUBSTR(csr_string_aux,0,20)
+			
+			IF (siaf:codigo_siaf != 8530) THEN
+			    MOVE SUBSTR(common:csr_string,25,14) TO SUBSTR(csr_string_aux,21,14)
+			END IF
+
+	    	CALL csr:f_saaddpl dsc:pases csr_string_aux 
+	    	
+	    	especie = SUBSTR(common:csr_string,0,20)
+	    	operador = SUBSTR(common:csr_string,25,14)
+
+	    END IF
+        //gpb:AUT-1563
+        //FIN
+        
+    	idx = idx + 1
+    LOOP
+	
+	clearfield common:csr_string
+    CALL csr:f_sadopl dsc:pases common:csr_string
+    lib:err_retval = retval
+    CALL csr:f_sadroppl dsc:pases
+    if (lib:err_retval < 0)   ///No selecciono nada
+		tes:login_dest = ope_aux
+		tes:espv_cod = esp_aux
+		refresh espv_cod
+		refresh login_dest
+		protfield login_dest
+		return (-2)
+	end if
+	Call MISClimpia_pase_espv
+	espv_cod = substr(common:csr_string,0,20)
+	refresh espv_cod
+	protfield espv_cod
+	login_dest  = substr(common:csr_string,25,14)
+	refresh login_dest
+	protfield login_dest
+END SUB
+
+/*******/

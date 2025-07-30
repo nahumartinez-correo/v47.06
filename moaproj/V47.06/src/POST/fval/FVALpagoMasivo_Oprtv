@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpagoMasivo_Oprtv
+* NOMBRE
+*   OFB:post:FVALpagoMasivo_Oprtv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpagoMasivo_Oprtv
+	LOCAL l_abm like siaf:i
+	
+	IF (CURRENTFIELD.NUMCHARS == 0) THEN
+		RETURN 0
+	END IF
+	l_abm = 0
+	IF (TESTFLAG(admin:mode_flags,grb)) THEN
+		l_abm = 1
+	END IF
+	IF (TESTFLAG(admin:mode_flags,bor)) THEN
+		l_abm = 1
+	END IF
+	IF (TESTFLAG(admin:mode_flags,act)) THEN 
+		l_abm = 1               
+	END IF 
+	IF (TESTFLAG(admin:mode_flags,todos)) THEN
+		l_abm = 1                 
+	END IF
+	IF (TESTFLAG(admin:mode_flags,ninguno)) THEN     
+		l_abm = 1            
+	END IF
+	IF (LASTKEY == RT_SEND && l_abm == 0) THEN
+		RETURN 0
+	END IF
+	
+	SELECT (siaf:codigo_siaf)
+		CASE 6640
+			CALL post:CDSbenefTmp_oprtv
+			IF (RETVAL == -801) THEN
+				CALL post:CDSbenefTmp("DT","","","")
+				;consulta multiple de beneficios por operativo
+				CALL post:CDSbenef_ing
+				IF (RETVAL == -2) THEN //no existe
+					;El host hace que se despliegue el mensaje "[H] No Hay Datos"
+					;MSGBOX "El operativo ingresado no existe para el pagador seleccionado.", OFB_OK ,"Error"
+					CALL admin:ABMresetflag
+					RETURN (-2)
+				END IF
+
+				//gpb:NI50462
+				CALL post:MISCvalidaVerAutoriz
+				IF (RETVAL == -2) THEN
+	      	//gpb:NI50458
+	    		CALL post:MISCFtrim(post:carga_masiva_on_site)
+	    		CALL CSR:fld_to_upper(post:carga_masiva_on_site)
+	    		//valido que el operativo permita la carga masiva
+	    		IF (post:carga_masiva_on_site != "S") THEN
+	    			MSGBOX "El operativo ingresado no permite el Pago Masivo", OFB_OK ,"Error"
+	    			//elimino los beneficios del operativo cargados en la tabla BenefTmp
+	    			CALL post:CDSbenefTmp("DT","","","")
+	    			NEXTFIELD post:adt_benTmp_operativo
+	    			RETURN (-2)
+	    		END IF
+	    	END IF
+                
+				;Vuelvo a comprobar operativo para que se cargue el picklist suc_cli
+				CALL post:CDSbenefTmp_oprtv
+			END IF
+		BREAK
+		CASE 6650
+			CALL post:CDSbeneficios_oprtv
+			IF (RETVAL == -801) THEN
+				MSGBOX "El operativo ingresado no está pendiente de rendición\npara el pagador seleccionado.", OFB_OK ,"Error"
+				CALL admin:ABMresetflag
+				RETURN (-2)
+			END IF
+		BREAK
+	END SELECT
+	SETVALDONE adt_benTmp_operativo
+END SUB
+
+/*******/

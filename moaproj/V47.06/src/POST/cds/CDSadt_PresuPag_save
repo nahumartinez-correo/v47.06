@@ -1,0 +1,261 @@
+/****o* Pendientes de agrupación/OFB:post:CDSadt_PresuPag_save
+* NOMBRE
+*   OFB:post:CDSadt_PresuPag_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSadt_PresuPag_save(Moneda,Moneda_anterior,Imp,Imp_anterior)
+/*Rutina modificada por Gabriel Falciola. La cumulación de los distintos medios de pago, ahora
+  se realizan a medida que se van realizando las transacciones*/
+	local moneda_distinta like common:csr_string
+	local moneda_aux like siaf:moneda
+	local moneda_param like siaf:moneda
+
+#if CORREO_DEBUG == CORREO_ON
+	local l_string	like common:csr_string
+	;if (plataf:current_state == BUDGET_STARTED) then
+		call post:MISClogMenues("<< post:CDSadt_PresuPag_save >>")
+		fprint l_string "CodSiaf: %s - TrnNro: %s" siaf:codigo_siaf,post:PreDNroTrn
+		call post:MISClogMenues(l_string)
+		fprint l_string "Mon:%s - MonAnt:%s - Imp:%s - ImpAnt:%s" Moneda,Moneda_anterior,Imp,Imp_anterior
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+
+	//Modificado para la Version 14 si la moneda(Medio Pago ) o la moneda anterior estan vacias asumo 99
+	common:csr_string = Moneda
+	Call csr:trimfield(common:csr_string)
+	If ( common:csr_string == ""  && common:csr_string.numchars == 0 )
+		Moneda = 99
+	End If
+	common:csr_string = Moneda_anterior
+	Call csr:trimfield(common:csr_string)
+	If ( common:csr_string == ""  && common:csr_string.numchars == 0 )
+		Moneda_anterior = 99
+	End If
+	/*Si estoy en Nota de Credito, no hago nada, ya que la tabla PresuPag no se utiliza
+	en la Anulación de Transacciones*/
+	if (NotaCredito == "S")
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		call post:MISClogMenues("salida1")
+	;endif
+#endif
+		return (0)
+	end if
+
+	// FGB 21.01.2003 - Combos: solo acumula el producto principal
+	if (post:enCombo == "S" && post:adt_concb_principal != "S") then
+		return
+	endif
+
+	/*Si no cambia nada con respecto al importe y la moneda no tengo que actualizar nada
+	Gabriel Falciola*/
+	if (Moneda == Moneda_anterior && Imp == Imp_anterior)
+		if (siaf:codigo_siaf == 6900)
+			if (siaf:adt_tran_afec_efvo == post:afecEfvoAnt)
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		call post:MISClogMenues("salida2")
+	;endif
+#endif
+				return (0)
+			endif
+		else
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		call post:MISClogMenues("salida3")
+	;endif
+#endif
+			return (0)
+		endif
+	end if
+
+	moneda_aux = siaf:moneda
+	siaf:moneda = Moneda
+	/*Si se cumple esta condición, directamente inserto un nuevo registro debido a que
+	  no puede acumularse con las demás transacciones, tiene que ser tratado en forma
+	  individual*/
+	  
+	/* sba 24-06-2003 - En Reingeniería hay que hacer todo el tratamiento
+	 como si fuera estado_presu 3 */
+	 
+	//Select  ( post:estado_presu )
+	//	case 2
+	//			CDS SELECT FROM DSC:TABPresuPago BECOMES DSC:CONPresuPago \
+	//					WHERE (FLD:post:fecha == FLD:post:fecha )              && \
+	//				(Fld:post:op_operator_id == fld:post:op_operator_id )  && \
+	//				(fld:siaf:moneda == siaf:moneda)
+	//				Cds FindFirst DSC:CONPresuPago lock
+	//				If ( CdsRetval != 0 )
+	//					adt_mp_cod = siaf:moneda
+	//					Call post:CDSadt_MedPago_load
+	//					siaf:desc_moneda = adt_mp_desc
+	//					Call post:CDSinsert_PresuPag(Imp)
+	//				Else
+	//					CDS EXTRACT DSC:CONPresuPago PrePImp
+	//					if (siaf:adt_tran_afec_efvo == "+")
+	//							PrePImp = PrePImp + Imp
+	//					end if
+	//					if (siaf:adt_tran_afec_efvo == "-")
+	//						PrePImp = PrePImp - Imp
+	//					end if
+	//					CDS APPEND DSC:CONPresuPago FLD:post:PrePImp
+	//					CDS UPDATE DSC:CONPresuPago LOCK
+	//				EndIf
+	//		break
+	//	Case Else
+					/*Si se modifica la moneda tengo restar de una y sumar de otra*/
+					If (Moneda != Moneda_anterior)
+						CDS SELECT FROM DSC:TABPresuPago BECOMES DSC:CONPresuPago \
+						WHERE (FLD:post:fecha == FLD:post:fecha )              && \
+							  (Fld:post:op_operator_id == fld:post:op_operator_id )  && \
+							  (fld:siaf:moneda == fld:Moneda_anterior)
+
+						CDS FINDFIRST DSC:CONPresuPago LOCK
+						if (cdsretval == 0)
+							CDS EXTRACT DSC:CONPresuPago PrePImp
+							; Template tiene la particularidad de que puede variar su.
+							; siaf:adt_tran_afec_efvo de positivo a negativo y viceversa.
+							; en las modificaciones. Esto traia problemas a la presupag.
+							; (Req 2700). se soluciona guardando el afecta efectivo anterior.
+							; en el campo post:afecEfvoAnt pero solo para template y modificacion.
+							if (siaf:codigo_siaf == 6900)
+								if (post:afecEfvoAnt == "+")
+									PrePImp = PrePImp - Imp_anterior
+								end if
+								if (post:afecEfvoAnt == "-")
+									PrePImp = PrePImp + Imp_anterior
+								end if
+							else
+								if (siaf:adt_tran_afec_efvo == "+")
+									PrePImp = PrePImp - Imp_anterior
+								end if
+								if (siaf:adt_tran_afec_efvo == "-")
+									PrePImp = PrePImp + Imp_anterior
+								end if
+							endif
+							CDS APPEND DSC:CONPresuPago FLD:post:PrePImp
+							CDS UPDATE DSC:CONPresuPago LOCK
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "update1 PresuPag - CdsRetval: %s" cdsretval
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+							Cds EndSelect DSC:CONPresuPago
+						End if
+						adt_mp_cod = Moneda
+						Call post:CDSadt_MedPago_load
+						siaf:desc_moneda = adt_mp_desc
+						CDS SELECT FROM DSC:TABPresuPago BECOMES DSC:CONPresuPago \
+						WHERE (FLD:post:fecha == FLD:post:fecha )              && \
+						(Fld:post:op_operator_id == fld:post:op_operator_id )  && \
+						(fld:post:PresNro == fld:post:PresNro)                 && \
+						(fld:siaf:moneda == fld:Moneda)
+						CDS FINDFIRST DSC:CONPresuPago LOCK
+						if (cdsretval == 0)
+							CDS EXTRACT DSC:CONPresuPago PrePImp PrePNroPag
+							if (siaf:adt_tran_afec_efvo == "+")
+								PrePImp = PrePImp + Imp
+							Else
+								PrePImp = PrePImp - Imp
+							End if
+							CDS APPEND DSC:CONPresuPago FLD:post:PrePImp
+							CDS UPDATE DSC:CONPresuPago LOCK
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "update2 PresuPag - CdsRetval: %s" cdsretval
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+						Else
+							adt_mp_cod = Moneda
+							Call post:CDSadt_MedPago_load
+							siaf:desc_moneda = adt_mp_desc
+							Call post:CDSinsert_PresuPag(Imp)
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "insert1 PresuPag - CdsRetval: %s" cdsretval
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+						End If
+					Else
+						CDS SELECT FROM DSC:TABPresuPago BECOMES DSC:CONPresuPago \
+						WHERE (FLD:post:fecha == FLD:post:fecha )              && \
+							  (Fld:post:op_operator_id == fld:post:op_operator_id )  && \
+							  (fld:siaf:moneda == fld:Moneda_anterior)
+
+						CDS FINDFIRST DSC:CONPresuPago LOCK
+						if (cdsretval == 0)
+							CDS EXTRACT DSC:CONPresuPago PrePImp
+							if (siaf:codigo_siaf == 6900)
+								if (post:afecEfvoAnt == "+")
+									PrePImp = PrePImp - Imp_anterior
+								end if
+								if (post:afecEfvoAnt == "-")
+									PrePImp = PrePImp + Imp_anterior
+								end if
+							else
+								if (siaf:adt_tran_afec_efvo == "+")
+									PrePImp = PrePImp - Imp_anterior
+								end if
+								if (siaf:adt_tran_afec_efvo == "-")
+									PrePImp = PrePImp + Imp_anterior
+								end if
+							endif
+							if (siaf:adt_tran_afec_efvo == "+")
+								PrePImp = PrePImp + Imp
+							end if
+							if (siaf:adt_tran_afec_efvo == "-")
+								PrePImp = PrePImp - Imp
+							end if
+							CDS APPEND DSC:CONPresuPago FLD:post:PrePImp
+							CDS UPDATE DSC:CONPresuPago LOCK
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "update3 PresuPag - CdsRetval: %s" cdsretval
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+						Else
+							//Si se da esta situacion quiere decir que la moneda anterior tiene valor 0.
+							Call post:CDSinsert_PresuPag(Imp)
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "insert2 PresuPag - CdsRetval: %s" cdsretval
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+						End if
+				End If
+	//			break
+	// End Select
+	CDS UNLOCK DSC:CONPresuPago
+	Cds EndSelect DSC:CONPresuPago
+	siaf:moneda = moneda_aux
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == BUDGET_STARTED) then
+		fprint l_string "-------------------------------"
+		call post:MISClogMenues(l_string)
+	;endif
+#endif
+
+END SUB
+
+/*******/

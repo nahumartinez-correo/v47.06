@@ -1,0 +1,236 @@
+/****o* Notas de Credito CM/OFB:post:MISCArmo_PresuDetNC
+* NOMBRE
+*   OFB:post:MISCArmo_PresuDetNC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:MISCArmo_PresuDet
+* REFERENCIADO POR
+*   post:MISCProd_Incumplido
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCArmo_PresuDetNC(tipo_presu)
+    LOCAL lnro_presudet like post:PreDNroTrn
+	LOCAL NombreTransac like siaf:nombre_transac
+	LOCAL l_prodvs_tarif LIKE post:adt_prodvs_tarifa
+	LOCAL l_prodvs_aliciva LIKE post:adt_prodvs_aliciva
+	LOCAL l_docfis_tasa[20] LIKE post:adt_prodvs_aliciva
+	LOCAL l_docfis_importe[20] LIKE post:importe_sesion
+	LOCAL l_docfis_impsiva[20] LIKE post:ImporteSinIva
+	LOCAL l_cont LIKE post:cantidad
+	LOCAL l_codigo LIKE siaf:codigo_siaf
+	LOCAL l_flia LIKE siaf:adt_tran_fliatran
+	LOCAL l_efvo LIKE siaf:afecta_efectivo
+	LOCAL Imp_DctoSurPost LIKE siaf:importe
+
+	 
+    
+	//Resguardo el nombre de la transaccion para que no se me pise
+	NombreTransac = siaf:nombre_transac
+	
+	/* Cargo los datos de la transac que aplican para todas */
+	siaf:codigo_siaf = post:item_codigo_trx
+	post:Dcto_CliMed = post:item_dcto
+	post:bonificaCM = post:item_bonifCM
+	let siaf:adt_tran_codigo = siaf:codigo_siaf
+	clearfield post:tarifa
+	clearfield post:cantidad
+	clearfield post:PreDNroTrnAsoc
+	
+	call siaf:CDSadt_tran_load
+    if (retval == 0) then                
+		siaf:nombre_transac = siaf:adt_tran_desc
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+		call post:MISCCampos_Flia_NC(siaf:adt_tran_fliatran,tipo_presu)
+							                                                                
+		//Cargo el campo post:tarifa con el importe bonificado del bien de cambio 
+		//correspondiente y calculo el importe del descuento
+
+	   	if (post:Dcto_CliMed > 0) then
+			;post:tarifa = post:ImpServUP
+			INIT 22,1
+			post:Imp_DctoCliMed = (post:tarifa * post:Dcto_CliMed) / 100
+			INIT 22,0
+		else
+			;clearfield post:tarifa
+			clearfield post:Imp_DctoCliMed
+			clearfield post:Dcto_CliMed
+		endif
+		
+		if (post:tipo_presu == PROFORMA)
+			
+			select (siaf:adt_tran_fliatran)
+				case "CSP"
+					item_impaux = siaf:importe_tot_serv
+					break
+				case "TES"
+					item_impaux = siaf:importe
+					break
+				case else
+					item_impaux = siaf:importe					
+					break
+			end select					
+			item_efvo = siaf:afecta_efectivo
+
+			/* Muevo los campos de la tarifa y el hasta */
+			clearfield post:item_um
+			clearfield post:item_hasta
+			select (siaf:adt_tran_fliatran)
+				case "CSP"				
+				case "CST"
+				case "CSE"
+					item_um = post:adt_tarif_um
+					item_hasta = post:adt_tarif_hasta
+				break
+			end select
+			
+			cds clearbuffer dsc:Prod_Incumplido_ctx 			
+			cds append dsc:Prod_Incumplido_ctx post:item_um post:item_hasta
+			/* Descarto los adelantos y dtos */
+			if (post:item_codigo_trx != 99450 && post:item_codigo_trx != 99300) then
+				if (siaf:afecta_efectivo == "+") then
+					siaf:importe_total = siaf:importe_total + item_impaux
+				else
+					siaf:importe_total = siaf:importe_total - item_impaux
+				end if
+				cds append dsc:Prod_Incumplido_ctx post:item_impaux post:item_efvo 
+			end if
+			
+			cds update dsc:Prod_Incumplido_ctx lock
+			
+		end if
+		
+
+		/* Limpio los vectores de la transaccion postal que quedan sucios */	
+	    CALL CSR:cleararray(fliatran_vec)
+		CALL CSR:cleararray(impciva_vec)
+		CALL CSR:cleararray(impsiva_vec)
+		
+		/* Me fijo las restricicones de Medio de pago Dif */
+		call post:MISCRestFlia
+	
+		/* Si la transacción es un consumo de anticipo solo acumulo el importe para que al 
+		confirmar se genere sola */
+		if (tipo_presu != PROFORMA)
+				select (post:estado_presu)
+					case 2	    		
+					   /* CALL post:MISCAcumTotalesSes
+					    if (siaf:adt_tran_fliatran == "CSV")
+							//Se cambió el tratamiento para Impuesto de Sellos - Gabriel Falciola
+							call post:MISCImpSellosTratam("ING/EGR")
+						end if*/
+						l_codigo = siaf:codigo_siaf
+						l_flia = siaf:adt_tran_fliatran
+						l_efvo = siaf:adt_tran_afec_efvo
+						
+			  			//CALL post:MISCGrabaDetalleTrn
+			  			
+			  			CALL post:MISCagreg99512(siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo)
+			    		siaf:codigo_siaf = l_codigo 
+						siaf:adt_tran_fliatran = l_flia
+						siaf:adt_tran_afec_efvo = l_efvo
+			    		/* Para Ingresos y egresos varios */
+				    	//call MISCTotalTransac(siaf:codigo_siaf) 
+			    		break
+				end select								    			    
+		end if
+		if (tipo_presu != PROFORMA) then			
+			//PS Cliente Medio - Bienes de Cambio - Genero Dcto para el Bien de Cambio
+			if (post:cli_tipo == CLIMED) then
+				lnro_presudet = post:PreDNroTrn
+				//El Descuento es por producto en este caso, no por sesión 
+				ConvenioSesionV = FALSE
+				// Flag Auxiliar, me sirve para imprimir la factura y preciso que esté grabado en la PresuDet 
+				PorSesion = FALSE
+				call MISCDto_CliMed(siaf:adt_tran_fliatran)
+			endif
+			//Si viene informado el campo del dto, se genera 
+			if (post:Dcto_CliMed > 0) then
+				CALL tes:CDSAct_PreDNroTrnCM
+				clearfield tes:adt_evaux_descCM //para que no quede sucio cuando se llama a la CDSauxesp_vta_exis
+			else
+				clearfield post:PreDNroTrnCM
+			endif
+			
+			/**** Solicitud 50076 - Sur Postal y EMS - Grabo tx de descuento para cajas ********/
+			//*** solo Sur Postal ***/
+			
+			IF ((siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) && \
+				(post:adt_oc_nro.numchars == 0) && \
+				(post:tipo_caja != "CAJA PROPIA"))
+				//(post:prod_serv.numchars != 0))
+				//tengo que entrar en la tabla de ProdVs para recuperar la tarifa y la alicuota
+				//(post:adt_prodvs_tarifa,post:adt_prodvs_aliciva)
+				//del bien de cambio que me viene informado en el campo post:item_bien_cambio.
+				l_prodvs_tarif = post:adt_prodvs_tarifa
+				l_prodvs_aliciva = post:adt_prodvs_aliciva
+	
+				CALL CDSProdVsBonif
+				
+				//resguardar y luego borrar vectores post:docfis_tasa_por, docfis_importe y docfis_impsiva
+				l_cont = 0
+				while (l_cont < 20)
+					l_docfis_tasa[l_cont] = post:docfis_tasa_por[l_cont]
+					l_docfis_importe[l_cont] = post:docfis_importe[l_cont]
+					l_docfis_impsiva[l_cont] = post:docfis_imp_siva[l_cont]
+					l_cont = l_cont + 1
+				end while
+				CALL csr:cleararray(post:docfis_tasa_por)
+				CALL csr:cleararray(post:docfis_importe)
+				CALL csr:cleararray(post:docfis_imp_siva)
+				
+				//tambien habria que resguardar los campos que se extraen en la rutina 
+				//MISCtarifaSurPost y ver CDSgenTrnBonSurPost
+				l_codigo = siaf:codigo_siaf
+				l_flia = siaf:adt_tran_fliatran
+				l_efvo = siaf:afecta_efectivo
+				
+				clearfield post:adt_prodvs_aliciva
+				//Calcular el dcto Sur Postal
+				Imp_DctoSurPost = post:adt_prodvs_tarifa * post:cantidad
+				//cargar vectores
+				call post:MISCacumula_vec_bon(Imp_DctoSurPost,adt_prodvs_aliciva, post:cantidad)
+       			//genera el dcto
+       			call post:CDSgenTrnBonSurPost(Imp_DctoSurPost,post:PreDNroTrn,"N")
+       			
+				//restauro campos resguardados
+				post:adt_prodvs_tarifa = l_prodvs_tarif 
+				post:adt_prodvs_aliciva = l_prodvs_aliciva
+				//post:cant_caja_prev = l_caja_prev
+								
+				l_cont = 0
+				while (l_cont < 20)
+					l_docfis_tasa[l_cont] = post:docfis_tasa_por[l_cont]
+					l_docfis_importe[l_cont] = post:docfis_importe[l_cont]
+					l_docfis_impsiva[l_cont] = post:docfis_imp_siva[l_cont]
+					l_cont = l_cont + 1
+				end while
+				
+				siaf:codigo_siaf = l_codigo
+				siaf:adt_tran_fliatran = l_flia
+				siaf:afecta_efectivo = l_efvo
+			END IF
+
+			/* VER !!!!!!!!!!! */
+			post:PreDNroTrn = lnro_presudet //Para que se grabe bien el tes:adt_evaux_prestran de la AuxEspV
+		
+	    	if (post:estado_presu == 2) && (siaf:codigo_siaf == 8500) then
+	        	call tes:MISCactuali_AuxEspV
+	    	end if
+	    end if
+	end if
+	
+	//Recupero el nombre de la transaccion
+	siaf:nombre_transac = NombreTransac
+	refresh siaf:nombre_transac
+End Sub
+
+/*******/

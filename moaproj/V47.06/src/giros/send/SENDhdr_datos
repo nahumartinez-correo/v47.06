@@ -1,0 +1,149 @@
+/****o* Pendientes de agrupación/OFB:giros:SENDhdr_datos
+* NOMBRE
+*   OFB:giros:SENDhdr_datos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossend.h"
+
+SUB giros:SENDhdr_datos(TieneNeto,TieneMonReco,TieneMonPago,TienePaisEmis,TienePaisBenef)
+	// Primer Byte 
+	// Bit 1 - Siempre 1
+	//common:csr_string = 0x0
+	//common:csr_string = 0x1
+	//COMM PUT  common:csr_string MSG TYPE BINARY LENGTH 1	
+	
+	// Bit 2 - Codigo del Correo	
+	// Longitud de Codigo Correo 
+	common:csr_string = 0x12
+	COMM PUT  common:csr_string msg TYPE BINARY LENGTH 1
+	IF (flia_giro_fld == "I") THEN
+		//common:csr_string = 0x88
+		//Se cambia el PAN para el nuevo H2H de WUI
+		common:csr_string = 0x85
+	ELSE
+		common:csr_string = 0x55
+	END IF	
+	COMM PUT  common:csr_string MSG TYPE BINARY  LENGTH 2
+	common:csr_string = 0x0
+	COMM PUT  common:csr_string MSG TYPE BINARY  LENGTH 4
+	// Bit 3 - Codigo de Procesamiento 
+	IF (!TESTFLAG(tlr:tran_flags,correction))
+		COMM PUT  codigo_procesamiento MSG TYPE BCD  LENGTH 3
+	ELSE
+		COMM PUT  codigo_anulacion MSG TYPE BCD  LENGTH 3
+	END IF
+	// Bit 4 - Si lleva monto o no
+	IF (TieneNeto == "S" || TieneNeto == "s" || TESTFLAG(tlr:tran_flags,correction) || TESTFLAG(giros:tran_send_mode,cancelacion)) THEN
+		// Falta definir la variable para el valor
+		siaf:importe_aux = giros:Importe_fld *100
+	
+		FPRINT siaf:importe_aux,"%012.12d",siaf:importe_aux
+	
+		COMM PUT  siaf:importe_aux MSG TYPE BCD   LENGTH 6
+	END IF 
+	// Bit 7 - Siempre  va es la Fecha y Hora de Transaccion
+	IF (!TESTFLAG(tlr:controla_firma,cancelacion)) THEN
+		hora_viaje = siaf:hora
+		dia_viaje = siaf:fecha
+	ELSE //Envia una 400
+		IF (!TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options != "REC_CAIDAS_VUELO")) THEN
+			/*Si no esta recuperando la caida mediante el proceso batch se setean los sig. campos
+			en caso contrario viajan con el valor que tienen en este momento*/
+			IF (TESTFLAG(tlr:controla_marca,cancel) && giros:flia_giro_fld == "I" && siaf:codigo_siaf == 70540)  THEN
+				;Para cancelaciones de giros 70540 en el caso de internacionales
+				;se envia el valor de giros:hora_viaje y giros:dia_viaje
+			ELSE
+				hora_viaje = tlr:jnl_time
+				dia_viaje = tlr:jnl_date
+			END IF
+		END IF 
+	END IF 
+	FPRINT common:csr_string "%02.2s%02.2s%6.6s",SUBSTR(giros:dia_viaje,4,2) SUBSTR(giros:dia_viaje,6,2) giros:hora_viaje
+	COMM PUT  common:csr_string MSG TYPE BCD  LENGTH 5
+	
+	// Segundo Byte 
+	// Bit 11 - Stan
+	COMM PUT  post:adt_codseq_nro MSG TYPE BCD   LENGTH 3
+	// Bit 12 - Hora Local
+	FPRINT common:csr_string "%6.6s",giros:hora_viaje
+	COMM PUT  common:csr_string MSG TYPE BCD  LENGTH 3
+	// Bit 13 - Fecha Local de Transaccion
+	FPRINT common:csr_string "%02.2s%02.2s",SUBSTR(giros:dia_viaje,4,2) SUBSTR(giros:dia_viaje,6,2) 
+	COMM PUT  common:csr_string MSG TYPE BCD  LENGTH 2
+	
+	// Tercer Byte
+	// Bit 20 - Pais Emisor del Giro 
+	IF (TienePaisEmis == "S" || TienePaisEmis  == "s") THEN
+		// Falta Definir los Campos
+		PaisEmisor_Hdr  = 54 // Despue Sacar
+		COMM PUT  PaisEmisor_Hdr   MSG TYPE BCD LENGTH 2
+	END IF 
+	// Bit 21 - Pais Beneficiaro    
+	IF (TienePaisBenef == "S" || TienePaisBenef  == "s") THEN
+		// Falta Definir los Campos
+		COMM PUT  PaisBenef_Hdr  MSG TYPE BCD LENGTH 2
+	END IF 
+	// Bit 24 - Siempre 003
+	common:csr_string = 0x03
+	COMM PUT  common:csr_string  MSG TYPE BINARY LENGTH 2
+	
+	// Cuarto Byte
+	IF (TESTFLAG(tlr:tran_flags,correction) || TESTFLAG(tran_send_mode,cancelacion)) THEN
+		COMM PUT  giros:clave_hdr_giros  MSG TYPE ASCII LENGTH 12
+	END IF
+
+	// Quinto Byte
+	IF (giros:flia_giro_fld == "I") THEN
+		//Ojo hardcode!!! Despues quitar!!!
+		//id_wui_comm = "B02000123456"
+		COMM PUT id_wui_comm MSG TYPE ASCII LENGTH 12
+	END IF
+	
+	// Sexto Byte 
+	// Bit 41-  Codigo de Identificacion de Terminal
+	COMM PUT  common:window_node  MSG TYPE ASCII LENGTH 8 justleft fill ' '
+	
+	// Septimo Byte 
+	// Bit 49 - Codigo de Moneda de emision del Giro segun Codificacion Internacional
+	COMM PUT  MonedaEmi_Hdr   MSG TYPE ASCII LENGTH 3
+	// Bit 50 - Codigo de Moneda de reconcilacion del Giro segun Codificacion Internacional
+	IF (TieneMonReco == "S" || TieneMonReco == "s") THEN
+	 	// Falta definir la variable para el valor
+	  COMM PUT MonedaAdm_Hdr  MSG TYPE ASCII LENGTH 3
+	END IF
+	// Bit 51 - Codigo de Moneda de pago del Giro segun Codificacion Internacional
+	IF (TieneMonPago == "S" || TieneMonPago  == "s") THEN
+	 	// Codigo Moneda Pago
+	 	COMM PUT  MonedaPag_Hdr  MSG TYPE ASCII LENGTH 3
+	END IF
+	
+	// Octavo Byte???
+	// Bit 60
+	// Bit 61
+	// Bit 62
+	// Bit 63
+	common:csr_string = 24
+	COMM PUT  common:csr_string MSG TYPE BCD  LENGTH 2
+	
+	common:csr_string = common:window_node
+	COMM PUT  common:csr_string MSG TYPE ASCII LENGTH 20 justleft fill ' '
+	
+	call giros:CDSVersion_load
+	common:csr_string = adt_version_nro
+	COMM PUT  common:csr_string MSG TYPE ASCII LENGTH 4 
+
+END SUB
+
+/*******/

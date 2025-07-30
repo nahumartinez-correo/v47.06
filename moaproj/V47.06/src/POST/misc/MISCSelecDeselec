@@ -1,0 +1,184 @@
+/****o* Pendientes de agrupación/OFB:post:MISCSelecDeselec
+* NOMBRE
+*   OFB:post:MISCSelecDeselec
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCSelecDeselec(pos, p_accion)
+/*Esta rutina selecciona /deselecciona un item 
+Asume que pos en la posicion en el arreglo. NBA*/
+local imp_aux like siaf:importe
+local l_accion like lib:err_retval
+local accion like common:csr_string
+
+	//Si la linea esta vacia
+	if (TranAnul_vec[pos][0].numchars != 0 && !testflag(lib:state_flags,scan_mode))
+		common:csr_string = TranAnul_vec[pos][1]
+		imp_aux = substr(TranAnul_vec[pos][0],47,13)
+		
+		if ( p_accion == 2 ) /*desmarco o marco segun situacion*/
+		    call MISCestado_tran(pos)
+		    l_accion = retval
+		else /*sino quiere decir que obligo a marcar o desmarcar*/
+		    l_accion = p_accion 
+		    if (l_accion == 0)
+		        call post:MISCmarca_tran(pos)
+		    else
+		        call post:MISCdesmarca_tran(pos)
+		    endif
+		endif
+		
+		if (l_accion == 0) /*marcada*/
+
+            /*Pregunto si la tx seleccionada tiene reversa. En caso
+            de que no tenga, no dejo seleccionarla*/
+            IF (TranAnul_vec[pos][10] == "N")//NO Tiene reversa
+				CALL MISCdesmarca_tran(pos)
+            	MSGBOX "Esta transacción no admite reversa",0x00,"ERROR"
+            	return (0)
+            END IF
+
+
+			/*MFM - Verifico si la pieza no fue marcada como excepción*/
+			IF (TranAnul_vec[pos][8] == "S") THEN
+				MSGBOX "La Transacción no se puede reversar porque fue marcada como excepción",0x00,"Error"
+				call MISCdesmarca_tran(pos)
+       			return (0)
+       		end if
+			CALL MISCverifContened(TranAnul_vec[pos][6],TranAnul_vec[pos][7],"N")
+			if (retval != 0)
+				call MISCdesmarca_tran(pos)
+				return (0)
+			end if
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99200 || substr(TranAnul_vec[pos][0],0,5) == 99240 ||\
+				substr(TranAnul_vec[pos][0],0,5) == 99242) //Reemplazo de Cheques
+					anula_reemp = "S"
+					setflag journal_flags,enviar_mensaje_host
+					giros:seq_giros_cancel = substr(TranAnul_vec[pos][1],0,4)
+			end if
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99124) //Póliza Internacional
+				anula_poliza = "S"
+				setflag journal_flags,enviar_mensaje_host
+				giros:seq_giros_cancel = substr(TranAnul_vec[pos][1],0,4)
+			end if									
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 6630) //Pago On Site
+				anula_pago_on_site = "S"
+				setflag journal_flags,enviar_mensaje_host
+				giros:seq_giros_cancel = substr(TranAnul_vec[pos][1],0,4)
+			end if												
+			
+			
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 70322 || substr(TranAnul_vec[pos][0], 0, 5) == 70323)
+				fprint common:csr_string "%s S", common:csr_string
+			else
+				fprint common:csr_string "%s N", common:csr_string
+			endif
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99012) //Observación de Póliza Internacional
+				post:Pieza = TranAnul_vec[pos][11]
+				call csr:trimfield(post:Pieza)
+  				// Si la pieza ya fue entregada, no puedo anular la Observación.
+				call post:MISCVerifPzaDevuelta
+				clearfield post:Pieza
+				IF (RETVAL < 0) THEN
+					MSGBOX "LA PIEZA NO PUEDE REVERSARSE.",0X00,"ERROR"
+					call MISCdesmarca_tran(pos)
+       				return (0)
+       	end if		
+      end if
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99020) //Entrega de Piezas
+				post:Pieza = TranAnul_vec[pos][11]
+				call csr:trimfield(post:Pieza)
+  			// Si la pieza fue entregada por HAndHeld no puedo anularla.
+				call post:MISCVerifEntregaHH
+				clearfield post:Pieza
+				IF (RETVAL < 0) THEN
+					MSGBOX "PIEZA ENTREGADA POR HAND HELD. NO PUEDE ANULARSE.",0X00,"ERROR"
+					call MISCdesmarca_tran(pos)
+       		return (0)
+       	end if		
+       end if
+
+			CALL CSR:f_saaddpl dsc:PICtran_sel common:csr_string
+			CALL CSR:f_saaddpl dsc:PICtran_sel_agrupa TranAnul_vec[pos][2]
+			accion = "MARCA"
+			call MISCproc_totalesNC(accion,imp_aux,TranAnul_vec[pos][3], \
+			TranAnul_vec[pos][4],TranAnul_vec[pos][5])
+			/*Si es una Transacción de Giros seteo el flag que indica que debo
+			anularla en el Host - Gabriel Falciola*/
+			if (TranAnul_vec[pos][9] == "CSM" && substr(TranAnul_vec[pos][0], 0, 5) != 95000)
+				setflag journal_flags,enviar_mensaje_host
+				giros:seq_giros_cancel = substr(TranAnul_vec[pos][1],0,4)
+			end if
+			if (TranAnul_vec[pos][9] == "PF ") then
+				call CDSchk_trxsf1_viaja(TranAnul_vec[pos][13]) 
+				if (retval == 1) then
+					setflag journal_flags,enviar_mensaje_host
+					giros:seq_giros_cancel = substr(TranAnul_vec[pos][1],0,4)
+					post:tipoViaje = "PF "
+				endif
+			endif
+		else /*desmarcada*/
+			accion = "DESMARCA"
+			call MISCproc_totalesNC(accion,imp_aux,TranAnul_vec[pos][3], \
+			TranAnul_vec[pos][4],TranAnul_vec[pos][5])
+			/*Si es una Transacción de Giros reseteo el flag que indica que debo
+			anularla en el Host y guardo el número de secuencia - Gabriel Falciola*/
+			if (TranAnul_vec[pos][9] == "CSM")
+				resetflag journal_flags,enviar_mensaje_host
+				clearfield giros:seq_giros_cancel
+			end if
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99200 || substr(TranAnul_vec[pos][0], 0, 5) == 99240 || \
+				substr(TranAnul_vec[pos][0],0,5) == 99242) // Reemplazo de Cheque 
+					resetflag journal_flags,enviar_mensaje_host
+					clearfield giros:seq_giros_cancel
+					clearfield anula_reemp
+			end if			
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 99124) //Póliza Internacional
+				resetflag journal_flags,enviar_mensaje_host
+				clearfield giros:seq_giros_cancel
+				clearfield anula_poliza
+			end if
+			if (substr(TranAnul_vec[pos][0], 0, 5) == 6630) //Pago On Site
+				resetflag journal_flags,enviar_mensaje_host
+				clearfield giros:seq_giros_cancel
+				clearfield anula_pago_on_site
+			end if		
+			if (TranAnul_vec[pos][9] == "PF ")
+				call CDSchk_trxsf1_viaja(TranAnul_vec[pos][13])
+				if (retval == 1) then
+					resetflag journal_flags,enviar_mensaje_host
+					clearfield giros:seq_giros_cancel
+					clearfield post:tipoViaje
+				endif
+			endif						
+			call MISCborra_tran_sel(pos)
+		end if
+		if (substr(TranAnul_vec[pos][0], 0, 5) == 70322 || substr(TranAnul_vec[pos][0], 0, 5) == 70323)
+			// [PAW] --> o se anulan todas las 70322 y 70323 o ninguna.
+			call MISCanulGirosChq(accion)
+		endif
+	else
+		call MISCestado_tran(pos)
+		if (retval == 0)
+			call MISCdesmarca_tran(pos)
+		else
+			call MISCmarca_tran(pos)
+		end if
+	end if
+
+END SUB
+
+/*******/

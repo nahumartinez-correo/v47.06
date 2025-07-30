@@ -1,0 +1,125 @@
+/****o* Facturación Giros/OFB:giros:MISCacumulo_serv
+* NOMBRE
+*   OFB:giros:MISCacumulo_serv
+* DESCRIPCION
+*   Rutina que acumula en la tabla ServFact los giros pertenecientes a un mismo rango
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:MISC_ImpreTmp_CSM
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-1290
+* SOURCE
+*/
+#include "girosmisc.h"
+
+
+sub giros:MISCacumulo_serv
+	local valor          like lib:err_retval
+	local loc_imp_siniva like giros:ImporteGiros4_fld
+	
+	clearfield giros:Importe_fld
+	clearfield giros:ImporteIva_fld
+	clearfield giros:cantidad
+	//AUT-1290
+	call csr:cleararray(giros:vec_opc_gir_cod)
+	call csr:cleararray(giros:vec_opc_gir_imp)
+	call csr:cleararray(giros:vec_opc_gir_iva)
+	call csr:cleararray(giros:vec_opc_gir_cant)
+	
+	cds select from ServFact_tab becomes ServFact_ctx \
+	    where post:adt_serv_serv == post:adt_serv_serv && \
+	          post:adt_tarif_desde == post:adt_tarif_desde && \
+	          post:adt_tarif_hasta == post:adt_tarif_hasta && \
+	          post:op_operator_id == op:op_operator_id
+	cds findfirst ServFact_ctx lock
+	valor = cdsretval
+	
+	if (valor == -801) then
+		Importe_fld = imp_servicio_fld
+		//SC 50170
+		call post:MISCdesglosaIva(imp_servicio_fld,post:adt_serv_aliciva,1,post:dif_calculada)
+		ImporteIva_fld = post:ImporteIva
+
+		post:adt_cativa_discri = "N"
+		post:adt_cativa_cod = post:IvaCod
+		Call  post:CDS_CatIva_Load
+		if ( post:adt_cativa_discri == "S" ) then
+			//SUC-964:Resolución General N° 5614/2024: solo aplica para mostar el iva Contenido al final de la facturas B
+			if (post:IvaCod !=  TICKFACTB &&  post:IvaCod != TICKFACTB2   &&  post:IvaCod != TICKFACTB3) 
+					//init 22,1
+					giros:ImporteGiros4_fld  = post:ImporteSinIva_bis
+					init 22,1
+					giros:ImpTotalGiros4_fld = post:ImporteSinIva
+					init 22,0
+			else
+					giros:ImporteGiros4_fld  = imp_servicio_fld
+					giros:ImpTotalGiros4_fld = imp_servicio_fld
+			endif
+		else
+			giros:ImporteGiros4_fld  = imp_servicio_fld
+			giros:ImpTotalGiros4_fld = imp_servicio_fld
+		endif
+		cantidad = 1
+	else
+		cds extract ServFact_ctx all
+		Importe_fld = Importe_fld + imp_servicio_fld
+		//SC 50170
+		//call post:MISCdesglosaIva(imp_servicio_fld,post:adt_serv_aliciva,1,0)
+		call post:MISCdesglosaIva(imp_servicio_fld,post:adt_serv_aliciva,1,post:dif_calculada)
+		ImporteIva_fld = ImporteIva_fld + post:ImporteIva
+
+		post:adt_cativa_discri = "N"
+		post:adt_cativa_cod = post:IvaCod
+		Call  post:CDS_CatIva_Load
+		if ( post:adt_cativa_discri == "S" ) then
+			//SUC-964:Resolución General N° 5614/2024: solo aplica para mostar el iva Contenido al final de la facturas B
+				if (post:IvaCod !=  TICKFACTB &&  post:IvaCod != TICKFACTB2   &&  post:IvaCod != TICKFACTB3) 
+			
+					init 22,1
+					loc_imp_siniva = post:ImporteSinIva
+					init 22,0
+		
+					giros:ImporteGiros4_fld  = loc_imp_siniva + giros:ImporteGiros4_fld
+					giros:ImpTotalGiros4_fld = loc_imp_siniva + giros:ImpTotalGiros4_fld
+				else
+						giros:ImporteGiros4_fld  = imp_servicio_fld + giros:ImporteGiros4_fld
+						giros:ImpTotalGiros4_fld = imp_servicio_fld + giros:ImpTotalGiros4_fld
+				endif
+		else
+			giros:ImporteGiros4_fld  = imp_servicio_fld + giros:ImporteGiros4_fld
+			giros:ImpTotalGiros4_fld = imp_servicio_fld + giros:ImpTotalGiros4_fld
+		endif
+
+		cantidad = cantidad + 1
+	end if
+	let post:op_operator_id = op:op_operator_id
+	cds clearbuffer ServFact_ctx
+	//AUT-1290 - Se agregan los array de los opcionales que se deberan mostrar acumulados en la facturacion LG y Masivos
+	cds append ServFact_ctx Importe_fld ImporteIva_fld cantidad \
+	            post:adt_serv_serv post:adt_tarif_desde \
+	            post:adt_tarif_hasta post:op_operator_id \
+				giros:ImporteGiros4_fld \
+				giros:ImpTotalGiros4_fld \
+				array giros:vec_opc_gir_cod \
+				array giros:vec_opc_gir_imp \
+				array giros:vec_opc_gir_iva \
+				array giros:vec_opc_gir_cant \
+				array giros:vec_opc_gir_desc
+
+	if (valor == -801) then
+		cds insert ServFact_ctx lock
+	else
+		cds replace ServFact_ctx lock
+	end if
+	cds unlock ServFact_ctx
+	cds endselect ServFact_ctx
+end sub
+
+/*******/
+
+

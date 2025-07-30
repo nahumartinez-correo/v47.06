@@ -1,0 +1,72 @@
+/****o* Pendientes de agrupación/OFB:post:MISCverif_transp
+* NOMBRE
+*   OFB:post:MISCverif_transp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverif_transp
+
+    /*MFM - Verifico que el Corte de Linea que se quiere reversar no haya
+    sido llevado por un transporte  */
+    CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:journal_ctx1 \
+    WHERE post:adt_codseq_nro == post:adt_codseq_nro && \
+    siaf:codigo_siaf == 99050 && \
+    siaf:nombre_transac == "CORTE DE LINEA"
+    CDS FINDFIRST DSC:journal_ctx1 NOLOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS ENDSELECT DSC:journal_ctx1
+        MSGBOX "Se ha corrupto la tabla del Journal",0x00,"Error"
+        RETURN -2
+    END IF
+    CDS EXTRACT DSC:journal_ctx1 post:retirado_transp post:jnl_date_ori post:jnl_operator_ori post:jnl_sequence_ori
+    IF (post:retirado_transp == "S") THEN
+        /*NO SE PUEDE REVERSAR*/
+        MSGBOX "Este corte de linea ya fue llevado por un transporte, no puede reversarse",0x00,"Advertencia"
+        CDS ENDSELECT DSC:journal_ctx1
+        RETURN -2
+    END IF
+    /*MFM -Tengo que borrar el registro de la tabla de Despachos Pendientes, pero
+    antes verifico que no este siendo retirado por un transporte*/
+    CDS SELECT FROM DSC:DespPend_tbl BECOMES DSC:DespPend_ctx WHERE \
+    (adt_desppend_fecha == common:system_date && \
+    adt_desppend_op == op:op_operator_id && \
+    adt_desppend_op_ori == post:jnl_operator_ori && \
+    adt_desppend_seq == post:jnl_sequence_ori )
+    CDS FINDFIRST DSC:DespPend_ctx LOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS UNLOCK DSC:DespPend_ctx
+        CDS ENDSELECT DSC:DespPend_ctx
+        CDS ENDSELECT DSC:journal_ctx1
+        RETURN 0
+    END IF
+    CDS EXTRACT DSC:DespPend_ctx adt_desppend_marca
+    IF (adt_desppend_marca == ">>") THEN
+        /*NO SE PUEDE REVERSAR*/
+        MSGBOX "El corte de linea no puede reversarse debido a que esta siendo llevado por un transporte",0x00,"Advertencia"
+        CDS UNLOCK DSC:DespPend_ctx
+        CDS ENDSELECT DSC:DespPend_ctx
+        CDS ENDSELECT DSC:journal_ctx1
+        RETURN -2
+    END IF
+    CDS DELETE DSC:DespPend_ctx
+    CDS UNLOCK DSC:DespPend_ctx
+    CDS ENDSELECT DSC:DespPend_ctx
+    
+    CDS ENDSELECT DSC:journal_ctx1
+        
+END SUB
+
+/*******/

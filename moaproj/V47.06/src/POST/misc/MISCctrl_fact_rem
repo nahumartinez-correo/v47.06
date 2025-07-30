@@ -1,0 +1,233 @@
+/****o* Clientes Medios/OFB:post:MISCctrl_fact_rem
+* NOMBRE
+*   OFB:post:MISCctrl_fact_rem
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:SVAL99460
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCctrl_fact_rem
+    local idx like siaf:i
+    local i_idx like siaf:i
+    local varl_imp_rem like post:importe_factura
+    local varl_imp_consumo like	 post:importe_factura    
+    local varl_tipo_fact like post:consulta_ordenCM
+    local cont like siaf:i
+	
+	lib:err_retval = 0	
+	siaf:importe = 0 //Total del Saldo de las Facturas seleccionadas
+	clearfield imp_nc_consumida //Importe de las NOTAS de CREdito seleccionadas para consumir
+	post:total_cobranza = 0 //siaf:importe + total de los remitos seleccionados (el importe que viene del switch, no el que se calcula del tarifario actual).
+	post:resta_saldoCM = 0
+	siaf:i = 0 //Lo uso para contar la cantidad	de facturas
+	cont = 0   //Lo uso para contar la cantidad de notas de credito
+	
+	call csr:cleararray(vec_facturas)
+	call csr:cleararray(vec_remitos)
+	//50249
+	call csr:cleararray(vec_impfact)
+	call csr:cleararray(vec_saldofact)
+	call csr:cleararray(vec_tipofact)
+	call csr:cleararray(vec_seqfac)
+	call csr:cleararray(vec_nc_tipo)
+	call csr:cleararray(vec_nc_nro)
+	call csr:cleararray(vec_nc_imp)
+	
+	//Recorro el picklist de facturas
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	//ordenarlo por tipo y nro de comprobante 
+	//call csr:PickOp PICKOP_SORT dsc:facturas_cliente "0,1"
+	CALL csr:PickOp PICKOP_SORT dsc:facturas_cliente "0,16"
+	
+	call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+
+	Do
+		if (retval < 0)
+	    	break
+	    end if
+		fprint post:csr_string_250,"%s  ",post:csr_string_250
+		
+		If (substr(post:csr_string_250,62,1) == "*")
+
+		    if (siaf:i == 10 || cont == 10) then  //cgw:no debe superar 10 facturas ni 10 NC.
+		        siaf:importe = 0
+			    call csr:cleararray(vec_facturas)
+			    call csr:cleararray(vec_impfact)
+			    call csr:cleararray(vec_saldofact)
+			    call csr:cleararray(vec_tipofact)
+			    call csr:cleararray(vec_seqfac)
+			    call csr:cleararray(vec_nc_tipo)
+			    call csr:cleararray(vec_nc_nro)
+			    call csr:cleararray(vec_nc_imp)
+			    clearfield imp_nc_consumida
+			    return (-2)
+		    end if
+
+//CONTROLAR EL IMPORTE DEL CONSUMO Y DEL REMITO QUE SE ESTEN RECUPERANDO CORRECTAMENTE		   
+			if (substr(post:csr_string_250,0,1) == "F") then
+				vec_facturas[siaf:i] = substr(post:csr_string_250,1,15)
+				vec_impfact[siaf:i] = substr(post:csr_string_250,17,16)
+				vec_saldofact[siaf:i] = substr(post:csr_string_250,45,16)
+				vec_tipofact[siaf:i] = substr(post:csr_string_250,103,1)
+				/* Almaceno el secuenciador */
+				vec_seqfac[siaf:i] = substr(post:csr_string_250,121,15)
+				//recupero el importe del remito para devolverle al saldo
+				//varl_imp_rem = substr(post:csr_string_250,137,16) //OJO EL IMPORTE DEL REMITO ESTA EN OTRA POSICION!!!
+				varl_imp_rem = substr(post:csr_string_250,152,16) 
+				//recupero el importe del consumo de adelanto
+				//varl_imp_consumo = substr(post:csr_string_250,153,16) //OJO EL CONSUMO ESTA EN OTRA POSICION!!!
+				varl_imp_consumo = substr(post:csr_string_250,169,16)
+				/*Sumo los importes de las facturas seleccionadas*/
+				siaf:importe = siaf:importe + substr(post:csr_string_250,45,16)
+				//Indica si la factura proviene de una orden de compra/int.punitorios => no tengo que actualizar el credito
+				//hay que generar otro campo con los valores de las facturas de oc para que se le reste de total cobranza
+				//antes de mandar el mensaje
+				//varl_tipo_fact = substr(post:csr_string_250,168,1)//OJO EL TIPO DE FACTURA ESTA EN OTRA POSICION!
+				varl_tipo_fact = substr(post:csr_string_250,186,1)
+				vec_fact_fecha[siaf:i] = substr(post:csr_string_250,187,2) +  substr(post:csr_string_250,190,2) * 100 + substr(post:csr_string_250,193,4) * 10000
+				// MFM - Sumo el importe real de las facturas, en caso de que provengan de una fact.auto.			
+				if (varl_imp_rem > 0) then
+					post:total_cobranza = post:total_cobranza + varl_imp_rem
+				else
+					post:total_cobranza = post:total_cobranza + substr(post:csr_string_250,45,16)
+				endif
+			
+				//PS 9330/9331
+				if (varl_tipo_fact == "I") then
+					//este despues lo resto de total cobranza antes del viaje!!
+					post:resta_saldoCM = post:resta_saldoCM + substr(post:csr_string_250,45,16)
+				endif
+			
+				//PS 9337 - Pidieron que en la tabla remitos del switch, cuando el remito pertenezca a una 
+				//OC, se guarde el importe original del mismo, esto hace que tenga que modificar
+				//el tratamiento del campo resta_saldoCM porque sino en la cobranza de facturas
+				//se está devolviendo credito al cliente por una factura de una OC.
+				if (varl_tipo_fact == "O") then
+					post:resta_saldoCM = post:resta_saldoCM + varl_imp_rem
+				endif
+				siaf:i = siaf:i + 1
+			else
+				//es nota de credito!! 50249
+				vec_nc_nro[cont] = substr(post:csr_string_250,1,15)
+				vec_nc_id[cont] = substr(post:csr_string_250,121,15) // al host debe viajar el fact_id
+				vec_nc_imp[cont] = substr(post:csr_string_250,17,16)
+				vec_nc_tipo[cont] = substr(post:csr_string_250,103,1)
+				vec_nc_fecha[cont] = substr(post:csr_string_250,187,2) +  substr(post:csr_string_250,190,2) * 100 + substr(post:csr_string_250,193,4) * 10000
+				/*Resto los importes de las notas de credito seleccionadas*/
+				//siaf:importe = siaf:importe - substr(post:csr_string_250,17,16)
+				//Acumulo el importe de las notas de credito seleccionadas para luego generar la TX de Consumo NC (99525)
+				imp_nc_consumida = imp_nc_consumida + vec_nc_imp[cont]
+				cont = cont + 1
+			endif
+		endif
+		let idx = idx + 1
+	    let i_idx = PL_GETITEM + idx
+	    call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+	Loop
+	
+	if (siaf:i == 0) then
+		lib:err_retval = -1
+		post:ImprimeRecCob = FALSE
+	else
+		post:ImprimeRecCob = TRUE
+	end if
+	//si no hay facturas seleccionadas no puede haber nc seleccionadas
+	if (siaf:i == 0 && cont > 0) then
+		siaf:importe = 0
+		call csr:cleararray(vec_facturas)
+		call csr:cleararray(vec_impfact)
+		call csr:cleararray(vec_saldofact)
+		call csr:cleararray(vec_tipofact)
+		call csr:cleararray(vec_seqfac)
+		call csr:cleararray(vec_nc_tipo)
+		call csr:cleararray(vec_nc_nro)
+		call csr:cleararray(vec_nc_imp)
+		clearfield imp_nc_consumida
+		return (-3)
+	end if
+	
+	//PS 9329: Si las facturas fueron pagadas con adelanto entonces no debo emitir el recibo
+	//ya que el importe es cero.
+	if (post:total_cobranza == 0) then
+		post:ImprimeRecCob = FALSE
+	endif
+	//post:total_cobranza = siaf:importe
+	
+	siaf:i = 0 //Lo uso para contar la cantidad
+	post:importe_saldo = 0
+	
+	//Recorro la tabla remitos
+	CDS SELECT FROM DSC:post:TABremitos BECOMES DSC:post:CONremitos WHERE \
+	post:op_operator_id == op:op_operator_id && \
+	post:marca_remito == "*" && \
+	post:adt_oc_nro == FLD:post:adt_oc_nro
+    CDS FINDFIRST DSC:post:CONremitos NOLOCK
+	DO
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+    	CDS EXTRACT DSC:post:CONremitos ALL
+		if (siaf:i == 30) then
+			post:importe_saldo = 0
+			call csr:cleararray(vec_remitos)
+			call csr:cleararray(vec_facturas)
+			call csr:cleararray(vec_impfact)
+			call csr:cleararray(vec_saldofact)
+			call csr:cleararray(vec_tipofact)
+			call csr:cleararray(vec_seqfac)
+			call csr:cleararray(vec_nc_tipo)
+			call csr:cleararray(vec_nc_nro)
+			call csr:cleararray(vec_nc_imp)
+			clearfield imp_nc_consumida
+			CDS ENDSELECT DSC:post:CONremitos
+			return (-2)
+		else
+			vec_remitos[siaf:i] = remito_nro
+			post:importe_saldo = post:importe_saldo + post:remito_total
+			call CDSitem_consumo
+			if (retval == 0) then
+				//PS 9330 - No debe devolver al credito del cliente cuando el remito es de una OC
+				if (post:adt_oc_nro.NUMCHARS == 0) then
+					post:total_cobranza = post:total_cobranza + post:remito_importe //- post:item_importe
+				end if
+			endif
+			siaf:i = siaf:i + 1
+		end if
+
+		CDS FINDNEXT DSC:post:CONremitos NOLOCK
+	LOOP
+    CDS ENDSELECT DSC:post:CONremitos
+
+	//Sumo tambien el importe de las Facturas
+	post:importe_saldo = post:importe_saldo + siaf:importe
+	
+	//Si no selecciona nada...retorna -1
+	if (siaf:i == 0 && lib:err_retval == -1) then
+		siaf:importe = 0
+		call csr:cleararray(vec_facturas)
+		call csr:cleararray(vec_impfact)
+		call csr:cleararray(vec_saldofact)
+		call csr:cleararray(vec_tipofact)
+		call csr:cleararray(vec_seqfac)
+		call csr:cleararray(vec_nc_tipo)
+		call csr:cleararray(vec_nc_nro)
+		call csr:cleararray(vec_nc_imp)
+		clearfield imp_nc_consumida
+		return lib:err_retval
+	end if
+	
+END SUB    	
+
+/*******/

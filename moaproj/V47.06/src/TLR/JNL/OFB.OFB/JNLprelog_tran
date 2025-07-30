@@ -1,0 +1,107 @@
+/****o* Pendientes de agrupación/OFB:tlr:JNLprelog_tran
+* NOMBRE
+*   OFB:tlr:JNLprelog_tran
+* DESCRIPCION
+* 	Pre-log Transaction							
+* 	This routine pre-logs a transaction (typically before	
+* 	sending the transaction to the host) when a subsequent
+* 	update of the status is going to be done  (typically after
+* 	the host has responded) using either the JNLupdate_commit	
+* 	or the JNLupdate_backout routine.	
+* ENTRADAS
+*   FLD:tlr:INDjnl_append = rtn to append cust jnl fields	
+* SALIDAS
+*   RETVAL =  0 - if successful		
+*          = -1 - if error			
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+SUB tlr:JNLprelog_tran
+	#ifdef MENSAJES_CIERRE
+	/* Agrego la impresion de mensajes para develar 
+	el "Misterio del Cierre del Dia" */
+	if (siaf:codigo_siaf == 9560)
+	    dprint "Cierre del dia, JNLprelog_tran\r\n"
+	end if
+	#endif
+	
+		cds clearbuffer DSC:CONjnl_write
+		CALL  OFB:jnl_header
+         /*Si es Nota de Credito no ejecuto la rutina - Gabriel Falciola*/
+        If (post:NotaCredito != "S")
+			    CALL OFB:JNLcust_append
+		else
+			/* Limpio los campos de mensajeria para que no realice viaje */
+			CLEARFIELD hcomm:INDhost_sndrt
+			CLEARFIELD hcomm:INDhost_rcvrt
+	    end if
+		CALL  OFB:jnl_trailer
+		/*Si estoy en Nota de Crédito realizo la copia del contexto de la tabla
+		auxiliar al journal - Gabriel Falciola*/
+		If (post:NotaCredito == "S")
+			call post:MISCdump_jnl_nc
+		Endif
+		
+#if TLR_JNL_WAIT == 0
+	cds insert DSC:CONjnl_write lock nowait
+#else
+	cds insert DSC:CONjnl_write lock
+#endif
+
+		//tratamiento de caidas de tx postales con tt multiples
+		If (post:NotaCredito != "S" && post:enAnulacion != "S" && !testflag(tlr:jnl_tran_flags,correction))
+			//gpb:NI50479 - Genera NC PED
+			IF (!TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+				CALL post:CDSupd_tt_jnl
+			END IF
+		End if	
+
+
+
+        If (post:NotaCredito != "S")
+		/* MARTIN para SAP... Grabacion en tabla simil jnl */
+		if ((post:cli_tipo == 1 || (siaf:codigo_siaf == 99023 && \
+			post:Tipo_Formulario == 3) || \
+			siaf:codigo_siaf == 99150 || siaf:codigo_siaf == 99060) && \
+			!testflag(tlr:jnl_tran_flags,correction))	
+			// Si es cuenta correntista..y no es reversa..
+			call tlr:JNLappend_sap
+		endif
+	end if
+	if (cdsretval < 0)
+		CALL  OFB:lib:MISCcds_find_err /* display error msg */
+		#ifdef MENSAJES_CIERRE
+	    /* Agrego la impresion de mensajes para develar 
+	    el "Misterio del Cierre del Dia" */
+	    if (siaf:codigo_siaf == 9560)
+	        dprint "Cierre del dia, fallo el insert %s\r\n",cdsretval
+	    end if
+	    #endif
+		return (-1)
+	END IF
+	#ifdef MENSAJES_CIERRE
+	    /* Agrego la impresion de mensajes para develar 
+	    el "Misterio del Cierre del Dia" */
+	    if (siaf:codigo_siaf == 9560)
+	        dprint "Cierre del dia, Parece que grabo bien\r\n"
+	    end if
+        #endif
+
+	if ( testflag(giros:giros_masivos_trx,proc_trx_masivos) || \
+	     siaf:codigo_siaf == 70610 || siaf:codigo_siaf == 70620 || \
+	     siaf:codigo_siaf == 70630 )
+		// En las transacciones de giros masivos grabar marca
+		// en PresuDet de transaccion journalizada.
+		call giros:CDSsval_chkpoint(JNL_TRX)
+	end if
+	
+END SUB
+
+/*******/

@@ -1,0 +1,192 @@
+/****o* Pendientes de agrupación/OFB:tes:TRANtes_efvo_ini
+* NOMBRE
+*   OFB:tes:TRANtes_efvo_ini
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesTRAN.h"
+
+Sub tes:TRANtes_efvo_ini
+    local i like siaf:i
+    local tipo_cierre like tes:tes_marca_cierre
+    if (drv:descrip == "OPENDAY") THEN
+      cutscreen tes:SCRNapertura_dia,NOCURSOR
+    else
+      cutscreen tes:SCRNapertura_dia,NOCURSOR
+    end if
+  
+    resetflag tlr:tran_flags,supovr_request
+    resetflag tlr:tran_flags,supovr_granted
+    clearfield ovr:ovr_sup_id
+    clearfield tlr:jnl_supervisor
+    rend_marca = "L"    //revisar!!!!!
+
+    PDM ENABLEITEM drv:menubar, ALL, 2  // --> desactivar menúes.
+    call post:MISCdisabl_Lock_Calc
+   
+    let tipo_cierre = tes:tes_tipo_cierre   
+    clearfield tes:tes_tipo_cierre // No siempre está grabado
+    
+ 
+ 	if (tipo_cierre != "F") then
+	    /* actualizo la fecha de la tabla */
+	    cds select from dsc:tes:tesoro_table \
+	    becomes DSC:tes:tesoro_context where tes:tes_suc_id == op:op_branch_id
+	    Cds clearbuffer DSC:tes:tesoro_context
+	    Cds Findfirst DSC:tes:tesoro_context Lock
+	    if (cdsretval < 0) then
+	       let common:csr_string = "No Hay registros en tabla Tesoro"
+	       errmsg common:errmsg_list,FLD:common:csr_string
+	       call tlr:APPLterm
+	       return (-2)
+	    end if
+	    
+	    //Antes de empezar muestro una pantalla para que el operador espero y no
+	    //piense que el sistema esta colgado...
+	    display SCRNopen_msg
+	    
+	    do
+	       cds extract DSC:tes:tesoro_context ALL
+	       let tes:tes_fecha = common:system_date
+	        
+	       clearfield siaf:importe
+	       clearfield post:importe_origen
+	       post:adt_mp_cod = tes:tes_moneda 
+	       call post:CDSadt_MedPago_load
+	       siaf:moneda = post:adt_mp_cod
+	       siaf:desc_moneda = post:adt_mp_desc
+	       post:medio_pago_desc = post:adt_mp_desc
+	          
+	       let i = 0
+	       ;do
+		   /* pongo el pico del tesoro como saldo inicial */
+		     ;if (i > 13) then /* los vectores son de 14 posiciones */
+		        ;break
+		     ;end if
+		     ;let tes:tes_sdoinic[i] = tes:tes_importes[i]
+		     //siaf:importe = siaf:importe + tes:tes_importes[i]
+		     ;post:importe_origen = post:importe_origen + tes:tes_importes[i]
+		     ;let i = i + 1
+	       ;loop
+	       ;if (post:adt_mp_adm == "G")
+	           //tes:tes_tot_inic = siaf:importe
+	           //tes:tes_total = siaf:importe
+	           ;if (post:adt_mp_monet == "S")
+	               ;tes:tes_tot_inic = post:importe_origen
+	               ;tes:tes_total = post:importe_origen           
+	           ;else
+	               tes:tes_tot_inic = tes:tes_total
+	               post:importe_origen = tes:tes_total
+	           ;end if
+	       ;else
+	           ;tes:tes_tot_inic = tes:tes_total
+	           //siaf:importe = tes:tes_total
+	           ;post:importe_origen = tes:tes_total
+	       ;end if
+	     
+	       resetflag tlr:tran_flags,supovr_request
+	       resetflag tlr:tran_flags,supovr_granted
+	       clearfield ovr:ovr_sup_id
+	       clearfield tlr:jnl_supervisor
+	       rend_marca = "L"         //revisar!!!!!!
+	
+	       call post:MISCconvierto_coti(post:importe_origen)
+	
+	       if (post:importe_origen >= 0) THEN
+				;Si la apertura es normal se van pasando las pantallas automaticamente 
+				siaf:codigo_siaf = 8400
+				siaf:nombre_transac = "ING.EFEC.INIC.TESORO POSITIVO"
+				tlr:tran_mnemonic = "INGTES"
+				;let drv:INDscr = SCR:tlr:SCRNopen_day	    
+				let drv:INDjnl_rtn = OFB:siaf:JNLefec_inic_pos
+				drv:INDscr = SCR:siaf:SCRNefec_inic_pos				
+				/* Limpio la rutina que tiene enlazada la que la llama a esta */
+	        	clearfield drv:INDspc_rtn[4]
+	
+				UNGETKEY RT_SEND
+				call tlr:JNLtran    	            	         
+		     	;end if    
+	       else
+		        post:importe_origen = post:importe_origen * -1
+		        siaf:importe = siaf:importe * -1
+				siaf:codigo_siaf = 8200
+				siaf:nombre_transac = "ING.EFEC.INIC.TESORO NEGATIVO"
+				tlr:tran_mnemonic = "INGTES"
+				;let drv:INDscr = SCR:tlr:SCRNopen_day	    
+				let drv:INDjnl_rtn = OFB:siaf:JNLefec_inic_pos
+				drv:INDscr = SCR:siaf:SCRNefec_inic_pos				
+				/* Limpio la rutina que tiene enlazada la que la llama a esta */
+	        	clearfield drv:INDspc_rtn[4]
+				
+				UNGETKEY RT_SEND
+				call tlr:JNLtran    	        	        
+		     	;end if        
+	       end if
+	
+	       cds findnext DSC:tes:tesoro_context LOCK
+	       if (cdsretval < 0) then
+		        break
+	       end if
+	       cds clearbuffer DSC:tes:tesoro_context
+	    loop
+
+		//Cuando termino saco la pantalla que estaba mostrando
+		undisplay SCRNopen_msg
+	    
+	    cds endselect DSC:tes:tesoro_context
+	else
+   		/* Apertura con Arqueo */
+ 		CALL CSR:listexec(LST:siaf:TRAN8405)
+    	drv:funct_rest = 0        /* le hago hacer la carga inicial con arqueo */
+	end if
+
+   setflag op:op_state_flags,tesoro_abierto
+
+    /* Inicializo Tesoro */
+    call tes:MISCinic_tes  
+         
+   if (tipo_cierre == "F") then
+ 		CALL CSR:listexec(LST:tes:TRAN8207)
+    	drv:funct_rest = 0        /* le hago hacer la carga inicial con arqueo */
+ 	end if    
+     
+
+    
+    /* Copio la tabla tesoro */
+    call tes:CDSclear_teso_bak
+    call tes:CDSvuelco_tabla(DSC:tes:tesoro_table,DSC:tes:tesoro_context,DSC:tes:teso_bak_table,DSC:tes:teso_bak_ctx)	
+
+    /* Inicializo Especies */
+    call CDSstatus_TesEspV(" ", op:op_branch_id, "S", op:op_tesoro_id)
+    
+    
+    /* desprotejo y limpio campos */
+    call tlr:SENDopen_day
+    
+    call tes:MISCsave_mov_pend
+    
+    clearfield siaf:importe
+    clearfield tes:espv_cod
+    clearfield siaf:moneda
+    clearfield post:medio_pago_desc
+    unprotfield espv_cod
+    unprotfield siaf:importe
+    unprotfield post:importe_origen
+    unprotfield siaf:moneda
+    call post:MISCactivar_buts
+    call post:MISCEnabl_Lock_Calc
+    drv:funct_rest = 0
+End sub
+
+/*******/

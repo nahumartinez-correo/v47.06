@@ -1,0 +1,204 @@
+/****o* Facturación/OFB:post:MISCarmo_DifFact
+* NOMBRE
+*   OFB:post:MISCarmo_DifFact
+* DESCRIPCION
+*   Esta Rutina llama a otra que genera los registros en la DifFact, a medida que se recorre la PresuDet,y por 
+*	cada familia de tx
+* ENTRADAS
+*   flia: familia de transaccion
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCarmo_TotalTrans, post:MISCbarro_PreDet
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCarmo_DifFact(flia)
+	local idx_opc like siaf:i
+	local cant_tot like post:cantidad
+	
+
+	//Limpio los campos de la tabla
+	clearfield adt_diffact_fecha
+	clearfield adt_diffact_op
+	clearfield adt_diffact_presn
+	clearfield adt_diffact_id
+	clearfield adt_diffact_ali
+	clearfield adt_diffact_trann
+	clearfield adt_diffact_flia
+	clearfield adt_diffact_codagr
+	clearfield adt_diffact_codigo
+	clearfield adt_diffact_nromot
+	clearfield adt_diffact_esp
+	clearfield adt_diffact_subesp
+	clearfield adt_diffact_opc
+	clearfield adt_diffact_cant
+	clearfield adt_diffact_sin_iva
+	clearfield adt_diffact_sin_iva4 
+	clearfield adt_diffact_desde
+	clearfield adt_diffact_desde
+	
+	SELECT (flia)
+		CASE "CSP" //OK
+		CASE "CSE" //OK
+		adt_diffact_codagr = 0
+			//Se graban registros en la DifFact siempre y cuando la alicuota sea > 0
+			IF (adt_serv_aliciva > 0)
+				//grabo un registro por servicio
+					CALL CDSsave_DifFact(adt_serv_aliciva,siaf:codigo_siaf,post:cantidad,siaf:ImporteSinIva,ImporteSinIva_bis)
+				//si tiene bloques grabo uno por bloques
+				IF (leyenlar_bloq.numchars != 0)
+					if ((post:OperacionAut || post:OperacionCob) && post:adt_oc_nro.numchars != 0) then
+						cant_tot = cant_bloq
+					else
+						cant_tot = cantidad * cant_bloq
+					endif
+					CALL CDSsave_DifFact(adt_serv_aliciva,"BLQ",cant_tot,imp_bloques_siva,imp_bloques_siva4)
+				END IF
+			END IF
+			//Si la tx tiene opcionales grabo un registro por Opcional
+			CALL MISCopc_DifFact
+			BREAK
+		CASE "VAP"
+			adt_diffact_codagr = 0
+			//Se graban registros en la DifFact siempre y cuando la alicuota sea > 0
+			IF (adt_serv_aliciva > 0)
+				//grabo un registro por servicio
+					CALL CDSsave_DifFact(adt_serv_aliciva,siaf:codigo_siaf,post:cantidad,siaf:ImporteSinIva,ImporteSinIva_bis)
+			ENDIF
+			BREAK
+		CASE "CST" //OK
+			adt_diffact_codagr = 0
+			//Se graban registros en la DifFact siempre y cuando la alicuota sea > 0
+			IF (adt_serv_aliciva > 0)
+				//grabo un registro por telegrama
+				CALL MISCtele_DifFact
+				IF (leyenlar_bloq.numchars != 0)
+					if ((post:OperacionAut || post:OperacionCob) && post:adt_oc_nro.numchars != 0) then
+						cant_tot = cant_bloq
+					else
+						cant_tot = cantidad * cant_bloq
+					endif
+					CALL CDSsave_DifFact(adt_serv_aliciva,"BLQ",cant_tot,imp_bloques_siva,imp_bloques_siva4)
+				END IF
+			END IF
+			//Si la tx tiene opcionales grabo un registro por Opcional
+			CALL MISCopc_DifFact
+			BREAK
+
+		CASE "TES" //OK
+			IF (siaf:codigo_siaf == 8500)
+				//Especies
+				CALL MISCespv_DifFact
+			END IF
+			BREAK
+				
+		CASE "CME" //OK
+			adt_diffact_codagr = 0
+			//Se agrega la pregunta del importe > 0 para el caso de
+			//facturacion de bienes de cambio de una OC de CM, en donde
+			//se tienen que mostrar los bienes de cambio en la factura
+			// pero estos no se venden por lo cual el importe es cero y
+			// no deberian generarse en la DifFact.
+			IF (adt_prodvs_aliciva > 0 && post:ImporteSinIva > 0)
+				CALL CDSsave_DifFact(adt_prodvs_aliciva,siaf:codigo_siaf,post:cantidad2,post:ImporteSinIva,ImporteSinIva_bis)	
+			END IF
+			BREAK	
+
+		CASE "TAV" //OK
+			IF (siaf:codigo_siaf == 99020) 
+				//Entrega de Piezas
+				CALL MISCentrPie_DifFact
+			END IF
+			IF (siaf:codigo_siaf == 99124)
+				//Polizas
+				IF (EnPol_TasaGestEn > 0) 
+					//Gestion de Entrega
+					CALL CDSsave_DifFact(EnPol_TasaGestEn,"GEST",1,GestSinIva,GestSinIva4)
+				END IF
+				IF (EnPol_TasaPresAd > 0)  
+					//Presentacion de Aduana
+					CALL CDSsave_DifFact(EnPol_TasaPresAd,"PRES",1,PresSinIva,PresSinIva4)
+				END IF
+			END IF
+				
+			BREAK			
+
+		CASE "CSV" //OK
+			//Se graban registros en la DifFact siempre y cuando la alicuota sea > 0
+			IF (siaf:codigo_siaf == 6900) //templates
+				//grabo un registro por cada motivo que compone el template si la alicuota es > 0
+				CALL MISCtempl_DifFact
+			ELSE
+				//grabo un registro por cada motivo
+				CALL MISCmotivo_DifFact
+			END IF
+			BREAK
+
+		CASE "SVC"
+			IF (adt_serv_aliciva > 0)
+				IF (siaf:codigo_siaf == 18201)
+					//Correspondencia de cargo
+					CALL CDSsave_DifFact(adt_serv_aliciva,siaf:codigo_siaf,1,siaf:ImporteSinIva,ImporteSinIva_bis)
+				END IF
+				IF (siaf:codigo_siaf == 18501)
+					// Gestiones Varias
+					CALL CDSsave_DifFact(adt_serv_aliciva,siaf:codigo_siaf,cantidad,siaf:ImporteSinIva,ImporteSinIva_bis)
+				END IF
+				IF (siaf:codigo_siaf == 18301)
+					//Lista
+					CALL CDSsave_DifFact(adt_serv_aliciva,siaf:codigo_siaf,post:envios,siaf:ImporteSinIva,ImporteSinIva_bis)
+				END IF
+			END IF
+			BREAK
+
+			
+		CASE "CSM" 
+			//Se graban registros en la DifFact siempre y cuando la alicuota sea > 0 solo para G. Masivos
+			//NI 50295 - Tambien se debe grabar la DifFact para LISTA DE GIROS
+			
+			IF (((TESTFLAG(giros:giros_masivos,proc_gir_masivos) || \
+				TESTFLAG(giros:giros_masivos,proc_anul_masivos)) && giros:gir_nro_lote == "")) || \
+				(TESTFLAG(giros:giros_importacion,proc_em_lg))
+				clearfield adt_diffact_esp
+				clearfield adt_diffact_subesp
+				IF (adt_serv_aliciva > 0)
+					//CALL MISCgiros_DifFact(adt_serv_aliciva,"COMIS",giros:ComisionSinIva_fld,giros:ComisionSinIva4_fld)
+					//NI 50295 - No se deben grabar acumulados los servicios para GM y LISTA DE GIROS
+					CALL CDSsave_DifFact(adt_serv_aliciva,"COMIS",1,giros:ComisionSinIva_fld,giros:ComisionSinIva4_fld)
+				END IF
+				clearfield adt_diffact_esp
+				clearfield adt_diffact_subesp
+				IF (adt_tarif_fj_aliciva > 0)
+					//CALL MISCgiros_DifFact(adt_tarif_fj_aliciva,"TASA",giros:TasaSinIva_fld,giros:TasaSinIva4_fld)
+					//NI 50295 - No se deben grabar acumulados los servicios para GM y LISTA DE GIROS
+					CALL CDSsave_DifFact(adt_tarif_fj_aliciva,"TASA",1,giros:TasaSinIva_fld,giros:TasaSinIva4_fld)
+				END IF
+				//Si la tx tiene opcionales grabo un registro por Opcional
+				clearfield adt_diffact_esp
+				clearfield adt_diffact_subesp
+				CALL MISCopc_DifFact	
+			END IF
+			BREAK
+		
+		CASE "PCL"
+			IF (siaf:codigo_siaf == 99007 || siaf:codigo_siaf == 99019 || \
+				siaf:codigo_siaf == 99300)
+				CALL MISCdesctos_DifFact
+			END IF
+			BREAK
+
+	END SELECT
+	
+	
+	
+END SUB
+
+/*******/
+	
+	

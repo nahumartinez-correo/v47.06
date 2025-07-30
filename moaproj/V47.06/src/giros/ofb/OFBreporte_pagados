@@ -1,0 +1,173 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBreporte_pagados
+* NOMBRE
+*   OFB:giros:OFBreporte_pagados
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBreporte_pagados
+	LOCAL lcodigo_siaf LIKE siaf:codigo_siaf
+	LOCAL ltran_flags LIKE tlr:jnl_tran_flags
+	
+	siaf:indica_calcu = 0
+	CLEARFIELD siaf:listado_totmot
+	CALL CSR:f_sadroppl(DSC:pick_listado)
+	CALL CSR:f_sanewpl(DSC:pick_listado,PIC:giros:giros_listado)
+	IF (RETVAL < 0) THEN
+		MSGBOX "ERROR AL CREAR EL PICKLIST.",OFB_OK,"Error"
+		RETURN -2
+	END IF
+	
+	IF (siaf:pantalla_impreso != "P") THEN
+		CALL siaf:MISCopen_lis
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+		
+		CALL giros:MISCencab_pagados
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+	END IF
+
+	// ACUMULAR EN PICKLIST AUX LAS REVERSAS
+	CALL giros:OFBtrx_cancel_giros(DSC_PAG)
+	IF (RETVAL <  0) THEN
+		CALL CSR:f_sadroppl(DSC:pick_aux)
+		RETURN -2
+	END IF
+  
+	IF (giros:CodCajero_fld.NUMCHARS == 0) THEN
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+			WHERE tlr:jnl_branch == common:sucursal_activa \
+			&& tlr:jnl_date >= giros:gir_fec_desde \
+			&& tlr:jnl_date <= giros:gir_fec_hasta \
+			&& (tlr:jnl_status == HOST_REJECTED || tlr:jnl_status == HOST_ACCEPTED) \
+			&& (siaf:codigo_siaf == 70090 || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70120 || siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70384)
+	ELSE
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+			WHERE tlr:jnl_branch == common:sucursal_activa \
+			&& tlr:jnl_date >= giros:gir_fec_desde \
+			&& tlr:jnl_date <= giros:gir_fec_hasta \
+			&& (tlr:jnl_status == HOST_REJECTED || tlr:jnl_status == HOST_ACCEPTED) \
+			&& (siaf:codigo_siaf == 70090 || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70384 || siaf:codigo_siaf == 70120) \
+			&& tlr:jnl_op_login_id == giros:CodCajero_fld
+	END IF
+  
+  CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	IF (CDSRETVAL == -CDS_RECORD_NOT_FOUND) THEN
+		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550) THEN
+			MSGBOX "NO EXISTEN GIROS/TRANSFERENCIAS PAGADOS",OFB_OK,"Atencion"
+		END IF
+		CDS ENDSELECT DSC:tlr:jnl_context 
+		CALL siaf:MISCclose_lis
+		IF (siaf:pantalla_impreso != "P") THEN
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal , "listado.lis"
+			FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+			CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+			EXEC post:linea_spvCM                 
+		END IF        
+		IF (siaf:modo == "CLOSESUC") THEN
+			//listados al cierre de la sucursal
+			CALL CSR:f_sadroppl(DSC:pick_aux)
+			RETURN	-8
+		ELSE
+			RETURN -2
+		END IF
+	ELSE
+		IF (CDSRETVAL != 0) THEN
+			CALL lib:MISCcds_find_err
+			CDS ENDSELECT DSC:tlr:jnl_context 
+			CALL siaf:MISCclose_lis
+			CALL CSR:f_sadroppl(DSC:pick_aux)
+			RETURN	-2
+		END IF
+	END IF
+  
+  FYIMSG LST:common:fyimsg_list,MSGbucar_trx_giros
+  
+	WHILE (CDSRETVAL == 0)
+		CALL csr:proc_list(F_CLEAR,LST:LISTreporte_giros)
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+			FLD:tlr:jnl_op_login_id \
+			FLD:tlr:jnl_branch \
+			FLD:tlr:jnl_date \
+			FLD:tlr:jnl_time \
+			FLD:giros:Serie_fld \
+			FLD:giros:NroGiro_fld \
+			FLD:giros:digito_fld \
+			FLD:giros:clave_hdr_giros \
+			FLD:giros:cons_nro_ctrol \
+			FLD:giros:ApellidoBenef_fld \
+			FLD:giros:NombreBenef_fld \
+			FLD:giros:ApellidoBenef_inter \
+			FLD:giros:NombreBenef_inter \
+			FLD:giros:ImporteNeto \
+			FLD:giros:ImporteEmis_fld \
+			FLD:tlr:jnl_status \
+			FLD:giros:flia_giro_fld \
+			FLD:giros:tipo_giro_fld \
+			FLD:siaf:cancelacion \
+			FLD:tlr:jnl_sequence_corr \
+			FLD:tlr:jnl_sequence \
+			FLD:siaf:codigo_siaf INTO lcodigo_siaf \
+			FLD:giros:dia_viaje \
+			FLD:giros:hora_viaje	\
+			FLD:tlr:jnl_tran_flags INTO ltran_flags 
+
+		IF (siaf:cancelacion == "" && (!testflag(ltran_flags,correction))) THEN
+			CALL giros:OFBbusc_cancel_giros(DSC_PAG)
+			CALL giros:OFBtrx_rep_giros(lcodigo_siaf,DSC_PAG)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+		END IF
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+	END WHILE
+	CDS ENDSELECT DSC:tlr:jnl_context
+	CALL csr:PickOp 4 dsc:giros:pick_listado "1,5" "94,12" "166,10" "177,8"
+  
+	// FGB
+	CALL OFBarmar_ult_estado("P")
+	// fin FGB
+  
+	IF (RETVAL < 0) THEN
+		CALL CSR:f_sadroppl(DSC:pick_aux)
+		RETURN -2
+	END IF
+  
+  CALL csr:PickOp 4 dsc:giros:pick_listado "10,1" "6,4" "1,5" "94,12" "146,10" "157,8"
+  
+  CALL giros:OFBarmar_pick_giros(DSC_PAG)
+  IF (RETVAL < 0) THEN
+  	CALL CSR:f_sadroppl(DSC:pick_aux)
+  	RETURN -2
+  END IF
+  		
+	IF (siaf:pantalla_impreso != "P") THEN
+		CALL CSR:f_sadroppl(DSC:pick_aux)
+		CALL siaf:MISCclose_lis
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+	END IF
+  
+  FYIMSG CLEAR
+  
+END SUB
+
+/*******/

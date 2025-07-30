@@ -1,0 +1,102 @@
+/****o* Facturación/OFB:post:PRT_SaldoAnticipo
+* NOMBRE
+*   OFB:post:PRT_SaldoAnticipo
+* DESCRIPCION
+*   En las facturas emitidas por ventas o por cobranza de Cliente Medio en donde se utilizó el Adelanto 
+*   se imprime al pie de la misma el saldo restante de Adelanto. 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*		post:PRT_Factura
+*   post:PRT_Ticket_Jou
+* REFERENCIADO POR
+*   OFB:post:PRT_Factura
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_SaldoAnticipo(LIMP, Importe_Acumulado, Relleno, Largo, Tipo_Impresion)
+	LOCAL imp_anticipo LIKE siaf:importe
+	LOCAL l_err_retval LIKE lib:err_retval	
+	LOCAL l_consumo LIKE post:adt_adelcm_consumo
+	LOCAL l_remito LIKE post:adt_adelcm_remito
+	LOCAL consumo_CM LIKE post:adt_adelcm_consumo
+
+	IF (!OperacionAut) THEN
+		CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+			post:adt_adelcm_op == op:op_operator_id && \
+			post:adt_adelcm_cliente == post:climed_numero && \
+			post:adt_adelcm_consumo > 0 && \
+			post:adt_adelcm_marca == "*" 
+		
+		CDS FINDFIRST DSC:AdelCM_ctx NOLOCK
+		LET l_err_retval = CDSRETVAL
+    
+		WHILE (l_err_retval == 0)
+			CDS EXTRACT DSC:AdelCM_ctx post:adt_adelcm_consumo INTO l_consumo \
+				post:adt_adelcm_remito into l_remito
+			
+			IF (l_remito.NUMCHARS == 0) THEN
+				consumo_CM = consumo_CM + l_consumo
+			END IF
+
+			CDS FINDNEXT DSC:AdelCM_ctx NOLOCK
+			LET l_err_retval = CDSRETVAL
+		END WHILE
+		CDS ENDSELECT DSC:AdelCM_ctx
+		imp_anticipo = post:adelantoCM - consumo_CM	
+	ELSE
+		imp_anticipo = post:adelantoCM
+	END IF
+	
+	CALL PRTcortePagina(LIMP, Importe_Acumulado, PAGE_FACTURA, Tipo_Impresion)
+	LIMP = RETVAL
+
+	IF (DocFiscal == "TICKET")
+		FPRINT common:csr_string, "Saldo de Ade."
+	ELSE
+		FPRINT common:csr_string, "Saldo Restante de Adelanto"
+	END IF
+	
+	IF (Relleno == 0) THEN
+		//gpb:Original
+		;FPRINT common:csr_string "%-s $%e\n",common:csr_string, imp_anticipo
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THEN	
+			FPRINT common:csr_string "%-s $%e\n",common:csr_string, imp_anticipo
+		ELSE
+			//justifico a la izquierda
+			FPRINT common:csr_string "\x1Ba\x30%-s $%e\n",common:csr_string, imp_anticipo
+		END IF
+	ELSE
+		//gpb:Original
+		;FPRINT common:csr_string "%*.*s $%9.9e\n",\
+		;	Relleno,Largo,common:csr_string,imp_anticipo
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THEN			
+			FPRINT common:csr_string "%*.*s $%14.14e\n",\
+				Relleno,Largo,common:csr_string,imp_anticipo		
+		ELSE
+			//justifico a la derecha
+			FPRINT common:csr_string "\x1Ba\x32%s $%14.14e\n",common:csr_string,imp_anticipo
+		END IF
+	END IF
+	CALL post:MISCprt2laser(common:csr_string)
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+	END IF
+	
+	LIMP = LIMP + 1
+	RETURN (LIMP)	
+END SUB
+
+/*******/

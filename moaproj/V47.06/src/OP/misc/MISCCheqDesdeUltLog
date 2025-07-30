@@ -1,0 +1,84 @@
+/****o* Pendientes de agrupación/OFB:op:MISCCheqDesdeUltLog
+* NOMBRE
+*   OFB:op:MISCCheqDesdeUltLog
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCCheqDesdeUltLog
+    local MensajeErr like common:csr_string
+	local esJefe like siaf:i
+	local esCajero like siaf:i
+	local esMercha like siaf:i
+	local esSupervisor like siaf:i
+	call CDSfind_DiasUltLogin
+
+    if (op_fecha_ul_conex.NUMCHARS != 0) //control que no sea usuario de versiones viejas
+
+	; [PAW] --> Se anula este control si el operador tiene alguno de los siguientes perfiles:
+	; - JEFE DE OFICINA
+	; - CAJERO,
+	; - MERCHANDISING
+	; - SUPERVISOR
+	esJefe = op_sup_auth == "X"
+	esCajero = op_tlr_auth == "X"
+	esMercha = op_ret_auth == "X"
+	esSupervisor = op_tes_auth == "X"
+
+	if (!esJefe && !esCajero && !esMercha && !esSupervisor)
+		return 0
+	endif
+
+	 call csr:date_subtract(common:system_date,op_fecha_ul_conex)
+	 if (RETVAL == -9999999)
+		return (-2)
+	 else
+		if ( RETVAL >=  adt_ps_ult_login )
+  	       fprint fld:MensajeErr "El numero de dias desde el ultimo login supera los %d permitidos" \
+	            op:adt_ps_ult_login
+			errmsg drv:errmsg_list,fld:MensajeErr
+			//inhabilitar user
+			let op_inhibido = "S"
+			MOVE op_inhibido TO adt_inhibido
+			op_fecha_ul_inhabil = common:system_date
+			MOVE op_fecha_ul_inhabil TO adt_fecha_ul_inhabil
+			op_hora_ul_inhabil = common:time_of_day
+			MOVE op_hora_ul_inhabil TO adt_hora_ul_inhabil
+
+    		//mercedes - set the date and time of the last login
+    		op_fecha_ul_conex = common:system_date
+    		op_hora_ul_conex = common:time_of_day
+    	    MOVE op_fecha_ul_conex to adt_fecha_ul_conex
+    		MOVE op_hora_ul_conex to adt_hora_ul_conex
+    		//fin mercedes
+
+			call CDSadt_op_save
+
+			//journalizacion
+	        hcomm:tran_status = MEMO
+   		    MOVE "SOBREPASA n DIAS ULT.LOGIN" TO siaf:adt_mot_desc
+			let FLD:drv:INDjnl_rtn = OFB:op:JNLop_perfiles
+	 	    let FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			let siaf:codigo_siaf = 98080
+			call tlr:JNLout_of_tran
+			//fin journalizacion
+    	    call op:MISCend_NT
+		 end if
+	 end if
+  end if
+
+END SUB
+
+/*******/

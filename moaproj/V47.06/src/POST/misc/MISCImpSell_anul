@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:post:MISCImpSell_anul
+* NOMBRE
+*   OFB:post:MISCImpSell_anul
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+/*Rutina que se encarga de journalizar los Impuestos de Sello en
+  Nota de Crédito - Gabriel Falciola*/
+SUB post:MISCImpSell_anul
+    local PreAUltTrn_aux like post:PreAUltTrn
+    
+    PreAUltTrn_aux = PreAUltTrn //cgw:reservo ultimo nro transaccion journalizado.
+
+    /*Antes de journalizar, genero el registro correspondiente en la PresuDet*/    
+    call post:CDSImpSellPresu
+
+    cds select from dsc:AuxImpp_tbl becomes DSC:AuxImpp_ctx  \
+    where (Fld:adt_auximpp_op == fld:post:op_operator_id && PresNro == fld:PresNro)
+    cds findfirst DSC:AuxImpp_ctx nolock
+
+    /*cgw: Recupera ultimo nro.transaccion que journalizo anterior al impuesto sellado
+               y actualiza en NcTable */
+    lib:err_retval = cdsretval
+    if (cdsretval == 0) then
+        PreAUltTrn = PreAUltTrn_aux 
+        call post:CDSRecup_ant_ImpSell(PreAUltTrn)        
+    end if
+    cdsretval = lib:err_retval
+
+    while (cdsretval != -801)
+           //cgw:Incrementa el nro.de transaccion a journalizar (Impuesto Sellado).
+           call CDSIncSecSesion(post:PresNro,"TRN",1,"S")
+           PreDNroTrn = retval //nro.transaccion incrementado.
+           cds clearbuffer DSC:AuxImpp_ctx
+           cds findagain DSC:AuxImpp_ctx nolock 
+            
+	   cds extract DSC:AuxImpp_ctx all
+	   siaf:importe = adt_auximpp_importe
+	   siaf:moneda = 99
+	   clearfield post:medio_pago_desc
+	   clearfield post:MedPTipMon
+	   siaf:codigo_siaf = 99029
+	   if (sistCaido == "S")
+	       call CDScheck_jnl_anul
+	   end if
+	   if (retval == 0 || sistCaido != "S")
+	       call siaf:PRESfecha_hora
+	       post:NroCompPago = 0
+	       tlr:INDdcol_scrn[0] = SCR:post:SCRNImpSellados
+	       tlr:INDtran_name = LST:post:TRANImpSellados
+	       tlr:INDjnl_append = OFB:post:JNLImpSellados
+	       tlr:INDtots_append = LST:TOTSImpSellados
+	       call MISCmuevo_campos_jou
+	       call siaf:MISClleno_modalidad
+	       NotaCredito = "N"
+	       UngetKey RT_SEND
+	       CALL tlr:JNLtran
+	       NotaCredito = "S"
+	       
+	       /*cgw: se estaba generando problemas en el incremento del nro. de tx despues del sellado.
+	       call CDSIncSecSesion(post:PresNro,"TRN",1,"S")	       
+	       PreDNroTrn = retval
+	       */
+
+	       call post:CDSCobraPagaNC(siaf:importe,siaf:afecta_efectivo,PresNro)
+	       cds findnext DSC:AuxImpp_ctx nolock
+	   end if
+    end while
+    cds endselect DSC:AuxImpp_ctx
+END SUB
+
+/*******/

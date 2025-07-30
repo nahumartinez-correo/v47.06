@@ -1,0 +1,164 @@
+/****o* Reportes/OFB:siaf:PDOCfile_print
+* NOMBRE
+*   OFB:siaf:PDOCfile_print
+* DESCRIPCION
+*   Imprime las lineas de impresion grabado en el archivo temporal, con los formatos de pagina.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafPDOC.h"
+
+SUB siaf:PDOCfile_print
+local LINEAS like siaf:dif /* cuenta las lineas que se van imprimendo*/
+local cant_pag like siaf:i
+local seteo_T_Pie like siaf:i
+local T_Pie like siaf:i
+local L_pie like siaf:i
+local L_imprimible like siaf:i
+LOCAL INDICE_INF LIKE post:cantidad
+LOCAL INDICE LIKE post:cantidad
+	let LINEAS = 1 /* empiezo por la linea uno */
+	cant_pag = 1
+	prt textsize *150   /*Agregado por Daniel 10/12/98 */
+
+	prt textfont 10
+	prt scale 100
+	T_Pie = 0
+	L_pie = 0
+	L_imprimible = 0
+	seteo_T_Pie = 1
+	if (listado_totmot == 1) then
+	    prt style 13
+	else
+	    prt style 12
+	end if
+
+	//gbp:PS10889 - Ajusto margen izquierdo *90
+	//prt margin *8160,-,-,-,-,-
+	prt margin *8160,-,-,-,*90,-
+  
+	prt language 0
+	do
+		if (LINEAS == 62 && !T_Pie) then 
+			;Salto de página
+			;Por aca pasan los listados que no tienen metainformación de estilos.
+			PRT FORMFEED
+			PRT FLUSH
+			let LINEAS = 1
+			goto impresion
+		end if
+		clearfield common:csr_string
+		call csr:file_getline(7,common:csr_string)
+		if (retval < 0) then
+			if (T_Pie > 0) then
+				select (T_Pie)
+					case 1
+						fprint common:csr_string "Total de Páginas del listado : %s", siaf:indica_calcu
+						if (L_imprimible > common:csr_string.numchars) then
+							L_pie = L_imprimible - common:csr_string.numchars
+							fprint common:csr_string "%*.*s%s",L_pie,L_pie," ", common:csr_string
+						end if
+						break
+					case 2
+						fprint common:csr_string "Página %s de %-s", cant_pag, siaf:indica_calcu
+						if (L_imprimible > common:csr_string.numchars) then
+							L_pie = L_imprimible - common:csr_string.numchars
+							fprint common:csr_string "%*.*s%s",L_pie,L_pie," ", common:csr_string
+						end if
+				end select
+				while (LINEAS < 62)
+					prt newline
+					let LINEAS = LINEAS + 1
+				end while
+				prt newline
+				prt newline
+				prt print common:csr_string
+			end if
+			break
+		end if
+		;Establece tipo de pie
+		if (seteo_T_Pie) then
+			  ;Establece tipo de pie
+			call post:MISCveoTipoPieDePag(common:csr_string,T_Pie,L_imprimible)
+			seteo_T_Pie = 0
+			//gbp:PS10889 - Ajusto escala
+			;Establece la orientación, la escala y el corte de líneas por página
+			call post:MISCorientScalCantLn(common:csr_string,LINEAS)
+		end if
+		if (LINEAS == 62 && T_Pie) then 
+			;Salto de pagina
+			;Por aca pasan los listados que tienen metainformación de estilos.
+			select (T_Pie)
+				case 2
+					prt newline
+					prt newline
+					fprint common:csr_string "Página %s de %-s", cant_pag, siaf:indica_calcu
+					if (L_imprimible > common:csr_string.numchars) then
+						L_pie = L_imprimible - common:csr_string.numchars
+						fprint common:csr_string "%*.*s%s",L_pie,L_pie," ", common:csr_string
+					end if
+					prt print common:csr_string
+					clearfield common:csr_string
+			end select
+			PRT FORMFEED
+			PRT FLUSH
+			let LINEAS = 1
+			cant_pag = cant_pag + 1 
+		end if
+		;dprint "%s## Linea=%s\n" common:csr_string,LINEAS
+impresion:
+		;Si se quiere hacer un salto de página entre dos listados que se diferentes
+		;pero que se imprimen contiguamente, se puede insertar al final del primero
+		;la línea "<FORMFEED>"
+		CALL csr:str_search (common:csr_string,"<FORMFEED>",INDICE,INDICE_INF)
+		if (retval == 0) then
+			while (LINEAS < 61)
+				prt newline
+				let LINEAS = LINEAS + 1
+			end while
+			prt newline
+		else
+			prt newline
+			prt positionabs -,3
+			if (T_Pie) then
+				call post:MISCprintConFormato(common:csr_string)
+       			;Establesco el estilo predefinido
+				if (siaf:listado_totmot == 1) then
+	    			prt style 13
+				else
+	    			prt style 12
+				end if
+			else
+				; Para los listados viejos que imprimen sin metainformación de estilos
+				; el control de corte de página se hace de la siguiente manera:
+				; Para la primer hoja el corte es a 61 líneas, para las sucesivas
+				; es 60 (observar que en el corte de página se hace un goto y se inserta
+				; una línea en blanco sin leer el archivo, luego se vuelve a incrementar 
+				; el contador de líneas a dos, a partir de ese momento el corte es desde
+				; 2 a 61 = 60 líneas).
+				PRT PRINT common:csr_string
+			end if
+       	end if
+       	
+       	/* Para que la prox. linea no muestre lo anterior */
+        clearfield common:csr_string
+        /* */
+		prt carriagereturn
+		let LINEAS = LINEAS + 1
+	loop
+	/* purge rt print buffer to start new buffer for next page */
+	prt flush
+	//genera problemas cuando se hacen dos copias.
+	//clearfield siaf:listado_totmot
+END SUB
+
+/*******/

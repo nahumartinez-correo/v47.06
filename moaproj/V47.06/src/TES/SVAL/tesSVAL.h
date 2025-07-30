@@ -1,0 +1,15 @@
+#include "tlr.h"
+#include "base.h"
+#include "drv.h"
+#include <ofbdefs.h>       
+#include "tesoro.h"
+#include "cuentas.h"
+#include "hcommstd.h"
+#include "giros.h"
+#include "Impresio.h"
+#include "drv.h"
+#include "hcommstd.h"
+#include "ofbdefs.h"
+#include "pickdrv.h"
+#define MAX_DEN 14
+#define MENSAJES_CIERRE "SI"

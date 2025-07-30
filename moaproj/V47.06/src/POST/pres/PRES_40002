@@ -1,0 +1,119 @@
+/****o* Productos Varios/OFB:post:PRES_40002
+* NOMBRE
+*   OFB:post:PRES_40002
+* DESCRIPCION
+*   Rutina de PreDisplay de la TX de Venta de Productos Varios.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANventa_prodvs
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRES_40002
+LOCAL l_importe LIKE adt_prodvs_tarifa
+    siaf:nombre_transac.highlite = 0
+    siaf:codigo_siaf = 40002
+    tes:es_tesoro = "S"
+    /*IF ((estado_presu == 2 || estado_presu == 3) && cli_tipo == 1) THEN
+        ERRMSG LST:common:errmsg_list,ERRtran_no_presu
+        RETURN (-2)
+    END IF*/
+
+    /* si estoy en teclas ráìdas y tiene cursol legal protejo el
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+
+    if (post:estado_presu == 1) then
+
+         call post:CDSMPago_Clegal_load
+      	  if (retval == 0) then
+      	     siaf:moneda = post:adt_mp_cod
+      	     protfield siaf:moneda
+      	     DISABLECONTROL drv:PBcb2
+          else
+             errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+             return (-2)
+          end if
+
+    end if
+
+    CALL siaf:PRESfecha_hora
+    IF (RETVAL < 0) THEN
+        RETURN (-2)
+    END IF
+    /****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.     17/10/2000                                 */
+    /****************************************************************/
+   if (post:estado_presu == 2 || post:estado_presu == 3) then
+
+    if (siaf:adt_tran_med_pago != "S") then
+         post:captura_mp = siaf:adt_tran_med_pago
+         protfield siaf:moneda
+         siaf:moneda = 99
+         clearfield post:medio_pago_desc
+         DISABLECONTROL drv:PBcb2
+     else
+         ; Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+     end if
+   end if
+
+   if (post:estado_presu == 1 || post:estado_presu == 2) then
+	   	clearfield post:cod_agrupacion
+	   	/* MLD Limpio la secuencia también */
+	   	clearfield post:secuencia_vta
+	    clearfield fld:prod_serv
+	    clearfield fld:codesp_serv
+	    clearfield fld:subcod_serv
+	    clearfield fld:codesp_prod
+	    clearfield fld:subcod_prod
+	end if
+
+    post:INDPresuD_Dat = OFB:CDSTRAN40002_append
+    if (post:estado_presu == 3) then
+  		call post:MISCLeo_Adicional
+  	end if
+    CALL post:MISCLeo_PresDet
+    CALL post:MISCprotege(LST:fld40002protege,LST:fld40002desprotege)
+    
+    //NI50387:campo descuento cliente medio siempre protegido.
+    PROTFIELD post:Dcto_CliMed
+    
+   	if (post:estado_presu == 4) then
+   		siaf:importe_tot_serv = siaf:importe - fld_promo_imp
+   		refresh siaf:importe_tot_serv
+   	end if
+   	/*MLD Si estoy modificando vuelvo atrás la reserva de stock - No corre más a partir del PS 9575*/
+   	if (post:estado_presu == 3) then
+   		;stock_ant = post:cantidad2
+   		//PS 9575 - Se decidió que no se cancelaría la reserva del stock al entrar a modificar la TX
+   		//sino que se resguardarían los campos necesarios para luego actualizar la tabla Stock, llegado
+   		//el caso que se confirme alguna modificación.
+   		post:cantidad2_backUP =  post:cantidad2	
+   		//call post:CDScancelo_reserva(post:adt_prodvs_cod,post:adt_stock_coddep,post:cantidad2)
+   		
+   	end if
+   	IF (post:estado_presu == 3) THEN
+   		CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+		CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle	//MDG
+		IF (fld_promo_imp > 0) THEN
+			l_importe = adt_prodvs_tarifa * cantidad2
+			IF (post:promoPdvsTipoBon == TIPO_BONIF_VALOR)
+				CALL post:MISCdetalleBonifGral(promo_desc_pdvs,l_importe,"----",fld_promo_imp, "Prod.Vs", "")
+			ELSE
+				CALL post:MISCdetalleBonifGral(promo_desc_pdvs,l_importe,promo_bon_pdvs,fld_promo_imp, "Prod.Vs", "")
+			END IF
+		END IF
+	END IF
+    RETURN (RETVAL)
+END SUB
+
+/*******/

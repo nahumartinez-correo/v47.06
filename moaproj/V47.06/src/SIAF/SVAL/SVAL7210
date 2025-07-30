@@ -1,0 +1,167 @@
+/****o* Oficios Judiciales/OFB:siaf:SVAL7210
+* NOMBRE
+*   OFB:siaf:SVAL7210
+* DESCRIPCION
+*   Validacion de la transaccion de cobro de Oficios Judiciales
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:TRAN7210
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1692
+*		SC50368
+* SOURCE
+*/
+#include "siafSVAL.h" 
+
+SUB siaf:SVAL7210
+	LOCAL loc_retval LIKE lib:err_retval
+	
+	loc_retval = 0	
+
+	SELECT (post:estado_presu)
+		CASE 2
+			IF (TESTFLAG(admin:mode_flags,grb)) THEN                  
+				CALL siaf:MISCofijudi_agreg
+				RESETFLAG admin:mode_flags,grb
+				RETURN (-2)
+			END IF
+			
+			IF (TESTFLAG(admin:mode_flags,act)) THEN
+				CALL siaf:MISCofijudi_agreg
+				RESETFLAG admin:mode_flags,act
+				RETURN (-2)
+			END IF
+			
+			IF (TESTFLAG(admin:mode_flags,bor)) THEN
+				CALL siaf:MISCofijudi_borra
+				RESETFLAG admin:mode_flags,bor
+				RETURN (-2)
+			END IF
+			
+			CDS SELECT FROM DSC:siaf:OfiJudi_tbl BECOMES DSC:OfiJudi_ctx WHERE \
+			siaf:adt_oju_fecha == common:system_date \
+			&& siaf:adt_oju_operator_id == op:op_operator_id \
+			SORT "primary"
+			
+			CDS FINDFIRST DSC:siaf:OfiJudi_ctx LOCK
+			loc_retval = CDSRETVAL
+			IF (loc_retval == -801) THEN
+				CDS ENDSELECT DSC:siaf:OfiJudi_ctx
+				MSGBOX "NO SE CARGARON OFICIOS A COBRAR",0x00,"Error"
+				RETURN (-2)
+			END IF
+		CASE 3
+			WHILE (loc_retval == 0)
+			
+				IF (post:estado_presu == 2) THEN
+					CALL CSR:proc_list(F_CLEAR,LST:siaf:LISTOfiJudi)
+					CALL CSR:proc_list(F_REFRESH,LST:siaf:LISTOfiJudi)
+					CDS EXTRACT DSC:siaf:OfiJudi_ctx ALL
+				END IF
+				
+				/* MLD Modificio para Reingenieria */
+				IF (post:estado_presu != 4) THEN		
+					IF (post:estado_presu == 1) THEN
+						post:importe_origen = siaf:importe
+					END IF
+				
+					CALL siaf:SVALnivel_sup
+				
+					IF (RETVAL < 0) THEN
+						CALL CSR:proc_list(F_CLEAR,LST:siaf:LISTOfiJudi)
+						CALL CSR:proc_list(F_REFRESH,LST:siaf:LISTOfiJudi)
+						IF (RETVAL == -3) THEN
+							CALL post:MISCrechazo_transac
+							RETURN (-3)
+						ELSE
+							RETURN (RETVAL)
+						END IF
+					END IF
+				END IF
+								
+				siaf:ImporteSinSello = siaf:adt_oju_importe
+				
+				IF (post:estado_presu  == 3) THEN
+					siaf:ImporteSinSello = siaf:importe2
+				END IF
+				
+				CALL siaf:MISCsobretasaOJU
+			
+				/*Valido que estas asignaciones no se ejecuten si estoy reversando
+				PS 7945 - Gabriel Falciola*/
+				IF (!testflag(tlr:tran_flags,correction)) THEN
+					/*Seteo los campos necesarios para tener el importe con y sin IVA - Gabriel Falciola*/
+					siaf:ImporteConIva = siaf:ImporteSinSello
+					post:ImporteConIva = siaf:ImporteSinSello
+					siaf:ImporteSinIva = post:ImporteSinIva
+					post:PreDForFis = "FACTU"
+					
+					/* Calculo de Ventas UP */
+					post:AliServUP = post:TasaIva
+					post:ImpServUP = siaf:ImporteSinSello // Importe con Iva
+					
+					/* Limpio campos que no utilizo */
+					CALL csr:cleararray(post:ali_opc)
+					CALL csr:cleararray(post:ali_opc)
+					CALL csr:cleararray(post:flia_opc)
+					CALL csr:cleararray(post:cos_opc)
+					CLEARFIELD post:adt_tarif_fijo
+					CLEARFIELD post:adt_tarif_fj_aliciva
+					CLEARFIELD post:adt_tarif_uneg
+				END IF
+			
+				LET siaf:adt_mot_fliatran = siaf:adt_tran_fliatran
+			
+				IF (post:estado_presu != 1 && post:estado_presu != 4) THEN
+					/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago - Gabriel Falciola*/
+					CALL post:MISCAcumTotalesSes
+					
+					/*Se cambió el tratamiento para Impuesto de Sellos - Gabriel Falciola*/
+					CALL post:MISCImpSellosTratam("ING/EGR")
+				END IF
+			
+				IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+					IF (siaf:codigo_siaf == 7210 ) THEN
+						CALL post:MISCTotalTransac(siaf:codigo_siaf)	
+					END IF
+				END IF
+			
+				/* Limpio estos campos porque van en el journal para
+				templates */
+				CLEARFIELD post:ver_anulacion
+				CLEARFIELD post:cod_agrupacion
+	
+				CALL post:MISCGrabaDetalleTrn
+
+				IF (post:estado_presu == 2) THEN
+					CDS FINDAGAIN DSC:siaf:OfiJudi_ctx LOCK
+					CDS DELETE DSC:siaf:OfiJudi_ctx
+					CDS FINDNEXT DSC:siaf:OfiJudi_ctx LOCK
+					loc_retval = CDSRETVAL
+				ELSE
+					BREAK
+				END IF			
+
+			END WHILE
+			CDS ENDSELECT DSC:siaf:OfiJudi_ctx
+
+		BREAK
+		CASE 4
+			//confirma el presupuesto,calcula el secuenciador
+			CALL post:CDSobtiene_secuen(adt_tran_mnemonic)
+			LET nro_impre = post:adt_codseq_nro
+			REFRESH nro_impre
+			//journalizo el detalle de la transaccion
+			call post:MISCGrabaDetalleTrn
+	END SELECT
+	
+	RETURN (RETVAL)
+
+END SUB
+
+/*******/

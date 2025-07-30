@@ -1,0 +1,118 @@
+/****o* Compromisos de Pagos/OFB:post:SVALcompromiso
+* NOMBRE
+*   OFB:post:SVALcompromiso
+* DESCRIPCION
+*   Rutina SVAL de la trx de Compromiso de Pagos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay compromisos cargados.
+*   RETURN (-2): No se puede generar la tabla de Compromisos.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANcompromisos
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcompromiso 
+	IF (!testflag(tlr:tran_flags,correction)) THEN
+		LET drv:button = CB4 //finaliza tx
+		CALL drv:but_status
+		If (drv:disabled == 0) /*El boton de Finalizar tx esta deshabilitado*/
+			//si esta deshabilitado no deberia hacer este control
+			//puesto que ya lo hizo en el pb de confirma tx????
+			CALL MISCverif_fin_Comp
+			IF (retval < 0)
+				//se setea este valor porque cuando la tx de compromisos es ejecutada
+				//desde el cierre/cierre forzado de sucursal queda con valor 5 y al
+				//retornar un valor negativo, me ejecuta la rutina de Esc en lugar de
+				//volver a la tx.
+				drv:new_app = -1
+				return -2
+			END IF
+		end if
+		
+		//guardo los importes ingresados en la tabla que procesara Correo
+		CALL CDSsave_Compromisos
+		IF (retval < 0)
+			MSGBOX "No se pudo generar la tabla de Compromisos",0x00,"Error"
+			return -2
+		END IF
+		//Actualizo en la "DiaSuc" el registro de Compromisos
+		CALL tes:CDSmarca_suc_comp("X")
+	
+    	// Se obtiene un numero de secuencia para journalizar la cabecera
+    	//los detalles. Esto es util para la reversa
+    	CLEARFIELD post:codseq_compromiso
+	    CALL CDSobtiene_secuen("CABEC")
+    	post:codseq_compromiso = post:adt_codseq_nro
+	
+		// Journaliza el encabezado con otra pantalla 
+    	drv:INDscr = SCR:post:SCRNcompromiso_Hdr
+	    drv:INDjnl_rtn = OFB:post:JNLcompromiso_Hdr
+    
+    	UNGETKEY RT_SEND
+		CALL tlr:JNLtran
+    	UNGETKEY RT_SEND
+    	
+		//Journalizo los importes de los conceptos, items o  subitems por separado 
+    	CALL MISCjnl_Comp_Det
+	
+	 	CLEARFIELD drv:INDsend_rtn
+    	CLEARFIELD drv:INDscr
+	    CLEARFIELD drv:INDjnl_rtn
+    	CLEARFIELD drv:INDspc_rtn[0]
+    	CLEARFIELD drv:INDspc_rtn[2]
+    	
+    	//limpio la tabla auxiliar
+    	CALL CDSdel_AuxComp
+
+    	//cgw:NI50276 - Genero tabla auxiliar (AuxComp) con los datos necesarios, para luego pueda ser
+    	//recorrida en el Reporte de Compromisos de Pagos, unificado con el Reporte 
+    	//Consolidado de Denominaciones-Detalle de Valores Declarados (VDI)
+	    //genero documento
+	    CALL post:CDSbusco_Comprom    //CALL DOCSreporte_Comp
+    	
+        KEYDEF KEY_NO_MOUSE_WA_ON
+        KEYDEF KEY_NO_MOUSE_SB_ON
+        KEYDEF KEY_TIC_ON
+        KEYDEF KEY_QUEUE_ON
+        KEYDEF KEY_HELP_ON
+        KEYDEF KEY_HELP_MAN_ON
+        KEYDEF KEY_HELP_EDIT
+
+        //cgw:deslockear menues colgante gerente y tesoro
+   	    PDM CHECKITEM drv:tesoro,13,MOA_UNCHECKED
+   	    PDM CHECKITEM drv:gerente,19,MOA_UNCHECKED
+
+	ELSE
+
+		//Borro tabla de Compromisos
+		CALL CDSdel_Compromisos
+		//Actualizo en la "DiaSuc" la reversa de Compromisos
+		CALL tes:CDSmarca_suc_comp("")
+		
+		//reverso cabecera
+		tlr:INDdcol_scrn[0] = SCR:post:SCRNcompromiso_Hdr
+		tlr:INDjnl_append = OFB:post:JNLcompromiso_Hdr
+		CALL MISCreversa_transac
+		post:err_retval = -5
+		
+  		//reverso los detalles
+  		CALL MISCrev_det_Comp
+  		
+  		;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+  		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		
+		Resetflag tlr:tran_flags,correction
+		
+	END IF
+	clearfield fechaux
+END SUB
+
+/*******/

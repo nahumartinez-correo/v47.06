@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCbloque_suc
+* NOMBRE
+*   OFB:tes:MISCbloque_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCbloque_suc
+	LOCAL i LIKE siaf:i
+
+	CALL csr:f_sadroppl DSC:Bloques
+	CALL csr:f_sanewpl DSC:Bloques pic:Bloques
+
+	CDS SELECT FROM "journal" BECOMES "journal_ctx2" \
+		WHERE tlr:jnl_branch == FLD:op:op_branch_id \
+		&& tlr:jnl_bus_date == siaf:fecha_proceso \
+		&& ((siaf:codigo_siaf == 9540) || (siaf:codigo_siaf == 9550 ) \
+		|| (tlr:tran_mnemonic == "OPENSUCU") || (tlr:tran_mnemonic == "REOPENSU"))
+        
+	CDS FINDFIRST "journal_ctx2" NOLOCK
+	IF (CDSRETVAL == -801) THEN
+		CDS ENDSELECT "journal_ctx2"
+		RETURN -2
+	END IF
+	DO
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+                
+		CDS EXTRACT "journal_ctx2" siaf:codigo_siaf \
+			tlr:tran_mnemonic \
+			op:op_login_aux \
+			op:op_login_aux2 \
+			tlr:jnl_time \
+			siaf:motivo_desc
+
+		SELECT (siaf:codigo_siaf)
+			CASE 9540
+				FPRINT common:csr_string "%e   CIERRE SUCURSAL         %-14.14s %-14.14s ",tlr:jnl_time,op:op_login_aux,op:op_login_aux2
+			BREAK
+			CASE 9550
+				FPRINT common:csr_string "%e   CIERRE FORZADO          %-14.14s %-14.14s  %30.30s ",tlr:jnl_time,op:op_login_aux,op:op_login_aux2,siaf:motivo_desc
+			BREAK
+			CASE ELSE
+				IF (tlr:tran_mnemonic == "OPENSUCU")
+					FPRINT common:csr_string "%e   APERTURA SUCURSAL       %-14.14s %-14.14s ",tlr:jnl_time,op:op_login_aux,op:op_login_aux2
+				ELSE
+					FPRINT common:csr_string "%e   REAPERTURA SUCURSAL     %-14.14s %-14.14s ",tlr:jnl_time,op:op_login_aux,op:op_login_aux2
+				END IF
+			BREAK
+		END SELECT
+		CALL csr:f_saaddpl DSC:Bloques common:csr_string
+		CDS FINDNEXT "journal_ctx2" NOLOCK
+	LOOP
+	CDS ENDSELECT "journal_ctx2"
+        
+	// la fecha esta a partir de la posición 0 y ocupa 8
+	CALL csr:PickOp 4 DSC:Bloques "0,8"
+	
+	LET idx = 0
+	LET i_idx = PL_GETITEM + 0
+	
+	CALL csr:myPickcontrol DSC:Bloques common:csr_string i_idx
+	DO
+		IF (RETVAL < 0) THEN  /* || idx >= JSCN_LIST_CANT_ITEMS)  >= */
+			BREAK
+		END IF
+		CALL post:MISCwrite_doc_gral(5,FLD:common:csr_string)
+		LET idx = idx + 1
+		LET i_idx = PL_GETITEM + idx
+		CALL csr:myPickcontrol DSC:Bloques common:csr_string i_idx
+	LOOP
+
+	IF (siaf:pantalla_impreso == "I") THEN
+		DO
+			IF (siaf:lineas_cl < siaf:lineas_cl_gral - 1) THEN
+				LET common:csr_string = "    "
+				CALL post:MISCwrite_doc_gral(5,fld:common:csr_string)
+			ELSE
+				BREAK
+			END IF
+		LOOP
+	END IF
+        
+END SUB
+
+/*******/

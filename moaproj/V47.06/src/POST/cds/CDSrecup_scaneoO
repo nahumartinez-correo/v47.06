@@ -1,0 +1,77 @@
+/****o* Novedades de T&T/OFB:post:CDSrecup_scaneoO
+* NOMBRE
+*   OFB:post:CDSrecup_scaneoO
+* DESCRIPCION
+*   Se genera el Scaneo O de las imposiciones en las directas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:MISCGrabo_ScaneoO
+* REFERENCIADO POR
+*   post:MISCgenDir_scaneos
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSrecup_scaneoO
+
+    Local fecha like post:adt_stockp_recepfech
+    Local hora like post:adt_stockp_recephora
+    Local fecha_hora like post:adt_novtt_fecha
+
+    CDS SELECT FROM DSC:NovTTtmp_tbl BECOMES DSC:NovTTtmp_ctx WHERE \
+        post:adt_novtt_op == op:op_operator_id
+    CDS FINDFIRST DSC:NovTTtmp_ctx NOLOCK
+    IF (CDSRETVAL == -801)
+        CDS ENDSELECT DSC:NovTTtmp_ctx
+        RETURN (-2)
+    END IF
+    
+
+    CALL csr:proc_list(F_CLEAR,LST:LISTscaneoO)
+    CALL csr:proc_list(F_CLEAR,LST:LISTscaneoO_IPS)
+    CDS EXTRACT DSC:NovTTtmp_ctx ALL
+
+    /*Concateno la fecha y la hora para grabarlas en el scaneo*/
+    fecha = tlr:jnl_date
+    hora = tlr:jnl_time
+    FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora
+    IF (adt_novtt_opcional != "Y")
+        adt_novtt_opcional = " "
+    END IF
+    adt_novtt_cliente = "        "
+    adt_novtt_fecha = fecha_hora
+    adt_novtt_op = tlr:jnl_operator
+    adt_novtt_sequence = tlr:jnl_sequence
+    adt_novtt_codseq = 0
+    
+    CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx WHERE \
+        post:adt_novtt_op == tlr:jnl_operator && \
+        post:adt_novtt_sequence == tlr:jnl_sequence && \
+        post:adt_novtt_tipo == 15 && \
+        post:adt_novtt_fecha SMATCH adt_novtt_fecha
+    CDS FINDFIRST DSC:NovTT_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    
+    CALL CSR:proc_list(F_APPEND,DSC:NovTT_ctx,LST:LISTscaneoO,0)
+    CALL CSR:proc_list(F_APPEND,DSC:NovTT_ctx,LST:LISTscaneoO_IPS,0)
+
+    IF (lib:err_retval != -801)
+        CDS REPLACE DSC:NovTT_ctx LOCK
+    ELSE
+        CDS INSERT DSC:NovTT_ctx LOCK
+    END IF
+    CDS UNLOCK DSC:NovTT_ctx
+    CDS ENDSELECT DSC:NovTT_ctx
+    
+    CDS FINDAGAIN DSC:NovTTtmp_ctx LOCK
+    CDS DELETE DSC:NovTTtmp_ctx
+    CDS UNLOCK DSC:NovTTtmp_ctx
+    CDS ENDSELECT DSC:NovTTtmp_ctx    
+END SUB
+
+/*******/

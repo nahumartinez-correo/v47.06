@@ -1,0 +1,153 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSsuc_tots
+* NOMBRE
+*   OFB:siaf:CDSsuc_tots
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSsuc_tots
+    local mone like cant
+	local indice like siaf:i
+	/**********************************************************
+    Para hacer este listado se lee de la tabla de rendicion, 
+    si los operadores tienen fecha del dia se acumula los 
+    totales de cada transaccion por moneda. Si el operador 
+    no tiene fecha del dia solo se acumula en monto_no_oper el
+    efectivo inicial mas el efectivo que le haya quedado. 
+    Luego en el listado se imprimirá el total de la sucursal y 
+    el total de los cajero que no operaron.
+    ************************************************************/
+	CALL CSR:cleararray(suma_monto_vec)
+	CALL CSR:cleararray(suma_cant_vec)
+	CALL CSR:cleararray(suma_piezas_vec)
+	CALL CSR:cleararray(suma_sinimp_vec)
+	CALL CSR:cleararray(suma_pminor_vec)
+	CALL CSR:cleararray(suma_pcm_vec)
+	CALL CSR:cleararray(suma_pcmCC_vec)
+	CALL CSR:cleararray(suma_pcmDf_vec)
+	
+	CALL CSR:cleararray(suma_monto2_vec)
+	CALL CSR:cleararray(suma_cant2_vec)
+	CALL CSR:cleararray(suma_piezas2_vec)
+	CALL CSR:cleararray(suma_sinimp2_vec)
+	CALL CSR:cleararray(suma_pminor2_vec)
+	CALL CSR:cleararray(suma_pcm2_vec)
+	CALL CSR:cleararray(suma_pcmCC2_vec)
+	CALL CSR:cleararray(suma_pcmDf2_vec)
+
+    call csr:cleararray(aux1imp_vec)
+    call csr:cleararray(aux2imp_vec)
+    call csr:cleararray(aux3imp_vec)
+    call csr:cleararray(aux4imp_vec)
+    call csr:cleararray(aux5imp_vec)
+    call csr:cleararray(aux6imp_vec)
+    call csr:cleararray(aux1cant_vec)
+    call csr:cleararray(aux2cant_vec)
+    call csr:cleararray(monto_no_oper_vec)
+    call csr:cleararray(monto_efec_vec)
+    call csr:cleararray(monto_inic_vec)
+    			
+
+    /* selecciono los cajeros que hayan trabajado en el dia de hoy */
+    CDS SELECT tes:rend_op_id tes:rend_fecha \
+    FROM dsc:tes:rend_caj_table BECOMES dsc:tes:rend_caj_context \
+    WHERE tes:rend_suc_id == op:op_branch_id
+	;tes:rend_fecha == common:system_date
+
+	//if (cdsretval == 0) then
+	cds findfirst DSC:tes:rend_caj_context NOLOCK
+	call lib:MISCcds_find_err
+	if (retval == 0) then
+		fyimsg LST:common:fyimsg_list,"Procesando Totales"
+
+		/* Proceso por cada registro de rendicion encontrado en el select */
+		DO
+			CDS EXTRACT DSC:tes:rend_caj_context ALL
+			if (cdsretval == 0) then
+				// busco el registro de totales del cajero que trabajo en la fecha
+				CDS SELECT FROM DSC:tlr:TABtots BECOMES DSC:CONtots_read WHERE  \
+				tlr:tots_branch   == fld:op:op_branch_id && \
+				tlr:tots_operator == tes:rend_op_id
+				;tlr:tots_bus_date == common:system_date && \
+
+				CDS FINDFIRST DSC:CONtots_read NOLOCK
+				;call lib:MISCcds_find_err
+		        if (cdsretval == 0) then
+					// Me fijo si tiene la fecha del dia, porque si no tiene la fecha
+					// de rendicion del dia lo tengo que acumular en cajas que no
+					// operaron
+					IF (tes:rend_fecha == fecha_proceso) then
+						idx = 0
+						DO
+							CALL CSR:cleararray(auximp_vec)
+							CALL CSR:cleararray(auxcant_vec)
+							call CSR:cleararray(monto_vec)
+							call CSR:cleararray(cant_vec)
+							call CSR:cleararray(cantpiezas_vec) // Piezas
+							call CSR:cleararray(sinimp_vec)  //importe sin iva
+							call CSR:cleararray(pminor_vec) //piezas minoristas
+							call CSR:cleararray(pcm_vec) //piezas cliente medio
+							call CSR:cleararray(pcmCC_vec) //piezas cliente medio CC
+							call CSR:cleararray(pcmDf_vec) //piezas cliente medio Dif
+				   
+							CALL CDSextract_tran_tots(idx)
+							CALL lib:MISCcds_find_err
+							IF (RETVAL != 0) THEN
+								RETURN
+							END IF
+				        
+							
+							call siaf:CDSacum_totales(idx)
+				         	idx = idx + 1
+				         	IF (idx > TIPO_ARRAY) THEN
+					        	BREAK
+				         	END IF
+				      	LOOP
+				      
+					ELSE	
+						call csr:cleararray siaf:monto_vec
+						call csr:cleararray monto_auxi
+						call csr:cleararray(taux1imp_vec)
+						call csr:cleararray(auximp_vec)
+                      
+						// extraigo solo el efectivo inicial mas el efectivo en caja
+						// de los que no operaron
+					  
+						CDS EXTRACT DSC:CONtots_read \
+						array siaf:tefec_inic_vec into array auximp_vec \
+						array siaf:tefectivo_vec into array taux1imp_vec
+						
+						if (cdsretval == 0) then
+							indice = 0
+							While (indice < MP_ARRAY)
+								monto_no_oper_vec[indice] = monto_no_oper_vec[indice] + auximp_vec[indice] + taux1imp_vec[indice]
+								indice = indice + 1
+							EndWhile
+						endif
+					endif // Resultado de la pregunta por fecha
+				end if // resultado del findfirst del registro de totales
+
+			    /* Proxima seleccion de la tabla de rendicion */
+			    CDS FINDNEXT DSC:tes:rend_caj_context NOLOCK
+			    if (cdsretval != 0) then
+			    	break
+			    end if
+			end if // Resultado del extract de la tabla de rendición
+		LOOP
+		FYIMSG CLEAR
+	END IF
+END SUB   
+
+/*******/

@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:tes:PBgraba_chequera
+* NOMBRE
+*   OFB:tes:PBgraba_chequera
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBgraba_chequera
+        local cheque_fin like tes:adt_cheqaux_nro
+        
+        if (siaf:cantidad == 0 || siaf:nro_cheque == 0) then
+                errmsg lst:common:errmsg_list,"Faltan Campos !!!"
+                call MISCbotones_cheq
+                return (-1)
+        end if                        
+        if (siaf:cantidad > CANT_CHEQUE) || ((siaf:nro_cheque + siaf:cantidad) - 1 > MAX_CHEQUE)
+                errmsg lst:common:errmsg_list,"Cantidad Incorrecta"
+                call MISCbotones_cheq
+                return (-1)
+        end if 
+        
+        let cheque_fin = siaf:nro_cheque + siaf:cantidad
+        
+	/* Me fijo que los nro de chequeras no se superpongan */	     
+	Cds select from dsc:CheqCta_tbl becomes dsc:CheqCta_ctx where \
+        adt_chequera_bco  == tes:banco_codigo && \
+        adt_chequera_tipo == tes:tipo_cuenta && \
+        adt_chequera_cta == nro_cuenta
+        
+        cds findfirst dsc:CheqCta_ctx nolock
+        do
+                if (cdsretval < 0) then
+                        break
+                end if
+                cds extract dsc:CheqCta_ctx all
+                call MISCsuperpos(siaf:nro_cheque,siaf:cantidad,tes:adt_chequera_ini,tes:adt_chequera_cant)
+                if (retval < 0)
+                        errmsg lst:common:errmsg_list, "Hay Nros de Cheques Existentes"
+                        call MISCbotones_cheq
+                        cds endselect dsc:CheqCta_ctx 
+                        return (-2)
+                end if
+                cds findnext dsc:CheqCta_ctx nolock    
+        loop
+        cds endselect dsc:CheqCta_ctx
+
+        /* Me fijo que los nro de chequeras no se superpongan */	     
+	Cds select from dsc:AuxCheq_tbl becomes dsc:AuxCheq_ctx where \
+        adt_cheqaux_tesoro == "S" && \
+        adt_cheqaux_op == op:op_tesoro_id && \
+        adt_cheqaux_nro != siaf:nro_cheque
+        
+        cds findfirst dsc:AuxCheq_ctx nolock
+        do
+                if (cdsretval < 0) then
+                        break
+                end if
+                cds extract dsc:AuxCheq_ctx all
+                call MISCsuperpos(siaf:nro_cheque,siaf:cantidad,tes:adt_cheqaux_nro,tes:adt_cheqaux_cant)
+                if (retval < 0)
+                        errmsg lst:common:errmsg_list, "Hay Nros de Cheques Existentes"
+                        call MISCbotones_cheq
+                        cds endselect dsc:AuxCheq_ctx 
+                        return (-2)
+                end if
+                cds findnext dsc:AuxCheq_ctx nolock    
+        loop
+        cds endselect dsc:AuxCheq_ctx
+        
+        call CDSgraba_chequera
+        let lib:err_retval = retval
+        if (lib:err_retval == 0)
+                call MISCdisplay_chequera
+                call ABMchequera_clear
+                call ABMchequera_refresh                
+        end if
+        call MISCbotones_cheq
+        return (lib:err_retval) 
+END SUB  
+
+/*******/

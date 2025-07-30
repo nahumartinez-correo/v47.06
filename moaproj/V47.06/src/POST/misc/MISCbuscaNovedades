@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:post:MISCbuscaNovedades
+* NOMBRE
+*   OFB:post:MISCbuscaNovedades
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCbuscaNovedades(p_registro, l_separador)
+    LOCAL LMetaData   LIKE common:csr_string_4096
+    LOCAL LineaPick   LIKE common:csr_string_4096
+    LOCAL L_item      LIKE siaf:idx
+    LOCAL longClave   LIKE siaf:i
+    LOCAL idx         LIKE siaf:i
+    LOCAL INDICE_INF  LIKE post:cantidad
+    LOCAL Lsucceded   LIKE siaf:i
+    local l_retval    like lib:err_retval
+
+    INDICE_INF = 0
+	L_item = PL_GETITEM
+	idx = 0
+
+	clearfield adt_mdata_esBaja
+	; primero levanto todos los valores.
+	call post:MISCpasoValoresCampo(p_registro, l_separador)
+	if (retval != 0)
+		return -2
+	endif
+
+	; segundo proceso calculables.
+	call post:MISCprocesoCalc
+
+	; Ahora sí estoy en condiciones de validar
+	CLEARFIELD LMetaData
+	CALL csr:magic_myPickcontrol DSC:PickTabla_mdata LMetaData L_item
+	l_retval = retval
+	post:adt_mdata_abm = substr(LMetaData,0,40)
+	CALL CSR:trimfield(post:adt_mdata_abm)
+	post:adt_mdata_tabla = substr(LMetaData,41,40)
+	CALL CSR:trimfield(post:adt_mdata_tabla)
+	siaf:columnas_cl = 0
+	WHILE (l_retval >= 0)
+		IF (idx == 0) THEN
+			if (adt_mdata_esBaja == "S" || adt_mdata_esBaja == "s")
+				FPRINT FLD:LineaPick "B|%-40.40s|%-40.40s|" ,adt_mdata_abm,adt_mdata_tabla
+			else
+				FPRINT FLD:LineaPick " |%-40.40s|%-40.40s|" ,adt_mdata_abm,adt_mdata_tabla
+			endif
+			longClave = 81 //tamaño clave de busqueda en picklist CargaTabla (sin estado).
+		END IF
+
+		; Cargo información de meta data para este campo en particular.
+		CALL post:MISCcargaMdataCampo(LMetaData)
+
+		; paso el valor en el campo al common:csr_string
+		if (adt_mdata_tipoProc != "C")
+			siaf:columnas_cl = siaf:columnas_cl + 1
+			; Obtengo próximo valor del registro separado por el separador especificado en el ddproj.ini
+			call post:MISCproximoValor(p_registro, INDICE_INF, l_separador)
+			INDICE_INF = retval + 1
+		else
+			call post:MISCobtValorCampo(post:adt_mdata_campo)
+		endif
+
+		//Valida valor del campo contra Tabla MetaData
+		; la validación local no se debe hacer si el campo no es clave y estoy en una baja...
+		; ni siquiera vienen cargados esos registros...
+
+		if (!((adt_mdata_esBaja == "S" || adt_mdata_esBaja == "s") && post:adt_mdata_clave != "S")) THEN
+			CALL post:MISCvalidacionLocal
+		else
+			RETVAL = 0
+		endif
+		IF (RETVAL == 0) THEN
+			; agrego al picklist todos menos los temporarios...
+			if (adt_mdata_tipoProc != "T")
+				//Da Formato al valor del campo para grabar  en el picklist
+				CALL post:MISCformatoCampo(post:adt_mdata_tipo)
+				//Completa con campo y valor el registro picklist CargaTabla
+				FPRINT FLD:LineaPick "%s%-30.30s|%s|" \
+				LineaPick,post:adt_mdata_campo,common:csr_string
+				//tamaño clave de busqueda en picklist CargaTabla
+				IF (post:adt_mdata_clave == "S") THEN
+					call post:MISCmaximaLongCampo(adt_mdata_tipo)
+					longClave = longClave + 32 + retval
+				END IF
+			endif
+			idx = idx + 1 //cantidad campos
+		ELSE
+			//Errores en validaciones de campos
+			Lsucceded = 1
+		END IF
+		L_item = L_item + 1
+
+		CLEARFIELD LMetaData
+		CALL csr:magic_myPickcontrol DSC:PickTabla_mdata LMetaData L_item
+		l_retval = retval
+    end while
+
+    IF (Lsucceded.numchars > 0) THEN
+    	RETURN (-2)
+    END IF
+
+    ; Antes de seguir y grabar en el picklist llamo a la rutina de validación global (registro)
+	if (adt_mdata_val_global.numchars != 0)
+		CALL post:MISCvalidacionGlobal
+		if (retval != 0)
+			return -2
+		endif
+	endif
+
+	call MISCmarcarNovedad(LineaPick)
+	if (retval != 0)
+		return -2
+	endif
+END SUB
+
+/*******/

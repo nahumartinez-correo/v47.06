@@ -1,0 +1,173 @@
+/****o* Pendientes de agrupación/OFB:post:PBexcepCM_auto
+* NOMBRE
+*   OFB:post:PBexcepCM_auto
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBexcepCM_auto
+
+    Local l_perfil like post:Leyenda
+
+    CALL CSR:proc_list(F_CLEAR,LST:LISTcampos_excepCM)
+    CALL CSR:proc_list(F_REFRESH,LST:LISTcampos_excepCM)
+
+    clearfield post:excepCM_proddesc
+    refresh    post:excepCM_proddesc
+
+    ;VISUALIZACION DEL PICKLIST DE EXCEPCIONES DE CLIENTE MEDIOS
+    call csr:f_sadopl(DSC:busca_excep,common:csr_string)
+    if (retval < 0)
+	drv:button = 1
+	call drv:but_up_enable
+	return -2
+    end if
+    drv:button = 1
+    call drv:but_up_enable
+    clearfield post:climed_ult_item
+    move substr(common:csr_string,0,9)   to post:excepCM_id
+    move substr(common:csr_string,10,1)  to post:excepCM_tipo
+    move substr(common:csr_string,12,21) to post:excepCM_desc
+    move substr(common:csr_string,34,25) to post:excepCM_motivo
+    //move substr(common:csr_string,60,8)  to post:excepCM_Fvigencia
+    //Solicitud 50071 - Perfil Direccion
+    move substr(common:csr_string,71,15)  to l_perfil
+    move common:csr_string to post:excepCM_autorizadas
+    refresh post:excepCM_autorizadas
+
+    post:ConvenioProducto = FALSE
+    post:ConvenioSesion   = FALSE
+    post:ConvenioSesionV  = FALSE
+    post:ExcepProducto    = FALSE
+    post:ExcepSesion      = FALSE
+    post:ExcepSinLinea    = FALSE
+    post:ExcepDif         = FALSE
+    post:PerfilDireccion  = FALSE
+
+    //borrar las tablas temporales por si hubo una excepcion seleccionada anteriormente
+    call MISCDel_tblExcepCM
+    if (retval < 0) then
+	clearfield post:excepCM_autorizadas
+	refresh post:excepCM_autorizadas
+	return -2
+    end if
+    clearfield post:climed_ult_item
+
+    //cgw:Controlo la excepcion, si el cliente esta inhibido o no admite pago diferido.
+    if ((post:cliente_inhibido == "S" || post:cliente_pagodiferido == "N") && \
+        (post:excepCM_tipo == EXCEP_DIFERIDA || post:excepCM_tipo == EXCEP_PRODDIF || \
+         post:excepCM_tipo == EXCEP_SESDIF)) then
+         resetflag giros:tran_send_mode,consulta_simple
+	 resetflag giros:tran_send_mode,consulta_multiple
+	 MSGBOX "Excepcion no puede realizarse debido a Cliente Inhibido o por que no admite Pago Diferido.",,0X00,"AVISO"
+         ungetkey RT_ESC
+	 return -2
+    end if
+
+    if (post:excepCM_tipo == EXCEP_PRODUCTO || post:excepCM_tipo == EXCEP_SESION || \
+	post:excepCM_tipo == EXCEP_PRODDIF  || post:excepCM_tipo == EXCEP_SESDIF)
+	call post:OFBcmedio_excepcion
+	if (retval < 0)
+	    resetflag giros:tran_send_mode,consulta_simple
+	    resetflag giros:tran_send_mode,consulta_multiple
+	    ungetkey RT_ESC
+	    return -2
+	end if
+    end if
+    clearfield post:climed_ult_item
+    if (post:excepCM_tipo == EXCEP_PRODDIF || post:excepCM_tipo == EXCEP_SESDIF || \
+	post:excepCM_tipo == EXCEP_DIFERIDA) then
+	call post:OFBcmedio_diferido
+	if (retval < 0)
+	    resetflag giros:tran_send_mode,consulta_simple
+	    resetflag giros:tran_send_mode,consulta_multiple
+	    ungetkey RT_ESC
+	    return -2
+	end if
+    end if
+
+    resetflag giros:tran_send_mode,consulta_simple
+    resetflag giros:tran_send_mode,consulta_multiple
+
+    if (!post:ExcepProducto && !post:ExcepSesion && !post:ExcepDif)
+	msgbox "IMPOSIBLE CONTINUAR, EL CLIENTE NO TIENE ASOCIADO UN TIPO DE EXCEPCION.",\
+		OFB_OK,"Atencion"
+	return -2
+    end if
+
+    select (excepCM_tipo)
+      case EXCEP_PRODUCTO ;excepcion por producto
+	   ENABLECONTROL  drv:PBcb2 //habilito el boton de productos
+	   ENABLECONTROL  drv:PBcb3 //habilito el boton de rangos de volumenes
+	   ENABLECONTROL  drv:PBcb5 //habilito el boton de los opcionales
+	   DISABLECONTROL drv:PBcb4 //deshabilito el boton de cheques
+	   excepCM_pagdif = "N"
+	   break
+      case EXCEP_SESION ;excepcion por sesion
+	   DISABLECONTROL drv:PBcb2  //deshabilito el boton de productos
+	   ENABLECONTROL  drv:PBcb3  //habilito el boton de rangos de importes
+	   DISABLECONTROL drv:PBcb5  //deshabilito el boton de los opcionales
+	   DISABLECONTROL drv:PBcb4  //deshabilito el boton de cheques
+	   excepCM_pagdif = "N"
+	   break
+      case EXCEP_DIFERIDA ;excepcion de pago diferido
+	   DISABLECONTROL drv:PBcb2 //deshabilito el boton de productos
+	   DISABLECONTROL drv:PBcb3 //deshabilito el boton de rangos de importes
+	   DISABLECONTROL drv:PBcb5 //deshabilito el boton de los opcionales
+	   ENABLECONTROL  drv:PBcb4 //habilito el boton de cheques
+	   excepCM_pagdif = "S"
+	   break
+      case EXCEP_PRODDIF ;excepcion por producto y pago diferido
+	   ENABLECONTROL drv:PBcb2  //habilito el boton de productos
+	   ENABLECONTROL drv:PBcb3  //habilito el boton de rangos de importes
+	   ENABLECONTROL drv:PBcb5  //habilito el boton de los opcionales
+	   ENABLECONTROL drv:PBcb4  //habilito el boton de cheques
+	   excepCM_pagdif = "S"
+	   break
+      case EXCEP_SESDIF ;excepcion por sesion y pago diferido
+	   DISABLECONTROL drv:PBcb2  //deshabilito el boton de productos
+	   ENABLECONTROL  drv:PBcb3  //habilito el boton de rangos de importes
+	   DISABLECONTROL drv:PBcb5  //deshabilito el boton de los opcionales
+	   ENABLECONTROL  drv:PBcb4  //habilito el boton de cheques
+	   excepCM_pagdif = "S"
+	   break
+    end select
+
+    //Solicitud 50071 - Perfil Direccion
+    if (l_perfil == "7" && \
+       (excepCM_tipo == EXCEP_PRODUCTO || excepCM_tipo == EXCEP_PRODDIF)) then
+	post:PerfilDireccion = TRUE
+    end if
+
+    //Clientes Medios - Modalidades
+    //Si la excepcion incluye un cheque no se deben tener en cuenta las modalidades
+    if (excepCM_tipo == EXCEP_DIFERIDA || excepCM_tipo == EXCEP_PRODDIF || \
+    	excepCM_tipo == EXCEP_SESDIF) then
+	post:ModalidadCC = FALSE
+	post:ModalidadCD = FALSE
+    end if 
+
+    call CDSexcep_tmpCM_Save
+    if (retval < 0)
+	msgbox "ERROR AL ACTUALIZAR/GRABAR LOS DATOS DE LA EXCEPCION.",OFB_OK,"Atencion"
+	clearfield post:excepCM_autorizadas
+	refresh post:excepCM_autorizadas
+	return -2
+    end if
+
+    refresh post:excepCM_pagdif
+END SUB
+
+/*******/

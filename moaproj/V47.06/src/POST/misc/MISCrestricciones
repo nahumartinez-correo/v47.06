@@ -1,0 +1,117 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrestricciones
+* NOMBRE
+*   OFB:post:MISCrestricciones
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCrestricciones(TipoDeCliente)
+	Local Error like lib:err_retval
+	Local Importe_comp_fiscal like siaf:importe
+	//call csr:f_sadroppl Pic:PICaux_medios
+	Call post:CDSdel_MedioPagoHab
+	//Medio Pago
+	Call post:CDSdelete_TotMedPag
+	call csr:f_sadroppl dsc:pic_medios
+	call csr:f_sadroppl dsc:aux_pic_medios
+	call csr:f_sadroppl dsc:pic_acumulador
+	//call csr:f_sanewpl dsc:pic_medios, FLD:NombPickList
+	call csr:f_sanewpl dsc:pic_medios, PIC:PICmedios
+	call csr:f_sanewpl dsc:aux_pic_medios, PIC:PICaux_medios
+	call csr:f_sanewpl dsc:pic_acumulador, PIC:PICtotal_tran
+	//Buscar todos los Medios de Pago que no tienen restricciones
+	SupMedPago = "N"
+
+	Cds Select from MEDIOS_TAB BECOMES MEDIOS_CTX where post:adt_mp_rest == "N"
+	CDS FINDFIRST MEDIOS_CTX NOLOCK
+	While (CDSRETVAL != -801)
+		CDS EXTRACT MEDIOS_CTX ALL
+		siaf:suma_total_bol = post:importe_pesos
+		If ( siaf:suma_total_bol != 0 )
+			Call MISCadd_line_restric("N")
+		End If
+		CDS FindNext MEDIOS_CTX NOLOCK
+	End While
+	Cds EndSelect MEDIOS_CTX
+
+	// Paso a Un Picklist la Tabla para que sea mas rapido dada la cantidad
+	// de veces que se va acceder
+	Call post:MISCpaso_acumu_pic
+
+	// Busco todas las Restricciones
+	Cds Join from MEDIOS_TAB as "Medios" , RMEDIOS_TAB as "Restricciones"   \
+	BECOMES RMEDIOS_CTX  where ("Medios".post:adt_mp_cod == "Restricciones".post:adt_medpag_cod)
+	//( "Medios".post:adt_mp_rest == "S"  &&
+	CDS FINDFIRST RMEDIOS_CTX NOLOCK
+	While (cdsretval == 0)
+		acumFormuIncMot = 0
+		acumFormuIncTrn = 0
+		Cds Extract RMEDIOS_CTX  All
+		siaf:suma_total_bol = post:importe_pesos
+		If (post:adt_mp_rest == "S" && post:adt_rmedpag_bloq != "S")
+			Retval = 0
+			Call MISCcheck_SupMedPago(adt_rmedpag_sup)
+			// Tiene restriccion por provincia
+			if (post:adt_rmedpag_prov == "S")
+				Call MISCrestriccion_prov(common:sucursal_activa, adt_medpag_cod)
+			End If
+			// Tiene Restriccion por Modalidad
+			If (post:adt_rmedpag_mod == "S" && Retval == 0)
+					Call MISCrestriccion_mod(TipoDeCliente, adt_medpag_cod)
+			End if
+			// Tiene Restricciones por Comprobante Fiscal
+			if (adt_rmedpag_cfiscal == "S" && Retval == 0)
+				Call CDStotal_comp_fiscal
+				Importe_comp_fiscal	 = post:adt_importe
+			Else
+				Importe_comp_fiscal	 = 0
+			End if
+			Error = Retval
+			If (post:adt_rmedpag_tran == "S" && Error == 0)
+				siaf:suma_total_bol = 0
+				Call MISCrestriccion_tran(post:adt_medpag_cod, post:adt_rmedpag_ttipo)
+				siaf:importe2 =	siaf:suma_total_bol
+			Else
+				Call CDStotal_transacc
+				siaf:importe2 = post:adt_importe
+			End if
+
+			If ((post:adt_rmedpag_mot == "S" && Error == 0))
+				siaf:suma_total_bol = 0
+				Call MISCrestriccion_mot(post:adt_medpag_cod, post:adt_rmedpag_tmot)
+				siaf:suma_total_bol = siaf:importe2 + siaf:suma_total_bol
+			Else
+				siaf:suma_total_bol = siaf:importe2
+				Call post:CDShay_egresos(adt_medpag_cod)
+				If (retval != 0)
+					Call post:CDStotal_egresos
+					siaf:suma_total_bol = siaf:suma_total_bol + adt_importe
+				End If
+				Call post:CDShay_ingresos(adt_medpag_cod)
+				If (retval != 0)
+					Call post:CDStotal_ingresos
+					siaf:suma_total_bol = siaf:suma_total_bol + adt_importe
+				End If
+			End if
+			If (Error == 0  && siaf:suma_total_bol != 0)
+				Call post:MISCadd_line_restric("S")
+			Endif
+		End If
+		CDS FINDNEXT RMEDIOS_CTX NOLOCK
+	End While
+	Cds EndSelect RMEDIOS_CTX
+End Sub
+
+/*******/

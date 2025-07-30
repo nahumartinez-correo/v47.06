@@ -1,0 +1,146 @@
+/****o* Sesión Correo/OFB:tlr:jnl_update_tran
+* NOMBRE
+*   OFB:tlr:jnl_update_tran
+* DESCRIPCION
+* Update Transaction											
+* Update status for a pre-logged journal record.				
+* This routine assumes that the totals record will be updated	
+* within the same logical unit of work.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETVAL =  0 - if successful	
+*   RETVAL = -1 - if error		
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+/*--------------------------------------------------------------*/
+/* Update Transaction											*/
+/* Update status for a pre-logged journal record.				*/
+/* This routine assumes that the totals record will be updated	*/
+/* within the same logical unit of work.						*/
+/* Upon Exit:													*/
+/*   RETVAL =  0 - if successful								*/
+/*          = -1 - if error										*/
+/*--------------------------------------------------------------*/
+SUB tlr:jnl_update_tran
+/* update the journal record */
+	cds clearbuffer DSC:CONjnl_write
+	move state_flags to jnl_state_flags
+	move tran_flags to jnl_tran_flags
+		//En que caso se da esto????
+		IF (post:jnl_flia_tran == "CSM" || TESTFLAG(giros:tran_send_mode,ventaUP_diferida) || \
+		(siaf:codigo_siaf == 99124 && post:EnPol_Transac != "ENTREGA DE POLIZA") || \
+		(siaf:codigo_siaf == 99125 && post:EnPol_Transac != "ENTREGA DE POLIZA")) THEN
+			IF (sequence_corr != 0 && !TESTFLAG(giros:flags_back,cancelacion)) THEN
+				hcomm:tran_status = jnl_status
+			ENDIF		
+		ENDIF
+	/*Agregado para que no se pise el Estado del Host de la Transacción
+	cuando es Nota de Crédito - Gabriel Falciola*/
+	if (post:NotaCredito != "S" && post:NotaCreditoRev != "S") && (post:enSesion != "S" && post:enSesion != "P") ||\
+			(siaf:codigo_siaf == 99023)
+				if (post:rechazoDiferido)
+					jnl_status = STATUS_UP_ANULADO
+					SETFLAG tlr:jnl_tran_flags,rev_automatica
+				else
+					RESETFLAG tlr:jnl_tran_flags,rev_automatica				
+				    fprint jnl_status,"%.*d",jnl_status.length,hcomm:tran_status
+				endif
+	end if
+	
+	/*50295-MFM-Agregado para conservar el tlr:jnl_status UNPOSTED cuando es una emision de lista de giros*/
+	IF (testflag(giros:giros_importacion,proc_em_lg)) THEN
+		if (siaf:codigo_siaf != 70650) then
+			hcomm:tran_status = UNPOSTED
+		 	fprint jnl_status,"%.*d",jnl_status.length,hcomm:tran_status
+		endif
+	ENDIF
+	
+	// PS 10587 - se setea el status en 100 para el commit del jnl. Solo para 
+    //Pago Facil que no tenga viaje y en las directas
+    if (post:NotaCredito != "S" && post:NotaCreditoRev != "S") && \
+    	(post:enSesion != "S" && post:estAnul != "R2_")
+        IF (post:jnl_flia_tran == "PF")
+        	call post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+        	IF (retval != 1)
+        		//Si es pago facil y no tiene viaje el status se pone en 100
+        		//hcomm:tran_status = HOST_REJECTED //100
+        		jnl_status = HOST_REJECTED //100
+        	END IF
+        END IF	
+	end if
+	
+	let tlr:jnl_dia_ult_act = common:system_date
+	let tlr:jnl_hora_ult_act = common:time_of_day
+	CALL CSR:proc_list,F_APPEND,DSC:CONjnl_write,LST:DBFMupdate_tran,2
+	/*agregado para giros: journaliza vuelta del Switch */
+	call giros:MISCupdate_jnl(siaf:codigo_siaf, siaf:adt_tran_fliatran)
+	/* fin agregado para giros */
+	/* Si es transaccion multiple agrego estos campos */
+	if (siaf:multiple == "S")
+		CDS APPEND dsc:CONjnl_write FLD:siaf:recibido[0] \
+		FLD:siaf:recibido[1]\
+		FLD:siaf:recibido[2]\
+		FLD:siaf:recibido[3]\
+		FLD:siaf:recibido[4]\
+		FLD:siaf:recibido[5]\
+		FLD:siaf:recibido[6]\
+		FLD:siaf:recibido[7]\
+		FLD:siaf:recibido[8]\
+		FLD:siaf:recibido[9]\
+		FLD:siaf:recibido[10]\
+		FLD:siaf:recibido[11]\
+		FLD:siaf:recibido[12]\
+		FLD:siaf:recibido[13]\
+		FLD:siaf:recibido[14]
+		CDS APPEND dsc:CONjnl_write FLD:siaf:aceptado[0] \
+		FLD:siaf:aceptado[1]\
+		FLD:siaf:aceptado[2]\
+		FLD:siaf:aceptado[3]\
+		FLD:siaf:aceptado[4]\
+		FLD:siaf:aceptado[5]\
+		FLD:siaf:aceptado[6]\
+		FLD:siaf:aceptado[7]\
+		FLD:siaf:aceptado[8]\
+		FLD:siaf:aceptado[9]\
+		FLD:siaf:aceptado[10]\
+		FLD:siaf:aceptado[11]\
+		FLD:siaf:aceptado[12]\
+		FLD:siaf:aceptado[13]\
+		FLD:siaf:aceptado[14]
+		CDS APPEND dsc:CONjnl_write FLD:siaf:cod_tran_mult[0] \
+		FLD:siaf:cod_tran_mult[1]\
+		FLD:siaf:cod_tran_mult[2]\
+		FLD:siaf:cod_tran_mult[3]\
+		FLD:siaf:cod_tran_mult[4]\
+		FLD:siaf:cod_tran_mult[5]\
+		FLD:siaf:cod_tran_mult[6]\
+		FLD:siaf:cod_tran_mult[7]\
+		FLD:siaf:cod_tran_mult[8]\
+		FLD:siaf:cod_tran_mult[9]\
+		FLD:siaf:cod_tran_mult[10]\
+		FLD:siaf:cod_tran_mult[11]\
+		FLD:siaf:cod_tran_mult[12]\
+		FLD:siaf:cod_tran_mult[13]\
+		FLD:siaf:cod_tran_mult[14]
+	endif
+#if TLR_JNL_WAIT == 0
+	cds update DSC:CONjnl_write nolock beginwork nowait
+#else
+	cds update DSC:CONjnl_write nolock beginwork
+#endif
+	if (cdsretval < 0)
+		CALL  OFB:lib:MISCcds_find_err /* display error msg */
+		return (-1)
+	END IF
+END SUB
+
+/*******/

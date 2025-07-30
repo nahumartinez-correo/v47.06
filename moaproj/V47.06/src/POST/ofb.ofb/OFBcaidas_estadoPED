@@ -1,0 +1,86 @@
+/****o* Pago en Destino/OFB:post:OFBcaidas_estadoPED
+* NOMBRE
+*   OFB:post:OFBcaidas_estadoPED
+* DESCRIPCION
+*   Chequea si existe una tx con caida en la tabla jnl_caidas_ped y la recupera
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBproc_batch_PED
+* DOCUMENTACION
+*   
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBcaidas_estadoPED
+
+	local l_status like tlr:jnl_status
+	
+    CDS SELECT FROM "jnl_caidas_ped" BECOMES "jnl_caidas_ped_ctx" WHERE  \
+        tlr:jnl_branch == FLD:common:sucursal_activa && \
+        tlr:jnl_status > HOST_REJECTED && \
+        tlr:jnl_status < RECH_REV_AUTO DESCENDING SORT "primary"
+
+    CDS FINDFIRST "jnl_caidas_ped_ctx" LOCK
+    lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval == 0)
+        CDS EXTRACT "jnl_caidas_ped_ctx" ALL
+
+        //Hago un select de la tabla estadoPED para recuperar el mismo registro que el de la jnl_caidas_ped
+        CDS SELECT FROM "estadoPED" BECOMES "estadoPED_ctx" WHERE  \
+            tlr:jnl_branch == FLD:tlr:jnl_branch && \
+            tlr:jnl_operator == FLD:tlr:jnl_operator && \
+            tlr:jnl_date == FLD:tlr:jnl_date && \
+            tlr:jnl_time == FLD:tlr:jnl_time && \
+            tlr:jnl_bus_date == FLD:tlr:jnl_bus_date && \
+            tlr:jnl_sequence == FLD:tlr:jnl_sequence 
+        CDS FINDFIRST "estadoPED_ctx"  NOLOCK
+        IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT "estadoPED_ctx" ALL
+	
+            //Imprimo los datos principales de la tx que se esta recuperando
+            fprint common:csr_string "Recuperacion de caida en vuelo del siguiente estadoPED:"
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+            fprint common:csr_string "\n\nSUC: %e      OP: %e      COD TX: %e      NRO.SEC: %e " \
+                tlr:jnl_branch,tlr:jnl_operator,siaf:codigo_siaf,tlr:jnl_sequence
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+
+
+			call post:OFBenvio_caidas_PED //OFBenvio_caidas_cup
+			IF (retval < 0)
+				//caida en vuelo
+				CDS UNLOCK "estadoPED_ctx" 
+				CDS ENDSELECT "estadoPED_ctx"
+				return -2
+			END IF
+			l_status = UNPOSTED
+			//actualizo la tabla de estadoPED
+			CDS FINDAGAIN "estadoPED_ctx"  NOLOCK
+			CDS CLEARBUFFER "estadoPED_ctx"
+			CDS APPEND "estadoPED_ctx" \
+				l_status AS tlr:jnl_status
+			CDS UPDATE "estadoPED_ctx" LOCK
+		END IF
+		CDS UNLOCK "estadoPED_ctx" 
+		CDS ENDSELECT "estadoPED_ctx"
+
+
+		CDS FINDNEXT "jnl_caidas_ped_ctx" LOCK
+		lib:err_retval = CDSRETVAL
+		
+	END WHILE
+
+	CDS UNLOCK "jnl_caidas_ped_ctx" 
+	CDS ENDSELECT "jnl_caidas_ped_ctx"
+
+
+
+END SUB
+
+/*******/
+

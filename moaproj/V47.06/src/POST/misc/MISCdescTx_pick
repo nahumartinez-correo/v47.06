@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdescTx_pick
+* NOMBRE
+*   OFB:post:MISCdescTx_pick
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdescTx_pick
+//local	L_str_length	like siaf:cant
+//local	L_char			like plataf:tipo_doc_sesion
+local	L_descrip		like siaf:adt_tran_desc
+local	L_aux			like siaf:cant
+local	L_item			like siaf:idx
+//local	Lbrowser_cod	like plataf:adt_browser_codtrn
+//local	Lbrowser_lst	like plataf:adt_browser_lsttrn
+local	Lsucceded		like siaf:i
+
+// solo realizo la busqueda por descripcion, cuando corresponde...
+//if (testflag(plataf:menu_mode_flags,descrip)) then // --------------------- (A)
+	// solo realizo la busqueda cuando tengo por donde empezar...
+	//call csr:trimfield nombre_tran
+	//if (nombre_tran.NUMCHARS < 3 && nombre_tran.NUMCHARS > 0) then // (B)
+	//	msgbox "Utilice al menos un fragmento de 3 (tres) letras para la busqueda", \
+	//			OFB_ICONINFORMATION,BROWSER_CAPTION
+	//	return (-2)
+	//else // --------------------------------------------------------------- (B)
+	//	if (nombre_tran.NUMCHARS == 0) then
+	//		return (-2)
+	//	endif
+	//endif // --------------------------------------------------------------- (B)
+
+	// busco si hay algun elemento del picklist que tenga el substring ingresado...
+	//clearfield Lsucceded
+	let L_descrip = nombre_tran
+	call csr:fld_to_upper L_descrip
+	let common:csr_string = L_descrip
+	call csr:PickOp(3,DSC:DescVtaPostal,common:csr_string,1)
+	if (retval >= 0) then // ----------------------------------------------- (C)
+		// al menos encontre uno... veo si hay mas.
+		let L_item = PL_GETITEM + retval 
+		let L_aux = retval
+		call csr:f_sanewpl "matched_items" PIC:DescTran_list
+		if (retval == 0) then // ------------------------------------------- (D)
+			do 
+				call csr:myPickcontrol DSC:DescVtaPostal common:csr_string L_item
+				// los que voy encontrando los agrego en un picklist resultado 
+				call csr:f_saaddpl "matched_items" common:csr_string
+				let L_aux = L_aux + 1
+				// busco a partir del siguiente item...
+				let common:csr_string = L_descrip
+				call csr:PickOp(3,DSC:DescVtaPostal,common:csr_string,L_aux)
+				if (retval < 0) then
+					break
+				endif
+				L_item = PL_GETITEM + retval
+				L_aux = retval 
+			loop
+			// el operador debe seleccionar una opcion de las encontradas
+			clearfield common:csr_string
+			call csr:f_sadopl "matched_items" common:csr_string
+			if (retval >= 0) then
+				let Lsucceded = 1
+			endif
+			call csr:f_sadroppl "matched_items"
+		end if // ---------------------------------------------------------- (D)
+	
+		// si la seleccion fue exitosa, entonces busco los datos de la trx.
+		if (Lsucceded) then // --------------------------------------------- (E)
+			CDS SELECT FROM DSC:siaf:adt_tran_table BECOMES DSC:siaf:adt_tran_context \
+				WHERE siaf:adt_tran_desc == common:csr_string
+			if (cdsretval == 0) then // ------------------------------------ (F)
+				CDS FINDFIRST DSC:siaf:adt_tran_context NOLOCK
+				if (cdsretval == 0) then // -------------------------------- (G)
+					CDS EXTRACT DSC:siaf:adt_tran_context \
+						siaf:adt_tran_codigo into cod_tx \
+						siaf:adt_tran_desc into desc_tx
+					//if (cdsretval == 0) then
+					//	call set_chosen_flds(Lbrowser_cod,Lbrowser_lst)
+						setvaldone nombre_tran
+						return (0)
+					//endif
+				endif // --------------------------------------------------- (G)
+			endif // ------------------------------------------------------- (F)
+		else // ----------------------------------------------------------- (E)
+			//msgbox "No se encontraron coincidencias",OFB_OK,"Buscar"
+		endif // ----------------------------------------------------------- (E)
+	
+	else  // --------------------------------------------------------------- (C)
+		msgbox "No se encontraron coincidencias",OFB_OK,"Buscar"
+	endif // --------------------------------------------------------------- (C)
+
+	return (-2)
+	;setvaldone nombre_tran
+
+//endif // ------------------------------------------------------------------- (A)
+
+END SUB
+
+/*******/

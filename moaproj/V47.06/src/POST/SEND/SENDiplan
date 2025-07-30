@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:post:SENDiplan
+* NOMBRE
+*   OFB:post:SENDiplan
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDiplan
+	local loc_importe like siaf:importe_aux
+	local l_str_tmp like common:csr_string
+	local esIplan 		like siaf:i
+	local sclave like common:csr_string
+	local key like common:csr_string
+	local l_str like common:csr_string
+	local l_espacios like post:checkeo
+    local loc_utility like post:sf1_utility
+    local l_mensaje like fieldRespuestaBULK
+	local l_principio like siaf:i
+	l_principio = 0
+PRINCIPIO:
+    
+	l_str = common:csr_string
+	clearfield common:csr_string
+
+	// sba 20040115 - Ahora se busca en la tabla utilities por la utility para ver si es IPLAN
+	call post:CDSutility_cod_prod("")
+	esIplan = (post:utility_cod_prod == "IPLAN")
+	IF (esIplan)
+
+		hcomm:CodTran = 6680
+		hcomm:orig_line_status = "S"
+		hcomm:TranVersion = post:adt_tran_sf1_ver
+		loc_utility = sf1_utility
+
+		; PAW 28.05.2003 - Para el ruteo... (SwitchDemand)
+		l_str_tmp = 0x9999
+		COMM PUT l_str_tmp msg type BINARY length 2
+
+		call hcomm:SENDheaderV105
+
+        loc_importe =  post:importe_aux * 100
+
+		; PAW 28.05.2003 - concateno, relleno, encripto y mando.
+		common:csr_string = ""
+
+		if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+	        ;SMC Si es Version Nueva de IPLAN...
+	        if (hcomm:TranVersion > 1)
+	    	    /* Utility */
+	    	    COMM  PUT loc_utility TO MSG TYPE ASCII LENGTH 8 JUSTRIGHT FILL 0
+	        endif
+		    ; Ticket
+		    ;COMM  PUT sf1_nro_secuencia TO MSG TYPE ASCII LENGTH 4 JUSTRIGHT FILL 0
+    		call MISCconcatenar(post:sf1_nro_secuencia, 4, "0")
+
+	     	; Monto
+	     	;COMM  PUT loc_importe TO MSG TYPE ASCII LENGTH 13 JUSTRIGHT FILL '0'
+   			call MISCconcatenar(loc_importe, 13, "0")
+
+	 	else    // es una anulacion de pin
+	        ;SMC Si es Version Nueva de IPLAN...
+	        if (hcomm:TranVersion > 1)
+	    	    /* Utility */
+	    	    COMM  PUT loc_utility TO MSG TYPE ASCII LENGTH 8 JUSTRIGHT FILL 0
+	        endif
+	        ; ticketorig
+	        ;COMM  PUT sf1_nro_secuencia TO MSG TYPE ASCII LENGTH 4 JUSTRIGHT FILL '0'
+    		call MISCconcatenar(post:sf1_nro_secuencia, 4, "0")
+	 	 	; Monto
+	     	;COMM  PUT loc_importe TO MSG TYPE ASCII LENGTH 13 JUSTRIGHT FILL '0'
+   			call MISCconcatenar(loc_importe, 13, "0")
+	        ; fechaorig
+	        ;COMM  PUT jnl_date_ori TO MSG TYPE ASCII LENGTH 8 JUSTRIGHT FILL '0'
+    		call MISCconcatenar(jnl_date_ori, 8, "0")
+	        ; horaorig
+	        ;COMM  PUT jnl_time_ori TO MSG TYPE ASCII LENGTH 6 JUSTRIGHT FILL '0'
+    		call MISCconcatenar(jnl_time_ori, 6, "0")
+	    end if
+	    // FGB 12.08.05: se agrega el timeout al mensaje para que el HOST lo considere
+	    call MISCconcatenar(hcomm:timeout,3,"0")
+	    
+		; PAW 18.06.2003 - Encripto el viaje: semilla para el encriptado
+		fprint sclave "%04s%06s%04s%02s%02s%02s%02s%02s",\
+			tlr:jnl_sequence,\
+			op:op_operator_id, \
+			substr(tlr:jnl_date,0,4), \
+			substr(tlr:jnl_time,0,2), \
+			substr(tlr:jnl_date,4,2), \
+			substr(tlr:jnl_time,2,2), \
+			substr(tlr:jnl_date,6,2), \
+			substr(tlr:jnl_time,4,2)
+
+		DLL _BfJ_creaClave( sclave key )
+		DLL _BfJ_inicia( key )
+		DLL _BfJ_tamanioRequerido( common:csr_string )
+		siaf:i = retval
+		;DLL _BfJ_padded8( common:csr_string ,siaf:i)
+		dprint "\n\n ENCRIPTO: %s \n\n" common:csr_string
+		l_espacios = siaf:i * -1
+		fprint common:csr_string "%*.*s", l_espacios, siaf:i, common:csr_string
+		
+		if (l_principio == 0) then
+	        COMM SETRESOURCE hcomm:host1 INIT_SEND
+	        COMM  PUT common:csr_string TO msg TYPE ASCII LENGTH siaf:i
+	        COMM GET l_mensaje from msgbegin type BULK length siaf:i
+	        COMM SETRESOURCE hcomm:host1 INIT_SEND
+	        l_principio = l_principio + 1
+	        GOTO PRINCIPIO
+	    end if
+	    ;Modificaciones para el RTjava
+	    DLL _BfJ_encripta(l_mensaje,l_mensaje,siaf:i )
+        COMM  PUT l_mensaje TO MSG TYPE BULK LENGTH siaf:i
+		
+	    ;DLL _BfJ_encripta(common:csr_string,common:csr_string,siaf:i )
+	    ;COMM  PUT common:csr_string TO MSG TYPE ASCII LENGTH siaf:i
+		DLL _BfJ_fin()
+	endif
+	common:csr_string = l_str
+	
+END SUB
+
+/*******/

@@ -1,0 +1,183 @@
+/****o* Sesion Correo/OFB:post:CDSpresuDet_cab_ped
+* NOMBRE
+*   OFB:post:CDSpresuDet_cab_ped
+* DESCRIPCION
+*   Agrega campos en la PresuDet de las tx correspondientes al presupuesto.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpresuDet_cab_ped
+
+	IF (estado_presu == 2 || estado_presu == 3) THEN
+		SELECT (siaf:adt_tran_fliatran)
+			CASE "CSE" //ENCOMIENDAS
+			CASE "CSP" //POSTALES
+			CASE "CST" //TELGRAFICAS
+			CASE "SVC" //SERVICIOS VARIOS CORREO
+			CASE "CPM" //CORREO PRODUCTOS MAYORISTAS
+			CASE "VAP"
+				IF (estado_presu == 2) THEN
+					PreDForFis = adt_serv_formfiscal
+				END IF
+			BREAK
+			CASE "TES" //TESORERIA
+				PreDForFis = tes:adt_espv_formfiscal
+			BREAK
+			CASE "BG" //GALICIA
+				CLEARFIELD PreDForFis
+			BREAK
+			CASE "CME" //MERCHA
+				PreDForFis = adt_prodvs_formfisca
+				//NI 50324
+				IF (post:DctoCM_bc > 0) THEN
+					//NO DEBE QUEDAR ESTE CAMPO JOURNALIZADO EN LA TX40002 CUANDO EL DCTO SE
+					//REALIZO AL BIEN DE CAMBIO
+					CLEARFIELD post:Dcto_CliMed
+				END IF
+			BREAK
+			CASE "CSV" //CORREO SERVICIOS VARIOS
+				//gpb:50368 - AUT-1692
+				//Oficios Judiciales
+				IF (siaf:codigo_siaf == 7210) THEN
+					PreDForFis = "FACTU"
+				ELSE
+					IF (siaf:codigo_siaf == 6670) THEN //cgw:NI50361 - Cobro por Cuenta de Terceros
+						CLEARFIELD PreDForFis //Sin formulario fiscal
+					ELSE
+						PreDForFis = siaf:adt_mot_formfiscal
+					END IF
+				END IF
+			BREAK
+			CASE "TAV" //TRANSACCIONES ACTIVIDADES VARIAS
+				IF (siaf:codigo_siaf == 99020) //Entrega Piezas Cliente Ventanilla
+					PreDForFis = adt_serv_formfiscal
+				END IF
+			BREAK
+		END SELECT 
+  END IF 
+  
+;	IF (siaf:adt_tran_fliatran == "CSM" && \
+;		(estado_presu == 1 || estado_presu == 2 || estado_presu == 3)) THEN
+;		CALL MISCsetPresuDetGiros
+;	ENDIF 
+
+	//FGB 22.01.2004 - Combos
+	IF (post:enCombo == "S") THEN
+		IF (adt_concb_principal != "S") THEN
+			CLEARFIELD post:PreDForFis
+			CLEARFIELD siaf:importe
+			CLEARFIELD siaf:importe2
+			CLEARFIELD post:ImporteConIva
+			CLEARFIELD post:ImporteSinIva
+			CLEARFIELD siaf:ImporteConIva
+			CLEARFIELD siaf:ImporteSinIva
+			CLEARFIELD post:costo_opc
+		END IF
+	END IF
+
+	SELECT (siaf:adt_tran_fliatran)
+		CASE "PCL" //Presupuesto Cliente   
+		CASE "PF"  //Pago Facil
+			post:captura_mp = siaf:adt_tran_med_pago
+		BREAK
+		CASE "CSP" //Postales Nacionales e Internacionales
+		CASE "CST" //Telegraficas Nacionales e Internacionales
+		CASE "CSE" //Encomiendas
+		CASE "SVC" //Servicios Varios Correo (Lista, Gestiones Vs., Corresp. Cargo, etc.)
+		CASE "CME" //Merchandissing
+		CASE "CSV" //Correo Servicios Varios (Motivos, Templates)
+		CASE "TES" //Tesoreria (Especies Valorizadas)
+		CASE "TAV" //Transacciones Actividades Varias (Entrega de Piezas)
+		CASE "VAP"
+		BREAK
+		CASE ELSE
+			CLEARFIELD post:AdmiteMP
+	END SELECT    
+    
+;	//50295 - Para que grabe la listtran correspondiente de los giros emitidos
+;	IF (!TESTFLAG(giros:giros_importacion,proc_em_lg)) THEN
+;		tlr:INDtran_name = drv:INDcur_list
+;	END IF
+    
+	CDS CLEARBUFFER DSC:post:CONPresuDeta2 
+	CDS APPEND DSC:post:CONPresuDeta2 \
+		post:fecha \
+		post:op_operator_id \
+		post:PresNro \
+		post:PreDNroTrn \
+		tlr:INDtran_name \
+		post:PreDEst \
+		post:PrePEst \
+		post:PrePNroPag \
+		post:MedPTipMon \
+		post:PreDForFis \
+		post:MedPAdmIte \
+		siaf:adt_tran_jer_pres \
+		siaf:adt_tran_afec_efvo \
+		siaf:adt_tran_fliatran \
+		siaf:codigo_siaf
+		
+	CDS APPEND DSC:post:CONPresuDeta2 \
+		giros:clave_hdr_giros \
+		giros:flia_giro_fld \
+		post:AdmiteMP \
+		post:bonificaCM \
+		post:Dcto_CliMed  \
+		post:Imp_DctoCliMed \
+		post:captura_mp \
+		post:BonifLocalOk \
+		post:DctoCM_bc
+				
+	IF (siaf:adt_tran_fliatran == "CSM") THEN
+		CDS APPEND DSC:post:CONPresuDeta2 \
+			post:tipoAcumTotalTransac
+	END IF
+	
+	/*Para el tratamiento de Combos de productos.NBA*/
+	IF (post:enCombo  == "S") THEN
+		CDS APPEND DSC:post:CONPresuDeta2 \
+			post:adt_concb_cod \
+			post:adt_concb_principal \
+			post:adt_concb_colecta \
+			post:adt_concb_usa_tarif \
+			post:adt_concb_usa_opc \
+			post:adt_concb_cantidad \
+			post:adt_concb_jerarquia \
+			post:combo_nro
+	END IF
+	
+	IF (estado_presu == 2 || estado_presu == 3) THEN
+		IF (TESTFLAG(tlr:tran_flags,supovr_granted)) THEN
+			supervisor_id = ovr:ovr_sup_id
+		ELSE
+			CLEARFIELD supervisor_id
+		END IF
+	END IF
+	
+	CDS APPEND DSC:post:CONPresuDeta2 \
+		supervisor_id
+	
+;	//gpb:NI50479	
+;	//IF (siaf:codigo_siaf == 99300 && post:estado_presu == 4) THEN
+;	IF ((siaf:codigo_siaf == 99300 || siaf:codigo_siaf == 30300) && post:estado_presu == 4) THEN
+	IF (siaf:codigo_siaf == 30300 && post:estado_presu == 4) THEN
+		CDS APPEND DSC:post:CONPresuDeta2 array docfis_tasa_por \
+			array docfis_importe \
+			array docfis_imp_siva \
+			array docfis_imp_siva4
+	END IF
+				
+END SUB
+
+/*******/

@@ -1,0 +1,103 @@
+/****o* Pendientes de agrupación/OFB:post:MISCsaveLoteCIE_LOG
+* NOMBRE
+*   OFB:post:MISCsaveLoteCIE_LOG
+* DESCRIPCION
+*   Guarda un registro en la tabla LoteCIE_LOG
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCvpiBatchClose
+* DOCUMENTACION
+*   PS10932 - Log OperacionesVPI - Log LoteCIE
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsaveLoteCIE_LOG(p_operacion,p_retval_BC)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_retval_BC LIKE lib:err_retval
+
+	LET post:log_lcie_tipo_reg = p_operacion
+	LET l_retval_BC = p_retval_BC
+	LET post:log_lcie_VPI_OK = l_retval_BC
+			
+	IF (post:log_lcie_tipo_reg == "HEADER") THEN
+		//Limpio los campos con el detalle
+		CALL csr:proc_list(F_CLEAR, LST:post:LISTvpiBCloseDataOut)
+		
+		//Busco en Terminal_POS
+		CDS SELECT FROM DSC:post:termi_vpi_tbl BECOMES DSC:post:termi_vpi_ctx WHERE \
+			post:adt_tvpi_termi_win == fld:common:window_node
+			
+		CDS FINDFIRST DSC:termi_vpi_ctx NOLOCK
+		IF (CDSRETVAL < 0)
+			CDS ENDSELECT DSC:termi_vpi_ctx
+			RETURN -2
+		ELSE
+			CDS EXTRACT DSC:termi_vpi_ctx post:adt_tvpi_termi_pos INTO post:log_lcie_terminalID  
+			CDS ENDSELECT DSC:termi_vpi_ctx
+		END IF
+		
+		//Cargo default, si el campo viene vacio
+		LET post:log_lcie_batchNumber = 0
+		LET post:log_lcie_index = 0
+	END IF
+	
+	IF (post:log_lcie_tipo_reg == "HEADER") THEN
+		CDS SELECT FROM DSC:post:LoteCIE_LOG_tbl BECOMES DSC:post:LoteCIE_LOG_ctx \
+			WHERE post:log_lcie_fecha == post:log_lcie_fecha \
+			&& post:log_lcie_hora == post:log_lcie_hora \
+			&& post:log_lcie_terminalID == post:log_lcie_terminalID \
+			&& post:log_lcie_batchNumber == post:log_lcie_batchNumber \
+			&& post:log_lcie_index == post:log_lcie_index		
+	ELSE
+		CDS SELECT FROM DSC:post:LoteCIE_LOG_tbl BECOMES DSC:post:LoteCIE_LOG_ctx \
+			WHERE post:log_lcie_fecha == post:log_lcie_fecha \
+			&& post:log_lcie_hora == post:log_lcie_hora \
+			&& post:log_lcie_terminalID == post:vpi_terminalID \
+			&& post:log_lcie_batchNumber == post:vpi_batchNumber \
+			&& post:log_lcie_issuerCode == post:vpi_issuerCode \
+			&& post:log_lcie_index == post:vpi_index
+	END IF
+
+	CDS FINDFIRST DSC:post:LoteCIE_LOG_ctx LOCK
+	LET l_retval = CDSRETVAL
+ 
+  CDS CLEARBUFFER DSC:post:LoteCIE_LOG_ctx
+  
+  CDS APPEND DSC:post:LoteCIE_LOG_ctx \
+		post:log_lcie_fecha \
+		post:log_lcie_hora \
+		post:log_lcie_tipo_reg \
+		post:log_lcie_codseq_nro
+  
+  IF (post:log_lcie_tipo_reg == "HEADER") THEN
+  	 CDS APPEND DSC:post:LoteCIE_LOG_ctx \
+			post:log_lcie_index \
+			post:log_lcie_batchNumber \
+			post:log_lcie_terminalID
+  ELSE
+		CALL csr:proc_list(F_COPY, LST:post:LISTvpiBCloseDataOut, LST:post:LISTcierreLoteLog)
+		CALL csr:proc_list(F_APPEND,DSC:post:LoteCIE_LOG_ctx ,LST:post:LISTcierreLoteLog,2)
+	END IF
+	
+	CDS APPEND DSC:post:LoteCIE_LOG_ctx \
+		op:op_login_id AS post:log_lcie_login_id \
+		common:window_node AS log_lcie_termi_win \
+		post:log_lcie_VPI_OK
+		
+	IF (l_retval == -801) THEN
+		CDS INSERT DSC:post:LoteCIE_LOG_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:post:LoteCIE_LOG_ctx LOCK
+	END IF
+	
+	CDS UNLOCK DSC:post:LoteCIE_LOG_ctx	
+		
+END SUB
+
+/*******/

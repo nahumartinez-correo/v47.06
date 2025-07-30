@@ -1,0 +1,154 @@
+/****o* Pendientes de agrupación/OFB:post:MISCprintLinea
+* NOMBRE
+*   OFB:post:MISCprintLinea
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprintLinea
+	LOCAL franquea like usa_franqueadora
+	//me devuelve la descripcion del producto vendido
+	clearfield desc_impre
+	
+	// fgb: agregado de ultimo minuto para combos
+	// 		solo el producto principal debe aparecer en el comprobante.
+	if (combo_nro > 0 && adt_concb_principal != "S") then
+		return
+	endif
+	
+	SELECT (siaf:adt_tran_fliatran)
+
+		CASE "CME" //productos merchandising
+			desc_impre = adt_prodvs_desc		
+			CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad2,"","")
+			siaf:i = siaf:i + 1
+			break
+
+		CASE "CST" //telegrama
+			IF (consulta_ordenCM == "S")
+				//levantar la descripcion de la OC
+				desc_impre = adt_itemoc_factdesc
+			ELSE
+				CALL CDSserv_desc_load
+				desc_impre = adt_serv_desc
+			END IF
+			CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad,"","")
+			siaf:i = siaf:i + 1
+			//Verifico si tiene opcionales, de ser así imprimo una linea por opcional
+			IF (cant_opc > 0 && consulta_ordenCM != "S")
+				CALL MISCopcCIMPO
+			END IF			
+			//Obtengo el/los nros de telegrama
+			CALL MISCnroTelegCIMPO
+			//Verifico si tiene bloques adicionales e imprimo una linea con la informacion
+			IF (cant_bloq > 0)
+				//Si tiene bloques no imprimo el rango
+				CALL MISCbloqCIMPO
+			ELSE
+				//Imprimo el rango de lalabras
+				CALL MISCrangoTelegCIMPO
+			END IF
+			break
+		
+		CASE "CSE" //encomiendas
+		CASE "CSP" //postales
+		CASE "VAP"
+			IF (consulta_ordenCM == "S")
+				//levantar la descripcion de la OC
+				desc_impre = adt_itemoc_factdesc
+			ELSE
+				CALL CDSserv_desc_load
+				desc_impre = adt_serv_desc
+			END IF
+			IF (usa_franqueadora == "S")
+				franquea = usa_franqueadora
+			ELSE
+				clearfield franquea
+			END IF
+			CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad,franquea,destino)
+			siaf:i = siaf:i + 1
+			//Verifico si cobra por peso volumetrico e imprimo las medidas de la caja
+			IF (rel_vol.numchars > 0)
+				CALL MISCrel_vol_CIMPO
+			END IF
+			//Verifico si tiene opcionales y si no està en modalidad OC
+			//de ser así imprimo una linea por opcional
+			IF (cant_opc > 0 && consulta_ordenCM != "S")
+				CALL MISCopcCIMPO
+			END IF
+			//Verifico si tiene T&T cargado, de ser así imprimo una linea por T&T
+			IF (adt_serv_piezacont == "T" && TTcargado)
+				CALL MISCttCIMPO
+			END IF
+			break
+
+		CASE "TES" //especies
+			CALL CDSdesc_especie
+			break
+
+		CASE "CSV" //Ingresos-Egresos
+			IF (siaf:codigo_siaf == 6900) //Templates
+				desc_impre = tmpl_desc
+				CALL PRTlineCIMPO(siaf:codigo_siaf,1,"","")
+				siaf:i = siaf:i + 1
+				call CDStemplateCIMPO
+			ELSE
+				desc_impre = siaf:adt_mot_desc_tmp
+				CALL PRTlineCIMPO(siaf:codigo_siaf,1,"","")
+				siaf:i = siaf:i + 1
+			END IF
+			break
+		CASE "CMB" // Combos
+			CALL CDSserv_desc_load
+			desc_impre = adt_serv_desc
+			CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad,"","")		
+			siaf:i = siaf:i + 1
+			call MISCcbprtauxCIMPO
+			break
+		CASE else
+			if (siaf:codigo_siaf == 18100 || siaf:codigo_siaf == 18101) then
+				 Cds SELECT FROM Dsc:SERV_TAB     BECOMES Dsc:SERV_CTX        \
+            WHERE (adt_serv_serv == adt_serv_serv)
+		    Cds FINDFIRST DSC:SERV_CTX    LOCK
+		    Let lib:err_retval = cdsretval
+		    If (lib:err_retval == -801) THEN
+		        adt_serv_desc = " "
+		    Else
+		        Cds EXTRACT DSC:SERV_CTX     all
+		    End If
+		    Cds EndSelect Dsc:SERV_CTX
+					
+				FPRINT desc_impre "RPP:%s",adt_serv_desc
+
+				clearfield franquea
+			
+			CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad,franquea,destino)
+			siaf:i = siaf:i + 1
+			//Verifico si cobra por peso volumetrico e imprimo las medidas de la caja
+			IF (rel_vol.numchars > 0)
+				CALL MISCrel_vol_CIMPO
+			END IF
+			
+			else
+				CALL post:CDSdescProd(siaf:codigo_siaf)
+				CALL PRTlineCIMPO(siaf:codigo_siaf,cantidad,"","")
+				siaf:i = siaf:i + 1
+			endif
+			break
+
+	END SELECT
+END SUB
+
+/*******/

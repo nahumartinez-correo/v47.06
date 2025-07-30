@@ -1,0 +1,113 @@
+/****o* Pendientes de agrupación/OFB:post:CDSavansec_gral_encr
+* NOMBRE
+*   OFB:post:CDSavansec_gral_encr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSavansec_gral_encr(local_tipo,local_desc,Nro_avanzar,Tabla,Contexto)
+   LOCAL cadenaMD5 LIKE common:csr_string
+   LOCAL loc_tipo   LIKE adt_secuen_cod
+   LOCAL loc_ultimo LIKE adt_secuen_nro
+   LOCAL loc_nro    LIKE adt_secuen_nro
+   LOCAL loc_nro_ultimo LIKE adt_secuen_nro
+   LOCAL longitud   LIKE adt_secuen_nro
+   adt_secuen_sucnro = common:sucursal_activa
+   loc_tipo   = local_tipo
+   loc_ultimo = 99999999
+
+	call post:MISCverificaFirma
+	DO
+		CDS SELECT from Tabla BECOMES Contexto \
+		WHERE post:adt_secuen_sucnro == FLD:post:adt_secuen_sucnro && \
+			  post:adt_secuen_cod    == loc_tipo
+
+		CDS FINDFIRST Contexto LOCK
+		LET lib:err_retval = CDSRETVAL
+		SELECT (lib:err_retval)
+			CASE 0
+				/* busqueda exitosa */
+				CDS EXTRACT Contexto ALL
+				CALL MISCenc_dec_ryptar(adt_secuen_nro,adt_secuen_nro.NUMCHARS)
+				adt_secuen_nro = common:csr_string
+				BREAK
+			CASE -801
+				/* no existe registro */
+				FLD:post:adt_secuen_nro = 1
+				FLD:post:adt_secuen_desc = local_desc
+				BREAK
+			CASE -803
+				/* registro lockeado por otro usuario */
+				/* reintenta busqueda */
+				BREAK
+		END SELECT
+		IF ((lib:err_retval == 0 || lib:err_retval == -801) && (bloqueoVentas != "S"))
+			NumeroFactura = post:adt_secuen_nro
+			IF ( NumeroFactura < loc_ultimo)
+				loc_nro = FLD:post:adt_secuen_nro
+				NumeroFactura = NumeroFactura + Nro_avanzar     // [PAW]  ---> Se hizo porque si no era
+				FLD:post:adt_secuen_nro = NumeroFactura  // [PAW]  ---> numerico daba problemas.
+				loc_nro_ultimo = adt_secuen_nro
+			ELSE
+				FLD:post:adt_secuen_nro = 0
+			END IF
+			// [PAW] --> Firma electrónica. (Sucursal + Nùmero)
+			fprint cadenaMD5 "%s%s", adt_secuen_sucnro, adt_secuen_nro
+			call csr:MD5checksum(cadenaMD5, 1, adt_secuen_firma, 1)
+
+			CALL MISCenc_dec_ryptar(adt_secuen_nro,adt_secuen_nro.NUMCHARS)
+			adt_secuen_nro = common:csr_string
+			CDS CLEARBUFFER Contexto
+			FLD:post:adt_secuen_cod = loc_tipo
+
+			CDS APPEND Contexto \
+                   FLD:post:adt_secuen_sucnro 	\
+                    FLD:post:adt_secuen_cod  	\
+                    FLD:post:adt_secuen_desc 	\
+                    FLD:post:adt_secuen_nro		\
+                    FLD:post:adt_secuen_firma
+
+			IF (lib:err_retval == 0)
+				CDS UPDATE Contexto LOCK
+			ELSE
+				CDS INSERT  Contexto LOCK
+			END IF
+			CDS UNLOCK Contexto
+			adt_secuen_nro_final = loc_nro_ultimo
+			FLD:post:adt_secuen_nro = loc_nro
+		END IF
+		CDS ENDSELECT Contexto
+
+		if (bloqueoVentas == "S")
+			// [PAW] --> esto se hace para que no quede basura en el número de doc.
+			;common:csr_string = adt_secuen_nro_final
+			call post:MISCesNumerico(post:adt_secuen_nro_final)
+			if (retval == FALSO)
+				clearfield adt_secuen_nro_final
+			endif
+			;common:csr_string = adt_secuen_nro
+			call post:MISCesNumerico(post:adt_secuen_nro)
+			if (retval == FALSO)
+				clearfield adt_secuen_nro
+			endif
+		endif
+
+		if (lib:err_retval != -803)
+			break
+		endif
+	LOOP
+END SUB
+
+/*******/

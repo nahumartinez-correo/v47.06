@@ -1,0 +1,114 @@
+/****o* Pago en Destino/OFB:post:PBingresarPED
+* NOMBRE
+*   OFB:post:PBingresarPED
+* DESCRIPCION
+*   Boton de Ingreso a la Carga Manual de Lista De Envios con Pago en Destino.  
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta  
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales  
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual  
+* REFERENCIADO POR
+*		post:BUTCargaListaPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPB.h"
+
+SUB post:PBingresarPED
+	LOCAL l_last_button LIKE drv:last_button
+	LOCAL l_mensaje_log LIKE common:csr_string
+	LOCAL l_registro_log LIKE common:csr_string
+	LOCAL l_nombre_transac LIKE siaf:nombre_transac
+	
+	l_nombre_transac = siaf:nombre_transac //reservo el nombre de la trx original.
+	
+	l_last_button = drv:last_button //drv:button = 1
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	
+	CALL CSR:proc_list(F_CLEAR,LST:post:LISTcamposPant_ped)   
+	CALL CSR:proc_list(F_REFRESH,LST:post:LISTcamposPant_ped) 
+	CALL post:MISCclear_array_ped //limpia campos array que se graba en sesion_ped
+	
+	//SC 50170-FACTURACION
+	CLEARFIELD giros:ComisionSinIva4_fld
+	CLEARFIELD giros:TasaSinIva4_fld 
+	
+	CLEARFIELD post:sobretasa
+	CLEARFIELD post:sobretasa_prod
+	CLEARFIELD post:sobretasa_opc
+	
+	//lo creo para que funcione post:PBopcionales_ped
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle	                           
+	CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	
+
+	INIT 71 1 //Para que no se pueda clickear otro objeto
+	CUTSCREEN SCR:post:SCRNCargaListaPED,NOCURSOR
+	
+	CALL drv:MISCpopup(SCR:post:SCRNpedPostal,OFB:post:PRESped_post,OFB:post:PCOLped_carga_manual,OFB:post:SVALped_post,LST:post:BUTPostalManualPED)
+	
+	JOINSCREEN SCR:post:SCRNCargaListaPED,NOCURSOR
+	INIT 71 0
+	
+	//lo quito de memoria
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle	
+
+	siaf:nombre_transac = l_nombre_transac //recupero el nombre de la trx original.
+	
+	IF (LASTKEY != RT_ESC) THEN
+		IF (post:nro_sesion_ped.NUMCHARS == 0) THEN
+			//Llamo a la rutina que consulta en la Presu si ya existe el nro de sesion de lista de envios con pago en destino 
+			CALL post:CDSPresuNroSesionPED                   
+				IF (RETVAL != 0) THEN
+					//Llamo a la rutina que me calcula el nro de sesion de lista de envios con pago en destino
+					CALL post:MISCcec_seq_PED
+					IF (RETVAL != 0) THEN
+						LET l_mensaje_log = "NO SE PUDO OBTENER EL NRO DE LA LISTA DE ENVIOS CON PAGO EN DESTINO."
+						FPRINT l_registro_log "Mensaje de Error: %s",l_mensaje_log
+						drv:button = l_last_button
+						CALL drv:but_up_enable
+						RETURN (-2)
+					ELSE
+						//Graba en Presu
+						CALL post:CDSPresuImpPED
+					END IF
+				END IF
+			END IF
+	
+		//Obtengo la secuencia de los registros de la Lista de Envios con Pago en Destino
+		CALL post:CDSobtiene_secuen("TRXPD")
+		IF (RETVAL != 0) THEN
+			LET l_mensaje_log = "NO SE PUDO OBTENER EL NRO DE TRANSACCION DEL REGISTRO DE LA LISTA DE GIROS."
+			FPRINT l_registro_log "Mensaje de Error: %s",l_mensaje_log
+			drv:button = l_last_button
+			CALL drv:but_up_enable
+			RETURN (-2)
+		END IF     
+		//resultado va en post:adt_codseq_nro
+		post:nro_trx_ped = post:adt_codseq_nro
+	
+		LET post:estado_ped = "I"      
+		LET post:a_emitir = "N"  
+
+		//Llamo a la rutina que me graba el registro en sesion_ped
+		CALL post:CDSgrabaSesionPED
+	END IF
+	
+	//Borro todos los campos que se graban en sesion_ped excepto los campos del emisor del envio,
+	//para que no queden sucios en las siguientes cargas.   
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTlistaPedCLR)
+	CALL post:MISCclear_array_ped
+	
+	//Refresco en pantalla los campos de Totales
+	//Se invoca post:PRECCargaListaPED para refrescar la pantalla de Carga de Lista de Envios con Pago en Destino
+	CALL post:PRECCargaListaPED
+	
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+
+END SUB
+
+/*******/

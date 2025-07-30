@@ -1,0 +1,241 @@
+/****o* Contra Reembolso/OFB:post:CDSsave_stockpCont
+* NOMBRE
+*   OFB:post:CDSsave_stockpCont
+* DESCRIPCION
+*   Esta rutina pasa de la tabla de recepCont las piezas ingresadas en la transaccion de 
+*   Ingreso y Entrega en Contingencia, a la tabla stockp.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALrecep_cont
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postcds.h"
+
+Sub post:CDSsave_stockpCont
+
+    /*Primero selecciono los registros de la tabla temporal RecepCont*/
+    CDS SELECT FROM DSC:RecepCont_tbl BECOMES DSC:RecepCont_ctx  WHERE \
+        stockp_operador == op:op_operator_id   
+    CDS FINDFIRST DSC:RecepCont_ctx NOLOCK
+    
+    If (CDSRETVAL == -801) Then
+        MSGBOX "NO HAY PIEZAS PARA REGISTRAR",0x00,"ATENCION"
+        CDS UNLOCK DSC:RecepCont_ctx
+        CDS ENDSELECT DSC:RecepCont_ctx
+        RETURN -2
+    End If
+
+    DO
+        call csr:proc_list(F_CLEAR,LST:post:LISTrecep_cont_fld)
+        clearfield stockp_operador
+        clearfield entregaCont_date
+        clearfield stockp_es_grancl
+        clearfield es_mayorista     
+        clearfield post:IvaCod
+        
+        CDS EXTRACT DSC:RecepCont_ctx ALL
+
+        adt_stockp_pieza = Pieza
+        adt_stockp_plazoguar = 0
+        adt_stockp_es_grancl = stockp_es_grancl
+        adt_stockp_recepfech = common:system_date
+        adt_stockp_recephora = common:time_of_day
+        adt_stockp_recepop = post:stockp_operador
+        adt_stockp_vtofecha = entregaCont_date
+        adt_stockp_entrega_h = ""
+        adt_stockp_entrega_o = ""
+        adt_stockp_devol_fec = ""
+        adt_stockp_devol_hor = ""
+        adt_stockp_devol_op = ""            
+        IF (entregaCont_date.numchars != 0)
+            adt_stockp_entrega_f = entregaCont_date
+            adt_stockp_entrega_h = common:time_of_day
+            adt_stockp_entrega_o = op:op_operator_id
+        END IF
+        adt_stockp_destino = "ING/ENT CONTINGENCIA"
+        
+        adt_stockp_abon_apar = ""
+        adt_stockp_dest_nom = "NO DISPONIBLE - EN CONTING"
+        adt_stockp_vd_imp = ""
+        adt_stockp_crem_imp = CRimp_cobrado
+        adt_stockp_dest_ant = ""
+        adt_stockp_solo_entr = ""
+        adt_stockp_crem_impc = CRimp_cobrado
+        adt_stockp_ctaOM = stockp_ctaOM
+        adt_stockp_tipo_doc = stockp_tipo_doc
+        adt_stockp_doc = stockp_doc
+
+        /*Calculo el nro de orden*/
+        CALL post:CDSobtiene_secuen ("CRORD")
+        adt_stockp_Orden = adt_codseq_nro
+
+        adt_stockp_franq_inc = "N"
+        adt_stockp_en_devol = stockp_en_devol
+        adt_stockp_dias_alm = 0
+        adt_stockp_conting = "I"
+        adt_stockp_Observ = "PIEZA INGRESADA Y ENTREGADA EN CONTINGENCIA"
+        IF (adt_stockp_ctaOM.numchars == 0)
+            post:adt_TipoDoc_tipo = stockp_tipo_doc
+            post:CloCuit = stockp_doc
+            call post:CDSTipoDocu_existe
+            CDS EXTRACT DSC:clioca_ctx post:IvaCod
+            CDS ENDSELECT DSC:clioca_ctx
+            
+            call post:MISCes_no_liq_CREM(adt_stockp_crem_imp)
+            if (retval) then
+                ;SC50269 - La pieza es no liquidable
+                post:adt_stockp_Baja  = "S"
+                post:adt_stockp_conting = "Q"
+                fprint adt_stockp_Observ "%s NO LIQUIDABLE",adt_stockp_Observ
+                adt_stockp_devol_fec = common:system_date
+                adt_stockp_devol_hor = common:time_of_day
+                adt_stockp_devol_op = op:op_operator_id
+            else
+                post:adt_stockp_Baja  = "N"
+                if (adt_stockp_en_devol == "S" && adt_stockp_crem_imp > 0)
+                    post:adt_stockp_Baja  = "S"
+                end if
+            end if
+        ELSE 
+            adt_stockp_Baja = "S"
+            adt_stockp_devol_fec = common:system_date
+            adt_stockp_devol_hor = common:time_of_day
+            adt_stockp_devol_op = op:op_operator_id
+        END IF
+        adt_stockp_tyt_reenc = ""
+        adt_stockp_Oficio = ""
+        
+        adt_stockp_ult_mod_f = common:system_date
+        adt_stockp_ult_mod_h = common:time_of_day
+        adt_stockp_ult_mod_o = op:op_operator_id
+        adt_stockp_recep_nom = "NO DISPONIBLE - EN CONTING"
+        adt_stockp_reenc = "N"
+        adt_stockp_reenc_cul = ""
+        adt_stockp_pie_obs = "N"
+        adt_stockp_est_ent = ""
+        adt_stockp_coment = ""
+        adt_stockp_excepcion = "N"
+        adt_stockp_existe = ""
+        adt_stockp_rend_cent = stockp_rend_cent
+        adt_stockp_rct = stockp_rct
+        adt_stockp_laboral = "N"
+        es_CDD = "N"
+        adt_stockp_rev = "N"
+        
+        AsignaDestino = "S"
+
+        clearfield adt_stockp_original
+        call csr:cleararray(adt_stockp_serie)
+        call csr:cleararray(adt_stockp_nro)
+        call csr:cleararray(adt_stockp_dig)
+        call csr:cleararray(adt_stockp_fec) 
+        call csr:cleararray(adt_stockp_PresNro)
+        call csr:cleararray(adt_stockp_impGiro)
+   
+        
+        /*Inserto el reg en la tabla stockp*/
+        CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+        WHERE (adt_stockp_pieza == Pieza)
+        CDS FINDFIRST DSC:stockp_ctx LOCK
+        LET lib:err_retval = CDSRETVAL
+        CDS CLEARBUFFER DSC:stockp_ctx
+        CDS APPEND DSC:stockp_ctx adt_stockp_pieza \
+        adt_stockp_es_grancl \
+        adt_stockp_plazoguar
+                
+        CDS APPEND DSC:stockp_ctx adt_stockp_recepfech \
+        adt_stockp_recephora \
+        adt_stockp_recepop \
+        adt_stockp_vtofecha \
+        adt_stockp_entrega_f \
+        adt_stockp_entrega_h
+        CDS APPEND DSC:stockp_ctx adt_stockp_entrega_o \
+        adt_stockp_devol_fec \
+        adt_stockp_devol_hor \
+        adt_stockp_devol_op \
+        adt_stockp_destino
+        CDS APPEND DSC:stockp_ctx adt_stockp_abon_apar \
+        adt_stockp_dest_nom \
+        adt_stockp_vd_imp \
+        adt_stockp_crem_imp \
+        adt_stockp_crem_impc \
+        adt_stockp_ctaOM \
+        adt_stockp_tipo_doc \
+        adt_stockp_doc
+        CDS APPEND DSC:stockp_ctx \
+        adt_stockp_Orden \
+        adt_stockp_franq_inc \
+        adt_stockp_en_devol \
+        adt_stockp_dias_alm \
+        adt_stockp_Baja \
+        adt_stockp_conting
+        CDS APPEND DSC:stockp_ctx adt_stockp_tyt_reenc \
+        adt_stockp_Oficio \
+        adt_stockp_Observ \
+        adt_stockp_ult_mod_f \
+        adt_stockp_ult_mod_h \
+        adt_stockp_ult_mod_o \
+        adt_stockp_recep_nom \
+        adt_stockp_reenc \
+        adt_stockp_reenc_cul \
+        adt_stockp_pie_obs \
+        adt_stockp_est_ent \
+        adt_stockp_coment
+        CDS APPEND DSC:stockp_ctx adt_stockp_excepcion \
+        adt_stockp_existe \
+        adt_stockp_fecha_obs \
+        adt_stockp_hora_obs \
+        adt_stockp_dest_ant \
+        adt_stockp_solo_entr \
+        adt_stockp_rend_cent \
+        adt_stockp_rct \
+        post:AsignaDestino \
+        post:adt_stockp_laboral \
+        es_CDD \
+        adt_stockp_original \
+        adt_stockp_rev
+        
+        
+        if (post:adt_stockp_crem_imp > 0)
+            idx = 0
+            WHILE (idx < 10)
+                CDS APPEND DSC:stockp_ctx \
+                adt_stockp_serie[idx] \
+                adt_stockp_nro[idx] \
+                adt_stockp_dig[idx] \
+                adt_stockp_fec[idx] \
+                adt_stockp_PresNro[idx] \
+                adt_stockp_impGiro[idx]
+                idx = idx + 1
+            END WHILE   
+        end if
+
+        IF (lib:err_retval == -801) THEN
+            CDS INSERT DSC:stockp_ctx LOCK
+        ELSE
+            CDS REPLACE DSC:stockp_ctx LOCK
+        END IF
+         
+        /* Termino seleccion de tabla stockp original*/
+        CDS UNLOCK DSC:stockp_ctx
+        CDS ENDSELECT DSC:stockp_ctx
+  
+        /*Busco el siguiente reg de la tabla temporal*/
+        CDS FINDNEXT DSC:RecepCont_ctx LOCK
+        If (CDSRETVAL == -801) Then
+            /* Termino seleccion de tabla temporal*/
+            CDS UNLOCK DSC:RecepCont_ctx
+            CDS ENDSELECT DSC:RecepCont_ctx
+            BREAK
+        End If
+    LOOP
+End Sub
+
+/*******/

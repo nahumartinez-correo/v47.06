@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSsubcpto_sel
+* NOMBRE
+*   OFB:siaf:CDSsubcpto_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSsubcpto_sel
+// mostrar el picklist dinamico con los valores de subconcepto
+// sin mostrar el subconcepto = al concepto
+
+
+	// solo muestro subconceptos validos
+	CDS SELECT FROM DSC:siaf:ImpConSubAfip_tbl BECOMES DSC:ImpConSubAfip_cont \
+	  		   WHERE siaf:adt_impuesto == siaf:form_impuesto
+
+	CDS FINDFIRST DSC:ImpConSubAfip_cont lock
+	IF (cdsretval < 0)
+		CDS ENDSELECT DSC:siaf:ImpConSubAfip_cont
+
+		//MOSTRAR TODOS LOS SUBCONCEPTOS.
+	    CDS SELECT FROM DSC:SubcptoAfip_tbl BECOMES DSC:SubcptoAfip_cont \
+    			   WHERE siaf:adt_subconcep_cod == siaf:subconcep_cod \
+					  && siaf:adt_subconcep_cod != siaf:form_concepto
+	ELSE
+		CDS ENDSELECT DSC:siaf:ImpConSubAfip_cont
+
+		//MOSTRAR TODOS LOS SUBCONCEPTOS, QUE ESTAN EN LA TABLA ImpConSubAfip
+		CDS JOIN FROM DSC:siaf:ImpConSubAfip_tbl as "ImpConSub" \
+		              DSC:SubcptoAfip_tbl        as "Sub" \
+		         BECOMES DSC:SubcptoAfip_cont \
+			     WHERE "Sub".adt_subconcep_cod       != siaf:form_concepto \
+			      &&   "ImpConSub".adt_impuesto      == siaf:form_impuesto \
+				  &&   "ImpConSub".adt_concepto      == siaf:form_concepto \
+				  &&   "ImpConSub".adt_subconcep_cod == "Sub".adt_subconcep_cod
+	END IF
+
+    IF (CDSRETVAL < 0 ) THEN
+         ERRMSG LST:common:errmsg_list,"Error al buscar los códigos de categoria."
+         REFRESH WINDOW
+         RETURN (-2)
+    END IF
+
+	CDS FINDFIRST DSC:SubcptoAfip_cont NOLOCK
+
+	//cargar el picklist
+	CALL csr:f_sanewpl("afip_Scpto",PIC:siaf:afip_Scpto, 20)
+	DO
+		IF (CDSRETVAL != 0 ) THEN
+			BREAK
+		END IF
+
+	    CDS EXTRACT DSC:SubcptoAfip_cont ALL
+
+		FPRINT common:csr_string "%3.3s %-s " \
+			   siaf:adt_subconcep_cod, siaf:adt_subconcep_des
+
+		CALL csr:f_saaddpl("afip_Scpto",common:csr_string)
+
+		CDS FINDNEXT DSC:SubcptoAfip_cont NOLOCK
+	LOOP
+
+	CALL csr:f_sadopl "afip_Scpto"  common:csr_string
+	IF (RETVAL < 0) then
+		//sino selecciono ningun item.
+		call csr:f_sadroppl("afip_Scpto")
+		CDS ENDSELECT DSC:SubcptoAfip_cont
+		RETURN (-1)
+	END IF
+
+	FPRINT 		siaf:subconcep_cod "%d" substr(common:csr_string,0,3)
+	REFRESH 	siaf:subconcep_cod
+	SETVALDONE 	siaf:subconcep_cod
+
+	call csr:f_sadroppl("afip_Scpto")
+
+	CDS ENDSELECT DSC:SubcptoAfip_cont
+
+    RETURN (0)
+
+END SUB
+
+/*******/

@@ -1,0 +1,194 @@
+/****o* Pendientes de agrupación/OFB:giros:PCOLemis2_locali
+* NOMBRE
+*   OFB:giros:PCOLemis2_locali
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospcol.h"
+
+SUB giros:PCOLemis2_locali
+    local item like siaf:idx
+    local cont like siaf:idx
+    
+    //EMISIONES, REVALIDAS, CAMBIOS DE BENEFICIARIO
+    select (siaf:codigo_siaf)
+ 		case 70030 //emision GP
+ 		case 70050 //emision GT
+ 		case 70391
+ 		case 70212
+ 		case 70213 
+ 		case 70220
+ 		case 70221
+ 		case 70192 //cambio benef TG
+ 		case 70193  
+ 		case 70200 
+ 		case 70201 
+ 		case 70394 //cambio emisor TN
+ 		case 70395 //cambio benef TN
+ 		case 70396 //cambio destinatario TN
+ 		case 70397 //REVALIDA DE TRANSFERENCIA NACIONAL
+ 		 
+  		CLEARFIELD FecIR_benef_gp
+  		CLEARFIELD FecContEsc_benef_gp
+  		REFRESH FecIR_benef_gp
+  		REFRESH FecContEsc_benef_gp
+  		PROTFIELD FecIR_benef_gp
+  		PROTFIELD FecContEsc_benef_gp
+	  	SETVALDONE FecIR_benef_gp
+	  	SETVALDONE FecContEsc_benef_gp
+	  	break
+  end select
+
+	if ((siaf:codigo_siaf == 70090  || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70120 ||\
+		 siaf:codigo_siaf == 70392) && post:estado_presu < 4) 
+		UNPROTFIELD TipoDocBenef_fld	
+		UNPROTFIELD NroDocBenef_fld	
+	    DISABLECONTROL drv:PBcb12
+	    DISABLECONTROL drv:PBcb16
+	    DISABLECONTROL drv:PBcb18
+	    	    	    
+	elseif ((siaf:codigo_siaf == 70192 || siaf:codigo_siaf == 70193 || \
+		     siaf:codigo_siaf == 70200 || siaf:codigo_siaf == 70201 || \
+		     siaf:codigo_siaf == 70395) && post:estado_presu < 4) 
+		
+	    ENABLECONTROL drv:PBcb12
+	    ENABLECONTROL drv:PBcb14
+	    ENABLECONTROL drv:PBcb15
+	    ENABLECONTROL drv:PBcb16
+	    ENABLECONTROL drv:PBcb18
+	    ENABLECONTROL drv:PBcb20
+	    CALL csr:proc_list(F_UNPROTECT,LST:LISTbenef_flds)
+		PROTFIELD ProvSucBenef_fld
+		PROTFIELD PaisResidBenef
+
+	   if (!testflag(giros:pjurid_benef_flag,persona_juridica) && (!testflag(giros:pjurid_benef_flag,persona_op))) // es persona fisica
+		   	protfield RazonSocBenef_fld
+		   	protfield NroInscRegBenef_fld
+		   	unprotfield NombreBenef_fld
+		   	unprotfield ApellidoBenef_fld
+	   else	// es persona juridica/organismo publico
+			 if ( testflag(giros:pjurid_benef_flag,persona_juridica))
+			   		altercontrolset op:chk10 //persona juridica
+			  else		
+			   		altercontrolset op:chk8 // OP
+			  endif
+		   	unprotfield RazonSocBenef_fld
+		   	unprotfield NroInscRegBenef_fld
+		   	protfield NombreBenef_fld
+		   	protfield ApellidoBenef_fld
+	   end if
+				
+		// cgw:Nro Cuit
+		if (NroCuitBenef_fld.NUMCHARS != 11) then
+			if (!testflag(pjurid_benef_flag,nocuit_benef)) then
+	   	        unprotfield NroCuitBenef_fld
+			else
+				protfield NroCuitBenef_fld
+			end if			
+		end if
+		enablecontrol op:chk9
+		
+		//cgw:Ocupacion
+		if (OcupacionBenef_fld == "** OTRA ACTIVIDAD **") then
+  	       protfield OcupacionBenef_fld
+  	       unprotfield OtrosOcupBenef_fld
+  	    else
+  	 	   protfield OtrosOcupBenef_fld
+        end if
+		
+	elseif  ((es_emision_postal == "S" || es_emision_tele == "S" || es_envio_WU == "S") && \
+		(!testflag(camara_flags,emis2) || post:estado_presu < 4))
+	    ENABLECONTROL drv:PBcb12
+	    ENABLECONTROL drv:PBcb14
+	    ENABLECONTROL drv:PBcb15
+	    ENABLECONTROL drv:PBcb16
+	    ENABLECONTROL drv:PBcb18
+	    ENABLECONTROL drv:PBcb20
+	   // sba 20030919 - Protejo o desprotejo campos segun si es persona
+	   // fisica o juridica
+	   if (!testflag(giros:pjurid_benef_flag,persona_juridica) && (!testflag(giros:pjurid_benef_flag,persona_op))) // es persona fisica
+	   	protfield RazonSocBenef_fld
+	   	protfield NroInscRegBenef_fld
+	   	unprotfield NombreBenef_fld
+	   	unprotfield ApellidoBenef_fld
+	   else	// es persona juridica/organismo publico
+	   		//OP
+	   		if (testflag(giros:pjurid_benef_flag,persona_op))
+	   				altercontrolset op:chk8
+	   				PROTFIELD FecIR_benef_gp
+  					PROTFIELD FecContEsc_benef_gp
+  			ENDIF
+
+				//PJ
+				if (testflag(giros:pjurid_benef_flag,persona_juridica))
+						altercontrolset op:chk10
+						UNPROTFIELD FecIR_benef_gp
+	  				UNPROTFIELD FecContEsc_benef_gp
+	  		ENDIF
+
+	   	unprotfield RazonSocBenef_fld
+	   	unprotfield NroInscRegBenef_fld
+	   	protfield NombreBenef_fld
+	   	protfield ApellidoBenef_fld
+	   end if
+	   
+	   // cgw:Nro Cuit
+	   if (NroCuitBenef_fld.NUMCHARS == 11) then
+		   if (NroCuitBenef_comm.numchars > 0 && NroCuitBenef_comm != 0) then
+			   //cgw:el cuit fue cargado en la emision
+			   disablecontrol op:chk9
+		   end if
+	   else			
+		   if (!testflag(pjurid_benef_flag,nocuit_benef)) then
+	   	       unprotfield NroCuitBenef_fld
+		   else
+			   protfield NroCuitBenef_fld
+		   end if
+		   enablecontrol op:chk9
+	   end if
+	   
+	   //cgw:Ocupacion
+	   if (OcupacionBenef_fld == "** OTRA ACTIVIDAD **") then
+  	       protfield OcupacionBenef_fld
+  	       unprotfield OtrosOcupBenef_fld
+  	   else
+  	 	   protfield OtrosOcupBenef_fld
+       end if
+	   
+    else
+	    DISABLECONTROL drv:PBcb12
+	    DISABLECONTROL drv:PBcb14
+	    DISABLECONTROL drv:PBcb16
+	    DISABLECONTROL drv:PBcb18
+	    // nuevos
+	    disablecontrol drv:PBcb15
+	    disablecontrol drv:PBcb20
+	    disablecontrol op:chk9
+	    disablecontrol op:chk10
+	    disablecontrol op:chk8
+    end if
+        
+    /*Para indicar que aun no fue creado el picklist*/
+    pickLoc_prov = "9"
+    ;PS9994 
+    select (siaf:codigo_siaf)
+        case 70050 //Giro telegráfico
+        case 70192 //Ccambio de beneficiario giro telegráfico
+            DISABLECONTROL drv:PBcb18
+            PROTFIELD giros:CodPaisResidBenef
+        break
+    end select
+END SUB
+
+/*******/

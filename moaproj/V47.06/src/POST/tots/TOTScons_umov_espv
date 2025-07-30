@@ -1,0 +1,217 @@
+/****o* Pendientes de agrupación/OFB:post:TOTScons_umov_espv
+* NOMBRE
+*   OFB:post:TOTScons_umov_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "posttots.h"
+
+SUB post:TOTScons_umov_espv
+
+    local existe_dif like siaf:i
+    local importe like siaf:importe
+
+    IF (siaf:pantalla_impreso != "P") THEN
+        ;LMB - PS 9780 - 17.06.2008
+        ;FPRINT siaf:dnix_cmd,"/te mp/umev.lis"
+        FPRINT siaf:dnix_cmd, "%s%s", common:dirTemporal, "umev.lis"
+        CALL CSR:file_open 1 siaf:dnix_cmd "w"
+        IF (RETVAL < 0) THEN
+            ERRMSG LST:common:errmsg_list,"Error al abrir el archivo umev.lis"
+            RETURN (-2)
+        END IF
+    END IF
+
+    LET siaf:pick_titulo = "umev"
+    CALL CSR:f_sanewpl siaf:pick_titulo PIC:umev
+
+    existe_dif = 0
+    siaf:i = 1
+    siaf:cta_hojas = 1
+    total_ent_ev = 0
+    total_sal_ev = 0
+
+    select (umev_opcion)
+
+            case "SUCURSAL"   
+
+                  CDS SELECT FROM DSC:adt_umev_table BECOMES DSC:adt_umev_context where \
+                            (adt_umev_suc == common:sucursal_activa) && \
+                            (adt_umev_especie == fld:adt_umev_especie) && \
+                            (adt_umev_fecha >= adt_umov_fecha_ini) && \
+                            (adt_umev_fecha <= adt_umov_fecha_fin) ascending sort "umev_ord"
+            break
+     
+            case "TESORO"
+
+                  CDS SELECT FROM DSC:adt_umev_table BECOMES DSC:adt_umev_context \
+                      WHERE (adt_umev_suc == common:sucursal_activa) && \
+                            (adt_umev_especie == fld:adt_umev_especie) && \
+                            (adt_umev_fecha >= adt_umov_fecha_ini) && \
+                            (adt_umev_fecha <= adt_umov_fecha_fin) && \
+                            (adt_umev_es_tes == "S") ascending sort "umev_ord"
+            break
+    
+            case "OPERADORES"
+
+                  CDS SELECT FROM DSC:adt_umev_table BECOMES DSC:adt_umev_context \
+                      WHERE (adt_umev_suc == common:sucursal_activa) && \
+                            (adt_umev_especie == fld:adt_umev_especie) && \
+                            (adt_umev_fecha >= adt_umov_fecha_ini) && \
+                            (adt_umev_fecha <= adt_umov_fecha_fin) && \
+                            (adt_umev_es_tes == "N") ascending sort "umev_ord"
+            break
+           
+            case "OPERADOR"
+
+                  CDS SELECT FROM DSC:adt_umev_table BECOMES DSC:adt_umev_context \
+                      WHERE (adt_umev_suc == common:sucursal_activa) && \
+                            (adt_umev_especie == fld:adt_umev_especie) && \
+                            (adt_umev_fecha >= adt_umov_fecha_ini) && \
+                            (adt_umev_fecha <= adt_umov_fecha_fin) && \
+                            (adt_umev_op == FLD:adt_umev_op) && \
+                            (adt_umev_es_tes == "N") ascending sort "umev_ord"
+            break
+    end select
+
+    IF (CDSRETVAL != 0) THEN
+      	ERRMSG LST:common:errmsg_list,ERRumev_select
+      	RESET TRAN
+     	RETURN (-2)
+    END IF
+
+    CDS FINDFIRST DSC:adt_umev_context NOLOCK
+    err_retval = CDSRETVAL
+    cant_mov = 0
+
+    IF (err_retval == 0) THEN 
+        CDS EXTRACT DSC:adt_umev_context ALL
+        CALL MISCumev_encabez
+        CALL MISCumev_enc_sub
+        CALL MISCumev_enc_op
+        CALL MISCumev_enc_fecha
+        tmp_umev_subespecie = adt_umev_subespecie
+        tmp_umev_op         = adt_umev_op
+        tmp_umev_es_tes        = adt_umev_es_tes
+        tmp_umev_fecha      = 19970101
+        
+    ELSE
+        msgbox "NO EXISTEN REGISTROS COINCIDENTES",OFB_OK,"AVISO"
+        ;RETURN (-2)
+    END IF
+
+    while (err_retval == 0)
+        while (adt_umev_subespecie == tmp_umev_subespecie && \
+               err_retval == 0)
+            while (adt_umev_subespecie == tmp_umev_subespecie && \
+                   adt_umev_es_tes == tmp_umev_es_tes && adt_umev_op == tmp_umev_op &&  \
+                   err_retval == 0)       
+                while (adt_umev_subespecie == tmp_umev_subespecie && \
+                       adt_umev_es_tes == tmp_umev_es_tes && adt_umev_op == tmp_umev_op && \
+                       adt_umev_fecha == tmp_umev_fecha && \
+                       cdsretval == 0)
+                       total_ent_ev = total_ent_ev + adt_umev_entrada
+                       total_sal_ev = total_sal_ev + adt_umev_salida
+                       CALL MISCumev_equi_fecha
+                       tmp_umev_impact = adt_umev_impact
+                       tmp_umev_es_tes = tmp_umev_es_tes
+                       cds findnext DSC:adt_umev_context nolock
+                       err_retval = CDSRETVAL
+                       if (err_retval == 0)
+                           cds extract DSC:adt_umev_context all
+                       end if
+                end while
+                if (adt_umev_fecha != tmp_umev_fecha && \
+                    adt_umev_subespecie == tmp_umev_subespecie && \
+                    adt_umev_op == tmp_umev_op) then                    	
+                    total_ent_ev = total_ent_ev + adt_umev_entrada
+                    total_sal_ev = total_sal_ev + adt_umev_salida
+                    tmp_umev_impact = adt_umev_impact
+                    tmp_umev_fecha  = adt_umev_fecha                  
+                    CALL MISCumev_dist_fecha
+                    cds findnext DSC:adt_umev_context nolock
+                    err_retval = CDSRETVAL
+                    if (err_retval == 0)
+                        cds extract DSC:adt_umev_context all
+                    end if                                           
+                end if
+            end while
+            if ((adt_umev_op != tmp_umev_op || adt_umev_es_tes != tmp_umev_es_tes ) && \
+                adt_umev_subespecie == tmp_umev_subespecie ) then                
+                CALL MISCumev_pie_op
+                cant_mov = 0
+                CALL MISCumev_enc_op
+                CALL MISCumev_enc_fecha
+                total_ent_ev = total_ent_ev + adt_umev_entrada
+                total_sal_ev = total_sal_ev + adt_umev_salida
+                tmp_umev_op  = adt_umev_op
+                tmp_umev_es_tes  = adt_umev_es_tes
+                CALL MISCumev_dist_fecha
+                cds findnext DSC:adt_umev_context nolock
+                err_retval = CDSRETVAL
+                if (err_retval == 0)
+                    cds extract DSC:adt_umev_context all
+                end if
+            end if
+        end while
+        if (adt_umev_subespecie != tmp_umev_subespecie) then            
+            CALL MISCumev_pie_op
+            cant_mov = 0
+            CALL MISCumev_enc_sub
+            CALL MISCumev_enc_op
+            CALL MISCumev_enc_fecha
+            total_ent_ev = total_ent_ev + adt_umev_entrada
+            total_sal_ev = total_sal_ev + adt_umev_salida
+            tmp_umev_impact = adt_umev_impact
+            tmp_umev_fecha  = adt_umev_fecha 
+            tmp_umev_op  = adt_umev_op
+            tmp_umev_es_tes  = adt_umev_es_tes
+            tmp_umev_subespecie = adt_umev_subespecie                             
+            CALL MISCumev_dist_fecha
+            cds findnext DSC:adt_umev_context nolock
+            err_retval = CDSRETVAL
+            if (err_retval == 0)
+                cds extract DSC:adt_umev_context all
+            end if
+        end if 
+    end while          	
+       
+    adt_umev_tran = 11110
+    CALL MISCumev_pie_op
+
+    FYIMSG CLEAR
+
+    CLEARFIELD common:csr_string
+    call csr:file_close(1)
+
+    IF (siaf:pantalla_impreso == "P") THEN
+        CLEARFIELD common:csr_string
+        ;LMB - PS 9780 - 17.06.2008
+        ;FPRINT common:csr_string,"/te mp/umev.lis"
+        FPRINT common:csr_string, "%s%s", common:dirTemporal, "umev.lis"
+        
+        keydef push
+        CALL CSR:f_sadopl siaf:pick_titulo common:csr_string 
+	keydef pop
+    ELSE
+        FYIMSG LST:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS MOVIMIENTOS"
+        ;LMB - PS 9780 - 17.06.2008
+        ;call siaf:MISCfile_print("\\te mp\\umev.lis", "predeterminada")
+        fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "umev.lis"
+        call siaf:MISCfile_print(common:tmpDirTemporal, "predeterminada")
+        EXEC common:csr_string
+    END IF
+END SUB
+
+/*******/

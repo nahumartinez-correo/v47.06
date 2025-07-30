@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:CDSrep_rango
+* NOMBRE
+*   OFB:post:CDSrep_rango
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSrep_rango
+
+LOCAL rango like common:csr_string
+LOCAL desde like post:adt_despost_serv	
+LOCAL hasta like post:adt_despost_serv
+	
+	CALL csr:f_sanewpl "RANGOS" PIC:PICrep_rangos
+	
+	//Si esta seleccionada la opcion de todas las tx
+	if (TESTFLAG(Rep_Comercial,RPtransac_todos)) then
+		//Si esta seleccionada la opcion de todos los destinos
+		if (TESTFLAG(Rep_Comercial,RPdestino_todos) ) then
+			//Levanto todos los rangos de la tabla de Tarifas con la unidad de medida
+			CDS SELECT FROM DSC:Tarifas_tbl  BECOMES DSC:Tarifas_ctx   
+		else
+			//si seleccionó un destino
+			if (rep_destino.numchars == 0) then
+				MSGBOX "DEBE INGRESAR UN DESTINO.",0x0190,"ERROR"
+    	    	CALL csr:f_sadroppl "RANGOS"
+    	    	RETURN -2
+    	    endif
+			//Levanto todos los rangos de la tabla de Tarifas cuyo destino coincida con el seleccionado
+			CDS SELECT FROM DSC:Tarifas_tbl  BECOMES DSC:Tarifas_ctx   \
+			WHERE post:adt_tarif_dest == rep_destino
+		endif
+	else
+	
+		IF (rep_transac_desde.numchars != 0 && rep_transac_hasta.numchars != 0) THEN
+			
+			desde = rep_transac_desde
+			hasta = rep_transac_hasta
+			while (desde.numchars != hasta.numchars) then
+					fprint desde "%1.1s%s", " ", desde
+			end while			
+			
+			//Si esta seleccionada la opcion de todos los destinos
+			if (TESTFLAG(Rep_Comercial,RPdestino_todos) ) then
+				//Levanto los rangos de la tabla de Tarifas que cumplan con la condicion
+				CDS SELECT FROM DSC:Tarifas_tbl  BECOMES DSC:Tarifas_ctx  \
+				WHERE post:adt_tarif_serv >= desde && \
+				post:adt_tarif_serv <= hasta
+					
+    		else
+    			if (rep_destino.numchars == 0) then
+					MSGBOX "DEBE INGRESAR UN DESTINO.",0x0190,"ERROR"
+    	    		CALL csr:f_sadroppl "RANGOS"
+    	    		RETURN -2
+    	    	endif
+    	    	
+    	    	//Levanto todos los rangos de la tabla de Tarifas que cumplan con la condiciion
+				CDS SELECT FROM DSC:Tarifas_tbl  BECOMES DSC:Tarifas_ctx  \
+				WHERE post:adt_tarif_serv >= desde && \
+				post:adt_tarif_serv <= hasta && \
+				post:adt_tarif_dest == rep_destino
+			
+	   		endif
+		ELSE
+			MSGBOX "DEBE INGRESAR UN RANGO DE TRANSACCIONES.",0X00,"ERROR"
+			CALL csr:f_sadroppl "RANGOS"
+			RETURN -2
+		ENDIF
+	endif
+
+	CDS FINDFIRST DSC:Tarifas_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+
+	WHILE (CDSRETVAL == 0) THEN
+		clearfield adt_tarif_um
+		clearfield adt_tarif_hasta
+		CDS EXTRACT DSC:Tarifas_ctx adt_tarif_um,adt_tarif_hasta
+		FPRINT rango "%12.12e  %-3.3s", adt_tarif_hasta,adt_tarif_um
+		CALL  csr:f_sadopv ("RANGOS",rango,0)
+		If (RETVAL < 0) Then/*Quiere decir que el destino no esta en la lista*/
+			CALL csr:f_saaddpl "RANGOS" rango
+		Endif
+		CDS FINDNEXT DSC:Tarifas_ctx NOLOCK
+	END WHILE
+
+	CDS ENDSELECT DSC:DEST_CTX
+	
+	IF (lib:err_retval == -801) THEN
+		clearfield rep_rango
+		MSGBOX "NO EXISTEN RANGOS ASOCIADOS A LAS TRANSACCIONES SELECCIONADAS.",0X00,"AVISO"
+       	RETURN 0
+    END IF
+	
+	/*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+	/*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl "RANGOS" common:csr_string
+	LET lib:err_retval = RETVAL
+	/*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+	IF (lib:err_retval >= 0) THEN
+		post:rep_rango = common:csr_string
+    ELSE
+    	CLEARFIELD rep_rango
+    ENDIF
+    REFRESH rep_rango
+	CALL csr:f_sadroppl "RANGOS"
+	
+END SUB
+
+/*******/

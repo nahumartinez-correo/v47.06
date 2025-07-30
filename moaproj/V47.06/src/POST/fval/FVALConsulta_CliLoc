@@ -1,0 +1,222 @@
+/****o* Pendientes de agrupación/OFB:post:FVALConsulta_CliLoc
+* NOMBRE
+*   OFB:post:FVALConsulta_CliLoc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postFVAL.h"
+
+SUB post:FVALConsulta_CliLoc
+
+LOCAL cli LIKE post:CloRazon
+LOCAL clocuit LIKE post:CloCuit
+LOCAL cant1 LIKE siaf:cant
+LOCAL cant2 LIKE siaf:cant
+LOCAL encuentro LIKE siaf:i
+LOCAL ret LIKE lib:err_retval
+LOCAL tip_doc like post:CloTipDoc
+
+
+	if (post:Recep_CliTipo.numchars == 0) then
+		msgbox "Por favor, ingrese el tipo de cliente.",0x00,"AVISO"
+		return -2
+	endif
+	if (post:CliUP.numchars == 0) then
+		msgbox "Por favor, ingrese la razón social del cliente.",0x00,"AVISO"
+		return -2
+	endif		
+	
+	SELECT (post:Recep_CliTipo)
+	    CASE OCASIONAL
+	        call drv:but_number(OFB:post:PBConsulta_CliLoc)
+            if (retval >= 0) then
+            	drv:button = retval
+            end if
+	        post:CliRazBusq = post:CliUP
+	        call post:MISCaddPickCli(OCASIONAL)
+        	SELECT (RETVAL)
+        		CASE 0
+            		ret = -2
+            		break
+        		CASE 2
+        			ret = -399
+        			break
+				case 1
+					ret = 0        			
+        	END SELECT
+            
+            IF (ret >= 0) THEN
+                post:adt_TipoDoc_tipo = CloTipDoc
+                //CDS SELECT FROM DSC:clioca_tbl BECOMES "CliOca_ctx" \
+                //where  CloCuit == CloCuit && \
+                //CloTipDoc == CloTipDoc
+                
+                //modifico German
+                CDS SELECT FROM DSC:clioca_tbl BECOMES "CliOca_ctx" \
+                where  CloCuit match CloCuit && \
+                CloTipDoc == CloTipDoc
+                
+                CDS FINDFIRST "CliOca_ctx" NOLOCK
+                IF (CDSRETVAL == -801) THEN
+                    CDS ENDSELECT "CliOca_ctx"
+                    call drv:back_but_status
+		            drv:button = drv:last_button
+                    CALL drv:but_up_enable
+                    RETURN (-2)
+                END IF
+                CDS EXTRACT "CliOca_ctx" ALL
+                CDS UNLOCK "CliOca_ctx"
+                CDS ENDSELECT "CliOca_ctx"
+                
+                REFRESH post:CloCuit
+                REFRESH post:adt_TipoDoc_tipo
+                if (CloPersonaJuridica == "N")
+                    fprint CliUP "%s %s", CloNombre, CloApellido
+                else
+                    let CliUP = CloRazon
+                end if
+            else
+                if (ret != -399) then
+                    
+	        	    MSGBOX "NO SE ENCONTRARON CLIENTES PARA ESA BUSQUEDA.\nPOR FAVOR INGRESE LOS DATOS A MANO.",OFB_OK,"ERROR"
+	        	    
+                ELSE
+                    MSGBOX "DEBERA INGRESAR LOS DATOS A MANO.",OFB_OK,"ERROR"
+                END IF
+                clearfield post:adt_TipoDoc_tipo
+	        	refresh post:adt_TipoDoc_tipo
+	        	clearfield post:CloCuit
+	        	refresh post:CloCuit
+	        	INIT 33,0
+	        	setvaldone CliUP
+                RETURN (-2)
+                
+            END IF
+	    break
+	    case else
+	        LET encuentro = 0
+	        call csr:trimfield post:CliUP	 	
+  	        
+  	        //CDS SELECT FROM FLD:tablaCli BECOMES FLD:contextoCli \
+  	        //where post:CloRazon == post:CliUP
+  	        
+  	        //modifico german
+  	        CDS SELECT FROM FLD:tablaCli BECOMES FLD:contextoCli \
+  	        where post:CloRazon match post:CliUP
+  	        
+	        CDS FINDFIRST FLD:contextoCli LOCK
+	        lib:err_retval = CDSRETVAL
+            
+	        IF (lib:err_retval < 0) THEN
+	        	setvaldone CliUP
+	        	CDS ENDSELECT FLD:contextoCli
+	        	IF (post:Recep_CliTipo == CTACTE) THEN
+	        		post:climed_tipo = CTACTE_HOST
+	        	ELSE
+	        		IF (post:Recep_CliTipo == CLIUP) THEN
+	        			post:climed_tipo = 1
+	        		ELSE
+	        			post:climed_tipo = post:Recep_CliTipo
+	        		ENDIF
+	        	ENDIF
+	        	post:CliRazBusq = post:CliUP
+	        	
+	        	IF (post:Recep_CliTipo == CLIMED) THEN
+	        		call post:OFBcli_otra_suc
+	        		lib:err_retval = RETVAL
+	        	ENDIF
+	        
+	        	if ( lib:err_retval < 0 )
+	        		if (post:Recep_CliTipo != CTACTE) then
+	        			clearfield post:adt_TipoDoc_tipo
+	        			refresh post:adt_TipoDoc_tipo
+	        		endif
+	        		clearfield post:CloCuit
+	        		refresh post:CloCuit
+	        		MSGBOX "NO SE ENCONTRARON CLIENTES PARA ESA BUSQUEDA.\nPOR FAVOR INGRESE LOS DATOS A MANO.",OFB_OK,"ERROR"
+	        		INIT 33,0
+	        		setvaldone CliUP
+	        		RETURN (-2)
+	        	else
+	        		post:CliUP = post:CliRaz
+	        		refresh CliUP
+	        		setvaldone post:CliUP
+	        		return 0
+	        	end if
+	        END IF
+            
+	        CALL CSR:f_sadroppl(DSC:busca_cliente)
+	        CALL CSR:f_sanewpl(DSC:busca_cliente,PIC:busca_cliente)
+            
+	        DO
+	        	post:CliRazBusq = post:CliUP
+	        	
+	        	CDS EXTRACT FLD:contextoCli  CloRazon into cli  CloCuit into clocuit post:CloTipDoc into tip_doc
+	           
+	            LET cant1 = CliRazBusq.numchars
+	            LET cant2 = cli.numchars
+	            CALL siaf:busca_chars(post:CliRazBusq,cli,cant1,cant2)
+                
+	            IF (retval == 0) THEN
+	        	 	FPRINT common:csr_string, "%-50s  %-2.2s %-11s", cli tip_doc clocuit
+	        	 	CALL CSR:f_saaddpl(DSC:busca_cliente ,common:csr_string)
+	            	LET encuentro = 1
+	            END IF
+                
+	        	 CDS FINDNEXT FLD:contextoCli NOLOCK
+                
+	            IF (cdsretval < 0) THEN
+	            		BREAK
+	            END IF
+            
+	        LOOP
+            
+	        IF (encuentro == 0) THEN
+	        	if (post:Recep_CliTipo != CTACTE) then
+	        		clearfield post:adt_TipoDoc_tipo
+	        	    refresh post:adt_TipoDoc_tipo
+	        	endif
+	        	clearfield post:CloCuit
+	        	refresh post:CloCuit
+	        	MSGBOX "NO SE ENCONTRARON CLIENTES PARA ESA BUSQUEDA.\nPOR FAVOR INGRESE LOS DATOS A MANO.",OFB_OK,"ERROR"
+	        	CDS ENDSELECT FLD:contextoCli
+	        	RETURN (-2)
+	        END IF
+            
+	        call csr:PickOp 4 DSC:busca_cliente "0,50"
+	        CALL csr:f_sadopl(DSC:busca_cliente,common:csr_string)
+	        ret = retval
+	        CALL CSR:f_sadroppl(DSC:busca_cliente)
+            
+	        IF (ret >= 0) THEN
+	        	LET post:CliUP = substr(common:csr_string,0,50)
+	        	CALL csr:trimfield(post:CliUP)
+	        	refresh CliUP
+	        	if (post:Recep_CliTipo != CTACTE) then
+	        		LET post:adt_TipoDoc_tipo = substr(common:csr_string,52,2)
+	        		CALL csr:trimfield(post:adt_TipoDoc_tipo)
+	        		refresh post:adt_TipoDoc_tipo
+	        	endif
+	        	LET post:CloCuit = substr(common:csr_string,55,11)
+	        	CALL csr:trimfield(post:CloCuit)
+	        	refresh CloCuit
+	        ENDIF
+        BREAK	
+	END SELECT 
+	REFRESH CliUP
+	//setvaldone CliUP
+	
+END SUB
+
+/*******/

@@ -1,0 +1,213 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRepRem_BCNV
+* NOMBRE
+*   OFB:post:MISCRepRem_BCNV
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRepRem_BCNV
+LOCAL indice LIKE post:cantidad
+LOCAL copias_aux LIKE post:cantidad
+LOCAL l_cantRegistros LIKE post:cantidad
+LOCAL l_pick_remito LIKE siaf:pick_titulo
+LOCAL l_pick_productos LIKE siaf:pick_titulo
+LOCAL tot_cantidad LIKE siaf:cantidad
+LOCAL tot_remitos LIKE siaf:cantidad
+LOCAL tot_productos LIKE siaf:cantidad
+LOCAL loc_guiones LIKE common:csr_string
+LOCAL rem_anterior LIKE post:adt_rbcnv_remito
+LOCAL pro_anterior LIKE post:adt_rbcnv_prod
+LOCAL l_cdsretval LIKE lib:err_retval
+LOCAL l_stilo LIKE siaf:listado_totmot
+	lineas = 0
+	siaf:indica_calcu = 0
+	tot_remitos = 0
+	tot_productos = 0
+	siaf:i = 1
+	l_pick_remito = "remitos"
+	SELECT (siaf:pantalla_impreso)
+    	CASE "P"
+    		siaf:pick_titulo = "Reporte"
+    		CALL CSR:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+    		BREAK
+    	CASE "I"
+    		;LMB - PS 9780 - 17.06.2008
+ 			;CALL post:MISCopen_reporte("/te mp/climed.lis")
+    		FPRINT common:tmpDirTemporal, "%-s%-s", common:dirTemporal, "climed.lis"
+    		CALL post:MISCopen_reporte(common:tmpDirTemporal)
+    		BREAK
+    END SELECT
+	;CABECERA DEL REPORTE
+	CALL post:MISCCabRepRem_BCNV
+	CALL csr:f_sadroppl l_pick_remito
+	CALL CSR:f_sanewpl(l_pick_remito,PIC:siaf:totales)
+	CDS SELECT FROM DSC:Rem_BCNV_tbl BECOMES DSC:Rem_BCNV_ctx \
+				WHERE post:adt_rbcnv_fecha == siaf:fecha_proceso
+	CDS FINDFIRST DSC:Rem_BCNV_ctx NOLOCK
+	LET l_cdsretval = CDSRETVAL
+	IF (l_cdsretval == 0) THEN
+		CDS EXTRACT DSC:Rem_BCNV_ctx ALL
+	END IF
+	rem_anterior = 0
+	WHILE (l_cdsretval == 0)
+		l_cantRegistros = 0
+		tot_cantidad = 0
+		IF (rem_anterior != post:adt_rbcnv_remito) THEN
+			CALL post:MISCRem_BCNV_cabeTab
+			;SI LAS LINEAS LLEGAN A 51 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+			;EN LA SIGUIENTE HOJA
+			IF (lineas == 51) THEN
+				lineas = 0
+				CALL post:MISCRem_BCNV_cabeTab
+			END IF
+		END IF
+		rem_anterior = post:adt_rbcnv_remito
+		WHILE ((rem_anterior == post:adt_rbcnv_remito) && (l_cdsretval == 0))
+			tot_cantidad = tot_cantidad + siaf:cantidad
+			FPRINT common:csr_string, "%-11.11s   %-50.50s    %-10.10s    %4.4s", post:climed_numero, post:CliRaz, post:adt_rbcnv_prod, siaf:cantidad
+			CALL csr:f_saaddpl l_pick_remito common:csr_string
+			l_cantRegistros = l_cantRegistros + 1
+			CDS FINDNEXT DSC:Rem_BCNV_ctx NOLOCK
+			LET l_cdsretval = CDSRETVAL
+			IF (l_cdsretval == 0) THEN
+				CDS EXTRACT DSC:Rem_BCNV_ctx ALL
+			END IF
+		END WHILE
+		indice = PL_GETITEM
+		if (l_cantRegistros > 0)
+			CALL csr:myPickcontrol(l_pick_remito,common:csr_string,indice)
+		endif
+		WHILE ((indice - PL_GETITEM) < l_cantRegistros )
+			;CUERPO DE LAS TABLAS
+			CALL post:MISCwrite_Rem_BCNV
+			lineas = lineas + 1
+			;SI LAS LINEAS LLEGAN A 51 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+			;EN LA SIGUIENTE HOJA
+			IF (lineas == 51) THEN
+				lineas = 0
+				CALL post:MISCRem_BCNV_cabeTab
+			END IF
+			indice = indice + 1
+			CALL csr:myPickcontrol(l_pick_remito,common:csr_string,indice)
+		END WHILE
+		tot_remitos = tot_remitos + 1
+		;IMPRIMO PIE DE LA TABLA
+		CALL post:MISCRem_BCNV_pieTab(tot_cantidad, rem_anterior)
+		CALL csr:f_sadroppl l_pick_remito
+		IF (l_cdsretval == 0) THEN
+			CALL CSR:f_sanewpl(l_pick_remito,PIC:siaf:totales)
+		END IF
+	END WHILE
+	CDS ENDSELECT DSC:Rem_BCNV_ctx
+
+	;IMPRIMO PIE DE REMITOS
+	FPRINT common:csr_string "TOTAL REMITOS DEL DIA: %s", tot_remitos
+    CALL post:MISCwrite_Rem_BCNV
+    common:csr_string = " "
+    CALL post:MISCwrite_Rem_BCNV
+	CALL csr:f_sadroppl l_pick_remito
+	lineas = lineas + 2
+	;RESUMEN DE OPERACIONES DEL DIA POR ARTICULO
+	CDS SELECT FROM DSC:Rem_BCNV_tbl BECOMES DSC:Rem_BCNV_ctx \
+				WHERE post:adt_rbcnv_fecha == siaf:fecha_proceso \
+				SORT "RemBCNV"
+	CDS FINDFIRST DSC:Rem_BCNV_ctx NOLOCK
+	LET l_cdsretval = CDSRETVAL
+	IF (l_cdsretval == 0) THEN
+		CDS EXTRACT DSC:Rem_BCNV_ctx post:adt_rbcnv_prod siaf:cantidad
+		CALL post:MISCRem_BCNV_cabeRes
+		;SI LAS LINEAS LLEGAN A 51 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+		;EN LA SIGUIENTE HOJA
+		IF (lineas == 51) THEN
+			lineas = 0
+			CALL post:MISCRem_BCNV_cabeRes
+		END IF
+	END IF
+	pro_anterior = 0
+	WHILE (l_cdsretval == 0)
+		l_cantRegistros = 0
+		tot_cantidad = 0
+		pro_anterior = post:adt_rbcnv_prod
+		WHILE ((pro_anterior == post:adt_rbcnv_prod) && (l_cdsretval == 0))
+			tot_cantidad = tot_cantidad + siaf:cantidad
+			CDS FINDNEXT DSC:Rem_BCNV_ctx NOLOCK
+			LET l_cdsretval = CDSRETVAL
+			IF (l_cdsretval == 0) THEN
+				CDS EXTRACT DSC:Rem_BCNV_ctx ALL
+			END IF
+		END WHILE
+		;CUERPO DE LAS TABLAS
+		CLEARFIELD post:adt_prodvs_desc
+		post:adt_prodvs_cod = pro_anterior
+		CALL post:CDSprodvs_desc_load
+		FPRINT common:csr_string, "%-10.10s    %-40.40s    %4.4s", pro_anterior, post:adt_prodvs_desc, tot_cantidad
+		CALL post:MISCwrite_Rem_BCNV
+		lineas = lineas + 1
+		;SI LAS LINEAS LLEGAN A 51 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+		;EN LA SIGUIENTE HOJA
+		IF (lineas == 51) THEN
+			lineas = 0
+			CALL post:MISCRem_BCNV_cabeRes
+		END IF
+		tot_productos = tot_productos + tot_cantidad
+	END WHILE
+	CDS ENDSELECT DSC:Rem_BCNV_ctx
+
+	;IMPRIMO PIE DE RESUMEN DE OPERACIONES
+	FPRINT common:csr_string "%58.58s%4.4s", "TOTAL ARTICULOS ENTREGADOS EN EL DIA: ",tot_productos
+    CALL post:MISCwrite_Rem_BCNV
+    common:csr_string = " "
+    CALL post:MISCwrite_Rem_BCNV
+	CALL csr:f_sadroppl l_pick_remito
+
+	CALL post:MISCclose_reporte
+	FYIMSG CLEAR
+    CLEARFIELD common:csr_string
+    call csr:file_close(1)
+	IF (siaf:pantalla_impreso == "P") THEN
+        CLEARFIELD common:csr_string
+        ;LMB - PS 9780 - 17.06.2008
+ 		;FPRINT common:csr_string,"\\te mp\\climed.lis"
+        FPRINT common:csr_string, "%-s%-s", common:dirTemporal, "climed.lis"
+        
+        KEYDEF PUSH
+        CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+        KEYDEF POP
+    ELSE
+    	l_stilo = siaf:listado_totmot
+    	siaf:listado_totmot = 1
+        FYIMSG LST:common:fyimsg_list, \
+	    "(L) SE ESTAN IMPRIMIENDO LAS VENTAS DE CLIENTES MEDIOS"
+        LET copias_aux = 1
+ 		WHILE (copias_aux <= siaf:nro_copias)
+ 		    ;LMB - PS 9780 - 17.06.2008
+ 			;CALL siaf:MISCfile_prt_cierre("\\te mp\\climed.lis","predeterminada","N")
+ 			FPRINT common:tmpDirTemporal, "%-s%-s", common:dirTemporal, "climed.lis"
+       		CALL siaf:MISCfile_prt_cierre(common:tmpDirTemporal,"predeterminada","N")
+ 			
+ 			LET copias_aux = copias_aux + 1
+ 		END WHILE
+ 		siaf:listado_totmot = l_stilo
+        
+        ;LMB - PS 9780 - 17.06.2008
+ 		;FPRINT common:csr_string "cmd /c del %-s", "\\te mp\\climed.lis"
+        FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "climed.lis"
+        
+        CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT
+        EXEC common:csr_string
+    END IF
+END SUB
+
+/*******/

@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCact_tx_caida
+* NOMBRE
+*   OFB:giros:MISCact_tx_caida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCact_tx_caida
+    /*Esta rutina se encarga de actualizar el mensaje, el status y el sequence_corr, en el
+    journal, de la tx con caída que ha sido recuperada*/
+    LOCAL hora LIKE post:hor_a
+    CLEARFIELD siaf:tran_retval 
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context WHERE  \
+        tlr:jnl_branch == FLD:tlr:jnl_branch && \
+        tlr:jnl_operator == FLD:tlr:jnl_operator && \
+        tlr:jnl_bus_date == FLD:tlr:jnl_bus_date && \
+        tlr:jnl_sequence == FLD:tlr:jnl_sequence 
+    CDS FINDFIRST DSC:tlr:aux_context LOCK 
+    IF (CDSRETVAL != 0) THEN
+        CDS UNLOCK DSC:tlr:aux_context 
+        CDS ENDSELECT DSC:tlr:aux_context 
+        RETURN 
+    END IF 
+    siaf:cancelacion = "TRANCANCELADA"
+    IF (hcomm:tran_status > HOST_REJECTED) THEN
+        siaf:tran_retval = TRAN_CAIDA_VUELO
+        CDS UNLOCK DSC:tlr:aux_context 
+        CDS ENDSELECT DSC:tlr:aux_context 
+        RETURN 
+    END IF 
+    CDS CLEARBUFFER DSC:tlr:aux_context
+    IF (hcomm:tran_status == HOST_ACCEPTED) THEN
+        FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,hcomm:tran_status
+        siaf:mensaje = "CANCELACION AUTO."
+        CDS APPEND DSC:tlr:aux_context \
+        FLD:tlr:jnl_sequence AS FLD:tlr:jnl_sequence_corr \
+        FLD:tlr:jnl_status FLD:siaf:mensaje \
+        FLD:siaf:cancelacion
+	ELSE
+		SELECT ( giros:CodRespuesta_comm )
+		 CASE "98"
+			    // Transaccion Ya Efectuada.
+			    siaf:mensaje = "CANCELACION YA EFECTUADA"
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_ACCEPTED
+			    BREAK
+		CASE "09"
+			    // No Existe Transaccion Directa.
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    siaf:mensaje = "CANCELACION NO SE PUEDE REALIZAR"
+			    BREAK
+		CASE "95"
+			    // No Se puede realizar recuperacion de la operacion.
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    siaf:mensaje = "NO SE PUEDE RECUPERAR LA OPERACION"
+			    BREAK
+		CASE ELSE
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    BREAK
+		END SELECT        
+    END IF
+
+// FGB agrego esto para saber a que hora se recupero al trx. a traves del 
+// proceso batch...
+	let tlr:jnl_hora_ult_act = common:time_of_day
+	let tlr:jnl_dia_ult_act = common:system_date
+
+    //Hago el append en el journal 
+    CDS APPEND DSC:tlr:aux_context \
+        FLD:tlr:jnl_sequence AS FLD:tlr:jnl_sequence_corr \
+        FLD:tlr:jnl_status \
+        FLD:siaf:mensaje \
+        FLD:siaf:cancelacion \
+		FLD:tlr:jnl_hora_ult_act \
+		FLD:tlr:jnl_dia_ult_act
+
+    CDS UPDATE DSC:tlr:aux_context LOCK
+    IF (RETVAL < 0)
+        hora = common:time_of_day
+        fprint common:csr_string "\nError al actualizar el journal luego de la respuesta del switch de la tx con sequencia %e .\n Termina el proceso RT batch en forma anormal. Hora: %e\n",tlr:jnl_sequence,hora
+        CALL batch:MISCgeneraLog(common:csr_string,"ERROR","N")
+//        CALL batch:MISCgeneraLog("#############################################################################\n","AMBOS","N")
+        RETURN (-1)       
+    END IF
+    CDS UNLOCK DSC:tlr:aux_context 
+    CLEARFIELD siaf:mensaje 
+    CDS ENDSELECT DSC:tlr:aux_context 
+END SUB 
+
+/*******/

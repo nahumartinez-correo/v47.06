@@ -1,0 +1,78 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRepPzasVencidas
+* NOMBRE
+*   OFB:post:MISCRepPzasVencidas
+* DESCRIPCION
+*   Consulta la piezas vencidas
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCclose_suc, tes:SVALaper_suc
+* DOCUMENTACION
+*   CRQ-20394 - MENSAJE DE PIEZAS VENCIDAS EN MOSAIC
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRepPzasVencidas
+	LOCAL err_stockp LIKE lib:err_retval   
+	LOCAL l_cantidad LIKE post:adt_stockp_pieza
+	LOCAL l_mensaje LIKE common:csr_string
+	
+	//Limpio la tabla GStock
+	CDS SELECT FROM DSC:post:GStock_tbl BECOMES DSC:post:GStock_ctx
+	IF (CDSRETVAL == 0) THEN
+		CDS DELETE DSC:post:GStock_ctx ALL
+	END IF
+	CDS ENDSELECT DSC:post:GStock_ctx
+	
+	LET post:fecha_desde_CPG = 20010101
+	LET post:destino_CPG = "TODOS"
+	LET post:tipo_Cli_CPG = "TODOS"
+	LET post:estado_CPG = "PIEZAS VENCIDAS"
+       
+  CLEARFIELD post:remitente_CPG
+  CLEARFIELD post:lote_CPG
+  
+	//Saco de la tabla stockp solo las vencidas
+	CALL post:CDScargo_pieza_venc("stockp","stockp_ctx1")
+	err_stockp = RETVAL
+
+	IF (err_stockp == 0) THEN
+		CDS SELECT FROM "GStock" BECOMES "GStock_ctx" 
+	
+		CDS AGGREGATE "GStock_ctx" COUNT post:adt_stockp_pieza
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT "GStock_ctx" post:adt_stockp_pieza INTO l_cantidad
+		END IF
+		CDS ENDSELECT "GStock_ctx"
+		
+		LET siaf:cantidad = l_cantidad
+
+		//Si es apertura o reapertura
+		IF (siaf:codigo_siaf == 6000 || siaf:codigo_siaf == 6010) THEN
+			FPRINT l_mensaje ,"EXISTEN (%s) PIEZAS VENCIDAS, RECUERDE REGULARIZARLAS A LA BREVEDAD.\n DESEA IMPRIMIR REPORTE?",l_cantidad
+			MSGBOX l_mensaje,OFB_YESNO,"AVISO PIEZAS VENCIDAS"
+			IF (RETVAL == OFB_IDYES) THEN
+				LET siaf:pantalla_impreso = "I"
+				LET lugar_guarda_pieza = "DESTINO"
+				CALL post:MISCRepCGP
+			END IF
+		ELSE
+			FPRINT l_mensaje ,"EXISTEN (%s) PIEZAS VENCIDAS, RECUERDE REGULARIZARLAS A LA BREVEDAD.",l_cantidad
+			MSGBOX l_mensaje,OFB_OK,"AVISO PIEZAS VENCIDAS"	
+		END IF
+	END IF
+	
+	CLEARFIELD post:fecha_desde_CPG 
+	CLEARFIELD post:destino_CPG 
+	CLEARFIELD post:tipo_Cli_CPG 
+	CLEARFIELD post:estado_CPG
+	CLEARFIELD siaf:pantalla_impreso
+	
+END SUB
+
+/*******/

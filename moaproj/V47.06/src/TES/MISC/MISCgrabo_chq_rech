@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCgrabo_chq_rech
+* NOMBRE
+*   OFB:tes:MISCgrabo_chq_rech
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCgrabo_chq_rech
+	LOCAL lstring LIKE common:csr_string
+	LOCAL idx LIKE siaf:i
+				
+	CLEARFIELD aux_sequence_pase //La uso para guardar la misma secuencia a todos los pases NO aceptados
+	CLEARFIELD siaf:moneda  //La limpio para hacer el corte de control
+	CLEARFIELD aux_sequence_mov //Lo uso para controlar cuando termina de grabar los movimientos correspondientes a una cabecera
+	
+	PaseAnulado = "N"
+	idx = PL_GETITEM   
+	//Recorro el picklist y grabo primero todo lo que sea NO aceptado
+	DO
+		CALL csr:myPickcontrol(DSC:PICPasesDisp,lstring,idx)
+		IF (RETVAL < 0 || PasesRech_cant == 0) THEN
+			//Actualizo  la  marca de completo. Controlo por medio de aux_sequence_mov, si tiene valor es porque
+			//ya grabo la cabecera con sus pases
+			IF (aux_sequence_mov.NUMCHARS != 0 && PaseAnulado == "N") THEN
+				CALL MISCact_cabe_chq
+				/* enviar un mensaje al operador origen */
+				CALL MISCsend_msg_dest(tes:chmov_login_orig,"RECHAZO SU PASE DE VALORES")
+			END IF
+			BREAK
+		END IF
+		
+		//Busco este pase en el picklist de rechazados
+		sequence_val[0] = SUBSTR(lstring,70,4)
+		CALL MISCverif_rechazo(0)
+		IF (RETVAL == 0) THEN //Lo encontre !
+			siaf:continua_transaccion = "N"			
+			IF (siaf:moneda != SUBSTR(lstring,0,2)) THEN
+				//Actualizo  la  marca de completo. Controlo por medio de aux_sequence_mov, si tiene valor es porque
+				//ya grabo la cabecera con sus pases
+				IF (aux_sequence_mov.NUMCHARS != 0  && PaseAnulado == "N") THEN
+					CALL MISCact_cabe_chq
+					/* enviar un mensaje al operador origen */
+					CALL MISCsend_msg_dest(tes:chmov_login_orig,"RECHAZO SU PASE DE VALORES")					        
+				END IF
+
+				siaf:moneda = SUBSTR(lstring,0,2)						
+				chmov_sequence_pase = SUBSTR(lstring,75,4)
+			
+				IF (rend_sup == "S") THEN  /* si la primera fue supervisada , marco todas */
+					SETFLAG tlr:tran_flags,supovr_granted
+				END IF
+				CALL tes:MISCcabe_ent_chq
+				LET siaf:codigo_siaf = siaf:codigo_siaf + 6	
+			END IF					
+			
+			IF (PaseAnulado == "N") THEN
+				//Actualizo el movimiento NO aceptado
+				siaf:moneda = SUBSTR(lstring,0,2)
+				siaf:cod_banco = SUBSTR(lstring,3,3)
+				siaf:cheqcuenta = SUBSTR(lstring,7,20)
+				post:codigo_interno = SUBSTR(lstring,28,6)
+				siaf:nro_cheque = SUBSTR(lstring,35,20)
+				post:importe_origen = SUBSTR(lstring,56,13)
+				chmov_sequence_orig = SUBSTR(lstring,70,4)
+				chmov_sequence_pase = SUBSTR(lstring,75,4)
+				tes:termi_win = SUBSTR(lstring,80,40)
+				CALL csr:trimfield(tes:termi_win)
+		        
+				/* Grabo el pase */
+				IF (rend_sup == "S") THEN  /* si la primera fue supervisada , marco todas */
+					SETFLAG tlr:tran_flags,supovr_granted
+				END IF
+				CALL tes:MISCjour_ent_chq					
+			END IF
+											
+			//Elimino del picklist que contiene los pases disponibles para que despues me queden solo los aceptados
+			siaf:i = idx - PL_GETITEM
+			CALL CSR:myPickdelete(DSC:PICPasesDisp,lstring,siaf:i)
+			idx = idx - 1
+					
+			PasesRech_cant = PasesRech_cant - 1 //Descuento la cantidad de pases que me quedan NO aceptados
+		END IF
+		idx = idx + 1
+	LOOP
+	
+END SUB
+
+/*******/

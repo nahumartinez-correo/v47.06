@@ -1,0 +1,90 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcalc_tots_pagfac
+* NOMBRE
+*   OFB:post:MISCcalc_tots_pagfac
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCcalc_tots_pagfac
+    LOCAL INDICE like post:cantidad
+    LOCAL SeqAFIP like siaf:adt_tran_tot_nro
+    LOCAL SeqPF like siaf:adt_tran_tot_nro
+    
+    call post:MISCBusco_seq_tot(6820,SeqPF)
+    
+    call post:MISCBusco_seq_tot(6840,SeqAFIP)
+
+
+    totales_sf1     = 0
+    sf1_cantidad_op = 0
+    
+
+    /* 
+    IMPORTANTE: Esto se hacía al cierre de Tesoro. 
+    Ahora pasa al cierre de la Sucursal por lo tanto,me aseguro de que 
+    el campo tlr:set_bus_date tenga la fecha del día que se está 
+    cerrando la sucursal.
+    */
+
+    Cds join  from DSC:tlr:TABtots  dsc:tes:rend_caj_table  becomes dsc:tes:JoinTotales where \
+    DSC:tlr:TABtots.tlr:tots_branch       == FLD:op:op_branch_id                    && \
+    DSC:tlr:TABtots.tlr:tots_branch       == dsc:tes:rend_caj_table.tes:rend_suc_id && \
+    DSC:tlr:TABtots.tlr:tots_operator     == dsc:tes:rend_caj_table.tes:rend_op_id  && \
+    dsc:tes:rend_caj_table.tes:rend_fecha == tlr:set_bus_date
+    CDS FindNext dsc:tes:JoinTotales nolock
+	lib:err_retval = cdsretval
+	While (lib:err_retval == 0)
+    	  Cds extract dsc:tes:JoinTotales ALL
+          
+     	  ;IF (siaf:cpago_facil_vec.numchars != 0)
+     	  IF (siaf:cant_tx_vec[SeqPF].numchars != 0)
+    		 ;totales_sf1 = totales_sf1 + siaf:tpago_facil_vec
+    		 totales_sf1 = totales_sf1 + siaf:total_tx_vec[SeqPF]
+    		 ;sf1_cantidad_op = sf1_cantidad_op + siaf:cpago_facil_vec
+    		 sf1_cantidad_op = sf1_cantidad_op + siaf:cant_tx_vec[SeqPF]
+          Endif
+          
+          ;SMC se agrega para AFIP
+     	  ;IF (siaf:cafip_vec.numchars != 0)
+     	  IF (siaf:cant_tx_vec[SeqAFIP].numchars != 0)
+    		 ;totales_sf1 = totales_sf1 + siaf:tafip_vec
+    		 totales_sf1 = totales_sf1 + siaf:total_tx_vec[SeqAFIP]
+    		 ;sf1_cantidad_op = sf1_cantidad_op + siaf:cafip_vec    		   
+    		 sf1_cantidad_op = sf1_cantidad_op + siaf:cant_tx_vec[SeqAFIP]   		   
+          EndIF
+          
+          Cds FindNext dsc:tes:JoinTotales nolock
+          lib:err_retval = cdsretval
+	End While
+
+    Cds Endselect dsc:tes:JoinTotales
+    // Saco los decimales
+    post:totales_sin_dec = post:totales_sf1 * 100
+    // Relleno todas las Posiciones
+    fprint post:totales_sin_dec "%14.14d" post:totales_sin_dec
+    // Encrypto el total
+    Call post:MISCencryp_simple(post:totales_sin_dec,post:totales_sin_dec.numchars)
+    post:sf1_totales_encryp =  common:csr_string
+    fprint post:sf1_cantidad_op "%6.6d" post:sf1_cantidad_op
+    Call post:MISCencryp_simple(post:sf1_cantidad_op,post:sf1_cantidad_op.numchars)
+    post:sf1_cantidad_encryp  = common:csr_string
+    post:sf1_estado_jrnl = "S"
+
+    ;SMC ControlCaja
+    siaf:tpagofacil_cierre = post:totales_sf1
+    siaf:cpagofacil_cierre = post:sf1_cantidad_op
+END SUB
+
+/*******/

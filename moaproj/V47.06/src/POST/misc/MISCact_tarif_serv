@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:post:MISCact_tarif_serv
+* NOMBRE
+*   OFB:post:MISCact_tarif_serv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCact_tarif_serv
+    //cgw:SC 50170
+    local l_importe like post:importe_sesion
+
+	IF (post:cli_tipo != 1 && !TESTFLAG(uso_int_flag,uso_interno) && \
+	    post:enCombo != "S") THEN
+	    //cgw:si no es un producto de un combo, calcula importes.
+	    post:importe = 0
+
+		if (post:adt_serv_tipo == "PO" || post:adt_serv_tipo == "EN") then
+			;Habilito restricción de bonificación de bienes de cambios
+			adt_promo_tipoRest = "SRV"
+			fprint adt_promo_clavRest "%s", siaf:codigo_siaf
+			adt_promo_RestBC = "S"
+		end if
+
+	    /*Si tiene una especie asociada, le suma al importe el valor de la especie por la cantidad*/
+
+
+	    if (codesp_serv.numchars > 0) then
+	    	tes:adt_espv_cod = codesp_serv
+	    	tes:adt_espv_subcod = subcod_serv
+	    	tes:adt_evaux_cantidad = post:cantidad
+	    	CLEARFIELD promo_tot_EspVdas
+	    	CALL tes:CDSadt_esp_load
+			if (aux_cantidad != post:cantidad || promo_aplica == "S") then
+	    		CALL post:MISCLimpioPromo("Espec.Val.")
+	    		if (prod_serv.numchars == 0) then
+	    			aux_cantidad = post:cantidad
+	    		end if
+				CALL post:MISCaplicaBonif(TIPO_ESPECIES_VS)
+				IF (aplica_bonif_esvs ==	"S") THEN
+        			CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_ESPECIE, "")
+					promo_EspVdas[0] = promo_tot_EspVdas
+					promoInhibeUpEsvs[0] = promo_inhibeUpEsvs
+					promoCod_esvs[0] = promo_cod_esvs
+					promoDesc_esvs[0] = promo_desc_esvs
+					promoBon_esvs[0] = promo_bon_esvs
+				ELSE
+					promo_EspVdas[0] = 0
+				END IF
+			end if
+			post:importe = post:importe + (cantidad * tes:adt_espv_valor) - promo_EspVdas[0]
+		end if
+	    /*Si vende algun producto, se le agrega al importe total del servicio, el valor del producto * la
+	    cantidad vendida (que es la cantidad - lo que trajo el cliente). Y si ese producto tiene especies asociadas
+	    que se venden se procede de la misma forma*/
+	    if (prod_serv.numchars > 0)
+	    	LET promo_tot_ProdVs = 0
+			CALL post:MISCLimpioPromo("Prod.Vs")
+	    	IF (cant_caja_prev < cantidad) then
+	    		adt_prodvs_cod = prod_serv
+	    		CALL post:CDSprodvs_load
+	    		cantidad2 = cantidad - cant_caja_prev
+    			CALL post:MISCaplicaBonif(TIPO_PRODUCTOS_VS)
+				IF (aplica_bonif_pdvs ==	"S") THEN
+    				CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_PRODVS, "")
+    			END IF
+	    		post:importe = post:importe + (cantidad2 * adt_prodvs_tarifa) - promo_tot_ProdVs
+	    	else
+				cantidad2 = cantidad - cant_caja_prev
+	    	end if
+
+	    	if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad) then
+	    		aux_cantidad = post:cantidad
+				tes:adt_espv_cod = codesp_prod
+		    	tes:adt_espv_subcod = subcod_prod
+		    	tes:adt_evaux_cantidad = cantidad - cant_cinta_prev
+		    	CLEARFIELD promo_tot_EspVdas
+		    	CALL tes:CDSadt_esp_load
+		    	CALL post:MISCaplicaBonif(TIPO_ESPECIES_VS)
+				IF (aplica_bonif_esvs == "S") THEN
+					CALL post:MISCLimpioPromo(str_det_bonif_aux)
+		    		CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_ESPECIE, "")
+		    		promo_EspVdas[1] = promo_tot_EspVdas
+		    		promoInhibeUpEsvs[1] = promo_inhibeUpEsvs
+					promoCod_esvs[1] = promo_cod_esvs
+					promoDesc_esvs[1] = promo_desc_esvs
+					promoBon_esvs[1] = promo_bon_esvs
+		    		if (promo_EspVdas[1] > 0) then
+		    			LET str_det_bonif_aux = str_detalle_bonif
+		    		end if
+		    	ELSE
+		    		promo_EspVdas[1] = 0
+		    	END IF
+			    post:importe = post:importe + ((cantidad - cant_cinta_prev) * tes:adt_espv_valor)- promo_EspVdas[1]
+			else
+				promo_EspVdas[1] = 0
+				CLEARFIELD promoInhibeUpEsvs[1]
+				CLEARFIELD promoCod_esvs[1]
+				CLEARFIELD promoDesc_esvs[1]
+				CLEARFIELD promoBon_esvs[1]
+				CALL post:MISCLimpioPromo(str_det_bonif_aux)
+			end if
+	    end if
+
+	    INIT 22,1		 
+		//cgw:SC 50170 (Redondea a dos decimales)		 
+		l_importe = post:importe
+	    INIT 22,0
+
+	    Let promo_aplica = "N"
+		fld_promo_imp = promo_imp_blq_tot + promo_imp_tot_opc + \
+		promo_imp_srv_tot + promo_tot_ProdVs + promo_EspVdas[0] + promo_EspVdas[1]
+		siaf:importe_tot_serv = l_importe + siaf:importe - promo_imp_blq_tot - promo_imp_tot_opc - promo_imp_srv_tot
+		if (estado_presu != 4 && siaf:importe_tot_serv < 0)
+			clearfield siaf:importe_tot_serv
+		end if
+		REFRESH fld_promo_imp
+	   	REFRESH siaf:importe_tot_serv
+	END IF
+END SUB
+
+/*******/

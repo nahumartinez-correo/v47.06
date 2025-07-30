@@ -1,0 +1,318 @@
+/****o* Recepción de Piezas/OFB:post:PBAgregar
+* NOMBRE
+*   OFB:post:PBAgregar
+* DESCRIPCION
+*   Esta rutina Agrega la pieza recibida en una tabla temporal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:PBAgregar_CDD
+* REFERENCIADO POR
+*   OFB:post:FVALstockp_pieza,SCR:post:SCRNpiezas_CM,SCR:post:SCRNpiezas_GC
+* DOCUMENTACION
+*   50361 - https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* NI50569-RPP
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBAgregar
+	local Ltipo_doc like post:stockp_tipo_doc
+	local Lnum_doc  like post:stockp_doc
+	local l_mensaje like common:csr_string
+	
+	//gpb:NI50437 REQ003
+	//antes era "MINORISTA RPP"
+	//cambio por "VUELTA A PAGAR (VAP)"
+	//si lo vuelven a cambiar, entonces hay que actualizar el descriptor
+	IF (stockp_destino == DSC:post:minoristaRPP_desc) THEN
+		CALL post:MISCprotFields_RPP
+	ELSE
+		//NI50479
+		//PAGO EN DESTINO (PED)
+		IF (stockp_destino == DSC:post:PED_desc) THEN
+			 CALL post:CDS_PEDpend_load
+			 IF (RETVAL < 0)
+			 	MSGBOX "LA PIEZA INGRESADA NO ES UNA PIEZA PED",0x00,"ATENCION"
+			 	RETURN -2
+			 ELSE 
+			 	IF (estado_pieza_ped == "RHD"|| estado_pieza_ped == "RHO" ||post:estado_pieza_ped == "PER")
+			 		MSGBOX "LA PIEZA INGRESADA ESTA MARCADA COMO ROBADA O PERDIDA. NO PUEDE RECIBIRSE",0x00,"ATENCION"
+			 		RETURN -2
+			 	END IF
+			 END IF
+			 CALL post:MISCprotFields_PED
+		ELSE
+			CALL post:CDS_PEDpend_load
+			IF (RETVAL == 0)
+				//Si esta en la PEDpend solo se podra ingresar con el destino PAGO EN DESTINO
+				MSGBOX "LA PIEZA INGRESADA SOLO PODRA SER RECIBIDA COMO 'PAGO EN DESTINO'",0x00,"ERROR"
+				RETURN -2
+			END IF				
+			UNPROTFIELD cod_barra_CREM
+		END IF	
+	END IF
+	
+	//cgw:NI 50388 - AUT-2079 determino si esta en boton Agregar o Modificar
+	LET drv:button = CB6
+	CALL drv:but_status
+	IF (drv:disabled == 0) THEN //Estoy Modificando
+    	Modificando = TRUE
+    ELSE //Estoy Agregando
+    	Modificando = FALSE
+    END IF
+
+	//Verifico que la pieza no haya sido ingresada en la Rendicion de Piezas CDD
+	CALL CDSstockpCDD_load("StockpCDD","StockpCDD_ctx")
+	If (RETVAL < 0) Then
+		RETURN -2
+	End If		
+	//Verifico que la pieza no haya sido ingresada en la Rendicion de Piezas CDD
+	//y se encuentre en el archivo historico
+	CALL CDSstockpCDD_load("StockpCDDHist","StockpCDDHist_ctx")
+	If (RETVAL < 0) Then
+		RETURN -2
+	End If
+
+    //cgw: SC50190:Verifico que la pieza no este pendiente en la Rendicion de Piezas CDD.
+    //    (Grabada en la tabla StockpCDD_Aux).
+    CALL post:CDSStockpCDDAux_load
+    If (RETVAL < 0) Then
+		RETURN -2
+	End If
+	
+	IF (Modificando)
+		CALL post:CDS_PEDpend_load
+		IF (RETVAL == 0)
+			IF (stockp_destino != DSC:post:PED_desc)
+				MSGBOX "LA PIEZA A MODIFICAR SOLO PUEDE SER RECIBIDA COMO 'PAGO EN DESTINO'",0x00,"ERROR"
+				RETURN -2
+			END IF
+		ELSE
+			IF (stockp_destino == DSC:post:PED_desc)
+				MSGBOX "LA PIEZA A MODIFICAR NO PUEDE SER RECIBIDA COMO 'PAGO EN DESTINO'",0x00,"ERROR"
+				RETURN -2			
+			END IF
+			//RETURN -2
+		END IF			
+	END IF
+	
+
+	if (post:AsignaDestino == "N") then
+		//verifico que la pieza no haya sido recibida con anterioridad
+		CALL post:CDSstockp_recep_Load
+		If (RETVAL < 0) Then
+			RETURN -2
+		End If
+		//verifico que la pieza no haya sido asignada a destino con anterioridad
+		CALL post:CDSstockp_Load
+		If (RETVAL < 0) Then
+			RETURN -2
+		End If
+
+	end if
+
+    //SC 50185 - CD LABORAL
+    If (post:AsignaDestino == "S" || post:AsignaDestino == "E" || AsignaDestino == "M") 
+ 	   call MISCes_TT(stockp_pieza)
+ 	   if (retval == 0 && (substr(stockp_pieza,0,2) == "CD" || substr(stockp_pieza,0,2) == "MD")) then
+ 		   unprotfield stockp_laboral
+	 	   NEXTFIELD stockp_laboral
+ 	   else
+ 		   stockp_laboral = "N"
+ 	   	   refresh stockp_laboral
+	 	   protfield stockp_laboral
+ 		   NEXTFIELD stockp_pieza
+ 	   endif
+   endif
+
+   CALL post:FVALcamposrequeridos
+   lib:err_retval = RETVAL
+   LASTKEY = 0X00
+   
+   IF (lib:err_retval == 0) THEN
+
+   	   //cgw:NI 50388 - AUT-2079. Validaciones y Desglose del codigo de barras CCT
+		IF (AsignaDestino == "S" || AsignaDestino == "M") THEN
+			IF (Modificando) THEN
+				//reservo tipo y nro de documento ya que en el desglose se limpia y se necesitan para la modificacion de un cliente minorista.
+				Ltipo_doc = post:stockp_tipo_doc
+				Lnum_doc = post:stockp_doc
+			END IF
+			CALL post:FVALcod_barra_CREM
+			IF (RETVAL < 0) THEN
+				NEXTFIELD post:cod_barra_CREM
+				RETURN (-2)
+			END IF
+		END IF
+		
+   		IF (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") THEN
+   			CALL MISCrend_cent
+   			if (retval < 0)
+   			return -2
+   			endif
+   		END IF
+   
+   	
+        IF (stockp_crem_imp > 0) THEN
+            //SC 50190 - SC 50361
+           IF (cod_barra_CREM.numchars == 0 || post:id_cupon_CCT.numchars == 0 || post:adt_climay_razon.numchars == 0) then
+           
+           	   //cgw:Si es boton Modificar y Cliente Minorista recupero tipo y nro de documento
+           	   IF ((AsignaDestino == "S" || AsignaDestino == "M") && post:adt_climay_razon.numchars == 0 && Modificando) THEN
+			   	   post:stockp_tipo_doc = Ltipo_doc
+			   	   post:stockp_doc = Lnum_doc   			   	   
+			   END IF
+           
+             	CALL MISCrtte_crem(post:stockp_pieza)
+				unprotfield post:cod_barra_CREM
+			ELSE
+				es_mayorista = "S"
+				CALL post:CDStbls_aux_crem
+			ENDIF
+        ELSE
+        	
+        	//SC 50190 - SC 50361
+        	IF (post:cod_barra_CREM.numchars != 0)
+				msgbox "DEBE INGRESAR EL IMPORTE DE CONTRAREEMBOLSO.",0X00,"ERROR"
+				RETURN -2
+			ENDIF
+        	//cgw: SC50190 - PS9832
+        	//Para Clientes Mayorista con parametria cargada en CliMayCrem y con pieza propia,
+        	//debe validarse que el importe CREM se cargue obligatoriamente.
+        	IF (AsignaDestino != "N" && AsignaDestino != "E") THEn
+        		//Cuando no agrega automaticamente la pieza
+        		//Agrega pieza automaticamente si No Asigna Destino ("N") o es Operativos Especiales ("E").
+        	    CALL CDSesCliMay_crem(post:stockp_pieza)
+        	    IF (RETVAL == 0) THEN
+        		    MSGBOX "Debe cargar el importe crem mayor a 0",0x00,"Error"
+                    RETURN -2
+                END IF
+            END IF
+
+        	clearfield es_mayorista
+            clearfield stockp_ctaOM
+		    clearfield stockp_tipo_doc
+			clearfield stockp_doc
+			IF (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") THEN
+   				post:stockp_es_grancl = "N"
+   				post:stockp_rend_cent = "N"
+   				post:stockp_rct = "N"	
+   			ENDIF
+
+            CALL post:CDSstockp_temp_save
+
+
+
+
+        END IF
+        //PUEDE VENIR -2 CUANDO ES UNA POLIZA Y NO HAY LINEA
+        IF (RETVAL < 0) THEN
+        	INIT 33,0
+        	RETURN -2
+        ENDIF
+
+        CLEARFIELD stockp_pieza
+        REFRESH stockp_pieza
+        // sba 03012003 - Obs.Polizas
+        if (stockp_destino == "REENCAMINAMIENTO" && stockp_dest_ant == "PIEZA PACTADA EN SUC") then
+        	CLEARFIELD post:stockp_destino
+        	REFRESH post:stockp_destino
+        endif
+
+
+
+       	//Si estoy modificando la pieza y tiene orden de guarda, limpio el destino luego de modificar y fuerzo
+		//a que lo elija nuevamente porque si quiere ingrasar una nueva pieza con ordende guarda se duplica el de la 
+		//pieza anterior
+		IF (Modificando && post:ord_guarda_pieza.numchars != 0)
+			CLEARFIELD post:stockp_destino
+			REFRESH post:stockp_destino
+		END IF
+
+        CALL CSR:proc_list(F_CLEAR,LST:LISTstockp_CM_flds)
+        IF (Modificando)
+        	CLEARFIELD lugar_guarda_pieza
+        	CLEARFIELD ord_guarda_pieza
+        	REFRESH lugar_guarda_pieza
+        	REFRESH ord_guarda_pieza
+        END IF
+        //SC50361
+        CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds)
+        IF (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") THEN
+			   		/*If (stockp_destino == "RTA POSTAL PAGA") Then
+	   						post:stockp_en_devol = "S"
+			   		else
+			   				post:stockp_en_devol = "N"
+			   		endif*/
+					if (post:stockp_destino == "RTA POSTAL PAGA" && stockp_crem_imp > 0) THEN
+						MSGBOX "DESTINO RPP NO ADMITE PIEZAS CREM.",0x00,"ERROR"
+						clearfield post:stockp_crem_imp
+						refresh post:stockp_crem_imp
+						RETURN -2
+					endif
+  
+			   		post:stockp_en_devol  = "N"
+						post:stockp_franq_inc = "N"
+						post:stockp_es_grancl = "N"
+						post:stockp_rend_cent = "N"
+						post:stockp_rct = "N"	
+	    	ENDIF
+	   		 post:stockp_laboral = "N"
+
+        CALL CSR:proc_list(F_REFRESH,LST:LISTstockp_CM_flds)
+
+      	PROTFIELD stockp_dias_alm
+      	PROTFIELD stockp_laboral
+      	PROTFIELD stockp_plazoguarda
+        PROTFIELD stockp_vtofecha
+      //  PROTFIELD stockp_rpp_corp
+
+      	SETVALDONE stockp_pieza
+      	SETVALDONE stockp_abonado
+	    	SETVALDONE stockp_destino
+    		SETVALDONE stockp_Oficio
+   			SETVALDONE stockp_destin_nom
+      	SETVALDONE stockp_dias_alm
+      	SETVALDONE lugar_guarda_pieza
+      	SETVALDONE stockp_rpp_corp
+
+      	DISABLECONTROL drv:PBcb3//Deshabilita el boton de Agregar
+      	DISABLECONTROL drv:PBcb4//Deshabilita el boton de Eliminar
+      	DISABLECONTROL drv:PBcb6//Deshabilita el boton de Modificar
+
+
+		UNPROTFIELD post:stockp_destino
+		UNPROTFIELD post:stockp_pieza        
+   		ENABLECONTROL drv:PBcb2     
+
+
+      	NEXTFIELD stockp_pieza
+      	CLEARFIELD stockp_pieza
+      	REFRESH stockp_pieza
+      	SETVALDONE stockp_pieza
+
+		//despues de guardar la pieza
+		IF (!Modificando && stockp_es_guarda == "S")
+			//Si estoy agregando una pieza que tiene guarda, actualizo y muestro el orden de guarda
+			CALL post:CDSobtiene_secuen("GUARD")
+			ord_guarda_pieza = adt_codseq_nro
+			refresh ord_guarda_pieza
+			UNPROTFIELD post:stockp_destino
+		END IF	
+		
+			
+        //PROBAR!!
+      	IF (currentfield.id != stockp_pieza.id) then
+      		ungetkey RT_TAB
+      		RETURN 0
+      	ENDIF
+   	ELSE
+   		RETURN -2
+   	END IF
+
+END SUB
+
+/*******/

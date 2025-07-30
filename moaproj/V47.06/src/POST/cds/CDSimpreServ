@@ -1,0 +1,188 @@
+/****o* Pendientes de agrupación/OFB:post:CDSimpreServ
+* NOMBRE
+*   OFB:post:CDSimpreServ
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSimpreServ(INDICE, SUBTOTAL, CODAGRUP)
+
+	/********************************************************************************************************/
+	/*                                                                                                      */
+	/* [PAW - 03/11/99]      Esta rutina se encarga de imprimir los opcionales, controles, descuentos, etc. */
+	/*                       asociados a un servicio.                                                       */
+	/* [PAW - 09/11/99]      AGREGADO: se imprimen tambien los motivos de template que no tienen formualrio */
+	/*                       fiscal asociado.                                                               */
+	/* [FGB - 13.01.03]		 AGREGADO: para la nueva trx de telgrafia, se imprimen los nros de telegrama en */
+	/*                       forma similar a como se imprimen los T&T's                                     */
+	/* [FGB - 13.02.04]		 AGREGADO: para la nueva trx de combos, se imprimen los T&T's, Nro. Telegramas  */
+	/*                       y Nros. de Giro, en forma similar a como se imprimen los T&T's.                */
+	/*                                                                                                      */
+	/********************************************************************************************************/
+
+	/*Adecuaciones para Nota de Credito. La seleccion se hace por PresNro_tt y
+	NroTrn_tt en vez de PresNro y PreDNroTrn. Tambien se filtra por la
+	marca de anulacion (Anula_tt) - Gabriel Falciola*/
+	if (CODAGRUP != 0)  // [PAW] --> Parte de un template.
+		Cds SELECT FROM Dsc:TblImpreTmp BECOMES DSC:ImpreTmpCon \
+			WHERE post:op_operator_id == post:op_operator_id && \
+				  post:cod_agrupacion == CODAGRUP && 			\
+				  post:noImprimir == "S"
+
+		CDS FINDFIRST DSC:ImpreTmpCon NOLOCK
+		LET lib:err_retval = CDSRETVAL
+		WHILE (lib:err_retval != -801)
+			if (SUBTOTAL != -1)  // si es anexo no hay cortes.
+				/* Corte de página si se alcanzó el máximo */
+				//call PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA_CUERPO, 1)
+				//INDICE = retval
+				//CDS FINDAGAIN DSC:ImpreTmpCon NOLOCK
+			endif
+			CDS EXTRACT DSC:ImpreTmpCon	post:cantid_impre post:desc_impre post:importe_impre
+			
+			//con correcciones
+			/*if (SUBTOTAL == -1)  // si es anexo imprimo reducido.
+				fprint post:desc_impre "%s                   ", post:desc_impre
+				post:desc_impre = substr(post:desc_impre,0,22)
+				fprint post:desc_impre "%s %11.11e$", post:desc_impre, importe_impre
+				Fprint common:csr_string "    %-33.33s\n", desc_impre
+			else
+				CALL CSR:trimfield(post:desc_impre)
+				fprint post:desc_impre "   %s %11.11e$", post:desc_impre, importe_impre
+				Fprint common:csr_string "%7.7s %-65.65s\n", " ",desc_impre
+			endif*/
+
+			//Vieja
+			if (SUBTOTAL == -1)  // si es anexo imprimo reducido.
+				fprint post:desc_impre "%s                   ", post:desc_impre
+				post:desc_impre = substr(post:desc_impre,0,22)
+				fprint post:desc_impre "%s %8.8e$", post:desc_impre, importe_impre
+				Fprint common:csr_string "    %-33.33s\n", desc_impre
+			else
+				CALL CSR:trimfield(post:desc_impre)
+				//fprint post:desc_impre "   %s %8.8e$", post:desc_impre, importe_impre
+			// se modifica el print del campo de importe para que no se trunque
+				fprint post:desc_impre "   %s %10.10e$", post:desc_impre, importe_impre
+				Fprint common:csr_string "%7.7s %-62.62s\n", " ",desc_impre
+			endif			
+			
+			call post:MISCprt2laser(common:csr_string)
+			INDICE = INDICE + 1
+		    CDS FINDNEXT DSC:ImpreTmpCon NOLOCK
+			LET lib:err_retval = CDSRETVAL
+		END WHILE
+		CDS ENDSELECT DSC:ImpreTmpCon
+	else
+//	SINGLESTEP ON
+		if (siaf:adt_tran_fliatran == "CST") then 		// FGB: para telegrafia...
+			CDS SELECT FROM DSC:cod_ctrl_tbl BECOMES TT_CTX WHERE \
+				fecha == common:system_date && 		\
+				operador_tt == op:op_operator_id && \
+				PresNro_tt == PresNro_tt && 		\
+				NroTrn_tt == NroTrn_tt 			&& \
+				tt_journalizado == "S" &&			\
+				Anula_tt != "S"
+		elseif (siaf:adt_tran_fliatran == "CMB") then	// FGB: para Combos...
+		    /*cgw:no se considera el post:PresNro en la busqueda de los track & trace
+			CDS SELECT FROM DSC:post:TABcombo_prt_aux BECOMES TT_CTX WHERE \
+				PresNro 	== PresNro		 	&&	\
+				combo_nro	== combo_nro
+			*/
+			//cgw:solo busca por el nro.de combo, de esta manera luego de imprimir una
+	        //    nota de credito,al cambiar post:PresNro no pierde los track & trace.
+	        CDS SELECT FROM DSC:post:TABcombo_prt_aux BECOMES TT_CTX WHERE \
+				combo_nro	== combo_nro
+		elseif (siaf:adt_tran_fliatran == "CSP"|| siaf:adt_tran_fliatran == "CSE")
+
+			//imprime linea con el calculo de la relacion volumetrica
+			IF (post:desc_impre_rv.numchars != 0)
+				FPRINT common:csr_string "%s\n", desc_impre_rv
+				call MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 1					
+			END IF
+
+			CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+				fecha == common:system_date && 		\
+				operador_tt == op:op_operator_id && \
+				PresNro_tt == PresNro_tt && 		\
+				PresNro_tt > 0 && 		\
+				NroTrn_tt == NroTrn_tt && 			\
+				Anula_tt != "S"
+				
+		elseif (siaf:adt_tran_fliatran == "VAP" || post:codigo_impre == 18100  || post:codigo_impre == 18101)
+			IF (post:desc_impre_rv.numchars != 0)
+				FPRINT common:csr_string "%s\n", desc_impre_rv
+				call MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 1					
+			END IF		
+			IF (Pieza.numchars != 0)
+				Fprint common:csr_string  "           SERV. NRO. %13.13s\n",Pieza
+				call MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 1
+			END IF
+			return (INDICE)
+		else
+			//no tiene codigo (T&T, telegrama, combo) para imprimir
+			return (INDICE)
+		endif
+
+		CDS FINDFIRST TT_CTX NOLOCK
+		LET lib:err_retval = CDSRETVAL
+		WHILE (lib:err_retval != -801)
+			if (SUBTOTAL != -1)  // si es anexo no hay cortes.
+				/* Corte de página si se alcanzó el máximo */
+				//call PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA_CUERPO, 1)
+				//INDICE = retval
+				//CDS FINDAGAIN TT_CTX NOLOCK
+			endif
+			CDS EXTRACT TT_CTX ALL
+			if (SUBTOTAL == -1)  // si es anexo imprimo reducido.
+				if (cp.NUMCHARS > 0)
+					Fprint common:csr_string  "    CPA:%-8.8s SERV N. %13.13s\n", cp, track_trace
+				else
+					if (siaf:adt_tran_fliatran == "CST") then		// Telegrafia
+						Fprint common:csr_string  "    SERV N. %17.17s\n", cod_ctrol 
+					elseif (siaf:adt_tran_fliatran == "CMB") then	// Combos
+						fprint common:csr_string "    %3.3s %-20s\n",adt_cbpa_nemo,adt_cbpa_desc
+					else											// Otros
+						Fprint common:csr_string  "    SERV N. %13.13s\n", track_trace
+					endif
+				endif
+			else
+				if (cp.NUMCHARS > 0)
+					Fprint common:csr_string  "       CPA:%-8.8s SERV.N.%13.13s\n", cp, track_trace
+				else
+					if (siaf:adt_tran_fliatran == "CST") then
+						Fprint common:csr_string  "       SERV. NRO. %17.17s\n", cod_ctrol
+					elseif (siaf:adt_tran_fliatran == "CMB") then
+						fprint common:csr_string "       SERV. %3.3s NRO: %-20s\n",adt_cbpa_nemo,adt_cbpa_desc
+					else
+						Fprint common:csr_string  "       SERV. NRO. %13.13s\n", track_trace
+					endif
+				endif
+			endif
+			call MISCprt2laser(common:csr_string)
+			INDICE = INDICE + 1
+			CDS FINDNEXT TT_CTX NOLOCK
+			LET lib:err_retval = CDSRETVAL
+		END WHILE
+		
+		CDS ENDSELECT TT_CTX
+		Clearfield NroTrn_tt
+	endif
+	return (INDICE)
+END SUB
+
+/*******/

@@ -1,0 +1,66 @@
+/****o* Pendientes de agrupación/OFB:post:CDSdel_PresuDet
+* NOMBRE
+*   OFB:post:CDSdel_PresuDet
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSdel_PresuDet
+    LOCAL codigo_trn LIKE siaf:codigo_siaf
+    LOCAL flia_trn LIKE siaf:adt_tran_fliatran
+   CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+              WHERE post:fecha == FLD:post:fecha && \
+                    post:op_operator_id == FLD:post:op_operator_id && \
+                    post:PresNro == FLD:post:PresNro
+   CDS FINDFIRST DSC:CONPresuDeta LOCK
+   IF (CDSRETVAL != 0) THEN
+      RETURN (-1)
+   END IF
+   DO
+   		/* MLD Actualizo la reserva de stock */
+      CDS EXTRACT DSC:CONPresuDeta Pieza cod_agrupacion siaf:codigo_siaf INTO codigo_trn \
+      post:adt_prodvs_cod \
+      post:adt_stock_coddep \
+      post:cantidad2 \
+      siaf:adt_tran_fliatran INTO flia_trn
+      
+      IF (codigo_trn == 99020)
+        CALL CDSentrPie_cancel
+      END IF
+      if (codigo_trn == 40002)
+      	call CDScancelo_reserva(post:adt_prodvs_cod,post:adt_stock_coddep,post:cantidad2)
+      end if
+      IF (codigo_trn == 30080) //limpio la marca de pieza regularizada
+      	pieza_ped = Pieza
+      	call post:CDSactMarcaRegul("")
+      END IF
+      if (flia_trn == "VAP")
+		//Si es una tx VAP entonces borro la marca en la stockp 
+    	CALL post:CDSlimpServStockp      
+      end if
+      IF (codigo_trn == 18100 || codigo_trn == 99093) //limpio la marca RPP de pieza 
+      	call post:CDSlimpRPPStockp
+      END IF
+      CDS DELETE DSC:CONPresuDeta
+      CDS FINDNEXT DSC:CONPresuDeta LOCK
+      let lib:err_retval = cdsretval
+      if (lib:err_retval == -801) then
+         break
+      end if
+   LOOP
+   CDS ENDSELECT DSC:CONPresuDeta
+END SUB
+
+/*******/

@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:CDSprocTotIngBr
+* NOMBRE
+*   OFB:post:CDSprocTotIngBr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSprocTotIngBr
+
+	local ProvAux like post:CloProvin
+	local l_acum  like siaf:importe
+
+	siaf:importe = 0
+	l_acum = 0
+	; muy parecida a la post:CDSprocIngBr_reg
+	/*Rutina que recorre la tabla CliIngBr y chequea cómo debe realizarse el cálculo de
+	Ingresos Brutos - Gabriel Falciola*/
+	/*Antes de buscar los datos de las Inscripciones del Cliente, chequeo
+	que no esté exento - Gabriel Falciola*/
+
+	if (CloInscripto == "N")
+		return (0)
+	end if
+	/*Resguardo la Provincia del Cliente para recuperarla una vez de procesar las
+	Inscripciones - Gabriel Falciola*/
+	ProvAux = CloProvin
+
+	select (cli_tipo)
+		case CLIUP
+			tablaCliIB = DSC:CliIBUP_tbl
+			contextoCliIB = DSC:CliIBUP_ctx
+	    		CDS SELECT FROM FLD:tablaCliIB BECOMES FLD:contextoCliIB WHERE  \
+	    		post:CloTipDoc == post:CloTipDoc && \
+	    		post:CloCuit   == post:CloCuit && \
+			post:NisUP == post:NisUP
+			break
+		case CLIMED
+			tablaCliIB = DSC:CliIBCliMed_tbl
+			contextoCliIB = DSC:CliIBCliMed_ctx
+	    		CDS SELECT FROM FLD:tablaCliIB BECOMES FLD:contextoCliIB WHERE  \
+	    		post:CloTipDoc == post:CloTipDoc && \
+	    		post:CloCuit   == post:CloCuit
+			break
+		case else
+			tablaCliIB = DSC:CliIngBr_tbl
+			contextoCliIB = DSC:CliIngBr_ctx
+	    		CDS SELECT FROM FLD:tablaCliIB BECOMES FLD:contextoCliIB WHERE  \
+	    		post:CloTipDoc == post:CloTipDoc && \
+	    		post:CloCuit   == post:CloCuit
+			break
+	end select
+
+    	CDS FINDFIRST FLD:contextoCliIB NOLOCK
+    	while (cdsretval == 0)
+    		clearfield CloProvin
+    		clearfield IngBCod
+    		clearfield CloExento
+    		clearfield CloCoefPartProv
+    		cds extract FLD:contextoCliIB all
+    		/*Antes de seguir la búsqueda chequeo que no esté exento. 
+		  Si no lo es accedo a los datos correspondientes a la Provincia y la 
+		  Categoría en la tabla ProvCatTas*/
+
+    		if (CloExento != "S")
+
+			clearfield adt_prvta_coefmincat
+			clearfield adt_prvta_base_imp
+			clearfield adt_prvta_otras_juri
+			clearfield adt_prvta_vinc_ivaIB
+
+			CDS SELECT FROM DSC:adt_ProvCatTas_table BECOMES \
+			DSC:adt_ProvCatTas_ctx WHERE \
+			adt_prvta_pcia_cod == FLD:CloProvin && \
+			adt_prvta_tasa_cod == FLD:CloCatCodIB
+			CDS FINDFIRST DSC:adt_ProvCatTas_ctx NOLOCK
+
+			if (cdsretval == 0)
+				CDS EXTRACT DSC:adt_ProvCatTas_ctx all
+				if (substr(common:sucursal_activa,0,1) == CloProvin)
+					/*Rutina de Cálculo*/
+					call post:CDScalcTotIngBr
+				else
+					if (adt_prvta_otras_juri == "S")
+						/*Rutina de Cálculo*/
+						call post:CDScalcTotIngBr
+					end if
+				end if
+				l_acum = l_acum + siaf:importe
+			end if
+			CDS ENDSELECT DSC:adt_ProvCatTas_ctx
+		end if
+		CDS FINDNEXT FLD:contextoCliIB NOLOCK
+	end while
+	CloProvin = ProvAux
+	siaf:importe = l_acum
+END SUB
+
+/*******/

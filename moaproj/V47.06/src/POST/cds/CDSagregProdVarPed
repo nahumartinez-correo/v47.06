@@ -1,0 +1,97 @@
+/****o* Pago en Destino/OFB:post:CDSagregProdVarPed
+* NOMBRE
+*   OFB:post:CDSagregProdVarPed
+* DESCRIPCION
+*  	Carga los datos del  la Especie Valorizada en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVAL30050
+* DOCUMENTACION
+*    NI50479
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSagregProdVarPed
+	LOCAL tran_cod_aux LIKE siaf:codigo_siaf
+	LOCAL l_efectivo LIKE siaf:afecta_efectivo
+	LOCAL l_flia LIKE siaf:adt_tran_fliatran
+	LOCAL l_ImporteConIva LIKE siaf:ImporteConIva
+	LOCAL l_ImporteSinIva LIKE siaf:ImporteSinIva
+	LOCAL l_adt_tran_fliatran LIKE siaf:adt_tran_fliatran
+	LOCAL l_adt_tran_afec_efvo LIKE siaf:adt_tran_afec_efvo
+	LOCAL l_PresNro LIKE post:PresNro
+	LOCAL l_moneda LIKE siaf:moneda
+	LOCAL l_importe LIKE siaf:importe
+	
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+		WHERE post:fecha == FLD:common:system_date && \
+		post:op_operator_id == FLD:op:op_operator_id && \
+		post:PresNro == post:PresNro && \
+		siaf:codigo_siaf == 40002
+       
+	CDS FINDFIRST DSC:CONPresuDeta2 LOCK
+	lib:err_retval = CDSRETVAL
+   
+	IF (lib:err_retval == -801) THEN	
+		/*Resguardo el codigo_siaf de la transacció original*/
+		tran_cod_aux = siaf:codigo_siaf
+		l_efectivo = siaf:adt_tran_afec_efvo
+		l_flia = siaf:adt_tran_fliatran
+	
+		CALL CDSIncSecSesion(PresNro,"TRN",1, enAnulacion)
+		PreDNroTrn = RETVAL
+		siaf:codigo_siaf = 40002
+		LET siaf:adt_tran_codigo = siaf:codigo_siaf
+		CALL siaf:CDSadt_tran_load
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+		LET tlr:INDtran_name    = LST:post:TRANventa_prodvs
+		PreDEst                 = 1
+		PrePEst                 = 1
+		siaf:adt_tran_jer_pres  = 3
+		siaf:moneda = 99
+		CDS CLEARBUFFER DSC:CONPresuDeta2
+		
+		//grabo la cabecera en la PresuDet
+		CALL post:CDSpresuDet_cab_ped
+		
+		//grabo el detalle en la PresuDet
+		CALL post:CDSpresuDet_pv_ped
+		
+		CDS INSERT DSC:CONPresuDeta2 LOCK   
+		
+		CDS UNLOCK DSC:CONPresuDeta2
+		CDS ENDSELECT DSC:CONPresuDeta2
+		
+		//resguardo campos para actualizar AuxIngBr y PresuPag
+		l_ImporteConIva = siaf:ImporteConIva
+		l_ImporteSinIva = siaf:ImporteSinIva
+		l_adt_tran_fliatran = siaf:adt_tran_fliatran
+		l_adt_tran_afec_efvo = siaf:adt_tran_afec_efvo 
+		l_PresNro = post:PresNro
+		l_moneda = siaf:moneda
+		l_importe = siaf:importe
+
+		//actualizo AuxIngBr y PresuPag
+		CALL post:MISCAuxIngBr_fld_ped(l_ImporteConIva,l_ImporteSinIva,l_adt_tran_fliatran,l_adt_tran_afec_efvo,l_PresNro,l_moneda,l_importe)
+	
+		//restauro
+		siaf:codigo_siaf = tran_cod_aux 
+		siaf:adt_tran_afec_efvo = l_efectivo  
+		siaf:adt_tran_fliatran = l_flia
+			
+	ELSE
+		CDS DELETE DSC:CONPresuDeta2 
+		CDS UNLOCK DSC:CONPresuDeta2
+		CDS ENDSELECT DSC:CONPresuDeta2
+		RETURN (-2)
+	END IF
+	
+END SUB
+
+//*******/

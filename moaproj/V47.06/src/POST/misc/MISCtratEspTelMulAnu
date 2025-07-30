@@ -1,0 +1,234 @@
+/****o* Pendientes de agrupación/OFB:post:MISCtratEspTelMulAnu
+* NOMBRE
+*   OFB:post:MISCtratEspTelMulAnu
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCtratEspTelMulAnu(pos)
+local l_codigo_siaf like siaf:codigo_siaf
+local l_codigo_tele like siaf:codigo_siaf
+local l_codigo like siaf:codigo_siaf
+local l_secuencia like common:csr_string
+local l_secuencia_leida like common:csr_string
+local l_agrupa  like common:csr_string
+local l_transaccion like adt_PreDNroTrn
+local l_accion like lib:err_retval
+local accion like common:csr_string
+local imp_aux like siaf:importe
+local mas_menos like common:csr_string
+local formulario like common:csr_string
+local mone_aux like common:csr_string
+local cont like post:cantidad
+local idx like siaf:i
+local idx2 like siaf:i
+local idx3 like siaf:i
+local l_cant like siaf:i
+local l_flia like post:jnl_flia_tran
+	if (TranAnul_vec[pos][0].numchars != 0 && !testflag(lib:state_flags,scan_mode))
+		call MISCestado_tran(pos)
+		l_accion = retval
+		if (l_accion == 0) /*marcada*/
+            /*Pregunto si la tx seleccionada tiene reversa. En caso
+            de que no tenga, no dejo seleccionarla*/
+            IF (TranAnul_vec[pos][10] == "N")//NO Tiene reversa
+				CALL MISCdesmarca_tran(pos)
+            	MSGBOX "Esta transacción no admite reversa",0x00,"ERROR"
+            	return (-2)
+            END IF
+        end if
+        l_cant = 1
+		l_codigo_siaf = substr(TranAnul_vec[pos][0],0,5)
+		;if (l_codigo_siaf == 13100) then
+			idx = PL_GETITEM
+			fprint common:csr_string "%s %s", TranAnul_vec[pos][0], TranAnul_vec[pos][1]
+			call csr:PickOp PICKOP_SEARCH dsc:PICanulacion_tran common:csr_string
+			idx = idx + retval
+			if (idx >= 0)
+				
+				
+				//Verifico si es una Entrega de Piezas con piezas liquidadas no se pueden anular
+				IF (l_codigo_siaf == 99020)
+					CALL post:CDSbusco_RevEntr
+					IF (retval < 0)
+						CALL MISCdesmarca_tran(pos)
+						return -2
+					END if
+					CALL post:CDSbusco_RevImagen
+					IF (retval < 0)
+						errmsg lst:common:errmsg_list, \
+						"La ENTREGA no puede reversarse porque existen piezas con captura de imagen."
+						CALL MISCdesmarca_tran(pos)
+						return -2
+					END if
+				END IF
+				
+				call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string_200,idx)
+				l_codigo_tele = substr(common:csr_string_200,168,5)
+				l_flia = substr(common:csr_string_200,97,3)
+				select (l_flia)
+				    case "CSP"
+				    case "CST"
+				    case "CSE" 
+				;select (l_codigo_tele)
+					;case 13311
+					;case 13312
+					;case 13313
+					;case 13321
+					;case 13322
+					;case 13323
+						headOrBodyTele = substr(common:csr_string_200,174,1)
+						adt_PreDNroTrn = substr(common:csr_string_200,162,5)
+						select (headOrBodyTele)
+							case "H"
+								call MISCestado_tran(pos)
+		    					if (retval == 0) then
+		    						;marco
+		    						idx = PL_GETITEM
+		    						do
+    									call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string_200,idx)
+        								if (retval < 0)
+        									break
+        								else
+		    								l_codigo = substr(common:csr_string_200,0,5)
+		    								if (l_codigo == l_codigo_siaf) then
+		    										tipo_produc = substr(common:csr_string_200,168,5)
+													headOrBodyTele = substr(common:csr_string_200,174,1)
+													l_transaccion = substr(common:csr_string_200,162,5)
+													if (tipo_produc == l_codigo_tele && headOrBodyTele == "B" && \
+														l_transaccion == adt_PreDNroTrn) then
+														;marco transaccion	
+														fprint l_secuencia "%s" substr(common:csr_string_200,61,4)
+														fprint l_agrupa "%s" substr(common:csr_string,66,5)
+	                									imp_aux = substr(common:csr_string_200,47,13)
+		                								mas_menos = substr(common:csr_string_200,72,1)
+	    	            								formulario = substr(common:csr_string_200,74,2)
+	        	        								mone_aux = substr(common:csr_string_200,77,2)
+	            	    								accion = "MARCA"
+	            	    								idx2 = PL_GETITEM
+	            	    								do
+        													call csr:myPickcontrol(dsc:PICtran_sel,common:csr_string,idx2)
+        													if (retval < 0) then
+        														if (l_cant == 1) then
+        														    select (l_flia)
+				                                                        case "CSP"
+				                                                            MSGBOX "TRANSACCION POSTAL CON OPC COBRADO A UN SOLO DESTINATARIO, \nDEBE REVERSAR PRIMERO LOS DESTINATARIOS QUE NO PRESENTAN EL COBRO \nDE ESTOS OPC O PUEDE REVERSARLOS TODOS JUNTOS. \nDESEA REVERSARLOS TODOS JUNTOS?",OFB_YESNO,"Aviso"
+				                                                            break
+				                                                        case "CST"
+				                                                            MSGBOX "TRANSACCION DE TELEGRAFIA CON OPC COBRADO A UN SOLO DESTINATARIO, \nDEBE REVERSAR PRIMERO LOS DESTINATARIOS QUE NO PRESENTAN EL COBRO \nDE ESTOS OPC O PUEDE REVERSARLOS TODOS JUNTOS. \nDESEA REVERSARLOS TODOS JUNTOS?",OFB_YESNO,"Aviso"
+				                                                            break
+				                                                        case "CSE"
+				                                                            MSGBOX "TRANSACCION DE ENCOMIENDA CON OPC COBRADO A UN SOLO DESTINATARIO, \nDEBE REVERSAR PRIMERO LOS DESTINATARIOS QUE NO PRESENTAN EL COBRO \nDE ESTOS OPC O PUEDE REVERSARLOS TODOS JUNTOS. \nDESEA REVERSARLOS TODOS JUNTOS?",OFB_YESNO,"Aviso"
+				                                                            break
+				                                                    end select
+        															
+																    if (retval == OFB_IDNO) then
+																    	CALL MISCdesmarca_tran(pos)
+																    	return -2
+																    end if
+																    l_cant = 0
+        														end if
+        														fprint l_secuencia_leida "%s N", l_secuencia
+	            	    										call CSR:f_saaddpl dsc:PICtran_sel l_secuencia_leida
+	                											call CSR:f_saaddpl dsc:PICtran_sel_agrupa l_agrupa
+	            	    										call MISCproc_totalesNC(accion,imp_aux,mas_menos,formulario,mone_aux)
+		       													cont = 0
+		    													while (cont < 12)
+		    														if (TranAnul_vec[cont][1] == l_secuencia) then
+		    															call post:MISCmarca_tran(cont)
+		    														endif
+		    														cont = cont + 1
+		    													end while
+		    													break
+		    												else
+		    													if (substr(common:csr_string,0,4) == l_secuencia) then
+		    														break
+		    													else
+		    														idx2 = idx2 + 1
+		    													end if
+		    												end if
+		    											loop
+		    										end if	
+		    								end if
+		    								idx = idx + 1
+		    							end if
+		    						loop
+		    					end if
+								break
+							case "B"
+								call MISCestado_tran(pos)
+		    					if (retval == -1) then
+		    						;desmarco
+		    						idx = PL_GETITEM
+		    						do
+    									call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string_200,idx)
+        								if (retval < 0)
+        									break
+        								else
+		    								l_codigo = substr(common:csr_string_200,0,5)
+		    								if (l_codigo == l_codigo_siaf) then
+		    										tipo_produc = substr(common:csr_string_200,168,5)
+													headOrBodyTele = substr(common:csr_string_200,174,1)
+													l_transaccion = substr(common:csr_string_200,162,5)
+													if (tipo_produc == l_codigo_tele && headOrBodyTele == "H" && \
+														l_transaccion == adt_PreDNroTrn) then
+														;marco transaccion	
+														fprint l_secuencia "%s" substr(common:csr_string_200,61,4)
+	                									imp_aux = substr(common:csr_string_200,47,13)
+		                								mas_menos = substr(common:csr_string_200,72,1)
+	    	            								formulario = substr(common:csr_string_200,74,2)
+	        	        								mone_aux = substr(common:csr_string_200,77,2)
+	            	    								accion = "DESMARCA"
+	            	    								idx2 = PL_GETITEM
+        												do
+        													call csr:myPickcontrol(dsc:PICtran_sel,common:csr_string,idx2)
+        													if (retval < 0)
+        														break
+        													end if
+        													l_secuencia_leida = substr(common:csr_string,0,4)
+        													if (l_secuencia_leida == l_secuencia)
+        														idx3 = idx2 - PL_GETITEM
+        														call CSR:myPickdelete(dsc:PICtran_sel,common:csr_string,idx3)
+        														call CSR:myPickdelete(dsc:PICtran_sel_agrupa,common:csr_string,idx3)
+        														call MISCproc_totalesNC(accion,imp_aux,mas_menos,formulario,mone_aux)
+        														cont = 0
+		    													while (cont < 12)
+		    														if (TranAnul_vec[cont][1] == l_secuencia) then
+		    															call post:MISCdesmarca_tran(cont)
+		    														endif
+		    														cont = cont + 1
+		    													end while
+        														break
+        													else
+        													        idx2 = idx2 + 1
+        													end if
+        												loop
+		       											
+		    										end if	
+		    								end if
+		    								idx = idx + 1
+		    							end if
+		    						loop
+		    					end if
+								break
+						end select
+						break
+				end select
+			end if
+		;end if
+	end if
+END SUB
+
+/*******/

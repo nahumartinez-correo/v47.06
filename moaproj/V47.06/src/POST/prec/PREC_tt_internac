@@ -1,0 +1,139 @@
+/****o* International Postal Services/OFB:post:PREC_tt_internac
+* NOMBRE
+*   OFB:post:PREC_tt_internac
+* DESCRIPCION
+*   Rutina PREC de la Pantalla de carga de Track & Trace Internacionales.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCdespliega_tt
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* SOURCE
+*/
+#include "postprec.h"
+
+SUB post:PREC_tt_internac
+	LOCAL tope_prox LIKE post:cantidad
+	
+	// 1 campo global va a tener el numero de pagina en la que estoy ahora.  (pag_act)
+
+	/*
+	//reseta flags replicar paises y contenidos en la primera pantalla para inicializar status de replicacion.
+	IF (pag_act == 0 || pag_act.numchars == 0) THEN
+		//solo en primera pantalla de la grilla t&t
+		RESETFLAG post:Todos_ips,Todos_pais_ips
+		RESETFLAG post:Todos_ips,Todos_cont_ips
+	END IF
+	*/
+	
+	/*Pone en pantalla la descripcion de la transaccion*/
+	IF (cli_tipo == 2 || cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+		LET desc_transac = adt_serv_desc
+	ELSE
+		MOVE adt_jnl_desc TO desc_transac
+	END IF
+	REFRESH desc_transac
+
+	//cgw:protejo todos los botones	
+	call drv:all_but_disable
+
+	//Solo estaran habilitados los botones replicar en la primera pantalla de la grilla t&t segun el servicio.
+	IF (pag_act > 0 || post:cantidad == 1) THEN
+    //Deshabilita botones replicar paises y contenido en las pantallas de la grilla distintas de 1
+		DISABLECONTROL drv:TB1
+		DISABLECONTROL drv:TB2	
+	ELSE
+		//Habilito botones replicar solo en la primera pantalla segun lo permita el servicio.
+		IF (post:adt_serv_ips_Rpais == "S") THEN
+ 			ENABLECONTROL drv:TB1
+ 		ELSE
+ 			DISABLECONTROL drv:TB1
+ 		END IF
+ 		IF (post:adt_serv_ips_cont == "M") THEN
+ 			ENABLECONTROL drv:TB2
+ 		ELSE
+ 			DISABLECONTROL drv:TB2
+ 		END IF
+ 	END IF
+	
+	//desprotege botones Volver y Anterior
+	IF (post:cantidad > 1 && pag_act > 0) then
+		drv:button = 20
+		CALL drv:but_up_enable
+	END IF
+    
+	//tope de pantalla para manejo de la habilitacion del boton proximo 	
+	tope_prox = (pag_act * 10) + 10
+	IF (post:cantidad > 1 && post:cantidad > tope_prox) THEN
+		drv:button = 21
+		CALL drv:but_up_enable
+	END IF
+
+	contador1 = 0
+	a_desproteger = 10
+	if ((pag_act + 1) == cant_pantallas)
+		a_desproteger = cant_desprot
+	endif
+	WHILE (contador1 < a_desproteger)
+		IF (post:cantidad > 1)
+			//gpb:AUT-2379
+			//cambio por campo sin autoskip	
+			//UNPROTFIELD track[contador1]
+			UNPROTFIELD track_ips[contador1]
+		ELSE
+			//si este valor esta vacio quiere decir que NO estoy en Carga diferida de TT
+			IF (post:adt_jnl_NroTrn.numchars == 0) 
+				//si la cantidad es 1 y NO estoy en carga diferida de TT 
+				//ya se cargo el T&T en la trx y solo debe mostrarse y cargar pais y contenido segun corresponda. 
+				//gpb:AUT-2379
+				//cambio por campo sin autoskip	
+				//PROTFIELD track[contador1]
+				PROTFIELD track_ips[contador1]
+			END IF
+		END IF
+		//protege o desprotege pais y contenido segun se haya ingresado T&T.
+		//gpb:AUT-2379
+		//cambio por campo sin autoskip	
+		//IF (track[contador1].numchars > 0) THEN
+		IF (track_ips[contador1].numchars > 0) THEN
+			//gpb:AUT-2379
+			//cambio por campo sin autoskip	
+			//PROTFIELD track[contador1]
+			PROTFIELD track_ips[contador1]
+			IF (post:adt_serv_ips_Rpais == "S") THEN
+				UNPROTFIELD ips_pais[contador1]
+			END IF
+			IF (post:adt_serv_ips_cont == "M") THEN
+				UNPROTFIELD ips_contenido[contador1]
+			END IF
+			//cgw:desprotege botones pais - contenido segun T&T ingresado
+			CALL post:MISCHabBut_tt_inter(contador1)
+		ELSE
+			PROTFIELD ips_pais[contador1]
+			PROTFIELD ips_contenido[contador1]
+			IF (TESTFLAG (Todos_ips,Todos_pais_ips) && post:primer_ips_pais.numchars > 0) THEN
+				ips_pais[contador1] = post:primer_ips_pais
+				ips_pais_cod[contador1] = post:primer_ips_pais_cod
+				REFRESH ips_pais[contador1]
+				SETVALDONE post:ips_pais[contador1]
+			END IF
+			IF (TESTFLAG (Todos_ips,Todos_cont_ips) && post:primer_ips_cont.numchars > 0) THEN
+				ips_contenido[contador1] = post:primer_ips_cont
+				ips_contenido_cod[contador1] = post:primer_ips_cont_cod
+				REFRESH ips_contenido[contador1]
+				SETVALDONE post:ips_contenido[contador1]
+			END IF
+	  END IF
+		contador1 = contador1 + 1
+	END WHILE
+	//se agrega para poder hacer un refresh sobre un el vector que almacena los tt 
+	//cuando cantidad > 1
+	contador = 0
+END SUB
+
+/*******/

@@ -1,0 +1,150 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70384
+* NOMBRE
+*   OFB:giros:SVAL70384
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70384
+	LOCAL limporte like common:csr_string
+	
+	
+	
+	IF (((TESTFLAG(opcionales_inter,opc_desc_fisica) && !testflag(opcionales_inter,chk_desc_fisica)) || \
+		(TESTFLAG(opcionales_inter,opc_preg_verif)  && !TESTFLAG(opcionales_inter,chk_preg_verif)) || \
+		(TESTFLAG(opcionales_inter,opc_avis_msg)    && !TESTFLAG(opcionales_inter,chk_avis_msg)) )) THEN
+		MSGBOX "TIENE OPCIONALES SIN CHEQUEAR",OFB_OK,"Atención"
+		RETURN (-2)
+	END IF	
+
+	IF (post:estado_presu < 4) THEN	
+		
+		//se llama a la secuencia de pantallas para ingresar datos del Emisor/Beneficiario
+		call drv:MISCpopup(scr:SCRN70384datos,ofb:PRESnada,ofb:PCOL70384datos,ofb:SVAL70384datos,LST:BUTnada)
+		if (lastkey == RT_ESC) then
+        	return -2
+        end if
+        
+	END IF
+	
+	giros:pay_indicator = "D"
+	giros:consulta = 1
+	post:captura_mp = "S"
+	limporte = siaf:importe * 100
+	FPRINT limporte,"%010.10s",limporte
+	MOVE SUBSTR(limporte,1,9) TO check_amount
+	
+	
+	// Se va a enviar la consulta.
+	IF (post:estado_presu < 4) THEN
+		
+		MSGBOX "¿Desea continuar y enviar el mensaje?",OFB_YESNO,"Atención"
+		IF (RETVAL != 6) THEN 
+			UNGETKEY RT_ESC
+			RETURN (-2)
+		END IF
+	ELSE
+		giros:pay_indicator = "P"
+		giros:consulta = 0
+	END IF
+
+	siaf:siaf_status = HOST_ACCEPTED
+
+	IF (post:estado_presu < 3) THEN
+		post:ImporteConIva = imp_servicio_fld
+		//SC 50170
+		CALL post:MISCdesglosaIva(post:ImporteConIva,post:adt_serv_aliciva,1,0)
+		//
+		post:destino 	= post:adt_tarif_dest
+		post:unidad_fac = post:adt_tarif_um
+		//
+		siaf:ImporteConIva = post:ImporteConIva
+		siaf:ImporteSinIva = post:ImporteSinIva
+	END IF 
+	
+	// Confirmacion Transaccion pago.
+	CALL giros:MISCenvio_inter
+	IF (RETVAL < 0) THEN /* consulta rechazada */
+		//UNGETKEY RT_ESC
+		RETURN (-2)
+	ELSE
+		IF (RETVAL == 2) THEN /* repetir la consulta */
+			giros:hora_viaje = common:time_of_day
+			giros:dia_viaje  = common:system_date
+			CALL post:CDSobtiene_secuen("STAN")
+			RETURN (-2)
+		END IF
+		IF (RETVAL == 1) THEN /* mandar la transaccion */
+			giros:pay_indicator = "P"
+			giros:consulta = 0
+			
+			CALL giros:MISCenvio_inter
+			IF (RETVAL == 2) THEN
+				/* no confirma la transaccion o no
+				ingresa supervisor */
+				UNGETKEY RT_ESC
+				RETURN (-2)
+			END IF
+		END IF
+	END IF
+	//
+	
+	//
+	IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+		IF (hcomm:tran_status != HOST_ACCEPTED) THEN
+			Msgbox "Desea realizar la consulta y enviar el mensaje nuevamente ?",OFB_YESNO,"CONTINUAR"
+			if (retval == 7) //NO
+				CALL MISCanulo_transac("NONE")
+			    // Salir de la transaccion.
+			    ungetkey RT_ESC
+			    //cgw: Se agrega un llamado a post:ESCtransaccion para que se vuelva a regenerar la AuxIva.
+			   	call post:ESCtransaccion
+			    return -3
+			else
+			    // Volver a 1era. pantalla.
+			    ;	ungetkey RT_ESC
+			    return -2
+			end if
+		ELSE	
+			CALL post:MISCTotalTransac(siaf:codigo_siaf)
+				
+			//gpb:NI50547 HOLD TRANSACTION WESTERN UNION INTERNACIONAL
+			CALL post:DOCSwuiHoldTransac
+				
+			/*MSGBOX "INGRESAR EL COMPROBANTE DE TRANSFERENCIA INTERNACIONAL PARA IMPRIMIR",OFB_OK,"Atención"
+			PRINTDOC OFB:giros:PRT_ImprePagoWU,docprt,"Imprimiendo Comprobante..."*/	
+		END IF
+		CLEARFIELD drv:INDhcomm_rtn
+		CLEARFIELD drv:INDspc_rtn[1]
+		CLEARFIELD drv:INDcur_tran
+		CLEARFIELD drv:INDjnl_rtn
+		CLEARFIELD drv:INDspc_rtn[0]
+	//
+	END IF
+	
+	//
+	IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+		post:PreDForFis = post:adt_serv_formfiscal
+		CALL post:MISCAcumTotalesSes
+	END IF
+	//
+
+	CALL post:MISCGrabaDetalleTrn
+	LET siaf:importe = post:ImporteConIva - ImporteNeto
+	CALL post:MISCgrabo_sinsesion
+	
+END SUB
+
+/*******/

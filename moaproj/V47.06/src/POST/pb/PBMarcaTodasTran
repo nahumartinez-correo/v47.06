@@ -1,0 +1,183 @@
+/****o* Pendientes de agrupación/OFB:post:PBMarcaTodasTran
+* NOMBRE
+*   OFB:post:PBMarcaTodasTran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBMarcaTodasTran
+//Rutina que selecciona todas las transacciones disponibles para anular - Gabriel Falciola
+	local idx like siaf:i
+	local imp_aux like siaf:importe
+	local accion like common:csr_string
+	local mas_menos like common:csr_string
+	local formulario like common:csr_string
+	local mone_aux like common:csr_string
+	local familia like common:csr_string
+	local l_tx_sf1	like post:adt_tran_sf1_codigo
+	local ltemp_string like common:csr_string
+
+
+	//local codigo like siaf:codigo_siaf
+	local codigo like common:csr_string
+
+
+	local locagrup like post:cod_agrupacion
+	local LRetval like lib:err_retval
+
+	call MISClimpio_tran
+	idx = PL_GETITEM
+
+	call csr:f_sanewpl dsc:pic_agrup,PIC:PICagrup
+
+    do
+    	call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string,idx)
+        if (retval < 0)
+        	break
+        else
+        	/* Verifico si existe ese codigo de agrupacion en el picklist que indica que
+        	no se puede marcar */
+        	locagrup = substr(common:csr_string,66,5)
+        	LRetval = 0
+        	if (locagrup != 0) then
+        		call post:MISCBuscoCodAgrup(locagrup)
+        		LRetval = retval
+        	end if
+        	if (LRetval == 0) then
+
+          		//Para reemplazo
+				codigo = substr(common:csr_string,0,5)
+				call csr:trimfield(codigo)
+
+	            /*Verifico si existe alguna tx que no admita reversa*/
+	            fprint ltemp_string "%s"  substr(common:csr_string,103,1)
+	            IF (ltemp_string == "S")//Si admite reversa
+
+	            	/*MFM - Verifico que la pieza no fue marcada como excepción*/
+	            	IF (substr(common:csr_string,95,1) != "S") THEN
+	               		fprint common:csr_string_130 "%s"  substr(common:csr_string,80,8)
+	    	       		fprint ltemp_string "%s"  substr(common:csr_string,88,5)
+
+	        	   		/*Verifico que la transaccion elegida no este contenerizada*/
+	            		CALL post:MISCverifContened(common:csr_string_130,ltemp_string,"S")
+		           		IF (RETVAL == 0)
+		           			//Para reemplazo
+							//codigo = substr(common:csr_string,0,5)
+							//call csr:trimfield(codigo)
+							IF (codigo == 99200 || codigo == 99240 || codigo == 99242)
+								anula_reemp = "S"
+								setflag journal_flags,enviar_mensaje_host
+								giros:seq_giros_cancel = substr(common:csr_string,61,4)
+							end if
+							//Para Póliza Internacional
+							IF (codigo == 99124)
+								anula_poliza = "S"
+								setflag journal_flags,enviar_mensaje_host
+								giros:seq_giros_cancel = substr(common:csr_string,61,4)
+							end if
+							//Pago On Site
+							IF (codigo == 6630)
+								anula_pago_on_site = "S"
+								setflag journal_flags,enviar_mensaje_host
+								giros:seq_giros_cancel = substr(common:csr_string,61,4)
+							end if							
+							LRetval = 0
+							if (codigo == 99012) //Observación de Póliza Internacional
+								post:Pieza = substr(common:csr_string,105,32)
+								call csr:trimfield(post:Pieza)
+				  				// Si la pieza ya fue entregada, no puedo anular la Observación.
+								call post:MISCVerifPzaDevuelta
+								clearfield post:Pieza
+								LRetval = retval
+							end if
+							
+							IF (codigo == 99020)
+								post:Pieza = substr(common:csr_string,105,32)
+								call csr:trimfield(post:Pieza)
+								//si la pieza captura imagen NO se puede reversar
+								CALL post:CDSbusco_RevImagen
+								clearfield post:Pieza
+								LRetval = retval
+							END IF
+							
+							/*Si llega acá es porque se puede marcar*/
+							if (LRetval == 0)
+								/*Si es una Transacción de Giros seteo el flag que indica que debo
+								anularla en el Host - Gabriel Falciola*/
+								familia = substr(common:csr_string,97,5)
+								call csr:trimfield(familia)
+								if (familia == "CSM")
+									setflag journal_flags,enviar_mensaje_host
+									giros:seq_giros_cancel = substr(common:csr_string,61,4)
+								end if
+								; 2003.07.04 PAW - Pago Facil iPlan.
+								; 2004.01.19 SBA - Ahora Pago Facil IPLAN se verifica por el utility
+								//if (familia == "PF " && (substr(common:csr_string,144,6) == "2NN" || substr(common:csr_string,144,6) == "2PN"))
+								if (familia == "PF ")
+									l_tx_sf1 = substr(common:csr_string,144,5)
+									// Verifico si es IPLAN
+									call post:CDSchk_trxsf1_viaja(l_tx_sf1)
+									if (retval == 1)
+										setflag journal_flags,enviar_mensaje_host
+										giros:seq_giros_cancel = substr(common:csr_string,61,4)
+										post:tipoViaje = "PF "
+									end if
+								endif
+	                			fprint ltemp_string "%s" substr(common:csr_string,61,4)
+	                			CALL CSR:f_saaddpl dsc:PICtran_sel ltemp_string
+	        	    			fprint ltemp_string "%s" substr(common:csr_string,66,5)
+	                			CALL CSR:f_saaddpl dsc:PICtran_sel_agrupa ltemp_string
+	                			imp_aux = substr(common:csr_string,47,13)
+	                			accion = "MARCA"
+		                		mas_menos = substr(common:csr_string,72,1)
+	    	            		formulario = substr(common:csr_string,74,2)
+	        	        		mone_aux = substr(common:csr_string,77,2)
+	            	    		call MISCproc_totalesNC(accion,imp_aux,mas_menos, \
+	                			formulario,mone_aux)
+	                		end if
+	                	else
+		                	/* Si la pieza fue contenerizada
+							grabo el codigo de agrupacion en un pickclist
+							para que no marque a ninguna tx de ese grupo */
+							if (locagrup != 0)
+								fprint ltemp_string "%s"  substr(common:csr_string,66,5)
+			        			call csr:trimfield(ltemp_string)
+			            		CALL CSR:f_saaddpl dsc:pic_agrup ltemp_string
+							end if
+						END IF
+					else
+						/* Si la pieza fue marcada como excepcion
+						grabo el codigo de agrupacion en un pickclist
+						para que no marque a ninguna tx de ese grupo */
+						if (locagrup != 0) then
+							fprint ltemp_string "%s"  substr(common:csr_string,66,5)
+		            		call csr:trimfield(ltemp_string)
+		                	CALL CSR:f_saaddpl dsc:pic_agrup ltemp_string
+		                end if
+					END IF
+				END IF
+			end if
+			idx = idx + 1
+        end if
+	loop
+	/* Libero la memoria ocupada por el picklist */
+	call csr:f_sadroppl dsc:pic_agrup
+
+
+	call MISCproc_tran_anul
+	call MISCflecha_define
+END SUB
+
+/*******/

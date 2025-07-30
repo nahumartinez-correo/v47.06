@@ -1,0 +1,91 @@
+/****o* Cierre de Caja/OFB:tes:MISCchk_pase_Pend
+* NOMBRE
+*   OFB:tes:MISCchk_pase_Pend
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCclose_day, tes:MISCControles_Cierre, tes:SVALcierre_teso
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2316
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCchk_pase_Pend
+    //NAM:Verifica si exisen pases pendiente de aceptacion por parte del Tesorero o del cajero
+    CDS select from DSC:tes:TesChkMov becomes DSC:tes:TesChkMov  \
+        where tes:adt_chk_suc == op:op_branch_id && \
+        tes:adt_chk_op_orig == op:op_operator_id && \
+        tes:adt_chk_marca_ing == "P" 
+                
+    CDS FINDFIRST DSC:tes:TesChkMov  NOLOCK
+    lib:err_retval = CDSRETVAL
+    CDS ENDSELECT DSC:tes:TesChkMov 
+
+    IF (lib:err_retval == 0) THEN
+    	IF (tes:pen_tes_ch.NUMCHARS == 0)
+        	MOVE "Error en Cierre: Está Pendiente la aceptación del pase de chequeras" TO common:csr_string
+        	ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+        	RETURN (-1)
+        END IF
+    END IF
+
+	clearfield tes:pen_tes_ch
+
+    //NAM:Verifica si exisen pases pendiente de recepcion por parte del Tesorero o del cajero
+    CDS select from DSC:tes:TesChkMov becomes DSC:tes:TesChkMov  \
+        where tes:adt_chk_suc == op:op_branch_id && \
+        tes:adt_chk_op_dest == op:op_operator_id && \
+        tes:adt_chk_marca_ing == "P" 
+                
+    CDS FINDFIRST DSC:tes:TesChkMov  NOLOCK
+    lib:err_retval = CDSRETVAL
+    CDS ENDSELECT DSC:tes:TesChkMov 
+
+    IF (lib:err_retval == 0) THEN
+        MOVE "Error en Cierre: Está Pendiente la recepción de chequeras" TO common:csr_string
+        ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+        RETURN (-1)
+    END IF
+
+    //NAM:Verifica si el pase está pendiente de recepcion por parte del operador
+    CDS select from DSC:RecepChk becomes DSC:RecepChk \
+        where giros:adt_chk_suc == op:op_branch_id && \
+        giros:adt_chk_op == op:op_operator_id && \
+        giros:adt_chk_estado == 1 && \
+        giros:adt_chk_tesoro == "N"
+    CDS FINDFIRST DSC:RecepChk NOLOCK
+    lib:err_retval = CDSRETVAL
+    CDS ENDSELECT DSC:RecepChk
+
+    IF (lib:err_retval == 0) THEN
+        //NAM:Verifica si el tesoro está cerrado en el dia 
+        clearfield tes:tes_marca_cierre 
+        CDS SELECT FROM DSC:tesoro_table BECOMES DSC:tesoro_context  \
+            WHERE tes_suc_id == FLD:op:op_branch_id 
+
+        CDS FINDFIRST DSC:tesoro_context NOLOCK 
+        lib:err_retval = CDSRETVAL
+
+        if ( lib:err_retval == 0)
+            cds extract dsc:tesoro_context all
+            CDS ENDSELECT DSC:tesoro_context 
+            if (tes:tes_fecha == common:system_date && tes:tes_marca_cierre == "")
+                MOVE "Tiene chequeras pendientes de recepción o rechazo" TO common:csr_string
+                ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+                RETURN (-1)
+            end if
+        else
+            CDS ENDSELECT DSC:tesoro_context 
+        end if
+    END IF
+
+END SUB
+
+/*******/

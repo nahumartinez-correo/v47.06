@@ -1,0 +1,130 @@
+/****o* Pendientes de agrupación/OFB:post:MISCarmo_Impre_ev
+* NOMBRE
+*   OFB:post:MISCarmo_Impre_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCarmo_Impre_ev
+
+    Local IMPORTE_FINAL like importeIva_impre
+	local l_PreDNroTrn like post:PreDNroTrn
+
+    // Supongo que los Item's del Importe y de las Cantidades son iguales
+    // Rob no nos puede fallar
+    // PJM 21-12-1998 Se elimino la Sobre Tasa
+    /*
+    NRO_ITEM = 0
+    While (NRO_ITEM < 14 )
+        If ( tes:importes[NRO_ITEM] > 0 )
+            IMPORTE_FINAL = tes:importes[NRO_ITEM]
+            cantidad = tes:cantidad[NRO_ITEM]
+            Fprint desc_impre "%s %10.10s",tes:espv_cod,tes:den_texto[NRO_ITEM]
+            Call MISCgenero_ImpreTmp( tes:den_texto[NRO_ITEM], TESORERIA , tes:adt_espv_aliciva , IMPORTE_FINAL,cantidad)
+        EndIf
+        NRO_ITEM = NRO_ITEM + 1
+    End While */
+
+
+	/* Se cambia la estructura anterior (vector de 14 posiciones:
+	una posicion para cada subespecie) por una nueva que no
+	limita la cantidad de subespecies por especie */
+
+    /*Modificación para Nota de Crédito: Si estoy journalizando el Fin de Sesión, selecciono
+    sólo las Especies que no son anuladas, para que el importe quede correctamente
+    Gabriel Falciola*/
+	if (NotaCredito == "S")
+		cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+		tes:adt_evaux_suc      == op:op_branch_id        && \
+        tes:adt_evaux_op       == op:op_operator_id      && \
+        tes:adt_evaux_tesoro   == "N"                    && \
+        tes:adt_evaux_prestran == tes:adt_evaux_prestran && \
+        post:jnl_sequence_dire == "D"
+	else
+		cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+      	tes:adt_evaux_suc      == op:op_branch_id   && \
+        tes:adt_evaux_op       == op:op_operator_id && \
+        tes:adt_evaux_tesoro   == "N"               && \
+        tes:adt_evaux_prestran == tes:adt_evaux_prestran
+	end if
+	/*Se hizo un pequeño cambio en el select que no molesta a nadie y beneficia a
+	Nota de Credito, en lugar de preguntar por tes:adt_evaux_prestran == PreDNroTrn
+	se hace por el mismo campo que tambien esta en la PresuDet y tiene el mismo valor
+	Gabriel Falciola*/
+
+	cds findfirst DSC:tes:AuxEspV_ctx LOCK
+	let lib:err_retval = CDSRETVAL
+	DO
+		if (lib:err_retval != 0) then
+			break
+		end if
+		cds extract DSC:tes:AuxEspV_ctx ALL
+		move tes:adt_evaux_codigo to tes:espv_cod
+		If (tes:adt_evaux_importe > 0)
+			/* Si es cuenta correntista debe imprimir el importe en cero */
+			if (post:cli_tipo == 1 || \
+			    post:enCombo == "S") then
+			    //cgw:si es un producto de un combo, importes en cero.
+				IMPORTE_FINAL = 0
+			else
+//				IMPORTE_FINAL = tes:adt_evaux_importe + fld_promo_imp
+				IMPORTE_FINAL = tes:adt_evaux_importe
+			end if
+			cantidad = tes:adt_evaux_cantidad
+			Fprint desc_impre "%s %20.20s",tes:espv_cod,tes:adt_evaux_subcod
+
+			l_PreDNroTrn = post:PreDNroTrn
+			post:PreDNroTrn = post:maxPreDNroTrn
+			post:maxPreDNroTrn = post:maxPreDNroTrn + 1
+			
+			//cgw:AUT-1579 Obs 10257. Se corrige para que grabe en ImpreTmp el formulario fiscal asociado valido de la especie.
+			IF (post:enAnulacion != "S") THEN //No es anulacion de documentos
+			    post:PreDForFis = tes:adt_espv_formfiscal
+			END IF
+
+			// SC 50170
+			Call MISCgenero_ImpreTmp( tes:adt_evaux_subcod, TESORERIA , tes:adt_espv_aliciva , IMPORTE_FINAL,cantidad,post:dif_calculada)
+
+			call post:MISCtotBonifEspecies
+			post:promo_desc = promo_desc_esvs
+			if (post:promo_tot < 0)
+		        // SC 50170
+		        Call MISCgenero_ImpreTmp(99007, BONIF_PROD, tes:adt_espv_aliciva, post:promo_tot, 1,0)
+		    endif
+			post:PreDNroTrn = l_PreDNroTrn
+		EndIf
+
+		/*Se hizo otro pequeño cambio. El mismo es que se totaliza el Medio de Pago
+		cuando recorro cada sub-especie y no al final - Gabriel Falciola*/
+		if (post:cli_tipo == 1 || \
+		    post:enCombo == "S") then
+			//cgw:si es un producto de un combo, importes en cero.
+			siaf:importe = 0
+		else
+			siaf:importe = tes:adt_evaux_importe
+		end if
+		//siaf:importe = IMPORTE_FINAL
+		siaf:afecta_efectivo = "+"
+		Call MISCtotalizo_MedPag
+
+		// cds unlock DSC:tes:AuxEspV_ctx
+		cds findnext DSC:tes:AuxEspV_ctx LOCK
+		let lib:err_retval = CDSRETVAL
+	LOOP
+	cds unlock DSC:tes:AuxEspV_ctx
+	cds endselect DSC:tes:AuxEspV_ctx
+END SUB
+
+/*******/

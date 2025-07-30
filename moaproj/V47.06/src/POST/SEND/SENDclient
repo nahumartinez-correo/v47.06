@@ -1,0 +1,162 @@
+/****o* Clientes Minoristas/OFB:post:SENDclient
+* NOMBRE
+*   OFB:post:SENDclient
+* DESCRIPCION
+*   Rutina SVAL del ABM de Clientes Ocacionales.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANabm_client
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDclient
+    drv:save_button = drv:last_button
+    
+        
+    
+      	//SC 50260
+	//mam:AUT-518 
+	CALL post:MISCvalidaCliMinor("NONE")
+	
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	
+	
+
+    IF (TESTFLAG(admin:mode_flags,update)) THEN
+    	RESETFLAG admin:mode_flags,update
+        IF (CloCalle.NUMCHARS == 0)
+            MSGBOX "Debe completar los datos de la siguiente pantalla",0x00000000,"ERROR"
+            RETURN (-2)
+        END IF
+  
+
+        
+        if (CloTipDoc == 96 && CloCuit == 99999999999)
+			MSGBOX "El Cliente no puede ser modificado",OFB_OK,"ERROR"
+			return (-2)
+		end if
+
+		/*si corresponde se chequea que los dos primeros digitos sean validos*/
+		CALL MISCverif2dig(CloTipDoc, CloCuit)
+		if (retval != 0)
+		    return (-2)
+		end if
+
+        CALL CDSclient_save
+        CALL drv:side_bar_disable
+    ELSE
+        IF (TESTFLAG(admin:mode_flags,delete)) THEN
+            RESETFLAG admin:mode_flags,delete
+            CALL MISCind_CloCuit
+        	if (CloTipDoc == 96 && CloCuit == 99999999999)
+				MSGBOX "El Cliente no puede ser eliminado",OFB_OK,"ERROR"
+				return (-2)
+			end if
+            ;SMC Modificacion para Testear por impactos antes de Borrar.
+            ;    Si se detecta impacto, se pregunta si se desea imprimir el reporte
+            call lib:MISCchk_impacto
+            if (retval < 0) then
+                return (retval)
+            endif
+            
+            //SC50190 Fase 2 - Verifico que el cliente minorista no tenga piezas CREM recibidas
+            //en sucursal, rendidas por el CDD, ni que se encuentren en el histórico
+            CALL CDSclioca_piezas
+            IF (RETVAL == 0) THEN	//TIENE PIEZAS
+            	MSGBOX "El cliente seleccionado no podrá ser eliminado por tener piezas asociadas.",OFB_OK,"ERROR"
+        		RETURN (-2)
+        	END IF	
+           	
+		    drv:button = 2
+		    CALL drv:but_enable
+		    drv:button = drv:last_button
+		    CALL drv:but_up_enable
+		    CALL lib:adt_delete_verify
+		    IF (RETVAL == 0) THEN
+		        CALL drv:side_bar_disable
+		        CALL CDSclient_delete
+		        IF (RETVAL != 0) THEN
+                    drv:button = drv:save_button
+                    CALL drv:but_up_enable
+                    IF (drv:screen_active == 1) THEN
+                        RETURN (-1)
+                    END IF
+                ELSE
+		            CALL CSR:proc_list(170,LST:LISTClient_flds2)
+                    CALL CSR:proc_list(190,LST:LISTClient_flds2)
+                    call MISCreset_categ_cli
+                    call MISCidentif_cli_flag
+					unprotfield CloInscripto
+					unprotfield CloCatCodIB
+					unprotfield CloNroInb
+                    enablecontrol drv:PBcb6
+					IF (drv:screen_active == 1) THEN
+                        RETURN (-1)
+                    END IF
+                END IF
+            END IF
+        ELSE
+            IF (TESTFLAG(admin:mode_flags,imprimir)) THEN
+                RESETFLAG admin:mode_flags,imprimir
+                siaf:adt_tabla_context = DSC:clioca_ctx
+                siaf:INDencab_lis = OFB:MISCencab_Client
+                siaf:INDselect_tabla = OFB:CDSclient_select
+                siaf:INDpaso_str_tabla = OFB:MISCpaso_str_client
+                siaf:INDestado_clave = OFB:MISCclave_client
+                siaf:INDadt_sval = 0
+                CALL siaf:TRANprt_drv_apai
+                CALL CSR:proc_list(170,LST:LISTClient_flds)
+                CALL CSR:proc_list(190,LST:LISTClient_flds)
+                call MISCreset_categ_cli
+                call MISCidentif_cli_flag
+				unprotfield CloInscripto
+				unprotfield CloCatCodIB
+				unprotfield CloNroInb
+				//debe estar protegido por default.
+				protfield post:CloRazon
+	            protfield esExentoRG3337
+                protfield porcExentoRG3337
+	            protfield CloSucAlt
+				protfield CloFecAct
+				
+				enablecontrol drv:PBcb6
+                IF (drv:screen_active == 1) THEN
+                    RETURN (-1)
+                END IF
+            END IF
+        END IF
+        RETURN (0)
+    END IF
+	CALL CSR:proc_list(170,LST:LISTClient_flds2)
+    CALL CSR:proc_list(190,LST:LISTClient_flds2)
+	call MISCreset_categ_cli
+	RESETFLAG pers_juridica,es_juridica
+	call MISCidentif_cli_flag
+	CLEARFIELD CloRazon
+	CLEARFIELD porcExentoRG3337
+	LET esExentoRG3337 = "N"
+	REFRESH porcExentoRG3337
+	REFRESH esExentoRG3337
+	PROTFIELD esExentoRG3337
+    PROTFIELD porcExentoRG3337
+	unprotfield CloInscripto
+	unprotfield CloCatCodIB
+	unprotfield CloNroInb
+	enablecontrol drv:PBcb6
+    IF (drv:screen_active == 1) THEN
+        RETURN (-1)
+    END IF
+END SUB
+
+/*******/

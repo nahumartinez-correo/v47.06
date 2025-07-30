@@ -1,0 +1,137 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBenvio_cupon
+* NOMBRE
+*   OFB:post:OFBenvio_cupon
+* DESCRIPCION
+*   Rutina que envia mensaje al switch para actualizar cupones
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBproc_batch_Cupon
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBenvio_cupon
+
+	;Guardar numero de operador
+	op:operator_tmp = op:op_operator_id
+	
+	;Resetear flags
+	resetflag tlr:controla_firma,cancelacion
+	resetflag tlr:controla_marca,cancel
+	resetflag tlr:controla_marca,reverso_auto
+	
+	if (post:adt_cupon_operacion == "D")
+		;TRX.DIRECTA
+		giros:codigo_procesamiento = 960000
+	else
+		;TRX.CANCELACION
+		giros:codigo_procesamiento = 960001
+	end if
+	
+	hcomm:INDhost_sndrt = OFB:post:SENDCupones
+	hcomm:INDhost_rcvrt = OFB:post:RCVECupones 
+	
+	if (post:adt_cupon_operacion == "D")
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+	else
+		//se recuperan del registro de la tabla cupon (se guardan los datos de la directa)
+		IF (post:adt_codseq_nro.numchars == 0 ) THEN
+			CALL CDScupon_dia_hora
+			IF (RETVAL < 0) THEN
+				return -3
+			ENDIF
+		END IF 
+	endif
+	
+	call post:MISCarma_cupon
+		
+	call hcomm:COMM_stat_init
+	if (retval == -2 )
+		return -2
+	end if	
+	
+	CDS CLEARBUFFER "cupon_ctx"
+	
+	CDS APPEND "cupon_ctx" \
+		hcomm:tran_status AS tlr:jnl_status \
+		giros:codigo_procesamiento \
+		giros:CodRespuesta_comm \
+		post:adt_codseq_nro \
+		giros:hora_viaje \
+		giros:dia_viaje 
+
+	CDS UPDATE "cupon_ctx" LOCK NOWAIT
+	CDS WAIT "cupon_ctx"
+	
+
+	fprint siaf:nota_1,\
+	"FECHA: %e HORA: %e STAN: %s PCODE: %s",giros:dia_viaje,giros:hora_viaje,\
+	post:adt_codseq_nro,giros:codigo_procesamiento
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	fprint siaf:nota_1,\
+	"CUPON BIT 109: %s",post:datos_msg109
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	fprint siaf:nota_1,\
+	"CUPON BIT 110: %s",post:datos_msg110
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+	
+	fprint siaf:nota_1,\
+	"Enviando transaccion al host ..."
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	call hcomm:COMM_host_tran
+	if (retval == TRAN_CAIDA_VUELO) then
+		//grabo registro de caida en vuelo para ingreso de cupon
+		tlr:jnl_status = hcomm:tran_status
+		CALL post:CDSjnl_caidas_cup
+		resetflag tlr:controla_firma,cancelacion
+		resetflag tlr:controla_marca,cancel
+		resetflag tlr:controla_marca,reverso_auto
+		clearfield siaf:tran_retval
+		fprint siaf:nota_1,"%s","Transaccion Caida en Vuelo ... "
+		call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+		return TRAN_CAIDA_VUELO
+	end if
+	
+	resetflag tlr:controla_firma,cancelacion
+	resetflag tlr:controla_marca,cancel
+	resetflag tlr:controla_marca,reverso_auto
+	
+	if (hcomm:tran_status == HOST_ACCEPTED )
+		fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_ACCEPTED
+		fprint common:csr_string "\nTransaccion Aprobada. CodRespuesta = %e. Hora: %e ",\
+		giros:CodRespuesta_comm,common:time_of_day
+		call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")
+	else
+		if (hcomm:tran_status == HOST_REJECTED )
+			fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_REJECTED
+		else
+			if (hcomm:tran_status > HOST_REJECTED )
+				fprint common:csr_string "\nTransaccion Caida en Vuelo. Hora: %e ",\
+				common:time_of_day
+				call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")	
+				
+				fprint siaf:nota_1,\
+				"Transaccion caida en vuelo ...",
+				call batch:OFBlog_batch(siaf:nota_1,0,"N","S","AMBOS","N")
+			end if
+		end if
+	end if
+
+   	CLEARFIELD siaf:cancelacion
+   	op:op_operator_id = op:operator_tmp
+
+END SUB
+
+/*******/

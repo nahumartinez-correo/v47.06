@@ -1,0 +1,157 @@
+/****o* SiMon/OFB:post:MISCimpri_Rep_DCPT
+* NOMBRE
+*   OFB:post:MISCimpri_Rep_DCPT
+* DESCRIPCION
+*   Reporte Diario PCT - Impresion de Codigos de barras.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANlist_Rep_DPCT
+* DOCUMENTACION
+*   NI50572 - Digitalizacion de Reportes
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCimpri_Rep_DCPT
+	LOCAL Lstring LIKE common:csr_string_200
+	LOCAL cli_operativo LIKE common:csr_string
+	LOCAL cli_operativo_ant LIKE common:csr_string
+	LOCAL Lcliente_ant LIKE post:adt_benTmp_cli
+	LOCAL Lcliente_desc_ant LIKE post:adt_benTmp_cli_desc
+	LOCAL Loperativo_ant LIKE post:adt_benTmp_operativo
+	LOCAL Lcliente LIKE post:adt_benTmp_cli
+	LOCAL Lcliente_desc LIKE post:adt_benTmp_cli_desc
+	LOCAL Loperativo LIKE post:adt_benTmp_operativo
+	LOCAL Loper_pag LIKE post:asign_falloBe_NomPag
+	LOCAL Lcomprobante LIKE post:adt_benTmp_benef
+	LOCAL Limporte LIKE siaf:importe
+	LOCAL Lfecha_pago LIKE common:system_date
+	LOCAL Lcodigo_siaf LIKE siaf:codigo_siaf
+	LOCAL LOnSite LIKE post:SiNo
+	LOCAL l_post_horiz LIKE post:etiq_ref_horiz
+	
+	LOCAL total_importe LIKE siaf:importe
+	LOCAL cant_cupon LIKE siaf:i
+	LOCAL total_cupon LIKE siaf:i
+	LOCAL total_general LIKE siaf:importe
+	LOCAL idx LIKE siaf:i
+
+	/* cgw: Impresion Reporte Diario PCT - Totales de Pago por Cuenta y Orden, por impresora. */
+
+	//limpia variables de control del corte de control.
+	CLEARFIELD cli_operativo_ant //control de corte control.
+	CLEARFIELD Lcliente_ant
+	CLEARFIELD Lcliente_desc_ant
+	CLEARFIELD Loperativo_ant
+
+	//limpia totalizadores corte control.
+	CLEARFIELD total_importe
+	CLEARFIELD cant_cupon
+	//limpia totalizadores generales.
+	CLEARFIELD total_cupon
+	CLEARFIELD total_general
+
+	FYIMSG LST:common:fyimsg_list, "Imprimiendo Documento, un momento por favor..." 
+
+	idx = 0x8000
+	DO
+		CLEARFIELD cli_operativo //control de corte control.
+		CLEARFIELD Lcliente
+		CLEARFIELD Lcliente_desc
+		CLEARFIELD Loperativo
+		CLEARFIELD Loper_pag
+		CLEARFIELD Lcomprobante
+		CLEARFIELD Limporte
+		CLEARFIELD Lfecha_pago
+		CLEARFIELD Lcodigo_siaf
+		
+		CALL csr:myPickcontrol("rep_diarioPCT",Lstring,idx)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF 
+
+		/*Extrae campos del picklist y los coloca en variables*/
+		cli_operativo = SUBSTR(Lstring,41,31) //corte control
+		Lcliente = SUBSTR(Lstring,41,10)
+		Lcliente_desc = SUBSTR(Lstring,0,40)
+		Loperativo = SUBSTR(Lstring,52,20)
+		Loper_pag = SUBSTR(Lstring,73,41)
+		Lcomprobante = SUBSTR(Lstring,115,20)
+		Lfecha_pago = SUBSTR(Lstring,136,8)
+		Limporte = SUBSTR(Lstring,145,16)
+		Lcodigo_siaf = SUBSTR(Lstring,162,5)
+		CALL csr:trimfield Lcomprobante
+
+		IF (cli_operativo != cli_operativo_ant) THEN
+			//Corte control Cliente - Operativo.            
+			IF (cli_operativo_ant.NUMCHARS > 0) THEN
+				//Imprime totales del corte control Cliente - Operativo.
+				//Imprime los codigos de barras.
+				CALL post:MISCtot_cctrlRepDPCT(Lcliente_ant, Lcliente_desc_ant, Loperativo_ant, cant_cupon, total_importe)
+				l_post_horiz = post:etiq_ref_horiz
+			END IF
+
+	    //Reserva variables de control de corte operativo.
+	    cli_operativo_ant = cli_operativo
+	    Lcliente_ant = Lcliente
+	    Lcliente_desc_ant = Lcliente_desc
+	    Loperativo_ant = Loperativo
+        	
+			//Imprime Titulos.
+			CALL post:MISCtit_RepDiarioPCT(Lcliente, Lcliente_desc, Loperativo)
+			l_post_horiz = post:etiq_ref_horiz
+			
+			//limpia totalizadores corte control.
+			CLEARFIELD total_importe
+			CLEARFIELD cant_cupon
+		END IF
+
+		IF (post:TipoRepPCT == "D") THEN
+			//Reporte Detallado - Imprime lineas de detalle.
+			CALL post:MISChojas_tot_RepPCT //Controla si hay un salto de pagina.
+			IF (siaf:lineas_cl == 7) THEN
+				//Hubo salto de pagina y se imprimio encabezado.        
+				//Imprime Titulos.
+				CALL post:MISCtit_RepDiarioPCT(Lcliente, Lcliente_desc, Loperativo)
+				//imprime una linea en blanco.
+				CLEARFIELD common:csr_string
+				FPRINT common:csr_string," "
+				CALL post:MISCwrite_doc_gral(5,common:csr_string)
+			END IF
+
+			CLEARFIELD LOnSite
+			IF (Lcodigo_siaf == 6630) THEN
+				//OnSite
+				LOnSite = "S"
+			END IF
+			CLEARFIELD common:csr_string
+			FPRINT common:csr_string "%-41.41s %20.20s %16.16e %10.10e   %s", Loper_pag, Lcomprobante, Limporte, Lfecha_pago, LOnSite
+			CALL post:MISCwrite_doc_gral(5,common:csr_string) 
+		END IF
+
+		//Contadores de Totales por corte control.
+		total_importe = total_importe + Limporte
+		cant_cupon = cant_cupon + 1
+		//Contadores de Totales Generales.
+		total_general = total_general + Limporte
+		total_cupon = total_cupon + 1
+		
+		idx = idx + 1
+	LOOP
+
+	//Imprime totales del corte control Cliente - Operativo.
+	//Imprime los codigos de barras.
+	CALL post:MISCtot_cctrlRepDPCT(Lcliente_ant, Lcliente_desc_ant, Loperativo_ant, cant_cupon, total_importe)
+	l_post_horiz = post:etiq_ref_horiz
+	
+	//Imprime Totales Generales.
+	CALL post:MISCtot_gralRepDPCT(Lcliente_ant, Lcliente_desc_ant, Loperativo_ant, total_cupon, total_general)	
+
+END SUB
+
+/*******/

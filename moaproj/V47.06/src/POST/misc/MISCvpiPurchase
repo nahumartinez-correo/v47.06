@@ -1,0 +1,151 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvpiPurchase
+* NOMBRE
+*   OFB:post:MISCvpiPurchase
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCvalida_AltaModif
+* DOCUMENTACION
+*   NI50525 POS Integrado
+* SOURCE
+*/
+#include "postmisc.h"
+#include "moa2vpipc.h"
+
+SUB post:MISCvpiPurchase
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_vpi_response LIKE post:adt_rvpi_codigo
+	
+	//Fuerzo el cierre del puerto!!!
+	CALL post:MISCvpiClosePort
+
+	//Abro el puerto de comunicacion
+	CALL post:MISCvpiOpenPort
+	IF (RETVAL != 0) THEN
+		RETURN -2
+	END IF
+
+	DPRINT "<<<*************[Purchase]*********************\n"
+
+	post:vpi_amount = Total_importe * 100           			// Monto *100
+	post:vpi_receiptNumber = "000000000000"				  			// Número de factura - Hardcode (siempre queda en cero)
+	post:vpi_instalmentCount = post:Nro_Cuotas_Pos  			// Cant. de cuotas
+	post:vpi_issuerCode = post:adt_tpos_codint_vpi  			// Código de tarjeta
+	post:vpi_planCode = post:Codigo_Plan_Pos        			// Código de plan
+	post:vpi_tip = "000"                    			  			// Propina *100 
+	post:vpi_merchantCode = post:adt_tvpi_comer_cod 			// Código de comercio
+	post:vpi_merchantName = common:adt_vpi_merchantName		// Razon social del comercio
+	post:vpi_cuit = common:adt_vpi_cuit                   // CUIT del comercio
+	IF (post:adt_vpi_status == "OFF" && post:adt_vpi_aut_offline == "S") THEN
+		post:vpi_linemode = "0"                   					// trx. Online(1) Offline(distinto de 1)
+	ELSE
+		post:vpi_linemode = common:adt_vpi_linemode					// trx. Online(1) Offline(distinto de 1)
+	END IF
+	post:vpi_timeout = common:adt_vpi_timeout             // Tiempo de espera de respuesta en segundos
+	
+	DPRINT "[post:vpi_amount][%s]\n" post:vpi_amount
+	DPRINT "[post:vpi_receiptNumber][%s]\n" post:vpi_receiptNumber
+	DPRINT "[post:vpi_instalmentCount][%s]\n" post:vpi_instalmentCount
+	DPRINT "[post:vpi_issuerCode][%s]\n" post:vpi_issuerCode
+	DPRINT "[post:vpi_planCode][%s]\n" post:vpi_planCode
+	DPRINT "[post:vpi_tip][%s]\n" post:vpi_tip
+	DPRINT "[post:vpi_merchantCode][%s]\n" post:vpi_merchantCode
+	DPRINT "[post:vpi_merchantName][%s]\n" post:vpi_merchantName
+	DPRINT "[post:vpi_cuit][%s]\n" post:vpi_cuit
+	
+	//gpb:Hardcode,despues quitar!!!
+	//post:vpi_linemode = "0" //Offline
+	
+	DPRINT "[post:vpi_linemode][%s]\n" post:vpi_linemode
+	DPRINT "[post:vpi_timeout][%s]\n" post:vpi_timeout
+	
+	//Obtengo el secuenciador
+	CALL post:CDSobtiene_secuen("VPIPC")
+	LET post:adt_vpi_codseq_nro = post:adt_codseq_nro
+	DPRINT "[post:adt_vpi_codseq_nro][%s]\n" post:adt_vpi_codseq_nro
+	
+	FYIMSG drv:fyimsg_list,"Pase la tarjeta en el dispositivo POS y aguarde..."
+	
+	CALL CSR:Moa2VpiPurchase(LST:post:LISTvpiPurchaseIn,LST:post:LISTvpiTrxOut,post:vpi_timeout)
+	l_retval = RETVAL
+	
+	FYIMSG CLEAR
+	
+	DPRINT "[RETVAL][%s]\n" l_retval
+	DPRINT "[post:vpi_hostRespCode][%s]\n" post:vpi_hostRespCode
+	DPRINT "[post:vpi_hostMessage][%s]\n" post:vpi_hostMessage
+	DPRINT "[post:vpi_authCode][%s]\n" post:vpi_authCode
+	DPRINT "[post:vpi_ticketNumber][%s]\n" post:vpi_ticketNumber
+	DPRINT "[post:vpi_batchNumber][%s]\n" post:vpi_batchNumber
+	DPRINT "[post:vpi_customerName][%s]\n" post:vpi_customerName
+	DPRINT "[post:vpi_panFirst6][%s]\n" post:vpi_panFirst6
+	DPRINT "[post:vpi_panLast4][%s]\n" post:vpi_panLast4	
+	DPRINT "[post:vpi_date][%s]\n" post:vpi_date
+	DPRINT "[post:vpi_time][%s]\n" post:vpi_time
+	DPRINT "[post:vpi_terminalID][%s]\n" post:vpi_terminalID
+	
+	//gpb:PS10932 - Log OperacionesVPI
+	LET post:log_opvpi_VPI_OK = l_retval
+	CALL post:MISCsaveOpeVPI_LOG("VEN")
+	
+	FYIMSG drv:fyimsg_list,"Cerrando comunicacion con el dispositivo POS, aguarde..."
+	CALL post:MISCvpiClosePort
+	IF (RETVAL != VPI_OK) THEN
+		FYIMSG drv:fyimsg_list,"Falla al cerrar comunicacion con el dispositivo POS, aguarde..."
+	END IF
+				
+	DPRINT "****************[Purchase]******************>>>\n"
+	
+	NAP 2000
+	FYIMSG CLEAR
+	
+	//Si hubo un error al ejecutar el comando al POS
+	FPRINT l_vpi_response "%s" l_retval
+	CALL post:MISCvpiGralResponse("VPI",l_vpi_response)
+	IF (post:adt_vpi_status == "ERR") THEN
+		RETURN -2
+	END IF
+	
+	//Si hubo un error en la respuesta del HOST
+	CALL post:MISCvpiGralResponse("HOST",post:vpi_hostRespCode)
+	IF (post:adt_vpi_status == "ERR" || post:adt_vpi_status == "OFF") THEN
+		RETURN -2
+	END IF
+	
+	//Si no hubo error
+	post:NroCompPago2 = post:vpi_ticketNumber
+	post:Nro_Lote_Pos = post:vpi_batchNumber
+	post:NroTransac = post:vpi_authCode
+	
+	//Grabo en la tabla OperacionesVPI
+	CALL post:MISCsaveOpeVPI("VEN")
+	
+	//INICIO gpb:PS10899, tratamiento contingencia, se pierden los valores de los campos... 
+	IF (NroCompPago2 ==  0 || NroCompPago2.NUMCHARS == 0) THEN
+		post:NroCompPago2 = post:adt_opvpi_ticketNumb
+	END IF
+	
+	IF (NroTransac == 0 || NroTransac.NUMCHARS == 0) THEN
+		post:NroTransac = post:adt_opvpi_authCode
+	END IF
+	
+	IF (Nro_Lote_Pos == 0 || Nro_Lote_Pos.NUMCHARS == 0) THEN
+		post:Nro_Lote_Pos = post:adt_opvpi_batchNumb
+	END IF
+	//FIN gpb:PS10899, tratamiento contingencia, se pierden los valores de los campos... 
+
+	REFRESH post:NroCompPago2
+	REFRESH post:Nro_Lote_Pos
+	REFRESH post:NroTransac
+
+	RETURN 0	
+	
+END SUB
+
+/*******/

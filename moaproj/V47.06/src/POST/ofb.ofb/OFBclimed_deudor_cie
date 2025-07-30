@@ -1,0 +1,130 @@
+/****o* Clientes Medios/OFB:post:OFBclimed_deudor_cie
+* NOMBRE
+*   OFB:post:OFBclimed_deudor_cie
+* DESCRIPCION
+*   Rutina que consulta los clientes medios de la sucursal con comprobantes de imposicion sin facturar
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:SVALcierre_suc,OFB:tes:SVALciefor_suc 
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBclimed_deudor_cie
+
+	local varl_retval like lib:err_retval
+
+	call giros:MISCctrl_facturacion(tes:suc_fecha)
+	if (retval ==  -1 )
+		return 0
+	end if
+	msgbox \
+	"CIERRE DE FACTURACION. SE CONSULTARAN LOS CLIENTES DEUDORES",\
+	OFB_OK,"Atencion"
+	
+	
+	//Borra la tabla remitos segun el post:op_operator_id
+	call post:CDSborrar_con_deuda
+	if (retval < 0 )
+	   msgbox \
+	   "IMPOSIBLE CONTINUAR, ERROR AL ELIMINAR LAS TABLAS TEMPORALES DE COMPROBANTES DE IMPOSICION.",\
+	    OFB_OK,"Atencion"
+	    return -2
+	end if
+	
+	//gpb:PS10698
+	//Borra la tabla rem_item segun el post:op_operator_id
+	call post:CDSborrar_it_deuda
+    if (retval < 0)
+	    msgbox \
+	    "IMPOSIBLE CONTINUAR, ERROR AL ELIMINAR LAS TABLAS TEMPORALES DE COMPROBANTES DE IMPOSICION.",\
+	    OFB_OK,"Atencion"
+	    return (-2)
+	end if
+	
+	clearfield post:clientes_deudores
+	tes:estado_aper_cier = "CIERRE"
+
+	;CONSULTA DE CLIENTES DEUDORES
+	call csr:f_sadroppl(DSC:clientes_deuda)
+	call csr:f_sanewpl(DSC:clientes_deuda,PIC:climedio_multiple)
+	/*post:climed_ult_item = " "
+	clearfield post:climed_tipo*/
+	post:climed_tipo = CLIMED
+	clearfield post:climed_numero
+	fprint climed_ult_item,"%-11.11s%s",post:climed_numero,post:climed_tipo
+	
+	call post:OFBcmedio_clientes
+	if ( retval < 0 )
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+		clearfield post:climed_ult_item
+		call csr:f_sadroppl(DSC:clientes_deuda)
+		return -2
+	end if
+
+	resetflag giros:tran_send_mode,consulta_simple
+	resetflag giros:tran_send_mode,consulta_multiple
+
+	if (giros:CodRespuesta_comm == "20")
+		return 0
+	end if
+
+	clearfield giros:item_picklist
+	let giros:numero_item = 0
+	move dsc:post:clientes_deuda to fld:giros:nombre_picklist
+
+	// EXTRACT DE PICK DE DATOS DE GIROS.
+	call giros:OFBpicklist_item
+	varl_retval = retval
+	/*
+	if ( varl_retval < 0 )
+		return -2
+	end if
+	*/
+	
+	WHILE (varl_retval == 0 )
+
+		post:climed_tipo =  CLIMED
+		let post:climed_numero = substr(giros:item_picklist,0,11)
+
+		;CONSULTA DE COMP. DE IMPOSICION PENDIENTES
+		fprint climed_ult_item,"%030.30s%3.3s","","REM"
+		call post:OFBcmedio_remitos
+		if ( retval < 0 )
+			resetflag giros:tran_send_mode,consulta_simple
+			resetflag giros:tran_send_mode,consulta_multiple
+			clearfield post:adt_adelcm_remito
+			call csr:f_sadroppl(DSC:clientes_deuda)
+			return -2
+		end if
+
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+	
+		giros:numero_item = giros:numero_item + 1
+
+		// EXTRACT DE PICK DE DATOS DE GIROS.
+		call giros:OFBpicklist_item
+		varl_retval = retval
+		if (  varl_retval < 0 )
+			break
+		end if
+
+	END WHILE
+	
+	call csr:f_sadroppl(DSC:clientes_deuda)
+	call post:CDSborrar_con_deuda
+	clearfield post:climed_tipo
+	clearfield post:climed_numero
+	clearfield post:adt_adelcm_remito
+END SUB
+
+/*******/

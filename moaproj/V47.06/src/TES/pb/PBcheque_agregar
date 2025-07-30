@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:tes:PBcheque_agregar
+* NOMBRE
+*   OFB:tes:PBcheque_agregar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPB.h"
+
+SUB tes:PBcheque_agregar
+ /* Agrega registros a la tabla AuxCheq */
+    
+   
+    if (siaf:cod_banco.numchars == 0 || siaf:nro_cheque.numchars == 0 ) then
+        ;|| post:importe_origen.numchars == 0 ) then
+	errmsg lst:common:errmsg_list,"Falta ingresar algún campo"
+	drv:button = drv:last_button
+        call drv:but_up_enable
+	return (-1)
+    else
+        if (siaf:cod_banco.numchars > 0) then
+            cds select from siaf:adt_banco_table becomes siaf:adt_banco_context \
+               where siaf:adt_banco_codigo == siaf:cod_banco
+            cds findfirst siaf:adt_banco_context nolock
+            let lib:err_retval = cdsretval
+            cds endselect siaf:adt_banco_context
+
+            if (lib:err_retval == -801)
+                msgbox "BANCO DEL CHEQUE INEXISTENTE",0x00,"ERROR"
+              	drv:button = drv:last_button
+                call drv:but_up_enable
+                return (-1)
+            end if
+        end if
+    end if
+    
+    move siaf:moneda to tes:adt_cheqaux_moneda
+    move op:op_branch_id to adt_cheqaux_suc
+    let tes:teso_cheq_suc     = op:op_branch_id
+    let tes:teso_cheq_banco   = siaf:cod_banco
+    let tes:teso_cheq_cuenta  = siaf:cheqcuenta
+    let tes:teso_cheq_nro     = siaf:nro_cheque
+    let tes:teso_cheq_importe = post:importe_origen
+    let tes:teso_cheq_moneda  = siaf:moneda
+    if (drv:dt_app == 4) then          
+        let teso_cheq_estado = "T"
+        let teso_cheq_id = op:op_tesoro_id
+        call CDStesoro_cheq_load
+        if (retval < 0) then
+            errmsg lst:common:errmsg_list, "Cheque No Pertence al Tesoro"
+            call drv:but_up_enable
+            call drv:but_disable
+            return (-1)
+        end if
+        let post:importe_origen = tes:teso_cheq_importe
+        refresh post:importe_origen
+    	let adt_cheqaux_tesoro = "S"
+        let adt_cheqaux_op = op:op_tesoro_id
+    else
+        let teso_cheq_estado = "O"
+        let teso_cheq_id = op:op_operator_id
+        call CDStesoro_cheq_load
+        if (retval < 0) then
+             errmsg lst:common:errmsg_list, "Cheque No Pertence a la Caja"
+             call drv:but_up_enable
+             call drv:but_disable
+             return (-1)
+        end if
+        
+        let post:importe_origen = tes:teso_cheq_importe
+        refresh post:importe_origen
+        let adt_cheqaux_tesoro = "N"
+	let adt_cheqaux_op = op:op_operator_id
+    end if
+	
+	call post:CDSbusco_jnl_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,UNPOSTED)
+	select (retval)
+		case -1
+			drv:button = drv:last_button		
+            call drv:but_up_enable
+			return (-2)
+			break
+		case -2
+			errmsg lst:common:errmsg_list "El cheque aun no ha sido registrado. Aguarde unos instantes y vuelva a intentar"
+			drv:button = drv:last_button
+            call drv:but_up_enable
+			return (-2)
+			break
+	end select	
+	    
+    /* No se permite sacar un cheque pendiente de reemplazo */
+    if (tes:teso_cheq_recep == "S") then
+    	errmsg lst:common:errmsg_list "Cheque Pendiente de Reemplazo"
+      	drv:button = drv:last_button
+        call drv:but_up_enable    	
+       return (-2)
+    end if
+		
+    let adt_cheqaux_banco  = siaf:cod_banco
+    let adt_cheqaux_cuenta = siaf:cheqcuenta
+    let adt_cheqaux_nro    = siaf:nro_cheque
+    call CDScheques_load
+    if (retval == 0) then    
+	errmsg lst:common:errmsg_list, "Cheque Ya Ingresado"
+	drv:button = drv:last_button
+        call drv:but_up_enable
+	return (-2)
+    end if
+    let adt_cheqaux_importe = post:importe_origen
+    call CDScheques_save
+    call MISCdisplay_cheques
+    call ABMcheques_clear
+    call ABMcheques_refresh
+
+    nextfield siaf:cod_banco
+    drv:button = drv:last_button
+    call drv:but_up_enable
+    if (drv:dt_app == 4) then
+        call drv:but_disable
+    end if
+    ;call drv:but_disable
+END SUB
+
+/*******/

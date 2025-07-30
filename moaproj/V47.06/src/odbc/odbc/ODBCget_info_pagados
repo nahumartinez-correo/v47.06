@@ -1,0 +1,273 @@
+/****o* Pendientes de agrupación/OFB:odbc:ODBCget_info_pagados
+* NOMBRE
+*   OFB:odbc:ODBCget_info_pagados
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "odbcodbc.h"
+
+SUB odbc:ODBCget_info_pagados
+    
+    LOCAL cant_items_pick         LIKE giros:gir_cantidad
+    LOCAL tipo_giro               LIKE common:local_ascii
+    LOCAL tipo_giroANT            LIKE common:local_ascii
+    LOCAL estado_giro             LIKE giros:asciide2_fld
+    LOCAL serie                   LIKE giros:Serie_fld
+    LOCAL nro_cheque              LIKE giros:NroGiro_fld
+    LOCAL digito                  LIKE giros:digito_fld
+    LOCAL suc_emisora             LIKE giros:CodSucPag_fld
+    LOCAL suc_pagadora            LIKE giros:CodSucPag_fld
+    LOCAL importe_giro            LIKE giros:Importe_fld
+    LOCAL importe_rev             LIKE giros:imp_revalida_fld
+    LOCAL clave                   LIKE giros:clave_hdr_giros
+    LOCAL operador                LIKE tlr:jnl_op_login_id
+    LOCAL nombre                  LIKE giros:NombreBenef_fld
+    LOCAL apellido                LIKE giros:ApellidoBenef_fld
+    LOCAL tipo_doc                LIKE giros:TipoDocBenef_fld
+    LOCAL nro_doc                 LIKE giros:NroDocBenef_fld
+    LOCAL tipo_pago               LIKE post:MedPMon
+    LOCAL estado_tran             LIKE giros:CodSucPag_fld
+    LOCAL codsiaf_temp            LIKE siaf:codigo_siaf
+    LOCAL cuenta                  LIKE common:local_int
+    LOCAL path_name               LIKE admin:msg_dir_name
+    ;    DECLARE DBfetch LIB "odb.dll" ( BYVAL ) 
+    ;    DECLARE DBdefineQuery LIB "odb.dll" ( BYOBJ BYVAL DATAREF BYVAL DATAREF  \
+    ;             BYOBJ ... ) 
+        
+    FYIMSG LST:common:fyimsg_list,MSGbuscando
+    let giros:gir_total = 0
+    let cuenta = 0
+    let giros:pag = 0
+    let siaf:i = 1
+    CLEARFIELD cant_items_pick 
+    clearfield giros:gir_cantidad
+    
+    // FGB 8.5.2001: Req. 2561 
+    clearfield FLD:giros:INDrutina 
+    let giros:INDrutina = OFB:siaf:MISCencab_pagados
+    // FGB fin
+    	
+    ;Abro archivo listado.lis
+    IF (siaf:pantalla_impreso == "P") THEN
+    	CALL CSR:f_sadroppl(DSC:pick)
+	    CALL CSR:f_sanewpl(DSC:pick,PIC:giros:giros4)
+    	IF (RETVAL < 0) THEN
+	    	MSGBOX "ERROR AL CREAR EL PICKLIST",OFB_OK,"ERROR"
+		    RETURN (-2)
+    	END IF 
+    END IF
+    CALL siaf:MISCopen_lis	
+    CALL siaf:MISCencab_pagados
+    if (giros:CodCajero_fld.NUMCHARS == 0) then
+    	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+    	WHERE (siaf:codigo_siaf == 70090 || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70120 || \
+    	       siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70384) && \
+    	      (tlr:jnl_status == HOST_ACCEPTED || tlr:jnl_status == HOST_REJECTED) && \
+    	      tlr:jnl_branch   ==  FLD:common:sucursal_activa && \
+    	      tlr:jnl_date >= FLD:giros:gir_fec_desde &&  \
+    	      tlr:jnl_date <= FLD:giros:gir_fec_hasta && \
+    	      siaf:cancelacion == "" 
+    else
+    	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+    	WHERE (siaf:codigo_siaf >= 70090 && siaf:codigo_siaf <= 70120 || \
+    	       siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70384) && \
+    	      tlr:jnl_op_login_id == giros:CodCajero_fld && \
+    	      (tlr:jnl_status == HOST_ACCEPTED || tlr:jnl_status == HOST_REJECTED) && \
+    	      tlr:jnl_branch   ==  FLD:common:sucursal_activa && \
+    	      tlr:jnl_date >= FLD:giros:gir_fec_desde &&  \
+    	      tlr:jnl_date <= FLD:giros:gir_fec_hasta && \
+    	      siaf:cancelacion == "" 
+    end if      
+    CDS FINDFIRST DSC:tlr:jnl_context NOLOCK 
+    WHILE (CDSRETVAL == 0)
+    	cuenta = cuenta + 1
+    	CDS EXTRACT DSC:tlr:jnl_context FLD:giros:Serie_fld  \
+    		FLD:giros:NroGiro_fld FLD:giros:digito_fld FLD:giros:clave_hdr_giros  \
+    		FLD:giros:ImporteNeto FLD:tlr:jnl_op_login_id FLD:giros:NombreBenef_fld  \
+    		FLD:giros:ApellidoBenef_fld FLD:giros:TipoDocBenef_fld  \
+    		FLD:giros:NroDocBenef_fld FLD:siaf:moneda FLD:tlr:jnl_status  \
+    		fld:tlr:jnl_sequence FLD:tlr:jnl_sequence_corr FLD:giros:CodSucEmis_fld  \
+    		FLD:giros:imp_revalida_fld FLD:giros:tipo_giro_fld \
+    		FLD:giros:cons_nro_ctrol FLD:siaf:codigo_siaf into codsiaf_temp
+                    		
+        IF (codsiaf_temp == 70384) //Pago Transferencia Internacional
+            CLEARFIELD giros:NombreBenef_inter
+            CLEARFIELD giros:ApellidoBenef_inter
+            CLEARFIELD giros:CodPaisResidEmis
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:giros:NombreBenef_inter \
+                FLD:giros:ApellidoBenef_inter \
+                FLD:giros:CodPaisResidEmis
+        END IF
+        
+        SELECT (codsiaf_temp)
+    		CASE 70090
+    			tipo_giro = "GIROS POSTALES"
+    			BREAK 
+    		CASE 70110
+	    		tipo_giro = "GIROS TELEGRAFICO"
+		    	BREAK 
+		 		CASE 70392
+	    		tipo_giro = "PAGO DE TRANSFERENCIAS"
+		    	BREAK 
+    		CASE 70384
+	    		tipo_giro = "PAGO DE TRANSFERENCIAS INTERNACIONALES"
+		    	BREAK 
+		    CASE 70120
+	    		tipo_giro = "PAGO ELECTRONICO CENTRALIZADO"
+		    	BREAK 	
+    	END SELECT 
+	    IF (tipo_giroANT != tipo_giro) THEN
+		    FPRINT siaf:nota_1,"%-50s",tipo_giro
+    		IF (siaf:pantalla_impreso == "P") THEN
+	    		CALL giros:MISCpantalla_impres2
+		    ELSE 
+			    CALL giros:MISCpantalla_impres2
+		    END IF 
+		    tipo_giroANT = tipo_giro
+	    END IF 
+	    estado_tran = "ACEP"
+	    IF (tlr:jnl_status == 100) THEN
+		    estado_tran = "RECH"
+	    END IF 
+        IF (tlr:jnl_sequence_corr != 0 && (tlr:jnl_sequence > tlr:jnl_sequence_corr)) THEN
+		    estado_tran = "REV."
+	    END IF 
+	    
+	    IF (codsiaf_temp == 70384)
+	        suc_emisora = giros:CodPaisResidEmis
+	        CLEARFIELD clave 
+	        nombre = giros:NombreBenef_inter
+	        apellido = giros:ApellidoBenef_inter
+	    ELSE
+	        suc_emisora  = giros:CodSucEmis_fld
+	        serie        = giros:Serie_fld
+	        nro_cheque   = giros:NroGiro_fld
+	        digito       = giros:digito_fld
+	        clave        = giros:clave_hdr_giros
+	        nombre       = giros:NombreBenef_fld
+	        apellido     = giros:ApellidoBenef_fld
+	    END IF
+        	
+	    importe_giro = giros:ImporteNeto
+	    importe_rev  = giros:imp_revalida_fld
+	    operador     = tlr:jnl_op_login_id
+	    tipo_doc     = giros:TipoDocBenef_fld
+	    nro_doc      = giros:NroDocBenef_fld
+	    tipo_pago    = siaf:moneda
+        		
+	    IF (siaf:pantalla_impreso == "P") THEN
+    		if (codsiaf_temp == 70392 || codsiaf_temp == 70384 ) then
+	    	   FPRINT siaf:nota_1,"   %8s                 %12s              %5s                %12s", \
+		    	   operador,giros:cons_nro_ctrol,suc_emisora,clave
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1, "              %-12e%-12s %2s %8s       %2s %12e     %s", \
+			        importe_giro,nombre,tipo_doc,nro_doc,tipo_pago,importe_rev,estado_tran
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"                          %-20s ", apellido
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1, \
+			        "------------------------------------------------------------------------------------"
+		        CALL giros:MISCpantalla_impres2
+		    else
+		        FPRINT siaf:nota_1,"   %8s                       %1s  %6s %1s               %5s        %12s", \
+			        operador,serie,nro_cheque,digito,suc_emisora,clave
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"              %-12e%-12s %2s %8s       %2s %12e     %s", \
+			        importe_giro,nombre,tipo_doc,nro_doc,tipo_pago,importe_rev,estado_tran
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"                          %-20s ",apellido
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1, \
+			        "------------------------------------------------------------------------------------"
+		        CALL giros:MISCpantalla_impres2
+		    end if   
+	    ELSE 
+	        if (codsiaf_temp == 70392 || codsiaf_temp == 70384 ) then
+		        FPRINT siaf:nota_1,"   %8s          %12s                 %5s      %-12s", \
+			        operador,giros:cons_nro_ctrol,suc_emisora,clave
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"  %12e %-12s      %2s %8s    %2s       %-12e%s", \
+			        importe_giro,nombre,tipo_doc,nro_doc,tipo_pago,importe_rev,estado_tran
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"  %20s ",apellido
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1, \
+			        "------------------------------------------------------------------------------------"
+		        CALL giros:MISCpantalla_impres2
+		    else
+		        FPRINT siaf:nota_1, "   %8s               %1s-%6s/%1s               %5s    %-12s", \
+			        operador,serie,nro_cheque,digito,suc_emisora,clave
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1," %12e  %-12s      %2s  %8s   %2s      %-12e %s", \
+			        importe_giro, nombre,tipo_doc,nro_doc,tipo_pago,importe_rev,estado_tran
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1,"  %20s ",apellido
+		        CALL giros:MISCpantalla_impres2
+		        FPRINT siaf:nota_1, \
+			        "------------------------------------------------------------------------------------"
+		        CALL giros:MISCpantalla_impres2
+		    end if   
+	    END IF 
+        
+	    SELECT (estado_tran)
+		    CASE "RECH"
+			    BREAK
+    		CASE "REV."	
+	    		giros:gir_total = giros:gir_total - importe_giro
+		    	BREAK
+    		CASE ELSE
+	    		giros:gir_total = giros:gir_total + importe_giro
+		    	BREAK
+	    END SELECT
+            
+	    cant_items_pick = cant_items_pick + 1
+	    if (tlr:jnl_status == HOST_ACCEPTED && tlr:jnl_sequence_corr == "") then
+		    giros:gir_cantidad = giros:gir_cantidad + 1
+	    end if
+	    CDS FINDNEXT DSC:tlr:jnl_context NOLOCK 
+    END WHILE 
+    CDS ENDSELECT DSC:tlr:jnl_context 
+    /* giros:gir_cantidad = cant_items_pick */
+    IF (cant_items_pick == 0) THEN
+	    MSGBOX "NO EXISTEN GIROS/TRANSFERENCIAS PAGADOS",OFB_OK,""
+	    CALL siaf:MISCclose_lis
+	    RETURN (-2)
+    ELSE
+	    IF (siaf:pantalla_impreso == "I") THEN
+	    	FPRINT siaf:nota_1,"     TOTAL GIROS/TRANSFERENCIAS PAGADOS: %-12e", \
+		    	giros:gir_cantidad
+		    CALL giros:MISCpantalla_impres2
+		    siaf:nota_1 = "   "
+		    CALL giros:MISCpantalla_impres2
+		    FPRINT siaf:nota_1,"     IMPORTE TOTAL: %12e ",giros:gir_total
+		    CALL giros:MISCpantalla_impres2
+	    ELSE 
+		    FPRINT siaf:nota_1,"     TOTAL GIROS/TRANSFERENCIAS PAGADOS: %-12e ", \
+		        giros:gir_cantidad
+		    CALL giros:MISCpantalla_impres2
+		    FPRINT siaf:nota_1,"     IMPORTE TOTAL: %12e ",giros:gir_total
+		    CALL giros:MISCpantalla_impres2
+	    END IF 
+    END IF 
+    REFRESH giros:gir_cantidad 
+    CALL giros:MISCpantalla_viewer (cuenta)
+    if (cuenta > 70) then
+	    RETURN (-1)
+    else	
+	    RETURN (0)
+    end if 
+END SUB 
+
+/*******/

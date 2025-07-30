@@ -1,0 +1,219 @@
+/****o* Pendientes de agrupación/OFB:op:MISCsave_brn
+* NOMBRE
+*   OFB:op:MISCsave_brn
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCsave_brn
+local LocalRetVal like lib:err_retval
+local LMensaje like common:csr_string
+local tmp_borrado_logico like op:op_borrado_logico
+
+	LET drv:save_button = drv:last_button
+	CALL  CSR:proc_list F_COPY LST:adt LST:adt_std
+
+	;SMC Si es auditor, no puede modificar datosd el operador
+	if (op:op_audit_auth == "X") then
+		errmsg lst:common:errmsg_list, "No posee permisos para modificar Operadores"
+		return (-2)
+	endif		
+	
+	IF (TESTFLAG(op:mode_flags,update))
+		CALL  OFB:CDSadt_op_new_chk
+		IF (RETVAL != 0)
+			CLEARFIELD op:adt_operator_flags
+		END IF
+		IF (adt_tlr_auth == " ")
+			CLEARFIELD adt_cash_min
+			CLEARFIELD adt_cash_max
+			CLEARFIELD adt_check_cash_max
+			CLEARFIELD adt_start_sk_menu
+		END IF
+
+		;Actualizo Fecha de Actualizacion de Datos de Usuario
+		call op:MISCfecha_ModifUsr
+        
+		;mercedes - para registrar fecha y hora de creacion de usuario
+		if (flag_new_user == 1) // usuario nuevo
+    
+			;Si estoy moviendo operadores de una sucursl a Otra...
+			IF (TESTFLAG(op:admin_flags,is_change)) then
+				;Checkeo que el operador con LOGIN o Numero no exista en esa sucursal
+				CDS SELECT FROM DSC:op:adt_op_table  BECOMES  DSC:op:adt_op_context \
+				WHERE op:op_branch_id == FLD:op:adt_branch_id && \
+				(op:op_login_id == FLD:op:adt_login_id || op:op_operator_id == FLD:op:adt_operator_id)
+				CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+				Let LocalRetVal = CDSRETVAL
+				if (cdsretval == 0)
+					cds extract DSC:op:adt_op_context op:op_borrado_logico into tmp_borrado_logico
+				end if
+				CDS ENDSELECT DSC:op:adt_op_context
+				if (LocalRetVal >= 0) then
+					if (tmp_borrado_logico == "S")
+						fprint FLD:common:csr_string_aux "EL USUARIO TIENE UNA BAJA PENDIENTE DE CIERRE DEL DIA EN LA SUCURSAL DESTINO, DEBE ESPERAR A LA APERTURA DEL DIA SIGUIENTE PARA TRANSFERIRLO"
+					else
+						fprint FLD:common:csr_string_aux "USUARIO CON LOGIN(%s) o NUMERO DE OPERADOR (%s)\n YA EXISTE EN LA SUCURSAL (%s)." \
+						op:adt_login_id,op:adt_operator_id, op:adt_branch_id
+					end if
+					errmsg lst:common:errmsg_list, FLD:common:csr_string_aux
+					resetflag op:admin_flags,borrado_logico
+					return (-2)
+				endif
+			endif
+
+			;Actualizo Fecha y hora de Actualizacion de Perfiles
+			call op:MISCfecha_perfiles			    
+            
+			if (!(TESTFLAG(op:admin_flags,is_change))) THEN
+				op_fecha_creacion = op_fecha_ul_modPerf 
+				op_hora_creacion = op_hora_ul_modPerf
+				MOVE op_fecha_creacion TO adt_fecha_creacion
+				MOVE op_hora_creacion TO adt_hora_creacion
+			end if
+
+			;a FVAL del campo inhibido setea estos campos para volver
+			;a habilitar operadores deshabilitados por exceder dias desde ult. log in
+			CLEARFIELD adt_fecha_ul_conex
+			CLEARFIELD adt_hora_ul_conex
+		end if	;fin mercedes
+	   
+		CALL OFB:adt_op_save
+        
+		//SMC se agrega un enter en el buffer de teclado para que no se quede
+		// esperando despues de journalizar.
+		ungetkey RT_ENTERFIELD
+
+		if (flag_new_user == 1)
+			//mercedes - journalizacion creacion de usuario
+			;SMC muevo sucusal del operador parea que se vea en el journal		  
+			MOVE op:adt_branch_id TO siaf:adt_mot_desc
+			let FLD:drv:INDjnl_rtn = OFB:op:JNLusuario_nuevo
+			let FLD:tlr:INDjnl_append = OFB:op:JNLusuario_nuevo
+			if (testflag(op:admin_flags,borrado_logico)) then
+				let siaf:codigo_siaf = 98021
+			else
+				let siaf:codigo_siaf = 98020
+			end if
+			//fin journalizacion
+		else
+			//mercedes - journalizacion cambio perfil
+			IF (TESTFLAG(op:admin_flags,is_change)) then
+				MOVE "CAMBIO DE SUCURSAL" TO siaf:adt_mot_desc
+			else
+				MOVE "ACTUALIZACION DEL USUARIO" TO siaf:adt_mot_desc			  
+			end if
+			hcomm:tran_status = MEMO
+			let tlr:INDdcol_scrn[0] = SCR:op:SCRNop_adt_post
+			let FLD:drv:INDjnl_rtn = OFB:op:JNLcambio_perfil
+			let FLD:tlr:INDjnl_append = OFB:op:JNLcambio_perfil
+			let siaf:codigo_siaf = 98010
+			//fin journalizacion
+		end if
+		hcomm:tran_status = MEMO
+		let tlr:INDdcol_scrn[0] = SCR:op:SCRNop_adt_post
+		call tlr:JNLout_of_tran   	  	   
+
+		;MLD sea grega para limites de supervision
+		IF (FLD:op:adt_tlr_auth == "X" || fld:op:adt_ret_auth == "X") then
+			RESETFLAG op:admin_flags,es_cajero
+		end if	
+       
+		let post:adt_limsupev_suc = op:adt_branch_id
+		LET post:adt_limsupev_op = op:adt_operator_id
+	ELSE
+		IF (TESTFLAG(op:mode_flags,delete) == 1)
+			/* MLD 19-08-1998 Verifico que el cajero haya rendido
+			antes de borrarlo */
+			let LocalRetVal = 0
+			call op:MISCverif_rend_del
+			let LocalRetVal = retval
+			/*Si el operador rindió todo, le doy la posibilidad de hacer la baja logica - Gabriel Falciola*/
+			if (LocalRetVal == -1)
+				if (testflag(op:admin_flags,borrado_logico) && testflag(op:admin_flags,is_change))
+					/*Si es un cambio de Sucursal, ya le di la opción de la baja lógica*/
+					let LocalRetVal = 0
+				else
+					FPRINT common:csr_string_171 "    El Operador tiene Operaciones de este Dia, por lo tanto no puede ser dado de baja fisicamente.\n¿Quiere realizar una Baja Pendiente de Cierre del Dia?."
+	            	MSGBOX common:csr_string_171 OFB_YESNO "Atención"
+					IF (RETVAL == 7) THEN
+						RETURN (-2)
+    	        	ELSE
+    	        		let LocalRetVal = 0
+    	        		setflag op:admin_flags,borrado_logico
+        	    	END IF
+        	    end if
+			end if
+			IF (LocalRetVal < 0) THEN
+				if (LocalRetVal == -2)
+					errmsg lst:common:errmsg_list, "    Operador sin Cierre. \nDebe Realizar Rendición y Cierre de Caja."                    
+					return (-2)
+				else
+					return (-2)
+				end if
+			ELSE
+				;if (!TESTFLAG(op:admin_flags,is_change) && (op:old_branch_id != common:sucursal_activa)) then
+				;if (!TESTFLAG(op:admin_flags,is_change) && (Dest_Server != LocalServer))  then
+				;    CALL  OFB:lib:adt_delete_verify
+				;    let LocalRetVal = retval
+				;end if
+				IF (LocalRetVal == 0)
+					if (!testflag(op:admin_flags,borrado_logico))
+						CALL  OFB:adt_op_del
+						let siaf:codigo_siaf = 98060
+					else
+						if (testflag(op:admin_flags,conexion_remota))
+							/*Pone la marca de borrado logico*/
+							call op:CDSborrado_logico
+							/*Si es transferencia o no*/
+							if (testflag(op:admin_flags,is_change)) 
+								let siaf:codigo_siaf = 98062
+							else
+								let siaf:codigo_siaf = 98061
+							end if
+						else
+							CALL  OFB:adt_op_del
+							/*Si es transferencia o no*/
+							if (testflag(op:admin_flags,is_change)) 
+								let siaf:codigo_siaf = 98062
+							else
+								let siaf:codigo_siaf = 98061
+							end if							
+						end if
+					end if
+					;SMC muevo sucusal del operador para que se vea en el journal
+					MOVE op:adt_branch_id TO siaf:adt_mot_desc
+					//SMC - journalizacion borrar usuario
+					let tlr:INDdcol_scrn[0] = SCR:op:SCRNop_adt_post
+					// Journalizo los mismos datos que en el alta
+					let FLD:drv:INDjnl_rtn = OFB:op:JNLusuario_nuevo
+					let FLD:tlr:INDjnl_append = OFB:op:JNLusuario_nuevo	
+					call tlr:JNLout_of_tran
+					//fin journalizacion
+				else
+					if (LocalRetVal == -1 ) then
+						return (-2)
+					endif
+				end if ;if retval == 0
+			ENDIF ;If retval >=0
+		ELSE
+			LET drv:button = drv:save_button
+			CALL  OFB:drv:but_up_enable
+		END IF
+	END IF
+END SUB
+/* Fin Journalizacion de campo MEMO por Reset send */
+
+/*******/

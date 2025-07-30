@@ -1,0 +1,189 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCclose_suc
+* NOMBRE
+*   OFB:tes:MISCclose_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+#define DT_TRAN_DEBUG 99
+
+SUB tes:MISCclose_suc
+
+	//Llamo a una rutina que verifica si se han cargado los Compromisos de Pago,
+	// de no ser así, aviso al RSC de tal situacion y dependiendo de la respuesta
+	// del mismo linkedito la tx de compromisos o no.
+	CALL post:MISCdispara_Comp
+	if (retval < 0)
+		return retval
+	end if    
+
+	//Verifica si se han registrdo las Piezas Buzon
+	CALL post:MISCreg_PzasBuz
+	if (retval < 0)
+		return retval
+	end if    	
+
+	/* Verifico que puede realizar el cierre de la sucursal */
+	/* MLD El tesoro debe estar cerrado */
+	call tes:CDScons_suc_lock
+	if (tes:suc_marca_cierre == "X") || (retval == -3)  || (retval == -2) then
+		let common:csr_string = "El dia ya esta cerrado"
+		errmsg common:errmsg_list,fld:common:csr_string
+		return (-1)
+	end if
+    
+	call tes:CDScons_tes_tesor
+	/* Verifico tesoro abierto con fecha de hoy */ 
+	if (tes:tes_marca_cierre != "X") && (tes:tes_fecha == common:system_date) then
+		ERRMSG LST:common:errmsg_list,"EL Tesoro debe Estar Cerrado"
+		return (-1)
+	end if        
+	
+	call tes:MISCestado_cajas
+	if (retval < 0) then
+		return (-1)
+	endif
+	
+	//SC 50190 FASE 2 - Evento 11
+	//Verifica que no haya piezas liquidadas parcialmente en las tablas stockp y StockpCDD
+	CALL post:CDSPiezasLiqParc
+	IF (RETVAL < 0) THEN
+		MSGBOX "Existen piezas CREM pendientes de liquidación. Por favor, finalice la liquidación antes de efectuar el cierre.",OFB_OK,"ERROR"
+		return (-2)
+	END IF
+
+	call CDSTesoCheq_read("Sucursal")
+	;lib:err_retval = retval
+
+	/*  *
+	* FGB 13.12.2005: comento para tratamiento de cheques
+	*
+	// Busco en la tabla MedPago para ver si se trata de un cheque 
+	CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX  where \
+	post:adt_mp_cod == tes:teso_cheq_moneda
+	CDS FINDFIRST DSC:post:MEDIOS_CTX LOCK
+	if (CDSRETVAL >= 0)
+		CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+	end if
+	CDS UNLOCK DSC:post:MEDIOS_CTX
+	CDS ENDSELECT DSC:post:MEDIOS_CTX
+    
+	if (lib:err_retval == 0 && post:adt_mp_adm == "I" && post:adt_mp_admban == "S")  // es cheque
+		errmsg common:errmsg_list "Quedan cheques en la sucursal pendientes de traspaso"
+		;return (0)
+	end if
+	*
+	* FGB fin
+	*/    
+
+  /* Guardo el del operador, el otro no se quien es todavia */
+	clearfield tes:segundo_id
+	let tes:suc_op1_cierre = op:op_operator_id
+	
+	clearfield tes:perfil_alto
+	clearfield tes:perfil_bajo
+	if (op:op_sup_auth == "X" || op:op_tesoro == "S") then
+		move "X" to tes:perfil_alto
+	else
+		if (op:op_tlr_auth == "X") then
+			move "X" to tes:perfil_bajo
+		endif
+	endif
+
+	/* Req. 127 muestra piezas, contenedores y sacas pendientes */
+	/* enero 1999 - Se modifica en Marzo 1999: antes se llamaba */
+	/* desde tlr:PRETclose_day - B. Petrella -*/
+	/* Resguardo Campos */
+	CALL tes:CDSren_caj_fecha
+	if (retval < 0)
+		return (-2)
+	end if
+	
+	/*MFM 2002.05.27 NUEVA RUTINA QUE VERIFICA SI HAY PIEZAS INTERDICTAS/A REBUT PARA DEVOLVER*/
+	CALL post:CDSDevolverPiezas
+	if (retval < 0)
+		return (-2)
+	end if
+
+	//SC 50230 - Evento 8
+	//Verifica si hay beneficios asignados pendientes de rendicion
+	CALL post:CDSPagSinRendir
+	IF (RETVAL < 0) THEN
+		MSGBOX "Existen beneficios asignados pendientes de rendir.",OFB_OK,"Advertencia"
+		CALL post:MISCRep_pagador
+	END IF     
+	
+
+	/* REQUERIMIENTO 151 - INFORMO SI QUEDAN PIEZAS PENDIENTES */
+	/* DE CUENTA CORRENTISTAS SIN CARGAR EL T&T JPM 05/99	   */
+	/* RESGUARDO CAMPOS */
+	SWAPDUP op:op_login_id
+	DUPFIELD op:op_login_id
+	SWAPDUP siaf:jnl_codigo_siaf
+	CALL post:CDSVerif_TTPend
+	
+	/* RECUPERO CAMPOS  */
+	SWAPDUP op:op_login_id
+	SWAPDUP siaf:jnl_codigo_siaf
+	IF (RETVAL != 0)
+		SWAPDUP op:op_login_id
+		POPUP post:SCRNinfPend
+		DUPFIELD op:op_login_id
+	END IF	
+
+	
+	/*Rutina que es llamada en " LIST tes:teclas_rapidas " para diferenciar si la Sucursal tiene 
+	mas de 2 cajas o no, dependiendo de esto entra en TRANclose_llave_suc o 
+	entra en TRANcierre_suc */
+	CALL tes:MISCaper_llave_tes
+	
+	//gpb:Generacion de alertas
+	CALL post:OFBgenera_alertas
+	
+	/* MLD 21-01-02 Se pide una sola combinación para todos los casos */
+	;IF (op:numero_cajas > 2 )THEN
+		/*Verifico que la sucursal tenga menos de 2 cajas, en caso contrario 
+		se solicita la password.*/
+		;CALL csr:listexec LST:tes:TRANclose_pass_suc /* cierre llave de tesoro*/
+		;if (LASTKEY == RT_ESC ) THEN
+			;let drv:button = TFB2
+			;CALL  drv:but_enable
+			;let drv:button = SFB3
+			;CALL  drv:but_enable
+			;CALL siaf:APPLterm		
+		;end if
+	;ELSE
+		;CALL csr:listexec LST:tes:TRANcierre_suc /* apert.de tesoro*/
+		; Si se ejecuta la transacción a traves del csr:listexec esta no hace ningún 
+		; DT_tran DT_START_TRAN. Esto hace que todos los campos utilizados en la nueva
+		; transacción formen parte de la transacción sobre la que se esta parado, en 
+		; este caso el descktop, lo cual hece que los campos permanezcan con valor
+		; para todas las transacciones que se ejecuten sobre el mismo.
+		; Para evitar esto se debe hacer que la transacción sea ejecutada por el driver *** MDG
+		LET FLD:drv:INDrun_funct = LST:tes:TRANcierre_suc
+	;ENDIF
+	
+	/*
+	if (LASTKEY == RT_ESC ) THEN
+		let drv:button = TFB2
+		CALL  drv:but_enable
+		let drv:button = SFB3
+		CALL  drv:but_enable
+		CALL siaf:APPLterm
+	end if
+	*/
+    
+END SUB
+
+/*******/

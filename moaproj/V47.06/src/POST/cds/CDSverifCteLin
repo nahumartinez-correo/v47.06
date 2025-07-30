@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:post:CDSverifCteLin
+* NOMBRE
+*   OFB:post:CDSverifCteLin
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSverifCteLin
+/* Verifica que si una pieza esta en una saca que se envio  */
+/* en un Cte. de Linea, la transaccion de la pieza no se    */
+/* pueda poder reversar -                       */
+/* May. 1998 - B. Petrella -    */
+	swapdup siaf:jnl_codigo_siaf
+	swapdup post:jnl_guia_despacho
+	swapdup post:jnl_guia_saca
+	if (post:codigo_siaf_ant == "99100")
+		let siaf:jnl_codigo_siaf = "99100"
+	else
+		IF (siaf:codigo_siaf == "99140")
+			let siaf:jnl_codigo_siaf = "99140"
+		ELSE
+			let siaf:jnl_codigo_siaf = "99040"
+		END IF
+	end if
+	let post:jnl_guia_saca = post:adt_codseq_nro
+
+  	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+    	(tlr:jnl_operator == op:op_operator_id && \
+    	siaf:jnl_codigo_siaf == siaf:jnl_codigo_siaf && \
+    	post:jnl_guia_saca == post:jnl_guia_saca)
+
+  	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+
+	IF (CDSRETVAL != 0) THEN
+		swapdup siaf:jnl_codigo_siaf
+		swapdup post:jnl_guia_despacho
+		swapdup post:jnl_guia_saca
+		CDS UNLOCK DSC:tlr:jnl_context
+		CDS ENDSELECT DSC:tlr:jnl_context
+		RETURN (-1)
+	END IF
+	CDS EXTRACT DSC:tlr:jnl_context post:jnl_guia_despacho
+	if (post:jnl_guia_despacho.numchars > 0)
+		if (codigo_siaf_ant != "99100") /* No es Expedicion rapida */
+			swapdup siaf:jnl_codigo_siaf
+			swapdup post:jnl_guia_despacho
+			swapdup post:jnl_guia_saca
+			CDS UNLOCK DSC:tlr:jnl_context
+			CDS ENDSELECT DSC:tlr:jnl_context
+			RETURN (-2)
+		endif
+	END IF
+    /*MFM - Pido supervision*/
+    CLEARFIELD siaf:cartel
+    let siaf:afecta_efectivo = " "
+    SETFLAG  tlr:tran_flags, supovr_request
+    SETFLAG  siaf:siaf_flags, req_tes
+    SETFLAG  siaf:siaf_flags, req_sup1
+    CALL siaf:MISCovr_process
+    IF (RETVAL < 0)THEN
+        RESETFLAG  tlr:tran_flags, supovr_request
+        RESETFLAG  siaf:siaf_flags, req_tes
+        RESETFLAG  siaf:siaf_flags, req_sup1
+        RETURN (-3)
+    END IF
+    INIT 33,0
+    
+    /*MFM - Borro los scaneos correspondientes*/
+    CALL CDSBorro_Scaneos("S")
+    CALL CDSBorro_Scaneos("R")
+	
+	swapdup siaf:jnl_codigo_siaf
+	swapdup post:jnl_guia_despacho
+	swapdup post:jnl_guia_saca
+
+	CDS UNLOCK DSC:tlr:jnl_context
+	CDS ENDSELECT DSC:tlr:jnl_context
+END SUB
+
+/*******/

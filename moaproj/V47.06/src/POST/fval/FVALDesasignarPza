@@ -1,0 +1,108 @@
+/****o* Expedición/OFB:post:FVALDesasignarPza
+* NOMBRE
+*   OFB:post:FVALDesasignarPza
+* DESCRIPCION
+*	Esta rutina UNICAMENTE marca la pieza/contenedor ingresada en el campo pza_saca  del campo post:DetalleContenidoGC y tabla DetTmp
+*  de la TX CIerre de Saca para desasignarla de la saca.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNllenadoSaca
+* DOCUMENTACION
+*  INICIATIVA 50571 (2019)
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALDesasignarPza
+	LOCAL cod_pieza_cont LIKE common:csr_string
+	LOCAL cant_pzas_saca LIKE post:adt_pzas_saca
+	LOCAL cant_cont_saca LIKE post:adt_cont_saca
+	
+	CALL CSR:trimfield (post:pza_saca)
+	
+	IF (post:pza_saca.numchars > 0) THEN
+		//PARA EL AGREGADO DE AR EN t&t VALIDOS
+		CALL MISCesTT(post:pza_saca)
+	//RESGUARDO PIEZA
+		LET cod_pieza_cont = post:pza_saca
+	  //RESGUARDO CONTADORES
+	  LET cant_pzas_saca = post:adt_pzas_saca
+	  LET cant_cont_saca = post:adt_cont_saca
+	  
+	    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+		    WHERE (op:op_operator_id == op:op_operator_id \
+		    &&  post:Pieza_id == cod_pieza_cont)
+       
+	    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+	    IF (CDSRETVAL == -801) THEN
+	    	CDS ENDSELECT DSC:post:DetTmp_ctx
+	    
+	 //PUEDE SER CONTENEDOR
+	    		FPRINT cod_pieza_cont "% 8.8s" post:pza_saca
+		    		
+				CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+					WHERE (op:op_operator_id == op:op_operator_id \
+					&& post:Pieza_id == cod_pieza_cont)
+			
+				CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+	    	IF (CDSRETVAL == -801) THEN
+					MSGBOX "LA PIEZA/CONT NO EXISTE PARA EXPEDIR.",0x00,"ERROR"
+					CDS UNLOCK DSC:post:DetTmp_ctx
+					CDS ENDSELECT DSC:post:DetTmp_ctx
+					CLEARFIELD post:pza_saca 
+					REFRESH post:pza_saca
+					RETURN -2
+				END IF
+    
+    END IF
+				
+		CDS EXTRACT DSC:post:DetTmp_ctx ALL 
+		CDS CLEARBUFFER DSC:post:DetTmp_ctx
+		//restauro contadores
+		LET  post:adt_pzas_saca = cant_pzas_saca
+		LET post:adt_cont_saca = cant_cont_saca
+		
+	 IF (post:MarcaBorrado == "*")
+		    //no es necesario enviar el mensaje MSGBOX "LA PIEZA YA SE ENCUENTRA DESASIGNADA.",0x00,"ERROR"
+				CDS UNLOCK DSC:post:DetTmp_ctx
+		    CDS ENDSELECT DSC:post:DetTmp_ctx
+				CLEARFIELD post:pza_saca 
+				REFRESH post:pza_saca
+				RETURN -2
+		END IF
+		
+		CLEARFIELD DetalleContenidoGC
+		REFRESH post:DetalleContenidoGC
+		
+		
+			FPRINT post:DetalleContenidoGC,"%-10.10e" FLD:tlr:jnl_date
+			/*MFM (9.11.2001) PS 4445*/
+			MOVE post:Pieza_id to SUBSTR(DetalleContenidoGC,11,32)
+			MOVE post:adt_novtt_grupo to SUBSTR(DetalleContenidoGC,44,2)
+			MOVE post:jnl_stockp_reenc_cul to SUBSTR(DetalleContenidoGC,47,1)
+			MOVE post:MarcaBorrado to SUBSTR(DetalleContenidoGC,49,1)
+		
+		REFRESH post:DetalleContenidoGC
+				            
+		CDS UNLOCK DSC:post:DetTmp_ctx
+		CDS ENDSELECT DSC:post:DetTmp_ctx
+		
+			
+				CALL post:MISCQuitaPiezaSaca
+			//Contadores de piezas y saca
+      	CALL post:MISCcontadores_exp
+		CLEARFIELD post:pza_saca
+		REFRESH post:pza_saca
+	END IF
+	
+	SETVALDONE pza_saca
+	NEXTFIELD post:pza_saca //para que el cursor se quede en el campo
+	
+End Sub
+
+/*******/

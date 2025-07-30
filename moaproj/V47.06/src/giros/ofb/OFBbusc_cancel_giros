@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBbusc_cancel_giros
+* NOMBRE
+*   OFB:giros:OFBbusc_cancel_giros
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBbusc_cancel_giros(LTipoReporte)
+
+local varl_retval like lib:err_retval
+local LSerie      like giros:Serie_fld
+local LNroGiro    like giros:NroGiro_fld
+local LDigito     like giros:digito_fld
+local LClave      like giros:cons_nro_ctrol
+local LCodigo     like siaf:codigo_siaf
+local LFliaG	  like giros:flia_giro_fld
+local varl_tipo   like common:csr_string
+local LUsu	  like tlr:jnl_op_login_id
+local ldia_viaje  like giros:dia_viaje
+local lhora_viaje like giros:hora_viaje
+local LClave_prev  like giros:clave_hdr_prev
+
+
+fprint varl_tipo,"%s",LTipoReporte
+
+clearfield giros:EstadoGiro_fld
+
+if ( giros:flia_giro_fld == "I" )
+	// Internacionales no tiene reversas 
+	return 0
+end if
+
+if ( varl_tipo == DSC_EMI && siaf:cancelacion == DSCERR_PRT_CHQ )
+	// En emisiones trx. canceladas por impresion con defectos
+	// fisicos en el cheque
+	giros:EstadoGiro_fld = "CA"
+	return 0
+end if
+
+clearfield giros:item_picklist
+let numero_item = 0
+move dsc:giros:pick_aux to fld:nombre_picklist
+
+// EXTRACT DE PICK DE DATOS DE GIROS.
+call giros:OFBpicklist_item
+varl_retval = retval
+if ( varl_retval < 0 )
+	return -2
+end if
+
+WHILE (varl_retval == 0 )
+	
+	LCodigo  = substr(item_picklist,0,5)
+	LSerie   = substr(item_picklist,6,1)
+	LNroGiro = substr(item_picklist,8,6)
+	LDigito  = substr(item_picklist,15,1)
+	LClave   = substr(item_picklist,30,12)
+	LFliaG   = substr(item_picklist,43,1)
+	post:fechaux = substr(item_picklist,45,8)
+	post:horaux  = substr(item_picklist,54,6)
+	LUsu         = substr(item_picklist,61,14)
+	ldia_viaje   = substr(item_picklist,76,8)
+	lhora_viaje  = substr(item_picklist,85,6)
+	LClave_prev  = substr(item_picklist,92,12)
+
+	clearfield giros:EstadoGiro_fld
+
+	if ( varl_tipo == DSC_PAG )
+	   if (post:fechaux == tlr:jnl_date && post:horaux >= tlr:jnl_time) then 
+			// Cancelacion del dia y posterior a la transaccion
+			// del pago.
+			if  (((flia_giro_fld == "P" && \
+			     (LCodigo == 70500 || LCodigo == 70540 ) ) || \
+				 (flia_giro_fld == "T" && ( LCodigo == 70502 || \
+			 	  LCodigo == 70540 ) ) ) && LClave_prev == giros:clave_hdr_giros && \
+			 	  LSerie == Serie_fld && LNroGiro == NroGiro_fld && \
+			 	  LDigito == digito_fld )
+						giros:EstadoGiro_fld = "CA"
+						tlr:jnl_op_login_id = LUsu
+						giros:dia_viaje  = ldia_viaje
+						giros:hora_viaje = lhora_viaje
+						break
+			else
+				if (flia_giro_fld == "W" && ( LCodigo == 70505 || \
+				    LCodigo == 70540 ) && \
+				    (LClave == cons_nro_ctrol &&  LClave_prev == giros:clave_hdr_giros))
+						giros:EstadoGiro_fld = "CA"
+						tlr:jnl_op_login_id = LUsu
+						giros:dia_viaje  = ldia_viaje
+						giros:hora_viaje = lhora_viaje
+						break
+				end if
+			end if
+	   end if
+	else
+		if  ( flia_giro_fld == LFliaG && (LCodigo == 70530 || \
+		 LCodigo == 70540 ) && \
+		 LSerie == Serie_fld && LNroGiro == NroGiro_fld && \
+		 LDigito == digito_fld )
+				giros:EstadoGiro_fld = "CA"
+				tlr:jnl_op_login_id = LUsu
+				break
+		else
+			if ( flia_giro_fld == "W" && ( LCodigo == 70530 || \
+			     LCodigo == 70540 ) && \
+			     (LClave == cons_nro_ctrol))
+				giros:EstadoGiro_fld = "CA"
+				tlr:jnl_op_login_id = LUsu
+				break
+			end if
+		end if
+
+	end if
+
+	numero_item = numero_item + 1
+
+	// EXTRACT DE PICK DE DATOS DE GIROS.
+	call giros:OFBpicklist_item
+	varl_retval = retval
+	if ( varl_retval < 0 )
+		break
+	end if
+
+END WHILE
+
+END SUB
+
+/*******/

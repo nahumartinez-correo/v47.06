@@ -1,0 +1,186 @@
+/****o* Pendientes de agrupación/OFB:tlr:jnl_init_resync
+* NOMBRE
+*   OFB:tlr:jnl_init_resync
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+/*--------------------------------------------------------------*/
+/* Init - Last Totals Update Missing							*/
+/* The last totals update precedes the last journal record.		*/
+/* This can occur if the last journal record was inserted with	*/
+/* a pre-log, and (due to a system crash) the subsequent single	*/
+/* logical unit of work used to update both the journal record	*/
+/* and the totals record was not done.							*/
+/* Resynchronization consists of updating the totals record		*/
+/* based on the information in the pre-logged journal record.	*/
+/* The totals record (checkpointed at the end of the previous	*/
+/* transaction) provides the following information:				*/
+/*   cash position at start of pre-logged transaction			*/
+/*   totals buckets at start of pre-logged transaction			*/
+/* The journal record for the pre-logged transaction provides	*/
+/* the following information:									*/
+/*   payget at end of preceding transaction						*/
+/*   payget at start of pre-logged transaction					*/
+/*   change in cash position for pre-logged transaction			*/
+/*   change in totals buckets for pre-logged transaction		*/
+/*   tran flags for pre-logged transaction						*/
+/* After the resynchronization the totals record is updated		*/
+/* to contain the following information:						*/
+/*   cash position at end of pre-logged transaction				*/
+/*   totals buckets at end of pre-logged transaction			*/
+/* After the resynchronization the journal record is updated	*/
+/* to contain the following information:						*/
+/*   payget at start of pre-logged transaction					*/
+/*   payget at end of pre-logged transaction					*/
+/*   change in cash position for pre-logged transaction			*/
+/*   change in totals buckets for pre-logged transaction		*/
+/*   tran flags for pre-logged transaction						*/
+/*--------------------------------------------------------------*/
+SUB tlr:jnl_init_resync
+    /* extract all fields from last jnl record */
+    cds extract DSC:CONjnl_write all
+    /* init payget and correction flag (they directly affect totals) */
+    CALL  OFB:CCTLinitialize /* init payget from last tran */
+    IF (testflag(tlr:jnl_tran_flags,correction))
+	setflag tran_flags,correction
+    END IF
+    /* recover business day flags for update in journal */
+    IF (testflag(tlr:jnl_state_flags,next_day))
+	setflag state_flags,next_day
+    END IF
+    /* recover tran related flags for update in journal */
+    IF (testflag(tlr:jnl_tran_flags,dup_tran))
+	setflag tran_flags,dup_tran
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,oprovr_request))
+	setflag tran_flags,oprovr_request
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,oprovr_granted))
+	setflag tran_flags,oprovr_granted
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,supovr_request))
+	setflag tran_flags,supovr_request
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,supovr_granted))
+	setflag tran_flags,supovr_granted
+    END IF
+    /* recover tran status for commit/backout decision (and for update) */
+    let hcomm:tran_status = jnl_status
+    call tes:MISCrecupero_espv
+    /* perform jnl/tots update for pre-logged transaction */
+    CALL  OFB:TLR_JNL_RESYNC /* custom resync decision */
+    if (retval == 0)
+	if (siaf:codigo_siaf == 99060)
+	    call csr:cleararray(post:Importe_Moneda)
+            call csr:cleararray(post:Tipo_Moneda)
+	    call post:MISCcalc_Tot_PagCli
+        end if
+
+        if (siaf:codigo_siaf == 99120) then
+            call post:CDSacepta_pm
+        end if
+        ;si es una venta de especies valorizadas la que tuvo
+        ;la caida, me fijno si se llego a actualizar el saldo
+        ;para ver si es necesario actualizarlo
+
+        if (siaf:codigo_siaf == 8500 && (post:adt_Modo == "NR" || tlr:jnl_sequence_corr.numchars != 0))
+            call tes:CDSget_imp_TesEspV(common:sucursal_activa,"N",op:op_operator_id,tes:espv_cod, tes:espv_subcod,tes:adt_espv_importe)
+            ;Si no llegó a actualizar
+            if (tes:importe_evant ==  tes:adt_espv_importe)
+                if (tlr:jnl_sequence_corr.numchars == 0)
+                    call tes:CDSmodif_TesEspV("resta",common:sucursal_activa, "N", op:op_operator_id,tes:adt_evaux_importe)
+            	    call post:MISCumev_asig_datos(common:sucursal_activa,tes:espv_cod,tes:espv_subcod,op:op_operator_id,"N",0,tes:adt_evaux_importe)
+            	else
+                    call tes:CDSmodif_TesEspV("suma",common:sucursal_activa, "N", op:op_operator_id,tes:adt_evaux_importe)
+            	    call post:MISCumev_asig_datos(common:sucursal_activa,tes:espv_cod,tes:espv_subcod,op:op_operator_id,"N",tes:adt_evaux_importe,0)
+            	end if
+            	; Ademas actualizo la AuxEspV para que lo marque como enviado
+
+            	/*
+            	cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+                    tes:adt_evaux_suc      == op:op_branch_id        && \
+                    tes:adt_evaux_op       == op:op_operator_id      && \
+                    tes:adt_evaux_prestran == tes:adt_evaux_prestran && \
+	            tes:adt_evaux_tesoro   == "N"                    && \
+	            tes:adt_evaux_envio    == "N"                    && \
+	            tes:adt_evaux_codigo   == tes:espv_cod && \
+	            tes:adt_evaux_subcod   == tes:espv_subcod
+	            cds findfirst dsc:tes:AuxEspV_ctx lock
+	            if (cdsretval == 0)
+	                cds clearbuffer dsc:tes:AuxEspV_ctx
+	                let tes:adt_evaux_envio = "S"
+	                cds append dsc:tes:AuxEspV_ctx tes:adt_evaux_envio
+	                cds update dsc:tes:AuxEspV_ctx lock
+	            end if
+	            cds unlock dsc:tes:AuxEspV_ctx
+	            cds endselect dsc:tes:AuxEspV_ctx
+	            */
+            end if
+
+            cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+            tes:adt_evaux_suc      == op:op_branch_id        && \
+            tes:adt_evaux_op       == op:op_operator_id      && \
+            tes:adt_evaux_prestran == tes:adt_evaux_prestran && \
+            tes:adt_evaux_tesoro   == "N"                    && \
+            tes:adt_evaux_envio    == "N"                    && \
+            tes:adt_evaux_codigo   == tes:espv_cod && \
+            tes:adt_evaux_subcod   == tes:espv_subcod
+            cds findfirst dsc:tes:AuxEspV_ctx lock
+            if (cdsretval == 0)
+                cds clearbuffer dsc:tes:AuxEspV_ctx
+                let tes:adt_evaux_envio = "S"
+                cds append dsc:tes:AuxEspV_ctx tes:adt_evaux_envio
+                cds update dsc:tes:AuxEspV_ctx lock
+            end if
+            cds unlock dsc:tes:AuxEspV_ctx
+            cds endselect dsc:tes:AuxEspV_ctx
+        end if
+
+        //cgw:(99097) - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+	if (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097) then
+	    CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX WHERE \
+   		post:adt_mp_adm == "I" && post:adt_mp_cod == siaf:moneda
+   	    CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+   	    LET lib:err_retval = CDSRETVAL
+	    IF (lib:err_retval == 0) THEN
+		CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+		CALL tes:MISCcapturo_cheque
+	    END IF
+	    CDS ENDSELECT DSC:post:MEDIOS_CTX
+	end if
+
+#ifdef SUCU_VIRTUAL
+        if (post:sucu_virtual == "S")
+            let post:cli_tipo = 2
+	else
+	    let post:cli_tipo = post:jnl_cli_tipo
+	endif
+#else
+	let post:cli_tipo = post:jnl_cli_tipo
+#endif
+
+        CALL  OFB:JNLupdate_commit /* commit cash and payget */
+    else
+	CALL  OFB:JNLupdate_backout /* backout cash and payget */
+    END IF
+
+    CALL  OFB:JNLwait /* in case cds nowait */
+    /* we must reread tots record - updates do "append as" */
+    cds findagain DSC:CONtots_write lock /* re-find record */
+    cds extract DSC:CONtots_write all /* re-extract fields */
+END SUB
+
+/*******/

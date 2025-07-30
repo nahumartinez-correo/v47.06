@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgrabo_tt
+* NOMBRE
+*   OFB:post:MISCgrabo_tt
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgrabo_tt
+
+    /*****************************************************/
+    /* Esta rutina se llama desde la pantalla de carga multiple de T&T*/
+    /* Si es de Control grabo el Track&Trace en la Tabla */
+    /* homónima, así no lo vuelven a utilizar otra vez.  */
+    /*****************************************************/
+	/*Se agrega un campo para Nota de Credito - Gabriel Falciola*/
+	clearfield Anula_tt
+	clearfield tt_journalizado
+	/*tt_aux = currentfield*/
+	IF (tt_aux != "") THEN
+		MOVE tt_aux TO post:track_trace
+		IF (cli_tipo == "")
+			// FGB (11.9.2000) - SAP - Modifico la fecha de busqueda, porque ahora en la
+			// tabla TTaux (cuya fecha se utiliza para la busqueda) puede haber operaciones
+			// de dias anteriores, y solo quiero que controle las del dia.
+			CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+				post:fecha == common:system_date && \
+				post:operador_tt == operador_tt && \
+				post:PresNro_tt == PresNro_tt && \
+				post:NroTrn_tt == NroTrn_tt && \
+				post:track_trace == post:tt_aux
+		ELSE
+			CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+				post:fecha == common:system_date && \
+				post:operador_tt == op:op_operator_id && \
+				post:PresNro_tt == post:PresNro && \
+				post:NroTrn_tt == post:PreDNroTrn && \
+				post:track_trace == post:tt_aux
+		END IF
+		CDS FINDFIRST TT_CTX LOCK
+		LET lib:err_retval = CDSRETVAL
+		CDS CLEARBUFFER TT_CTX
+
+		// FGB (11.9.2000) - SAP - como el campo post:fecha (sacado de la TTaux) ahora
+		// puede tener la fecha de dias anteriores, grabo siempre con la fecha del 
+		// dia para verificaciones posteriores.
+		CDS APPEND TT_CTX common:system_date AS post:fecha \
+			operador_tt \
+			PresNro_tt \
+			NroTrn_tt \
+			track_trace \
+			cp \
+			Anula_tt \
+			tt_journalizado \
+			adt_serv_tipo \
+			post:ent_misma_suc
+			
+		IF (lib:err_retval == -801)
+			CDS INSERT TT_CTX LOCK
+			IF (CDSRETVAL < 0)
+				RETURN (-2)
+			END IF
+		ELSE
+			CDS REPLACE TT_CTX LOCK
+			IF (CDSRETVAL < 0)
+				RETURN (-2)
+			END IF
+		END IF
+		CDS ENDSELECT TT_CTX
+		
+		//Robo de linea
+		CALL giros:CDSupd_TTgiros(post:track_trace,"S")           
+		
+		// FGB 1302.2004 - Combos -
+		call CDScb_prt_aux_save(adt_serv_nemonico,track_trace)
+		
+		/*para que no quede el campo tt cargado en el sistema  cuando cantidad es > 1*/
+		CLEARFIELD track_trace
+	END IF
+END SUB
+
+/*******/

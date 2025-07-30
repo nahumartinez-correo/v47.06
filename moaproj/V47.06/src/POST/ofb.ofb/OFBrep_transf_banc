@@ -1,0 +1,138 @@
+/****o* Transferencias Bancarias/OFB:post:OFBrep_transf_banc
+* NOMBRE
+*   OFB:post:OFBrep_transf_banc
+* DESCRIPCION
+*   Se realiza primero una consulta al HOST (997060) para recuperar todos los CLIENTES MEDIOS correspondientes a la sucursal activa.
+*   Luego se realiza una consulta al HOST (997060) para recuperar todos los CLIENTES UP correspondientes a la sucursal activa.
+*   Luego por cada uno de ellos se realiza una consulta al HOST (997021) para obtener el monto de las transferencias bancarias sin aplicar.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALrep_transf_banc
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   PS10915 Demora en el cierre de la sucursal a fin de mes
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBrep_transf_banc
+
+	local varl_retval like lib:err_retval
+	local varl_retval_aux like lib:err_retval
+	local idx    like siaf:i
+	local i_idx  like siaf:i
+	local cant like post:cantidad
+	
+	;CONSULTA PRIMERO TODOS LOS CLIENTES MEDIOS CORRESPONDIENTES A LA SUCURSAL ACTIVA
+	call csr:f_sadroppl(DSC:clientes_deuda)
+	call csr:f_sanewpl(DSC:clientes_deuda,PIC:climedio_multiple)
+	/*post:climed_ult_item = " "
+	//acordamos con Javier que al mandar vacio el tipo de cliente el autorizador lo tomara como que es cliente medio.
+	//esto es para no afectar el mensaje de consulta simple de cliente y que continue funcionando igual cuando se ponga la piloto de la v33
+	clearfield post:climed_tipo*/
+	//Se manda el tipo de cliente para hacerlo prolijo
+	post:climed_tipo = CLIMED
+	clearfield post:climed_numero
+	fprint climed_ult_item,"%-11.11s%s",post:climed_numero,post:climed_tipo
+	
+//	call post:OFBcmedio_clientes
+	call post:OFBcmedio_cliTB
+	if (retval < 0)
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+		clearfield post:climed_ult_item
+		return (-2)
+	end if
+	
+	;LUEGO CONSULTA TODOS LOS CLIENTES UP CORRESPONDIENTES A LA SUCURSAL ACTIVA
+	post:climed_tipo = UP_HOST
+	clearfield post:climed_numero
+	fprint climed_ult_item,"%-11.11s%s",post:climed_numero,post:climed_tipo
+
+	//call post:OFBcmedio_clientes
+	call post:OFBcmedio_cliTB
+	if (retval < 0)
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+		clearfield post:climed_ult_item
+		return (-2)
+	end if
+	resetflag giros:tran_send_mode,consulta_simple
+	resetflag giros:tran_send_mode,consulta_multiple
+
+		
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	call csr:myPickcontrol(dsc:clientes_deuda,common:csr_string,i_idx)
+	varl_retval = retval
+	varl_retval_aux = retval
+	
+	if (varl_retval_aux == 0) then
+	    //Creo picklist para guardar las transferencias
+	    call csr:f_sadroppl(DSC:transf_banc)
+	    call csr:f_sanewpl(DSC:transf_banc,PIC:climed_mult)
+	endif
+	
+	cant = 0 //cuenta la cantidad de clientes con TB sin aplicar
+	WHILE (varl_retval == 0)
+	    
+	    post:climed_tipo   = substr(common:csr_string,143,1)
+	    post:climed_numero = substr(common:csr_string,0,11)
+	    post:CloCuit       = substr(common:csr_string,12,11)
+	    post:CliRaz        = substr(common:csr_string,24,50)
+	    post:subcuentaDesc_CM   = substr(common:csr_string,75,30)
+	    
+  	    ;POR CADA CLIENTE REALIZO LA CONSULTA SIMPLE PARA OBTENER EL MONTO DE LAS TRANSFERENCIAS BANCARIAS SIN APLICAR
+	    call post:OFBconsulta_cliente
+	    if (retval == 0 && post:monto_TB > 0)
+	   	// Genero el picklist con los datos del reporte de transferencias bancarias sin aplicar:
+	   	/*tipo de cliente (Medio/UP) = post:climed_tipo (lo tengo en el picklist clientes_deuda)
+		la subcuenta del cliente medio o el NIS del cliente UP post:climed_numero (lo tengo en el picklist clientes_deuda)
+		Razón social del cliente post:CliRaz  (lo tengo en el picklist clientes_deuda)
+		Descricpion subcuenta CM post:subcuentaDesc_CM     (lo tengo en el picklist clientes_deuda)       
+		CUIT del cliente post:CloCuit (lo tengo en el picklist clientes_deuda)
+		Importe total de las transferencias bancarias sin aplicar (post:monto_TB)*/
+		clearfield common:csr_string
+		
+		fprint common:csr_string,"%1.1s%11.11s%50.50s%30.30s%11.11s%12.12s",post:climed_tipo,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM,post:CloCuit,post:monto_TB
+		call csr:f_saaddpl(DSC:transf_banc,common:csr_string)
+		cant = cant + 1
+	   endif
+	    let idx = idx + 1
+	    let i_idx = PL_GETITEM + idx
+	    clearfield common:csr_string
+	    call csr:myPickcontrol(dsc:clientes_deuda,common:csr_string,i_idx)
+	    varl_retval = retval
+	    clearfield post:monto_TB
+	
+	END WHILE
+	
+	resetflag giros:tran_send_mode,consulta_simple
+	resetflag giros:tran_send_mode,consulta_multiple
+	
+	if (cant > 0) then
+		//ARMO EL LISTADO Y LO IMPRIMO
+		call MISClst_TB_open 
+    		call MISClst_TB
+    		call MISClst_TB_close
+	else
+		msgbox "NO EXISTEN CLIENTES CON TRANSFERENCIAS BANCARIAS SIN APLICAR.",0x00,"Aviso"
+	endif
+	call csr:f_sadroppl(DSC:clientes_deuda)
+	call csr:f_sadroppl(DSC:transf_banc)
+	clearfield post:climed_tipo
+	clearfield post:climed_numero 
+	clearfield post:CliRaz
+	clearfield post:subcuentaDesc_CM
+	clearfield post:CloCuit
+	clearfield post:monto_TB
+	clearfield common:csr_string
+	
+END SUB
+
+/*******/

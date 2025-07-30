@@ -1,0 +1,173 @@
+/****o* Pendientes de agrupación/OFB:ovr:OVRro_ovr_proc
+* NOMBRE
+*   OFB:ovr:OVRro_ovr_proc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "ovrOVR.OFB.h"
+
+	SUB ovr:OVRro_ovr_proc
+	/*  This routine looks for a supervisor to process a needed */
+	/*  override.  The override is to be granted, denied or     */
+	/*  put on hold by a remote operator with supervisor        */
+	/*  authority.  If the operator has supervisor authority,   */
+	/*  no remote override request is generated, the override   */
+	/*  is granted immediately. However, if operator does not   */
+	/*  have supervisor authority, a picklist of operators with */
+	/*  supervisor authority and signed on is displayed.  The   */
+	/*  chosen operator (supervisor) receives the request.      */
+	/*  The operator sending the request waits for a decision   */
+	/*  by the operator (supervisor) who received the request.  */
+	/*  A message can be sent with the override request as well */
+	/*  as a message can be received with the response.         */
+	/*                                                          */
+	/*  This routines returns:                                  */
+	/*     0 - override granted                                 */
+	/*     1 - override not granted (error can cause this)      */
+	/*                                                          */
+	CALL  CSR:f_orsklock /* lock out resets over remote processing */
+
+	/* See if I am a supervisor and return ok if so */
+	if (testflag(common:menu_flags,AMsup_auth))
+		goto grant_exit
+	END IF
+
+	/* Display picklist of supervisors, which are currently signed-on
+	who can receive the override request */
+	CALL  OFB:op:CDSadt_op_sup_sel
+	if (retval != 0)
+		goto deny_exit
+	END IF
+
+	/* Move data into ovr fields, required by hcomm:SRQ_ro_send_req */
+	let ro_rcv_oper = op:adt_operator_id
+	move op:adt_node_id to ro_rcv_ws
+
+	/* clear field from last entry */
+	clearfield ro_resp
+
+	/* Collect optional message to send with override */
+	clearfield ro_info_desc
+	clearfield ro_info_msg1
+	clearfield ro_info_msg2
+	move DSC::ro_msg_ovr_rcv to ro_info_desc
+	/* Ensure that the user can enter data into the message fields */
+	unprotfield ro_info_msg1
+	unprotfield ro_info_msg2
+
+	popup POPovr_info_msg
+	if (lastkey != RT_SEND && lastkey != RT_PAGEDOWN)
+		goto deny_exit
+	END IF
+
+	/* Send the override request */
+	CALL  OFB:hcomm:SRQ_ro_send_req
+	if (retval != 0)
+		/* problem in send */
+		goto deny_exit
+	END IF
+
+	/* Wait for response */
+	fyimsg common:fyimsg_list,DSC:FYIwait_for_sup
+	DO
+		let hcomm:host_wait_time = OVR_WAIT_TIME
+
+		/* EC Para migrar de 2.7 a 3.6 le agrego en el llamado
+		que le pase como parametro el time */
+		CALL  OFB:hcomm:SRQ_wait_for_resp(fld:hcomm:host_wait_time)
+
+		/* cancelled out or timed out */
+		if (retval == 2 || retval == 3)
+			/* Reset out */
+			if (retval == 2)
+				/* discard reset key since locked out */
+				getkey
+			END IF
+			fyimsg clear
+			/* Cancel override request */
+			CALL  OFB:hcomm:SRQ_ro_send_cancel
+			if (retval != 0)
+				errmsg common:errmsg_list,DSC:ERRno_cancel_ovrreq
+			END IF
+			/* clear cancel message */
+			fyimsg clear
+			goto deny_exit
+		END IF
+		if (retval == 1)
+			fyimsg clear
+			errmsg common:errmsg_list,DSC:ERRno_delvr_ovrreq
+			goto deny_exit
+		END IF
+		if (testflag(ovr:event_flags,ovr_acknowledge))
+			fyimsg common:fyimsg_list,DSC:FYIsup_proc_ovr
+			resetflag ovr:event_flags,ovr_acknowledge
+			continue
+		END IF
+		if (testflag(ovr:event_flags,ovr_response))
+			resetflag ovr:event_flags,ovr_response
+			break
+		END IF
+	LOOP
+
+	/* Ensure that the returned message window is Read Only */
+	protfield ro_info_msg1
+	protfield ro_info_msg2
+	/* Received a good response, so put up info window, or fyi if no info */
+	fyimsg clear
+	SELECT (ro_resp)
+		case DSC:ro_grant
+			/* override granted */
+			if (ro_info_msg1.numchars == 0 && \
+				ro_info_msg2.numchars == 0)
+				fyimsg common:fyimsg_list,2,DSC:FYIovr_grant
+			else
+				move DSC:ro_grant_reason to ro_info_desc
+				popup POPovr_info_msg
+			END IF
+			goto grant_exit
+			break
+		case DSC:ro_deny
+			if (ro_info_msg1.numchars == 0 && \
+				ro_info_msg2.numchars == 0)
+				errmsg common:errmsg_list,DSC:ERRovr_deny
+			else
+				move DSC:ro_deny_reason to ro_info_desc
+				popup POPovr_info_msg
+			END IF
+			goto deny_exit
+			break
+		CASE ELSE /* hold */
+			if (ro_info_msg1.numchars != 0 || \
+				ro_info_msg2.numchars != 0)
+				move DSC:ro_hold_reason to ro_info_desc
+				popup POPovr_info_msg
+			END IF
+			goto deny_exit
+	END SELECT
+
+grant_exit:
+	move operator to ovr_sup_id
+	CALL  CSR:f_orskunlk
+	/* return 0 to indicate granted */
+	return
+
+deny_exit:
+/*	clearfield operator */
+	CALL  CSR:f_orskunlk
+	/* return 1 to indicate not granted */
+	return 1
+
+	END SUB
+
+/*******/

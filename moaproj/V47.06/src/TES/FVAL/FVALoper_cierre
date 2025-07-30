@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:tes:FVALoper_cierre
+* NOMBRE
+*   OFB:tes:FVALoper_cierre
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesFVAL.h"
+
+SUB tes:FVALoper_cierre
+    local i like siaf:i // contador
+    local cant like siaf:i // cantidad de cajeros sin rendir
+    if (tes:adt_op_id_orig.NUMCHARS == 0) then
+        call tes:CDSestado_cajas(common:system_date,"SAME_OR_BEFORE")
+        let cant = retval
+
+        if (cant > 0) then  // hay cajeros si cerrar sus cajas
+            call csr:f_sanewpl("operators",PIC:tes:operadores)
+            let i = 1
+            do
+            if (i > cant) then
+                break
+            end if
+            let op:adt_operator_id = texto_aux[i]
+            let op:adt_branch_id = op:op_branch_id
+            call op:CDSadt_op_opids_load
+            if (retval == 0) then
+                fprint common:csr_string \
+                       "CAJERO: %s    ESTACION: %s", \
+                   texto_aux[i],op:adt_node_id
+                call csr:f_saaddpl("operators",common:csr_string)
+            end if
+            let i = i + 1
+            loop
+           clearfield common:csr_string
+           call csr:f_sadopl "operators" common:csr_string
+           let tes:adt_op_id_orig = substr(common:csr_string,8,5)
+           refresh tes:adt_op_id_orig
+           call csr:f_sadroppl("operators")
+        else
+           let common:csr_string = "Error: No hay operadores sin rendir"
+           errmsg common:errmsg_list,FLD:common:csr_string
+           return (-2)
+        end if
+    else
+        CDS SELECT tes:rend_marca_cierre FROM DSC:rend_caj_table \
+        BECOMES DSC:rend_caj_context WHERE \
+            tes:rend_suc_id == op:op_branch_id && \
+            tes:rend_op_id ==  adt_op_id_orig
+        CDS FINDFIRST DSC:rend_caj_context NOLOCK
+        if (cdsretval < 0) then
+            MOVE "Operador sin registro de rendicion" \
+            TO common:csr_string
+            errmsg common:errmsg_list,fld:common:csr_string
+            CDS ENDSELECT DSC:rend_caj_context
+            return (-2)
+        end if
+        CDS EXTRACT DSC:rend_caj_context ALL
+        CDS ENDSELECT DSC:rend_caj_context
+        if (rend_marca_cierre != "") then
+            MOVE "La caja seleccionada ya esta cerrada" \
+            TO common:csr_string
+            errmsg common:errmsg_list,fld:common:csr_string
+            return (-2)
+        end if
+    end if
+END SUB
+
+/*******/

@@ -1,0 +1,176 @@
+/****o* Expedición/OFB:post:FVALcaratulaSaca
+* NOMBRE
+*   OFB:post:FVALcaratulaSaca
+* DESCRIPCION
+*   Rutina de validacion del campo Caratula de Saca de la TX Cierre de Saca.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNllenadoSaca
+* DOCUMENTACION
+* INICIATIVA 50571 (2019)
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALcaratulaSaca
+
+	//agrego German
+	call post:CDSborroDetTmp
+
+    if (post:CaratulaSaca.numchars < 20) then
+        let common:csr_string = "Error en la Caratula."
+        errmsg common:errmsg_list,FLD:common:csr_string
+        return (-2)
+    end if
+	
+	//Pasamos todo a mayúsculas - PS 10954
+    call  CSR:fld_to_upper (CaratulaSaca)
+
+	
+	call FVALcaratulaGral
+    IF (retval < 0)
+        let common:csr_string = "Error en la Caratula."
+        errmsg common:errmsg_list,FLD:common:csr_string
+	    RETURN (-2)
+    END IF
+    //PS 9133
+    CALL CDSCaratula_Usada
+    IF (retval < 0)
+        let common:csr_string = "La Caratula ya ha sido utilizada."
+        errmsg common:errmsg_list,FLD:common:csr_string
+	RETURN (-2)
+    END IF
+    
+    /* Si todos los cpos. están correctamente cargados */
+    /* Los protege y habilita el detalle del contenido de saca */
+       
+    call FVALmostrar_reenc
+    if (retval < 0)
+        nextfield mostrar_reenc
+        return (-2)
+    end if
+    
+    /*call FVALpesoKgSaca
+    if (retval < 0)
+        nextfield peso_en_kgs
+        return (-2)
+    end if
+    
+    CALL post:FVALpresSaca
+	if (retval < 0)
+        nextfield PresNroSaca
+        return (-2)
+    end if*/
+    
+    CALL CDSselTipoSaca
+    if (retval <= 0)
+        let common:csr_string = "Debe seleccionar por lo menos un Tipo de Saca"
+        errmsg common:errmsg_list,FLD:common:csr_string
+        nextfield post:SacaTipoDesc
+        return (-2)//para que funcione el nextfield
+    else
+		if (retval > 1)
+			Let SacaUnica = "S"
+			Call CDSverifGpo
+		      if (retval == -2)
+		        let common:csr_string = "Debe seleccionar Tipos de Saca de un mismo Grupo"
+		        errmsg common:errmsg_list,FLD:common:csr_string
+        		  //nextfield peso_en_kgs
+        		  nextfield post:SacaTipoDesc
+        		  return (-2)
+			else
+				if (retval == -1)
+			        let common:csr_string = "Inconsistencia Tipo 1 con la tabla RelMod"
+			        errmsg common:errmsg_list,FLD:common:csr_string
+        			 // nextfield peso_en_kgs
+        			 nextfield post:SacaTipoDesc
+        			  return (-2)
+				else
+					if (retval == -3)
+				        let common:csr_string = "Inconsistencia Tipo 1 con la tabla GSaca"
+				        errmsg common:errmsg_list,FLD:common:csr_string
+        				  //nextfield peso_en_kgs
+        				  nextfield post:SacaTipoDesc
+        				  return (-2)
+					else
+						if (retval == -4)
+					        let common:csr_string = "Debe seleccionar 1 solo Tipo de Saca si el Grupo es Vacío"
+					        errmsg common:errmsg_list,FLD:common:csr_string
+        					  //nextfield peso_en_kgs
+        					  nextfield post:SacaTipoDesc
+        					  return (-2)
+						end if
+					end if
+				end if
+			end if
+		else
+			Let SacaUnica = "N"
+			Call CDSverifGpo
+		end if
+    end if
+
+    
+    call MISCprotSaca
+
+    /* Carga DetTmp con los contenedores o encomiendas  */
+    /* que corresponda -                        */
+    call CDScargaDetSaca
+    if (retval >= 0)
+	  CALL CDSverCTRL_DetTmp
+	  IF (RETVAL >= 0)
+	        INIT 33,0
+
+      	  let drv:button = 2 /* Combo asoc al cpo. DetalleContenido */
+	        call drv:but_up_enable
+
+      	  let drv:button = 5 /* Marca - Desmarca */
+        	  call drv:but_up_enable
+          // 50571 - Si hay 2 operadores realizando el cierre del mismo tipo de saca (pors:ConcurrenciaSaca = TRUE) 
+          //se deshabilita el botono TODAS para obligar a escanear o seleccionar los T&T y poder controlar la concurrencia.
+          IF (post:ConcurrenciaSaca == TRUE)
+            let drv:button = 6 /* Todos */
+        	  call drv:but_disable
+					ELSE
+				  let drv:button = 6 /* Todos */
+        	  call drv:but_up_enable
+				  ENDIF
+        	  Let orden = 1
+				
+			  //Comento German
+         //unprotfield DetalleContenidoGC
+         unprotfield Pieza2
+         //MFM - Habilito el checkbox de Desasignar Pieza
+         ENABLECONTROL TAG:post:CHK0
+         call MISCrefLlenSaca
+
+	  ELSE
+	        INIT 33,0
+	    	  UNGETKEY 0x0191 /* RT SEND */
+	  END IF
+    else
+        //let common:csr_string = "No existen Contenedores/Piezas con las caract. ingresadas."
+       	/*MFM*/
+       	IF (mostrar_reenc == "S") THEN
+		  		let common:csr_string = "No existen Contenedores/Piezas reencaminadas con las caract. ingresadas."
+		  		mostrar_reenc = "N"
+				ELSE 
+					let common:csr_string = "No existen Contenedores/Piezas con las caract. ingresadas."
+					mostrar_reenc = "S"
+				END IF
+        errmsg common:errmsg_list,FLD:common:csr_string
+        call MISCunprotSaca
+        /*MFM*/
+        REFRESH mostrar_reenc
+        PROTFIELD mostrar_reenc
+        return (-2)
+        
+    end if
+
+END SUB
+
+/*******/

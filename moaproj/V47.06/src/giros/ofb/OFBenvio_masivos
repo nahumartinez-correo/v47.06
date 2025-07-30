@@ -1,0 +1,120 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBenvio_masivos
+* NOMBRE
+*   OFB:giros:OFBenvio_masivos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+
+SUB giros:OFBenvio_masivos(flia_giro)
+
+	local  varl_flia_giro like giros:flia_giro_fld
+	fprint varl_flia_giro,"%s",flia_giro
+
+	select (varl_flia_giro)
+		case "P"
+			giros:codigo_procesamiento = 992001
+			siaf:codigo_siaf = 70030
+			giros:consulta = 0
+			hcomm:INDhost_sndrt = OFB:giros:SEND70030
+			hcomm:INDhost_rcvrt = OFB:giros:RCVE70030_masivos
+			break
+
+		case "T"
+			giros:codigo_procesamiento = 992002
+			siaf:codigo_siaf = 70050
+			hcomm:INDhost_sndrt = OFB:giros:SEND70050
+			hcomm:INDhost_rcvrt = OFB:giros:RCVE70030_masivos
+			break
+
+		case "W"
+			giros:codigo_procesamiento = 992020
+			siaf:codigo_siaf = 70035
+			hcomm:INDhost_sndrt = OFB:giros:SENDcta_efvo_correo
+			hcomm:INDhost_rcvrt = OFB:giros:RCVEcta_efvo_correo
+			break
+
+	end select
+
+	resetflag  giros:tran_send_mode,consulta_simple
+	resetflag  giros:tran_send_mode,consulta_multiple
+
+	call post:CDSobtiene_secuen("STAN")
+	let siaf:fecha = common:system_date
+	let siaf:hora = common:time_of_day
+	giros:hora_viaje = siaf:hora
+	giros:dia_viaje  = siaf:fecha
+
+	call hcomm:COMM_stat_init
+
+	CDS CLEARBUFFER DSC:CONses_gm
+	CDS APPEND DSC:CONses_gm \
+		hcomm:tran_status AS giros:gm_status \
+		giros:codigo_procesamiento \
+		giros:CodRespuesta_comm \
+		post:adt_codseq_nro \
+		giros:hora_viaje \
+		giros:dia_viaje \
+		giros:Serie_fld \
+		giros:NroGiro_fld \
+		giros:digito_fld
+
+
+	CDS UPDATE DSC:CONses_gm LOCK NOWAIT
+	CDS WAIT DSC:CONses_gm
+	IF (cdsretval < 0)
+		CALL  OFB:lib:MISCcds_find_err /* display error msg */
+		return -2
+	END IF
+
+
+	call siaf:CDSchk_trxs_caidas
+    	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+    			clearfield hcomm:INDhost_sndrt 
+    			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    	elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    		clearfield hcomm:INDhost_sndrt
+    		clearfield hcomm:INDhost_rcvrt
+    	end if
+
+    	call giros:OFBdisable_bt_msg
+        call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    	call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh    lib:stat_message
+	refresh    statusline
+
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+		if ( varl_flia_giro == "P" )
+			clearfield giros:gm_cheque
+			call giros:CDSavanza_cheq("AN")
+			msgbox "TRANSACCION CON PROBLEMAS. DESTRUYA EL CHEQUE MANUALMENTE.",OFB_OK,"Atencion"
+		end if
+		return -2
+	end if
+
+END SUB
+
+
+/*******/
+

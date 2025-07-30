@@ -1,0 +1,105 @@
+
+/****o* Pendientes de agrupación/OFB:post:SVALgral_tt_cctrl
+* NOMBRE
+*   OFB:post:SVALgral_tt_cctrl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALgral_tt_cctrl
+    /*****************************************************/
+    /* Si es de Control, cantidad = 1 y cliente minorista
+     grabo el Track&Trace o el Codigo de Control  en la Tabla */
+    /* homonima, asi no lo vuelven a utilizar otra vez..  */
+    /*****************************************************/
+
+    IF (adt_serv_piezacont == "T" && cantidad == 1 &&  cli_tipo != 1)
+        	
+        /* Solo grabo si no estoy en una reversa y cantidad es = 1. */
+        IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+
+
+            IF (siaf:codigo_siaf != 12901 && siaf:codigo_siaf != 12902)
+
+				IF (cli_tipo == CLIMED)
+					TTcargado = true
+					IF ((ModalidadCC || OperacionCob || OperacionAut) && \
+						post:track_trace.numchars == 0)
+						TTcargado = false
+						RETURN (0)
+					END IF
+				END IF
+
+                CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+                	post:operador_tt == op:op_operator_id && \
+                	post:PresNro_tt == PresNro && \
+                	post:NroTrn_tt == post:PreDNroTrn
+                CDS FINDFIRST TT_CTX LOCK
+                lib:err_retval = CDSRETVAL
+                CDS CLEARBUFFER TT_CTX
+                CDS APPEND TT_CTX common:system_date AS post:fecha \
+                    op:op_operator_id AS operador_tt \
+                    PresNro AS PresNro_tt \
+                    PreDNroTrn AS NroTrn_tt \
+                    post:track_trace \
+                    tt_journalizado \
+                    adt_serv_tipo
+
+
+                /*Se agrega un campo para Nota de Credito - Gabriel Falciola*/
+                clearfield Anula_tt
+				CDS APPEND TT_CTX Anula_tt
+					//NI 50552 - se graba el campo que indica si la pieza es entregada en la misma sucursal
+				CDS APPEND DSC:TT_CTX 	post:ent_misma_suc 
+		
+				IF (lib:err_retval == -801)
+                	CDS INSERT TT_CTX LOCK
+                ELSE
+                	CDS REPLACE TT_CTX LOCK
+                END IF
+                CDS UNLOCK TT_CTX
+                CDS ENDSELECT TT_CTX
+
+            	IF (estado_presu == 1) //teclas rapidas
+            		//Robo de linea
+            		CALL giros:CDSupd_TTgiros(post:track_trace,"S")
+            	END IF
+				
+				// FGB 13.02.2004 - Combos - 
+                call CDScb_prt_aux_save(adt_serv_nemonico,track_trace)
+            ELSE
+
+                CDS SELECT FROM cod_ctrl_tbl BECOMES cod_ctrl_ctx
+                CDS CLEARBUFFER cod_ctrl_ctx
+                CDS APPEND cod_ctrl_ctx common:system_date AS post:fecha \
+                    op:op_operator_id AS operador_tt \
+                    PresNro AS PresNro_tt \
+                    PreDNroTrn AS NroTrn_tt \
+                    post:cod_ctrol \
+                    tt_journalizado
+                CDS INSERT cod_ctrl_ctx LOCK
+                CDS UNLOCK cod_ctrl_ctx
+                CDS ENDSELECT cod_ctrl_ctx                    
+				
+				// FGB 13.02.2004 - Combos - 
+				call CDScb_prt_aux_save(adt_serv_nemonico,cod_ctrol)
+				
+            END IF
+        END IF
+    END IF
+
+END SUB
+
+/*******/

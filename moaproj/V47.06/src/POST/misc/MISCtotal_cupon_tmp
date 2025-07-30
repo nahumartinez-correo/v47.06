@@ -1,0 +1,100 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISCtotal_cupon_tmp
+* NOMBRE
+*   OFB:post:MISCtotal_cupon_tmp
+* DESCRIPCION
+*   Totalizador de cupones en pantalla Cobro por Cuenta de Terceros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay registros, inicializa totalres con valores en cero
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCcupon_tmp_agreg
+*   OFB:post:MISCcupon_tmp_borrar
+*   OFB:post:MISCvalida_cupon_tmp
+*	OFB:SVAL6670
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+SUB post:MISCtotal_cupon_tmp(Tipo)
+local l_imp_total like siaf:tefectivo_pes
+
+IF (post:estado_presu == "3") THEN
+	 CDS SELECT FROM "PresuDet" BECOMES "PresuDet_ctx" WHERE \
+	 (post:op_operator_id == op:op_operator_id && \
+	 post:fecha == common:system_date && \
+	 post:PresNro == post:PresNro && \
+	 post:PreDNroTrn != post:PreDNroTrn)
+	
+	CDS FINDFIRST "PresuDet_ctx" LOCK
+	IF (CDSRETVAL < 0) THEN
+		CDS ENDSELECT "PresuDet_ctx"
+		RETURN 0
+	END IF
+	CDS AGGREGATE "PresuDet_ctx" SUM siaf:importe AS l_imp_total 
+	CDS EXTRACT "PresuDet_ctx" l_imp_total
+	l_imp_total = l_imp_total + post:importe_CCT
+	IF (l_imp_total > "9999999999,99") THEN
+		MSGBOX "NO PODRA MODIFICAR EL CUPON. EL IMPORTE TOTAL SUPERA EL MAXIMO PERMITIDO POR EL CAMPO.",0X00,"ALERTA"
+		CDS ENDSELECT "PresuDet_ctx"
+		RETURN (-2)
+	ENDIF
+	CDS ENDSELECT "PresuDet_ctx"
+ELSE
+	//Actualiza contadores cupones en pantalla, 
+	//Sumariza importes y cantidad de cupones del lote registrado en cupon_tmp.
+
+	IF (Tipo == "CONSULTA" && TESTFLAG(admin:mode_flags,act)) THEN
+		CDS SELECT FROM DSC:post:cupon_tmp_table BECOMES DSC:post:cupon_tmp_ctx WHERE \
+		post:cupon_tmp_operator == op:op_operator_id && \
+		post:id_cupon_CCT != post:id_cupon_CCT SORT "primary"
+	ELSE
+		CDS SELECT FROM DSC:post:cupon_tmp_table BECOMES DSC:post:cupon_tmp_ctx WHERE \
+		post:cupon_tmp_operator == op:op_operator_id SORT "primary"
+	ENDIF
+	CDS FINDFIRST DSC:post:cupon_tmp_ctx LOCK
+	IF (CDSRETVAL < 0) THEN
+		//No hay registros
+		CDS UNLOCK DSC:post:cupon_tmp_ctx
+		CDS ENDSELECT DSC:post:cupon_tmp_ctx
+		post:cant_cupon_CCT = 0
+		post:imp_total_CCT = 0
+		REFRESH post:cant_cupon_CCT
+		REFRESH post:imp_total_CCT
+		RETURN 0
+		//RETURN (-2)
+	END IF
+	CDS AGGREGATE DSC:post:cupon_tmp_ctx \
+	SUM post:importe_CCT AS l_imp_total  \
+	COUNT post:id_comitente_CCT AS post:cant_cupon_CCT
+
+	CDS EXTRACT DSC:post:cupon_tmp_ctx \
+	    l_imp_total post:cant_cupon_CCT
+	   
+	IF (Tipo == "CONSULTA") then
+		l_imp_total = l_imp_total + post:importe_CCT
+		IF (l_imp_total > "9999999999,99") THEN
+			IF (TESTFLAG(admin:mode_flags,act)) THEN
+				MSGBOX "NO PODRA MODIFICAR EL CUPON. EL IMPORTE TOTAL SUPERA EL MAXIMO PERMITIDO POR EL CAMPO.",0X00,"ALERTA"
+			ELSE
+				MSGBOX "NO PODRA INGRESAR EL CUPON. EL IMPORTE TOTAL SUPERA EL MAXIMO PERMITIDO POR EL CAMPO.",0X00,"ALERTA"
+			ENDIF
+			CDS UNLOCK DSC:post:cupon_tmp_ctx
+			CDS ENDSELECT DSC:post:cupon_tmp_ctx
+			RETURN (-2)
+		ENDIF
+	ELSE
+		post:imp_total_CCT = l_imp_total
+	ENDIF
+	
+	CDS UNLOCK DSC:post:cupon_tmp_ctx
+	CDS ENDSELECT DSC:post:cupon_tmp_ctx
+
+	REFRESH post:cant_cupon_CCT
+	REFRESH post:imp_total_CCT
+ENDIF
+END SUB    
+/*******/

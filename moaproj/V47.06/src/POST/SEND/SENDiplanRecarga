@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:post:SENDiplanRecarga
+* NOMBRE
+*   OFB:post:SENDiplanRecarga
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDiplanRecarga
+	local loc_importe like siaf:importe_aux
+    local loc_utility like sf1_utility
+	local l_str_tmp like common:csr_string
+	local sclave like common:csr_string
+	local key like common:csr_string
+	local l_espacios like post:checkeo
+	local l_mensaje like fieldRespuestaBULK
+	local l_principio like siaf:i
+	l_principio = 0
+PRINCIPIO:
+	;SMC se agrego el envio de Utility en los mensajes
+	move sf1_utility to loc_utility 
+    ;SMC Si es Reversa, manda codigo de Solicitud de Pin 6680
+    if ((TESTFLAG(tlr:tran_flags,correction)) || (testflag(common:rt_flags,reentry_active)))
+        hcomm:CodTran = 6680
+    else
+	    hcomm:CodTran = post:adt_tran_sf1_codigo  //siaf:codigo_siaf
+	end if
+	
+	; Para el ruteo... (SwitchDemand)
+	l_str_tmp = 0x9999
+	COMM PUT l_str_tmp msg type BINARY length 2
+	hcomm:TranVersion = post:adt_tran_sf1_ver
+	hcomm:orig_line_status = "S"
+	
+	call hcomm:SENDheaderV105
+
+	clearfield common:csr_string
+	
+	if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+		;  concateno, relleno, encripto y mando.
+        loc_importe =  post:importe_aux * 100
+	    /* Utility */
+	    COMM  PUT loc_utility TO MSG TYPE ASCII LENGTH 8 JUSTRIGHT FILL 0
+		;call MISCconcatenar(loc_utility, 8, "0")
+	    /* ID Pin */
+	    call MISCconcatenar(result_id_pin,20,"0")
+	    /* Ticket */
+	    call MISCconcatenar(sf1_nro_secuencia,4,"0")
+     	/* Monto */
+     	call MISCconcatenar(loc_importe,13,"0")
+        if (post:importe_aux == 0) || (post:importe_aux.numchars == 0)
+    	    msgbox "Problemas en la transaccion. Reversela e ingresela nuevamente", \
+           OFB_OK,"Error"
+           return -2
+        endif
+ 	else    /* es una anulacion de pin */
+	    loc_importe =  siaf:importe * 100
+	    /* Utility */
+	    COMM  PUT loc_utility TO MSG TYPE ASCII LENGTH 8 JUSTRIGHT FILL 0
+	    ;call MISCconcatenar(loc_utility,8,"0")
+        /* ticketorig */
+        call MISCconcatenar(sf1_nro_secuencia,4,"0")
+ 	 	/* Monto */
+     	call MISCconcatenar(loc_importe,13,"0")
+        /* fechaorig */
+        call MISCconcatenar(jnl_date_ori,8,"0")
+        /* horaorig */
+        call MISCconcatenar(jnl_time_ori,6,"0")
+    end if
+    
+    // FGB 12.08.05: se agrega el timeout al mensaje para que el HOST lo considere
+    call MISCconcatenar(hcomm:timeout,3,"0")
+    
+	; PAW 18.06.2003 - Encripto el viaje: semilla para el encriptado
+	fprint sclave "%04s%06s%04s%02s%02s%02s%02s%02s",\
+			tlr:jnl_sequence,\
+			op:op_operator_id, \
+			substr(tlr:jnl_date,0,4), \
+			substr(tlr:jnl_time,0,2), \
+			substr(tlr:jnl_date,4,2), \
+			substr(tlr:jnl_time,2,2), \
+			substr(tlr:jnl_date,6,2), \
+			substr(tlr:jnl_time,4,2)
+
+	DLL _BfJ_creaClave( sclave key )
+	DLL _BfJ_inicia( key )
+	DLL _BfJ_tamanioRequerido( common:csr_string )
+	siaf:i = retval
+	;DLL _BfJ_padded8( common:csr_string ,siaf:i)
+	dprint "\n\n ENCRIPTO: %s \n\n" common:csr_string
+	l_espacios = siaf:i * -1
+	
+	fprint common:csr_string "%*.*s", l_espacios, siaf:i, common:csr_string
+	
+	if (l_principio == 0) then
+	    COMM SETRESOURCE hcomm:host1 INIT_SEND
+	    COMM  PUT common:csr_string TO msg TYPE ASCII LENGTH siaf:i
+	    COMM GET l_mensaje from msgbegin type BULK length siaf:i
+	    COMM SETRESOURCE hcomm:host1 INIT_SEND
+	    l_principio = l_principio + 1
+	    GOTO PRINCIPIO
+	end if
+	;Modificaciones para el RTjava
+	DLL _BfJ_encripta(l_mensaje,l_mensaje,siaf:i )
+    COMM  PUT l_mensaje TO MSG TYPE BULK LENGTH siaf:i
+	
+	;DLL _BfJ_encripta(common:csr_string,common:csr_string,siaf:i )
+	;COMM  PUT common:csr_string TO MSG TYPE ASCII LENGTH siaf:i
+
+	DLL _BfJ_fin()
+END SUB
+
+/*******/

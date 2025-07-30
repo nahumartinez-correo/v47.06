@@ -1,0 +1,118 @@
+/****o* Pago en Destino/OFB:post:MISCproc_prodvar_ped
+* NOMBRE
+*   OFB:post:MISCproc_prodvar_ped
+* DESCRIPCION
+*   Procesa los datos del Producto Vario a cargar en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVAL30050
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCproc_prodvar_ped
+
+	siaf:afecta_efectivo = "+"
+	
+	post:DctoCM_bc = post:item_dcto_pv
+	post:adt_prodvs_cod = post:prod_serv
+	
+	/* Inicio consulta tabla ProdVs*/
+	IF (post:prod_serv.NUMCHARS > 0) THEN
+		CDS SELECT FROM DSC:post:adt_prodvs_table BECOMES DSC:post:adt_prodvs_context \
+			WHERE post:adt_prodvs_cod == post:prod_serv
+		
+		CDS FINDFIRST DSC:post:adt_prodvs_context NOLOCK
+		CDS EXTRACT DSC:post:adt_prodvs_context \
+			post:adt_prodvs_desc
+		
+		CDS ENDSELECT DSC:post:adt_prodvs_context		
+	END IF
+	CALL post:CDSprodvs_load
+	/* Fin consulta tabla ProdVs */
+
+	/* Inicio consulta tabla Stock */
+	CDS SELECT FROM DSC:post:adt_stock_table BECOMES DSC:adt_stock_context \
+		WHERE adt_stock_codprod == post:adt_prodvs_cod && \
+		post:adt_stock_stock != 0 && \
+		post:adt_stock_coddep == 0
+	CDS FINDFIRST DSC:post:adt_stock_context NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:post:adt_stock_context \
+			post:adt_stock_stock \
+			post:adt_stock_coddep \
+			post:adt_prodvs_ctl_stock
+	END IF
+	CDS ENDSELECT DSC:post:adt_stock_context
+	/* Fin consulta tabla Stock */
+	
+	/* Inicio consulta tabla transac */	
+	CDS SELECT FROM DSC:post:TRAN_TAB BECOMES DSC:post:TRAN_CTX \
+		WHERE siaf:adt_tran_codigo == 40002
+	
+	CDS FINDFIRST DSC:post:TRAN_CTX NOLOCK
+	CDS EXTRACT DSC:post:TRAN_CTX \
+		siaf:adt_tran_fliatran 
+	
+	CDS ENDSELECT DSC:post:TRAN_CTX		
+	/* Fin consulta tabla transac */
+
+	post:adt_prodvs_aliciva = post:item_alicuota_pv 
+	post:adt_prodvs_tarifa = post:item_importe_pv
+	
+	//Cargo el campo post:tarifa con el importe bonificado del bien de cambio 
+	//correspondiente y calculo el importe del descuento
+	IF (post:DctoCM_bc > 0) THEN
+		INIT 22,1
+		post:Imp_DctoCliMed = (post:adt_prodvs_tarifa * post:DctoCM_bc) / 100
+		INIT 22,0
+		post:bonificaCM = "S"
+	ELSE
+		CLEARFIELD post:Imp_DctoCliMed
+		CLEARFIELD post:Dcto_CliMed
+	END IF
+	
+	post:TasaIva = post:item_alicuota_pv
+	siaf:importe = post:item_importe_pv
+
+	//desgloso el importe sin iva del servicio (tarifa)
+	CALL MISCdesglosaIva(post:item_importe_pv,post:TasaIva,1,0)
+	
+	//genero los datos del descuento del Producto Varios para grabar en la AuxIva
+	//SC 50170
+	CALL CDSUpdate_ImpreIva(post:adt_prodvs_aliciva, post:ImporteSinIva_bis, post:ImporteIva_bis, post:SobreTasaIva)		
+	
+	siaf:ImporteSinIva = post:ImporteSinIva
+	siaf:ImporteConIva = post:item_importe_pv
+	post:ImporteConIvaNeto = siaf:ImporteConIva
+	post:ImporteSinIvaNeto = siaf:ImporteSinIva
+	post:ImporteConIvaNeto = post:item_importe_pv
+	post:ImporteSinIvaNeto = post:ImporteSinIva
+	post:ImporteConIva = post:item_importe_pv
+	post:ImpServUP = post:item_importe_pv
+	post:AliServUP = post:adt_prodvs_aliciva
+
+	IF (post:fld_promo_imp == 0) THEN	// ESTO ES PARA SABER SI LA PROMOCION
+		post:promo_aplica = "N"					// SE APLICA O NO MDG
+		post:promo_desc = ""
+	ELSE
+		post:promo_aplica = "S"
+	END IF
+
+	post:codesp_serv = post:codesp_serv 
+	post:subcod_serv = post:subcod_serv
+	post:secuencia_vta = PRODUCTO_SERV
+	post:precio_unitario = post:item_importe_pv
+	
+	post:tran_original = "N"
+
+END SUB
+
+/*******/

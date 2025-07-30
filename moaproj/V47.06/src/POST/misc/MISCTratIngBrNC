@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:post:MISCTratIngBrNC
+* NOMBRE
+*   OFB:post:MISCTratIngBrNC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCTratIngBrNC(Presupuesto)
+local ind like siaf:i
+local l_importeConIva like post:ImporteConIva
+local l_importeSinIva like post:ImporteSinIva
+
+	if (PreDForFis.numchars == 0)
+		EstadoFormu = SIN_FORM
+	else
+		EstadoFormu = CON_FORM
+	end if
+	if (fliatran_vec[0].numchars != 0)
+		/*TRATAMIENTO CON VECTORES*/
+			ind = 0
+			while (ind < MAX_VEC_INGBR && fliatran_vec[ind].NUMCHARS != 0)
+				call CDSAcumImpSes(0,0,impciva_vec[ind],impsiva_vec[ind],fliatran_vec[ind],siaf:afecta_efectivo,Presupuesto,siaf:moneda,siaf:moneda)
+				ind = ind + 1
+			end while
+	else
+		/*TRATAMIENTO CON CAMPOS*/
+		/*Las transacciones de esta familia deben acumularse de acuerdo a la familia del motivo*/
+		l_importeConIva = post:ImporteConIva
+		l_importeSinIva = post:ImporteSinIva
+
+		if (fld_promo_imp > 0)
+			ImporteConIva = ImporteConIvaNeto
+			ImporteSinIva = ImporteSinIvaNeto
+		endif
+
+		if (post:jnl_flia_tran == "CSV")
+			//gpb:SC50368 - AUT-1962
+			//Oficios Judiciales
+			IF (siaf:codigo_siaf == 7210) THEN
+				call CDSAcumImpSes(0,0,ImporteConIva,ImporteSinIva,post:jnl_flia_tran,siaf:afecta_efectivo,Presupuesto,siaf:moneda,siaf:moneda)
+			ELSE
+				call CDSAcumImpSes(0,0,ImporteConIva,ImporteSinIva,siaf:adt_mot_fliatran,siaf:afecta_efectivo,Presupuesto,siaf:moneda,siaf:moneda)
+			END IF
+		else
+			call CDSAcumImpSes(0,0,ImporteConIva,ImporteSinIva,post:jnl_flia_tran,siaf:afecta_efectivo,Presupuesto,siaf:moneda,siaf:moneda)
+		end if
+
+		post:ImporteConIva = l_importeConIva
+		post:ImporteSinIva = l_importeSinIva
+	end if
+
+	/*TRATAMIENTO PARA VENTAS UP*/
+	/*Se acumula en la tabla AuxIvaUP los importes de los Servicios, Opcionales y Monto Fijo
+	por Operador, Presupuesto, Familia y Alicuota*/
+	if	(cli_tipo == CLIUP)
+		if (siaf:codigo_siaf != 99160) then // Para los intereses de cheque diferido, este bloque me borra
+											// el post:ImporteSinIva y quedan mal los totales del operador.
+			/*Se acumula el Servicio*/
+			if (post:jnl_flia_tran == "CSV")
+				/*Se acumulan en rutinas particulares de la transacción*/
+				if (siaf:codigo_siaf != 6900)
+					call CDSAcumImpUP(0,ImpServUP,siaf:adt_mot_fliatran,AliServUP,siaf:afecta_efectivo,Presupuesto)
+				end if
+			else
+				/*Se acumulan en rutinas particulares de la transacción*/
+		        if (siaf:codigo_siaf != 99020)
+					call CDSAcumImpUP(0,ImpServUP,post:jnl_flia_tran,AliServUP,siaf:afecta_efectivo,Presupuesto)
+				end if
+			end if
+	
+			/*Se acumulan los Opcionales*/
+			ind = 0
+			while (ind < MAX_VEC_OPC && flia_opc[ind].NUMCHARS != 0)
+				call CDSAcumImpUP(0,cos_opc[ind],flia_opc[ind],ali_opc[ind],siaf:afecta_efectivo,Presupuesto)
+		    	ind = ind + 1
+	    	end while
+	
+			/*Se acumula el Monto Fijo*/
+			if (adt_tarif_fijo > 0)
+				call CDSAcumImpUP(0,adt_tarif_fijo,post:adt_tarif_uneg,adt_tarif_fj_aliciva,siaf:afecta_efectivo,Presupuesto)
+			end if
+		endif
+	end if
+END SUB
+
+/*******/

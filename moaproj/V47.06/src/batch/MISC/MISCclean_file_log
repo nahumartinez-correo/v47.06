@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:batch:MISCclean_file_log
+* NOMBRE
+*   OFB:batch:MISCclean_file_log
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "batchmisc.h"
+
+SUB batch:MISCclean_file_log(archivo)
+/*Esta rutina depura el arhivo que se pase como parámetro si tiene más de 5.000 líneas, 
+moviendo las mismas a un archivo de backup - Gabriel Falciola*/
+    local pos_extension like siaf:i
+    local pos_extension2 like siaf:i
+    local pos_extension3 like siaf:i
+    local archivo_back like common:csr_string
+    local archivo_log like common:csr_string
+	local linea like common:csr_string
+	local cant_lineas like siaf:i
+	local contador like siaf:i
+	local contador_pick like siaf:i
+	
+    archivo_log = archivo
+    common:csr_string = "\."
+    call csr:str_search(archivo_log, common:csr_string,pos_extension2)
+    if (retval == 0)
+    	pos_extension = pos_extension2
+		common:csr_string = archivo_log
+    	pos_extension3 = common:csr_string.numchars - 1
+    	common:csr_string = "-"
+    	fprint archivo_back,"%s%s%s",substr(archivo_log,0,pos_extension),common:csr_string,substr(archivo_log,pos_extension2,pos_extension3)
+	else
+		fprint archivo_back,"%s\-",archivo_log
+	end if
+	
+    /*Cuento las líneas del archivo*/
+    cant_lineas = 0
+    call csr:file_open 1 archivo_log "r"
+	if (retval == 0) then
+		call csr:f_sanewpl "log_file" PIC:lib:csr_dynamic_pic
+		if (retval == 0) then
+			// pongo el contenido del archivo de log historico en un picklist
+			do
+				call csr:file_getline 1 linea
+            	if (retval == 0) then
+                	if (linea.NUMCHARS > 0) then
+                    	call csr:f_saaddpl "log_file" linea
+                	else
+                    	linea = "   "
+                    	call csr:f_saaddpl "log_file" linea
+                	end if
+	                let cant_lineas = cant_lineas + 1
+				else
+					break
+				end if
+			loop
+			call csr:file_close 1
+			if (cant_lineas > 5000) then
+				/*seteo en base 0 para recorrer el picklist*/
+				cant_lineas = cant_lineas - 1
+			else
+				// la cantidad de lineas en el log es igual o menor a la que hay
+				// que mantener... por lo tanto lo dejo tal cual esta.
+				call csr:f_sadroppl "log_file"
+				return 
+			end if
+			// vuelco la información del picklist según corresponda
+			call csr:file_open 1 archivo_back "w"
+			lib:err_retval = retval
+			;LMB - PS 9780 - 03.07.2008
+			;call csr:file_open 2 "c:\\te mp\\te mpfileLOG" "w"
+			fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "tempfileLOG" 
+			call csr:file_open 2 common:tmpDirTemporal "w"
+			if (retval == 0 && lib:err_retval == 0) then
+				contador_pick = PL_GETITEM
+				contador = 0 
+				do
+					call csr:myPickcontrol "log_file" linea contador_pick
+					if (retval == 0) then
+						if (contador > 5000)
+							call csr:file_putline 2 linea
+    	                	call csr:file_flush 2
+    	                else
+							call csr:file_putline 1 linea
+                    		call csr:file_flush 1
+                    	end if
+					else
+						break
+					end if
+                	contador = contador + 1
+                	contador_pick = contador_pick + 1
+				loop
+				call csr:file_close 1
+				call csr:file_close 2
+				call csr:file_unlink (archivo_log)
+				
+				;LMB - PS 9780 - 03.07.2008
+				;fprint common:csr_string "cmd /C move c:\\te mp\\tempfileLOG %s", archivo_log
+				fprint common:csr_string "cmd /C move %stempfileLOG %s", common:dirTemporal, archivo_log
+				
+				call csr:create_process common:csr_string SW_HIDE CSR_WAIT
+			end if
+			call csr:f_sadroppl "log_file"
+		end if
+	end if
+END SUB
+
+/*******/

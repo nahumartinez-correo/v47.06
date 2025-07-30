@@ -1,0 +1,130 @@
+/****o* Pendientes de agrupación/OFB:drv:MISCpopup
+* NOMBRE
+*   OFB:drv:MISCpopup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   p_scr       Es la scr a mostrar, se deberá anteponer scr: a la misma
+*   p_pdis      Es la ofb pre-display, se deberá anteponer ofb:
+*   p_pcol      Es la ofb postcollect, se deberá anteponer ofb:
+*   p_sval      Es la ofb de validación gral, se deberá anteponer ofb:
+*   p_listbut   Es la lista de botones,  deberá anteponer lst:
+* SALIDAS
+*   
+* IMPACTOS
+*   
+* REFERENCIADO POR
+*   giros:PBBuscador, giros:PBingresarLG, giros:PBmodificarLG, giros:PBtt_Crem_a_liquidar,
+*   post:PRES70041, giros:PRES95000, giros:SVALrepGirEmiLG, giros:SVALrepListaGiro, post:MISCrtte_crem,
+*   post:MISCscr_datos, post:PBAgregar_CDD, post:PBModif_CDD, post:PBModifCliente
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainMisc.h"
+
+SUB drv:MISCpopup(p_scr,p_pdis,p_pcol,p_sval,p_listbut)
+	;Se generó un popup genérico porque la instrucción popup tiene un funcionamiento
+	;diferente al de las pantallas de transacciones ya que, cuando en una pantalla se presiona
+	;un botón, este vuelve a ejecutar el collect aplicando los nextfield.
+	LOCAL l_scr LIKE common:trap_reset
+	LOCAL l_pdis LIKE common:trap_reset
+	LOCAL l_pcol LIKE common:trap_reset
+	LOCAL l_sval LIKE common:trap_reset
+	LOCAL l_listbut LIKE common:trap_reset
+	LOCAL l_trap_reset LIKE common:trap_reset
+	LOCAL l_INDscr_aux LIKE drv:INDscr_aux
+	LOCAL l_INDrun_funct LIKE drv:INDrun_funct
+	LOCAL l_data_collect LIKE drv:data_collect 
+	LOCAL l_scrn_active_popup LIKE drv:screen_active_popup
+	
+	l_scr = p_scr
+	l_pdis = p_pdis
+	l_pcol = p_pcol
+	l_sval = p_sval
+	l_listbut = p_listbut
+	l_INDrun_funct = drv:INDrun_funct
+  CLEARFIELD drv:INDrun_funct
+  drv:collect = 1
+  
+  //gpb:resguardo el valor del data_collect
+  //porque cuando se hace una recuperacion de una caida
+  //con presupuesto fallaba
+  l_data_collect = drv:data_collect 
+  IF (SUBSTR(drv:data_collect,drv:screen_active,1) != "C") THEN
+  	//asigno valor para forzar el collect
+  	drv:data_collect = "CO00000000000"
+  END IF
+  
+  CALL FLD:l_pdis
+  CALL CSR:listexec FLD:l_listbut
+  l_trap_reset = common:trap_reset
+  l_INDscr_aux = drv:INDscr_aux
+  LET common:trap_reset = OFB:drv:MISCescPopup
+  LET drv:INDscr_aux = FLD:l_scr
+
+	//gpb:resguardo la listbut porque fallaba el ESC en los MISCpopup anidados,
+	//siempre quedaba seteado la listbut correspondiente al valor del drv:screen_active
+	FLD:drv:screen_active_popup = drv:screen_active_popup + 1
+	FLD:drv:INDbut_list_popup[drv:screen_active_popup] = FLD:l_listbut
+  
+  DISPLAY FLD:drv:INDscr_aux
+  CALL FLD:l_pcol
+  coll:
+  COLLECT - , FLD:l_sval
+	IF (drv:INDrun_funct != 0)
+		CALL  OFB:drv:driver_save
+		SELECT (RETVAL)
+			CASE -1
+				GOTO coll
+			BREAK
+		END SELECT
+	END IF
+
+	INIT 33,0   
+	drv:collect = 1
+	//cgw:Estaba refrescando mal la scr cuando se presionaba F7 (Pantalla deshabiltada).
+	//ya que tomaba el valor de la scr seteada en ese momento.
+	//Se soluciona recuperando la pantalla pasada como parametro en drv:MISCpopup
+	LET drv:INDscr_aux = FLD:l_scr
+	
+	//gpb:Vuelvo a recuperar el valor original
+	drv:data_collect = l_data_collect
+    
+	UNDISPLAY FLD:drv:INDscr_aux
+	REFRESH WINDOW
+	drv:INDscr_aux = l_INDscr_aux
+	common:trap_reset = l_trap_reset
+	RESETFLAG drv:mode_flags,popup_mode
+	CLEARFIELD drv:last_key
+
+	//gpb:recupero la listbut porque fallaba el ESC en los MISCpopup anidados,
+	//siempre quedaba seteado la listbut correspondiente al valor del drv:screen_active
+	IF (drv:INDbut_list[drv:screen_active] != 0) THEN
+		CLEARFIELD FLD:l_listbut
+		FLD:drv:INDbut_list_popup[drv:screen_active_popup] = FLD:l_listbut
+		FLD:drv:screen_active_popup = drv:screen_active_popup - 1
+		IF (drv:screen_active_popup > 0) THEN
+			CALL csr:listexec (FLD:drv:INDbut_list_popup[drv:screen_active_popup])
+		ELSE
+			CALL csr:listexec (FLD:drv:INDbut_list[drv:screen_active])
+		END IF
+	ELSE
+		//limpio array e indice de los MISCpopup anidados
+		drv:screen_active_popup = 0
+		CALL CSR:cleararray (FLD:drv:INDbut_list_popup)
+	END IF
+
+;	//gpb:Original
+;	IF (drv:INDbut_list[drv:screen_active] != 0)
+;		CALL csr:listexec (FLD:drv:INDbut_list[drv:screen_active])
+;	END IF
+    
+	drv:INDrun_funct = l_INDrun_funct
+	CALL CSR:proc_list F_COMPARE INDrun_funct
+	IF (RETVAL != 0) THEN
+		CALL CSR:proc_list F_CPTODUP INDrun_funct
+	END IF
+END SUB
+/*******/
+

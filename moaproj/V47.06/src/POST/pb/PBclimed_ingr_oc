@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:PBclimed_ingr_oc
+* NOMBRE
+*   OFB:post:PBclimed_ingr_oc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBclimed_ingr_oc
+	
+	drv:button = drv:last_button
+    CALL drv:but_down_disable
+
+	drv:button = 0 //Boton de Facturas a pagar
+    CALL drv:but_down_disable
+	drv:button = 2 //Boton de Proforma
+    CALL drv:but_down_disable
+
+    /*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+
+	CALL csr:f_sadroppl(DSC:remitos_oc)
+	//CALL csr:f_sanewpl(DSC:remitos_oc,PIC:climed_remitos_oc,74,82)
+	CALL csr:f_sanewpl(DSC:remitos_oc,PIC:climed_remitos_oc,197,130)
+
+	CDS SELECT FROM DSC:post:TABremitos BECOMES DSC:post:CONremitos WHERE \
+	post:op_operator_id == op:op_operator_id && post:adt_oc_nro != ""
+    CDS FINDFIRST DSC:post:CONremitos NOLOCK
+    IF (CDSRETVAL != 0) THEN
+    	MSGBOX "NO EXISTEN COMPROBANTES CON ORDEN DE COMPRA",0x00,"Aviso"
+    	UNPROTFIELD post:adt_selec_ocCM
+    	drv:button = 5
+    	CALL drv:but_up_enable
+    	DISABLECONTROL drv:PBcb5
+    	drv:button = 0 //Boton de Facturas a Pagar
+        CALL drv:but_up_enable
+	    drv:button = 2 //Boton de Proforma
+        CALL drv:but_up_enable
+        CDS ENDSELECT DSC:post:CONremitos
+    	RETURN (-2)
+    END IF
+	DO
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+    	
+    	clearfield post:adt_oc_nro
+    	clearfield post:diasPago_OC
+    	clearfield post:adt_oc_desc
+    	
+    	CDS EXTRACT DSC:post:CONremitos post:adt_oc_nro post:diasPago_OC post:adt_oc_desc
+    	//FPRINT common:csr_string," %3.3s %30.30s",post:adt_oc_nro post:diasPago_OC post:adt_oc_desc
+    	FPRINT common:csr_string,"%-30.30s %-9.9s %-3.3s",post:adt_oc_desc,post:adt_oc_nro post:diasPago_OC 
+    	//Busca orden de compra que no este cargado en el picklist.
+    	CALL csr:PickOp PICKOP_SEARCH DSC:remitos_oc common:csr_string
+    	IF (RETVAL < 0) THEN
+    		//no existe en el picklist, se lo ingresa.
+   		    CALL csr:f_saaddpl(DSC:remitos_oc,common:csr_string)
+        END IF
+		CDS FINDNEXT DSC:post:CONremitos NOLOCK
+	LOOP
+    CDS ENDSELECT DSC:post:CONremitos
+
+    /*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl DSC:remitos_oc common:csr_string  
+    /*Si el usuario selecciona una opciòn del picklist entonces queda en la linea */
+    /*para que se pueda marcar/desmarcar*/
+	IF (RETVAL < 0) THEN
+		CLEARFIELD post:adt_oc_nro
+		drv:button = drv:last_button
+   		CALL drv:but_up_enable
+	ELSE
+		/* Si esta en facturacion automatica no puede elegir */
+		/*post:adt_oc_nro = substr(common:csr_string,0,9)
+		post:diasPago_OC = substr(common:csr_string,10,3)
+		post:adt_oc_desc = substr(common:csr_string,14,30)*/
+		post:adt_oc_desc = substr(common:csr_string,0,30)
+		post:adt_oc_nro = substr(common:csr_string,31,9)
+		post:diasPago_OC = substr(common:csr_string,41,3)
+		
+		//REFRESH post:adt_oc_nro
+		REFRESH post:adt_oc_desc
+		//No puede volver a seleccionar orden de compra
+		//PROTFIELD post:adt_oc_nro
+		PROTFIELD post:adt_oc_desc
+		drv:button = 5
+   	    CALL drv:but_up_enable
+   	    DISABLECONTROL drv:PBcb5
+   	    //Puede elegir imposiciones luego de seleccionar una orden de compra.
+        drv:button = 1
+        CALL drv:but_up_enable
+        //Recalcula total imposicion segun la orden de compra seleccionada.
+        CALL post:MISCTotImp_remitosOC
+	END IF
+		
+    /*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+
+    drv:button = 0 //Boton de Facturas a Pagar
+    CALL drv:but_up_enable
+	drv:button = 2 //Boton de Proforma
+    CALL drv:but_up_enable
+END SUB
+
+/*******/

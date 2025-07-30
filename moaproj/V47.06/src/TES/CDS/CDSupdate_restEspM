@@ -1,0 +1,139 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSupdate_restEspM
+* NOMBRE
+*   OFB:tes:CDSupdate_restEspM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSupdate_restEspM
+	LOCAL indice		LIKE post:Tarif_idx
+	LOCAL lesp			LIKE adt_restesp_esp
+	LOCAL lsubesp		LIKE adt_restesp_subesp
+	LOCAL valor			LIKE common:csr_string
+	local idx			LIKE post:Tarif_idx
+	local l_total 		like siaf:i
+
+	if (nro_elegidos_esp > 0)
+		msgbox "Esta seguro que desea registrar las modificaciones realizadas? (Nota: Las restricciones cargadas anteriormente para el filtro seleccionado se eliminaran)", OFB_YESNO2 ,"Confirmacion"
+		if (retval == OFB_IDYES) then
+			; Cursor busy.
+			init 52,2
+
+			; seteo la tabla y el contexto. (uso los campos de cliente ocacional y up)
+			call tes:MISCrestMultgeneral("CONTEXTO", 0, "")
+
+			; atomizo la actualizacion.
+			CDS BEGINWORK
+
+			; Primero borro todos los registros que cumplen con el filtro.
+
+		    if (tipo_listado_esp == "T") //Todos las especies
+		        CDS SELECT FROM FLD:post:tablaCli BECOMES FLD:post:contextoCli
+		    else
+		    	if (tipo_listado_den == "T") //Todos las denominaciones
+			        CDS SELECT FROM FLD:post:tablaCli BECOMES FLD:post:contextoCli \
+		    		    WHERE adt_restesp_esp == FLD:adt_restesp_esp
+				else
+			        CDS SELECT FROM FLD:post:tablaCli BECOMES FLD:post:contextoCli \
+		    		    WHERE adt_restesp_esp == FLD:adt_restesp_esp && \
+		            		  adt_restesp_subesp == FLD:adt_restesp_subesp
+				endif
+		    end if
+
+			CDS AGGREGATE FLD:post:contextoCli count tes:adt_restesp_esp
+			if (cdsretval == 0)
+				CDS EXTRACT FLD:post:contextoCli tes:adt_restesp_esp
+			else
+				tes:adt_restesp_esp = 0
+			endif
+		    CDS FINDFIRST FLD:post:contextoCli LOCK
+			call post:MISCinicProgressBar("BORRANDO ANTERIORES - ", tes:adt_restesp_esp)
+
+			WHILE (cdsretval == 0)
+				CDS DELETE FLD:post:contextoCli
+			    CDS FINDNEXT FLD:post:contextoCli LOCK
+				call post:MISCactProgressBar("BORRANDO ANTERIORES - ", 1, BARRAPORCENT, 1)
+			END WHILE
+			call post:MISCfinProgressBar
+
+			; ahora doy de alta todos los registros
+			if (testflag(tipo_sel,todas))
+				l_total = nro_elegidos_esp * post:tarif_cant_tot
+			else
+				l_total = nro_elegidos_esp
+			endif
+			call post:MISCinicProgressBar("GRABANDO - ", l_total)
+
+			indice = PL_GETITEM
+			call csr:myPickcontrol(dsc:pic_elegidos,common:csr_string,indice)
+			WHILE ((indice - PL_GETITEM) < nro_elegidos_esp)
+				lesp = substr(common:csr_string,0,20)
+				lsubesp = substr(common:csr_string,20,20)
+			    CALL CSR:trimfield(lesp)
+			    CALL CSR:trimfield(lsubesp)
+				call MISCrestMultgeneral("TOMAFPRINT", 0, common:csr_string)
+				valor = common:csr_string
+
+				if (testflag(tipo_sel,todas))
+					; recorro todo el picklist de las especies seleccionadas por el filtro
+					; y grabo para cada una de ellas.
+				    idx  = PL_GETITEM
+					call csr:myPickcontrol(dsc:post:aux_pic_medios,common:csr_string,idx)
+					WHILE ((idx - PL_GETITEM) < post:tarif_cant_tot)
+				        lesp = substr(common:csr_string,2,20)
+				        lsubesp = substr(common:csr_string,22,20)
+
+					    CDS CLEARBUFFER FLD:post:contextoCli
+					    CDS APPEND FLD:post:contextoCli \
+					    	 lesp as FLD:adt_restesp_esp \
+					    	 lsubesp as FLD:adt_restesp_subesp
+
+							 call MISCrestMultgeneral("APPEND", 0, valor)
+
+				        CDS INSERT FLD:post:contextoCli LOCK
+
+						call post:MISCactProgressBar("GRABANDO - ", 1, BARRAPORCENT, 1)
+						idx  = idx + 1
+						call csr:myPickcontrol(dsc:post:aux_pic_medios,common:csr_string,idx)
+					END WHILE
+				else
+				    CDS CLEARBUFFER FLD:post:contextoCli
+				    CDS APPEND FLD:post:contextoCli \
+				    	 lesp as FLD:adt_restesp_esp \
+				    	 lsubesp as FLD:adt_restesp_subesp
+
+						 call MISCrestMultgeneral("APPEND", 0, valor)
+
+			        CDS INSERT FLD:post:contextoCli LOCK
+					call post:MISCactProgressBar("GRABANDO - ", 1, BARRAPORCENT, 1)
+			    endif
+				indice = indice + 1
+				call csr:myPickcontrol(dsc:pic_elegidos,common:csr_string,indice)
+			END WHILE
+		    CDS UNLOCK FLD:post:contextoCli
+		    CDS COMMITWORK
+		    CDS ENDSELECT FLD:post:contextoCli
+			SETFLAG admin:mode_flags,update
+			ungetkey RT_SEND
+			; Cursor normal.
+			init 53,3
+			call post:MISCfinProgressBar
+		endif
+	else
+		msgbox "No ha ingresado ninguna restriccion!", OFB_OK ,"Error"
+	endif
+END SUB
+
+/*******/

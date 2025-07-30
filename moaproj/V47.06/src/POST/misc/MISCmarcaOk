@@ -1,0 +1,72 @@
+/****o* Pendientes de agrupación/OFB:post:MISCmarcaOk
+* NOMBRE
+*   OFB:post:MISCmarcaOk
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCmarcaOk
+
+	local cliente  like post:cli_tipo
+	local pagodiff like post:pago_diferido
+
+	; Se agrega esta actualizacion por si se cae entre la journalizacion del medio.
+	; de pago y la actualizacion del flag. Requerimiento 2972.
+	
+	LOCAL status LIKE tlr:jnl_status
+	LOCAL cancel LIKE siaf:cancelacion
+   
+    	;Hay que controlar si esta el flag de pago diferido activado
+	call CDSrecuperoFlagDif
+
+	;Realizar el mismo chequeo para Cliente Medio
+	call MISCclimed_diff(cliente,pagodiff)
+     
+	If ( (TESTFLAG (cheque_dif,UPpago_dif)) || (cliente == CLIMED && pagodiff == "S" ) ) Then
+	/*cds extract DSC:tlr:CONjnl_write reg_up_dif into common:csr_string_130
+	IF (common:csr_string_130.NUMCHARS != 0)*/
+		cds findagain DSC:tlr:CONjnl_write lock
+		if (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097) then
+			cds extract DSC:tlr:CONjnl_write siaf:cancelacion into cancel tlr:jnl_status into status
+		else
+			cds extract DSC:tlr:CONjnl_write tlr:jnl_status into status
+		end if
+		
+		IF (status != 003 || cancel != "")
+	
+			//En este caso quiere decir que la tx se cayó antes de actualizar el status por lo que
+			// debería levantar nuevamente la captura de medios de pago...
+			RETURN (0)
+		END IF
+	END IF	
+	
+	if (siaf:codigo_siaf == 99098)
+		siaf:importe = siaf:importe * -1
+	endif
+	Cds SELECT FROM Dsc:TblImpreMedio BECOMES DSC:CtxImpreMedio \
+	            WHERE (Fld:post:op_operator_id == op:op_operator_id  \
+						&& journalizacionOk == "N" &&  siaf:moneda == siaf:moneda && \
+						siaf:importe == siaf:importe)
+	Cds FINDFIRST DSC:CtxImpreMedio  Lock
+	if (cdsretval == 0)
+		Cds ClearBuffer DSC:CtxImpreMedio
+		journalizacionOk = "S"
+		Cds Append DSC:CtxImpreMedio  journalizacionOk
+		Cds Update  DSC:CtxImpreMedio  Lock
+	endif
+	Cds Unlock  DSC:CtxImpreMedio 
+END SUB
+
+/*******/

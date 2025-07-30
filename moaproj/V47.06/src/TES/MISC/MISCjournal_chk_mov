@@ -1,0 +1,129 @@
+/****o* Chequeras/OFB:tes:MISCjournal_chk_mov
+* NOMBRE
+* OFB:tes:MISCjournal_chk_mov
+* DESCRIPCION
+* Actualiza Tablas RecepChk y TesChkMov y jounaliza Des/Adjudicacion de Chequeras segun corresponda o sus respectivos Rechazos.
+* REFERENCIADO POR
+* OFB:tes:SVALentrada_Ck
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCjournal_chk_mov
+    local tmp_chk_hora like tes:adt_chk_hora
+    local superviso like tes:rend_marca_cierre
+    local l_tesoro like op:adt_tesoro
+
+    // Guardo si fue supervisada para marcar las otras
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+	let superviso = "S"
+    else
+	let superviso = "N"
+    end if
+
+    let lib:err_retval = cdsretval
+
+    tmp_chk_hora = adt_chk_hora
+    tmov_login_orig = adt_chk_orig
+    tes:es_tesoro = "S"
+
+    tmov_login_orig = adt_chk_orig
+    tes:es_tesoro = "S"
+
+    if (superviso == "S") then
+       // si la primera fue supervisada , marco todas
+    	setflag tlr:tran_flags,supovr_granted
+    endif
+
+    LET giros:adt_chk_fecha = adt_chk_fecha
+    LET giros:adt_chk_hora  = adt_chk_hora
+
+    SELECT (siaf:codigo_siaf)
+	    CASE 9910
+		 IF (siaf:continua_transaccion == "N") THEN
+		     LET giros:adt_chk_op = adt_chk_op_orig
+		     
+		     //cgw: En la Adjudicacion de Chequeras, si no se acepta el pase o el rechazo,
+		     //     asigna quien posee la chequera segun si el operador es tesorero o cajero/habilitador.
+                     LET l_tesoro = "N"
+                     IF (op:adt_branch_id.NUMCHARS == 0) THEN //cgw:busca nombre del operador.
+    	                 CDS SELECT from DSC:op:adt_op_table BECOMES "ctx_profiles" \
+		             WHERE  op:op_operator_id == giros:adt_chk_op && \
+		                    op:op_borrado_logico != "S" ASCENDING
+                     ELSE
+    	                 CDS SELECT FROM DSC:op:adt_op_table BECOMES "ctx_profiles" \
+		             WHERE  op:op_branch_id == FLD:op:adt_branch_id && \
+		                    op:op_operator_id == giros:adt_chk_op && \
+		                    op:op_borrado_logico != "S" ASCENDING
+                     END IF
+		     CDS FINDFIRST "ctx_profiles" NOLOCK
+	             LET lib:err_retval = cdsretval
+	             IF (lib:err_retval == -801) THEN
+	                 LET l_tesoro = "N"
+	             END IF
+	             CDS EXTRACT "ctx_profiles" op:op_tesoro INTO l_tesoro
+	             CDS ENDSELECT "ctx_profiles"
+		     LET giros:adt_chk_tesoro = l_tesoro		     		     		     
+		     //LET giros:adt_chk_tesoro = "S"
+
+	    	     LET giros:adt_chk_estado = 3
+	             LET adt_chk_dest    = adt_chk_orig
+	             LET adt_chk_op_dest = adt_chk_op_orig
+	  	     LET adt_chk_orig    = op:op_login_id
+	             LET adt_chk_op_orig = op:op_operator_id
+	             LET adt_chk_tesoro = giros:adt_chk_tesoro
+	             LET adt_chk_marca_ing = "R"
+		     fprint siaf:nombre_transac, "RECH.%s", siaf:nombre_transac
+		 ELSE
+		     LET giros:adt_chk_op = adt_chk_op_dest
+	    	     LET giros:adt_chk_estado = 2
+		     LET giros:adt_chk_tesoro = "N"
+	             LET adt_chk_tesoro = giros:adt_chk_tesoro
+	     	     LET adt_chk_marca_ing = "C"
+	  	 END IF
+	  	 BREAK        
+	    CASE 9930
+		 IF (siaf:continua_transaccion == "N") THEN
+		     LET giros:adt_chk_op = adt_chk_op_orig
+		     LET giros:adt_chk_tesoro = "N"
+	    	     LET giros:adt_chk_estado = 3
+	             LET adt_chk_dest    = adt_chk_orig
+	             LET adt_chk_op_dest = adt_chk_op_orig
+	  	     LET adt_chk_orig    = op:op_login_id
+	             LET adt_chk_op_orig = op:op_operator_id
+	             LET adt_chk_tesoro = giros:adt_chk_tesoro
+	             LET adt_chk_marca_ing = "R"
+		     fprint siaf:nombre_transac, "RECH.%s", siaf:nombre_transac
+	   	 ELSE
+		     LET giros:adt_chk_op = op:op_operator_id
+	    	     LET giros:adt_chk_estado = 0
+		     LET giros:adt_chk_tesoro = "S"
+	             LET adt_chk_tesoro = giros:adt_chk_tesoro
+	     	     LET adt_chk_marca_ing = "T"
+	  	 END IF
+	  	 BREAK        
+    END SELECT
+
+    CALL CDSadt_chk_actu
+    CALL CDSupd_habilitador
+
+    CALL CDSadt_op_ck_actu
+
+    FLD:drv:INDjnl_rtn = OFB:tes:JNLentrada_Ck
+    ungetkey 0x190
+    //
+    call tlr:JNLtran
+
+    CLEARFIELD drv:INDjnl_rtn
+
+    //si el pase es rechazado NO emitir ticket
+    if (siaf:continua_transaccion == "S")
+        call csr:f_sadroppl dsc:RecepChk
+        call csr:f_sanewpl  dsc:RecepChk pic:RecepChk
+        fprint common:csr_string "Serie: %1s  Prox: %6s  Libres: %3s \n", \
+               serie_fld,nrogiro_fld,cantid_fld
+        call csr:f_saaddpl dsc:RecepChk common:csr_string
+	let drv:INDspc_rtn[2] = ofb:TRANprint_salida_ck
+    end if
+END SUB
+/*******/

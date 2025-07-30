@@ -1,0 +1,171 @@
+/****o* Pendientes de agrupación/OFB:giros:PCOL70500
+* NOMBRE
+*   OFB:giros:PCOL70500
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospcol.h"
+
+SUB giros:PCOL70500
+    PROTFIELD siaf:importe
+    PROTFIELD cod_tran_canc
+    select (drv:screen_active)
+		case 0 // Pantalla consulta
+    		//Porque si doy esc desde la pantalla de consulta se me limpia el campo
+    		//CLEARFIELD cons_nro_ctrol
+    		//REFRESH cons_nro_ctrol
+		hidefield giros:tipo_giro_fld
+		hidefield giros:tipo_giro_desc
+		PROTFIELD mtcn_canc
+   		/* Porque saque el combo*/ 		
+    		SELECT (siaf:codigo_siaf)
+				CASE 70500	  
+					cod_tran_canc = 70090
+					desc_tran_canc = "PAGO DE GIRO POSTAL"
+				  BREAK
+				CASE 70505
+				  cod_tran_canc = 70392
+					desc_tran_canc = "PAGO DE TRANSFERENCIA NACIONAL"
+					BREAK
+				CASE 70502
+				  clearfield cod_tran_canc 
+					clearfield desc_tran_canc 
+					unprotfield cod_tran_canc
+					BREAK
+			END SELECT
+		
+			REFRESH cod_tran_canc
+			REFRESH desc_tran_canc
+
+ if (giros:cod_tran_canc != "")
+    CALL giros:MISCBusca_flia (cod_tran_canc)
+	IF (RETVAL < 0 || (flia_giro_fld != "P" && flia_giro_fld != "T" && \
+					   flia_giro_fld != "W" && flia_giro_fld != "I"))
+	    MSGBOX "FALTA TIPO DE GIRO EN TABLAS",OFB_OK,"Error"
+            RESETFLAG tran_send_mode,consulta_multiple
+	    RETURN -3
+	END IF 
+ end if
+	
+	//Setea el nombre de la transaccion actual
+    CALL MISCnombre_tran_act
+ 
+    /*Prepara los campos de la pantalla de acuerdo a la tx elegida*/
+    CALL MISCcampos_canc
+     
+    /*asigna el codigo de procesamiento correspondiente a la tx elegida*/
+    CALL MISCcod_proc_canc(cod_tran_canc)
+
+
+			
+			break
+
+		case 1 //Datos generales de consulta
+			//siaf:nombre_transac = desc_tran_act
+			//refresh siaf:nombre_transac
+			CodPaisBenef_fld = CodPaisBenef_comm
+    		CodPaisEmis_fld = CodPaisEmis_comm
+    		CodPaisResidBenef = CodPaisBenef_comm
+    		CodPaisResidEmis = CodPaisEmis_comm
+    		EstadoGiro_fld = EstadoGiro_comm
+    		prov_pagad_fld = prov_pagad_comm
+    		
+			FPRINT cons_fecha_est "%4.4e%2.2e%2.2e" SUBSTR(opc_teleg_comm,4,4) \
+					SUBSTR(opc_teleg_comm,2,2) SUBSTR(opc_teleg_comm,0,2) 
+    		//cons_fecha_est = opc_teleg_comm
+			
+			//Busca la descripcion del pais del emisor
+			IF (CodPaisEmis_fld.NUMCHARS > 0)
+				CALL CDSpais_con_canc(CodPaisEmis_fld)
+				IF (RETVAL < 0)
+					CLEARFIELD CodPaisEmis_fld
+				ELSE
+					PaisResidEmis = adt_pais_desc
+				END IF
+			END IF
+			
+			//Busca la descripcion del pais del beneficiario
+			IF (CodPaisBenef_fld.Numchars > 0)
+				CALL CDSpais_con_canc(CodPaisBenef_fld)
+				IF (RETVAL < 0)
+					CLEARFIELD CodPaisEmis_fld
+				ELSE
+					PaisResidBenef = adt_pais_desc
+				END IF			
+			END IF
+			   			
+   			IF (prov_pagad_fld.NUMCHARS > 0) THEN
+    			  CALL buscaProvincia(prov_pagad_fld)
+    			  PciaPag_fld = Provincia
+    			  REFRESH PciaPag_fld
+   			END IF 
+
+    		CodSucEmis_fld = SucursalEmi_comm
+    		Sucursal_fld = Sucursal_comm
+    		FPRINT cons_fecha_emi "%4.4e%2.2e%2.2e" SUBSTR(fechaEmi_comm,4,4) \
+					SUBSTR(fechaEmi_comm,2,2) SUBSTR(fechaEmi_comm,0,2) 
+    		//cons_fecha_emi = fechaEmi_comm
+    		siaf:importe = Importe_comm
+   			siaf:importe = siaf:importe / 100
+    		tmp_monpas_codmonwu = CodMoneda_comm
+
+		    IF (Sucursal_fld.NUMCHARS > 0) THEN
+      			CALL CDSbuscaSuc(Sucursal_fld)
+				IF (RETVAL < 0)
+					CLEARFIELD Sucursal_fld
+				ELSE
+					SucPago_desc = admin:adt_br_bank_name
+				END IF			      			
+    		END IF 
+
+			CALL csr:proc_list(F_PROTECT,LST:giros:LISTcons_canc)
+			CALL csr:proc_list(F_REFRESH,LST:giros:LISTcons_canc)
+			move giros:tipo_giro_comm to giros:tipo_giro_fld
+			protfield giros:tipo_giro_fld
+			protfield giros:tipo_giro_desc
+			call giros:CDSbuscar_tipo_giro
+
+			break
+		
+		case 2 //Datos beneficiario consulta
+			//siaf:nombre_transac = desc_tran_act
+			//refresh siaf:nombre_transac
+			CALL PRESemis2
+			CALL PCOLemis2
+			CALL csr:proc_list(F_PROTECT,LST:giros:LIST70392_bene_flds)
+			CALL csr:proc_list(F_REFRESH,LST:giros:LIST70392_bene_flds)
+			break
+		
+		case 3 //Datos emisor consulta
+			//siaf:nombre_transac = desc_tran_act
+			//refresh siaf:nombre_transac
+			CALL PRESemis1
+			CALL PCOLemis1
+			CALL csr:proc_list(F_PROTECT,LST:giros:LIST70392_emis_flds)
+			CALL csr:proc_list(F_REFRESH,LST:giros:LIST70392_emis_flds)
+			break
+		
+		case 4 //pantalla confirmacion cancelacion
+			CALL csr:proc_list(F_PROTECT,LST:giros:LISTcampos_anul)
+			PROTFIELD cod_tran_canc
+			DISABLECONTROL drv:PBcb0
+			showfield giros:tipo_giro_fld
+			showfield giros:tipo_giro_desc
+			break
+	
+	end select
+		
+END SUB
+
+/*******/

@@ -1,0 +1,111 @@
+/****o* Recepción de Piezas/OFB:post:PBEliminar
+* NOMBRE
+*   OFB:post:PBEliminar
+* DESCRIPCION
+*   Esta rutina Elimina la pieza recibida de una tabla temporal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNpiezas_CM,SCR:post:SCRNpiezas_GC
+* DOCUMENTACION
+*   NI 50569- RPP 
+* SOURCE
+*/
+#include "postpb.h"
+
+Sub post:PBEliminar
+
+    If (stockp_pieza.numchars == 0) Then
+        CALL siaf:FVALcampo_requerido
+		RETURN -2
+	Else
+if (post:AsignaDestino == "N" || post:AsignaDestino == "M") then
+else
+        
+		//La caratula tiene que estar ingresada!!
+        call csr:trimfield(caratula_transf)
+  		call csr:trimfield(caratula_saca)
+        if (post:caratula_saca.numchars == 0 && post:caratula_transf.numchars == 0) then
+  			msgbox "Ingrese una Carátula.",0x00,"AVISO"
+  			return -2
+        endif        
+		if (caratula_transf.numchars != 0) then
+  			call FVALcarat_transfRP
+  			if (retval < 0) then
+  				return -2
+  			endif
+  		endif
+  		if (caratula_saca.numchars != 0) then	
+  			call FVALcarat_sacaRP
+  			if (retval < 0) then
+  				return -2
+  			endif
+  		endif
+   endif     
+	    /*Verifico si el reg a eliminar esta en stockp_temp y es del operador*/
+	    CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx WHERE \
+	    (stockp_pieza == stockp_pieza && stockp_operador == op:op_operator_id && \
+	    stockp_fecha == common:system_date)
+		CDS FINDFIRST DSC:stockp_temp_ctx LOCK
+		If (CDSRETVAL == -801) Then
+		    CDS UNLOCK DSC:stockp_temp_ctx
+		    CDS ENDSELECT DSC:stockp_temp_ctx
+		    MSGBOX "PIEZA INEXISTENTE EN TABLA",0X00,"ERROR"
+		    RETURN -2
+		End If
+		CDS DELETE DSC:stockp_temp_ctx
+		CDS UNLOCK DSC:stockp_temp_ctx
+		CDS ENDSELECT DSC:stockp_temp_ctx
+        
+		//recalculo el checksum!
+        if (post:AsignaDestino == "N" || post:AsignaDestino == "M") then
+        else
+        call MISCCheckSum
+        endif
+        
+        PROTFIELD stockp_dias_alm
+        CALL CSR:proc_list(F_CLEAR,LST:LISTstockp_CM_elifld)
+	IF (AsignaDestino == "S" || AsignaDestino == "E" || post:AsignaDestino == "M") then            
+    post:stockp_en_devol = "N"
+		post:stockp_franq_inc = "N"
+		post:stockp_es_grancl = "N"
+		post:stockp_rend_cent = "N"
+		post:stockp_rct = "N"
+	endif
+	stockp_laboral = "N"
+        CALL CSR:proc_list(F_REFRESH,LST:LISTstockp_CM_elifld)
+
+        PROTFIELD stockp_abonado
+        PROTFIELD stockp_Oficio
+        PROTFIELD stockp_destin_nom
+        PROTFIELD stockp_laboral
+        PROTFIELD stockp_plazoguarda
+        PROTFIELD stockp_vtofecha
+        PROTFIELD stockp_rpp_corp
+		UNPROTFIELD post:stockp_destino
+		UNPROTFIELD post:stockp_pieza        
+   		ENABLECONTROL drv:PBcb2     
+        
+        SETVALDONE stockp_pieza//Linea Nueva
+        
+        post:cantidad = post:cantidad - 1
+      	refresh post:cantidad
+      
+        DISABLECONTROL drv:PBcb4 /*Deshabilita el boton de Eliminar*/
+        DISABLECONTROL drv:PBcb6 /*Deshabilita el boton de Modificar*/
+        hidefield Leyenda_aux
+        hidefield stockp_abonado
+    	hidefield stockp_Oficio
+    	hidefield stockp_destin_nom
+    	 hidefield stockp_rpp_corp
+    	  hidefield leyenda_rpp
+	    refresh SCR:post:SCRNpiezas_CM
+ 	
+    End If
+End Sub
+
+/*******/

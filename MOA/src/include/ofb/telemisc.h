@@ -1,0 +1,13 @@
+#include "drv.h"
+#include "ofbdefs.h"
+#include "keys.h"
+#include "presupuesto.h"
+#include "impresio.h"
+#include "tesoro.h"
+#include "csr.h"
+#include 	    "pickdrv.h"
+#include 		"presupuesto.h"
+#include "bonif.h"
+# define    SETEODOC         "\x1bc0\x04"
+# define    NEWLINE          "\n"
+#undef TOTAL

@@ -1,0 +1,354 @@
+/****o* Sesión Correo/OFB:post:SVALimpre_fiscal
+* NOMBRE
+*   OFB:post:SVALimpre_fiscal
+* DESCRIPCION
+*   Tiene por objeto todo lo relevante para el fin de una sesión como ser 
+*   llevar a cabo la impresión de documentos fiscales, journalizar el fin de sesión 
+*   e inicializar los campos que sean necesarios para indicar que el presupuesto fue finalizado.
+* ENTRADAS
+* SALIDAS
+* 	Si la salida es menor que cero (-1 o -2) es porque no se puede reversar o existe un problema 
+*	que impide la impresión de los documentos.
+* REFERENCIADO POR
+* post:MISCfin_TeclaRapida
+* post:TRANimprefiscal
+* post:MISCtermina_anula
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1313
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALimpre_fiscal
+	LOCAL loc_Retval	LIKE lib:err_retval
+	LOCAL loc_codseq_nro LIKE post:adt_codseq_nro
+	LOCAL cli_tipo_local LIKE cli_tipo
+
+	CLEARFIELD giros:ImporteNeto //cgw:para que no arrastre el valor
+		
+	CALL post:MISCdeshab1_reqfactu // cgw:deshabilita req_factura, setea segun corresponda
+
+	// FGB: saco mensaje por el visor
+	CALL MISCmensaje_visor("C")
+
+	// FGB: Cierro conexion con SAP
+	// Como esta rutina siempre devuelve 0 la ejecuto siempre (cualquiera sea el
+	// el tipo de cliente y exista o no conexion)
+	// Antes de desconectarme, guardo el valor para journalizarlo (asi se como
+	// termino la sesion)
+	//TENDRIAMOS QUE VER QUE PONEMOS!!
+	LET jnl_sap_status = estado_conexion_sap
+	//CALL sap_logoff
+	//cgw:para teclas rapidas, setea la pantalla de fin de sesion para su journalizacion.
+	IF (post:Modo == "R") THEN
+		drv:INDscr = SCR:post:SCRNimpre_fiscal
+	END IF
+
+	
+	//Si no es reversa, si no es Cta Cte y si NO es Mercado Libre
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (cli_tipo != CTACTE && post:es_WEB != "X" && cli_tipo != CLIMED) THEN
+			//Verifico si hay T&T de encomiendas y pido huella digital
+			CALL MISChuella_digital
+		END IF
+	END IF
+
+
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (cli_tipo != CTACTE && importe_sesion == 0) THEN
+			IF (!(cli_tipo == CLIMED && ModalidadCC))
+				;PS9570 - Cancelación de sesión desde la captura
+				IF (!rechazoDiferido && plataf:current_state != BUDGET_CANCEL && post:codigo_impre != 99021) THEN
+					//gpb:NI50498 - Mercado Libre
+					IF (post:cli_tipo == 2 && post:es_WEB == "X") THEN
+						IF (post:estado_presu == 4) THEN
+							//gpb:PS10853- Ecommerce
+							//CALL post:MISCprint6680_MeLi
+							CALL post:MISCprint6680_Ecom
+							IF (RETVAL == -1)THEN
+								CALL post:TRANprint6680_Ecom
+							ELSE
+								IF (RETVAL == -2) THEN
+									//esta no va aca porque se imprime en la jnltran de la 6680
+									//CALL post:TRANprint6680
+								END IF
+							END IF
+						END IF
+					END IF
+					
+					IF (es_PrePaq == "S")
+						CALL TRANprintPrePaq
+						//PS10946
+						//Se blanquea el campo es_PrePaq porque el autoclear a veces no funciona
+						clearfield es_PrePaq
+					END IF
+					
+					IF (es_AdmRPP == "S")
+						CALL TRANprintAdmRPP
+						//Se blanquea el campo es_AdmRPP porque el autoclear a veces no funciona
+						clearfield es_AdmRPP
+					END IF
+					
+					/*Solicitud 50088 - Evento 3: Impresion de Ticko
+					En la venta de productos postales que son de control se requiere emitir un ticko 
+					informando el número de T&T. Este ticko sólo se imprimirá en el fin de sesión, 
+					cuando la venta que involucra a dichos productos no genere factura por algún 
+					eventual descuento comercial, descuento de timbres ó combinación con algún tipo 
+					de egreso que haga que la sesión quede en cero.En el caso de una venta a Cliente 
+					Medio por alguna de las Modalidades (Facturación Diferida o Cobro Diferido) no 
+					se emitirá el ticko ya que se imprime un Comprobante de Imposición con los T&T */
+					CALL MISCimpr_tickoTT("IMPRIME",post:PresNro)
+					IF (RETVAL < 0) THEN
+						CALL MISCimpr_tickoTT("REIMPRIME",post:PresNro)
+					END IF 
+				END IF
+			END IF
+		END IF
+		//cgw:NI50295 - Instancia campo a journalizar en el fin de sesion, que indicara si
+		//es una sesion con importacion de Lista de Giros.
+		IF (post:cli_tipo == CLIMED && post:tipo_giro_presu == "LG") THEN
+			giros:importacion_lg = "S"
+		END IF
+	END IF
+        
+	IF (post:Modo == "R" && siaf:adt_tran_fliatran != "CSM") THEN
+		;Req. 5148 - No calculaba el iva en teclas rapidas y
+		;por lo tanto, quedaban sucios de sesiones anteriores.
+		CALL MISCvectorIva
+		
+		;PS9425 Cuando el sistema se cae después de ejecutarse la 
+		;CDSadt_presuact_save cuando se vuelve a levantar el sistema,
+		;se pierde el fin de sesión. Para solventar esto se comentó la
+		;línea para ponerla en la MISCfin_TeclaRapida y se agregó un 
+		;upd para seguir manteniendo el estado. *** MDG
+		estado_presu = 1
+		;CALL CDSadt_presuact_save
+		CALL post:CDSadt_presuact_upd
+		PresNro = PresNro_Tmp
+		post:fecha = common:system_date
+		CALL post:CDSpresu_imp_save
+
+		/* Graba el Nro.Fiscal y el Doc.Fiscal en la tabla UltMovEspv (Ultimos
+		movimientos de Especies Valorizadas) */
+		CALL CDSumev_presu_save
+		CALL post:MISCBot_estado_presu
+		CLEARFIELD PresGrupoIva
+
+		//CSZ - FGB - 23.10.2006: se limpian los campos del SEND ya que si quedan con valor (ej: Cons.Mult.Giros)
+		//al pasar por la rutina post:MISCjnlPend99023 se estaba intentando mandar un viaje en el fin de sesión
+		CLEARFIELD hcomm:INDhost_sndrt 
+		CLEARFIELD drv:INDhcomm_rtn
+		
+		; PS9478 Existe una tx que en modo rápido, cuando se sale con esc
+		; el sistema journaliza el fin de sesión pero no ejecuta la
+		; post:TRANanula_fact. Esto se debe a que de alguna manera se hace un
+		; clearfield del campo indirecto que apunta a esta (drv:INDspc_rtn[4]).
+		; Al no ejecutarse la post:TRANanula_fact, no se actualiza la tabla
+		; PresuAct por medio de la CDSadt_presuact_save, esto ocaciona que 
+		; cuando se intente hacer otra transacción de modo rápido, no vea el
+		; presupuesto anterior terminado y utilice este indefinidamente.
+		; Para solucionar el PS9425 se dejó de ejecutar CDSadt_presuact_save        
+		; en esta rutina (SVALimpre_fiscal) ya que si el sistema se caía antes      
+		; de journalizar el fin de sesión, se perdía, pero a partir de esta solución
+		; es que se generó el problema del PS9478. Para mantener una solución       
+		; al 9425 y dar una al 9478, journalizamos el fin de sesión desde acá y     
+		; luego actualizamos la PresuAct.                                           
+		; Además comentamos la journalización en la rutina post:MISCfin_TeclaRapida 
+		; para que no se duplique el fin en caso de caida.                          
+		CALL post:MISCjnlPend99023()
+		estado_presu = 1
+		CALL CDSadt_presuact_save	
+        
+		;PAW: se agrego una inhibición del ESC en teclas rapidas, y por seguridad
+		;se la vuelve a habilitar.
+		CALL csr:f_orskunlk
+		
+		//gpb:AUT-872 
+		//Limpio los campos, a esta altura ya se journalizo y se imprimio el comprobante fiscal
+		CALL CSR:proc_list(F_CLEAR,LST:post:LISTLimpImp99023)
+
+		RETURN (0)
+	END IF
+
+	CLEARFIELD plataf:verify_session
+
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (post:importe_sesion > 0 || (cli_tipo != OCASIONAL && cli_tipo != CLIUP && cli_tipo != CLIMED)) THEN
+			IF ((Tipo_Formulario == FACTURA_A) || (Tipo_Formulario == FACTURA_B) || (revTicket == "S"))
+				; Esta rutina genera o levanta (en caso de caida) el numero de documento.
+				IF (sistCaido == "S") THEN
+					CALL post:CDStraeNum
+					IF (adt_DocInic.NUMCHARS != 0) THEN
+						post:DocInic = adt_DocInic
+						post:DocFin = adt_DocFin
+					END IF
+				END IF
+			END IF
+			aux_cli_tipo = cli_tipo
+			CLEARFIELD siaf:importe
+			CALL MISCvectorIva
+			DISABLECONTROL drv:PBcb0
+			IF (PresEst != 3) THEN
+				RETVAL = 0
+				CALL post:MISCimprimo_doc_fis
+
+				IF (RETVAL != 0) THEN
+					;PAW: se agrego una inhibición del ESC en teclas rapidas, y por seguridad
+					;se la vuelve a habilitar.
+					CALL csr:f_orskunlk
+					RETURN (RETVAL)
+				END IF
+
+				/* Grabo el Nro. de IRP en la Tabla de Piezas */
+				/* de Cuenta Correntistas con T&T pendientes. */
+				IF (post:cli_tipo == 1) THEN
+					CALL post:CDSgrabaIRP_TT
+				END IF
+				CALL giros:MISCcambiarEstado /* [JLA] Actualiza el Estado de los Cheques despues de una
+				Emision paga con Cheques */
+			END IF
+		
+			IF (cli_tipo == OCASIONAL || cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+				;limipio el campo para que no journalice de mas...
+				CLEARFIELD drv:INDjnl_rtn
+				IF (cli_tipo == CLIMED && ( ( post:OperacionCob && post:SeqIdentFact.NUMCHARS != 0 ) || post:Imp_CobroDif > 0 || (post:ConsumoAnticipo && !post:OperacionInt && !post:OperacionAut))) THEN
+					CALL post:OFBclimed_act_fact
+					CALL post:MISCjnl_fact_sesion(tlr:jnl_branch,tlr:jnl_operator,\
+						tlr:jnl_date,tlr:jnl_time,tlr:jnl_bus_date,tlr:jnl_sequence)
+				END IF
+					
+				IF (cli_tipo == CLIUP && post:ConsumoAnticipo) THEN
+					CALL post:OFBclimed_act_fact
+					CALL post:MISCjnl_fact_sesion(tlr:jnl_branch,tlr:jnl_operator,\
+						tlr:jnl_date,tlr:jnl_time,tlr:jnl_bus_date,tlr:jnl_sequence)
+				END IF
+				
+				//50249
+				IF (OperacionNC) THEN
+					CALL post:OFBclimed_act_fact
+					CALL post:MISCjnl_fact_sesion(tlr:jnl_branch,tlr:jnl_operator,\
+						tlr:jnl_date,tlr:jnl_time,tlr:jnl_bus_date,tlr:jnl_sequence)
+				END IF
+					
+				//50295
+				IF (post:cli_tipo == CLIMED && post:tipo_giro_presu == "EG") THEN
+					//MFM-Tratamiento de actualización de factura por RT BATCH (tabla jnl_fact_lg)
+					//aut-1313 - Se realiza la actualizacion de la tabla jnl_fact_lg inmediatamente despues 
+					//de jourjnalizar para evitar problemas en las caidas de rt
+					//CALL post:CDSsave_fact_lg
+					//FNR-Se desloquea la cabec_lg (tratamiento por concurrencia)
+					CALL giros:MISCactuali_op_cabec
+				END IF
+			ELSE
+				UNGETKEY RT_SEND
+			END IF
+		ELSE
+			IF (post:importe_sesion == 0)
+				//gpb:AUT-2352
+				IF (post:cli_tipo == 5 && post:tipo_giro_presu != "LG" && post:PresEst  == 3) THEN
+					loc_codseq_nro = post:adt_codseq_nro
+					post:adt_codseq_nro = SUBSTR(post:NroCompImpos,4,8)
+					CALL post:CDSgrabaIRP_TT
+					post:adt_codseq_nro = loc_codseq_nro
+				END IF
+
+				; PS. 5357: Quedaba sucio el campo post:DocFiscal en una sesion de cero pesos.
+				CLEARFIELD post:DocFiscal
+				
+				; PS 9335: Cuando en una venta a cliente UP se bonifica el 100%
+				; se arrastran los importes que quedan en memoria de la trans. de
+				; bonif. 99019. Por esto se graban sucios en el fin de sesión.
+				; Este problema pasa también con cliente Medio y Minorista
+				; siempre que el importe de fin de sesión sea igual a cero.   
+				; Para solucionar esto se regeneran los vectores. *** MDG
+				CALL MISCvectorIva
+				; Bug encontrado en base al PS 9338: 
+				; Cuando se hace una venta a cliente UP, minorista o Medio donde
+				; el importe de sesion es cero y el sistema se cae después de grabado
+				; el campo "post:estAnul = OK_", cuando el sistema se vuelve a levantar 
+				; pierde el fin de sesión, que normalmente lo jounaliza el driver. 
+				; Cuando el importe de sesión es mayor que cero se journaliza con la rutina
+				; post:MISCjnlPend99023() y no con el driver, por consiguiente hacemos lo 
+				; mismo cuando el importe es cero. *** MDG
+				CALL post:CDS_trx_count(common:system_date,op:op_operator_id,post:PresNro)
+				IF (RETVAL != -2) THEN
+					CALL post:MISCjnlPend99023()
+				END IF
+			END IF
+		END IF	
+
+		//tengo que borrar la remitTmp si el operador cancelo el presupuesto.
+		CALL giros:CDSborrarRemitTmp
+		post:fecha = common:system_date
+		CALL post:CDSpresu_imp_save
+
+		/* Graba el Nro.Fiscal y el Doc.Fiscal en la tabla UltMovEspv (Ultimos
+		movimientos de Especies Valorizadas) */
+		CALL CDSumev_presu_save
+		CLEARFIELD adt_secuen_nro 
+		CLEARFIELD adt_secuen_nro_final
+		; Si el sistema se cae después de imprimir un comprobante fiscal, luego al levantar 
+		; el sistema y terminar la sesión, si se inicia una sesión que tenga impuestos no se 
+		; verán en la grilla por quedar mal seteado el curren_state. Para solucionar esto lo 
+		; seteamos luego de terminar con las impresiones correspondientes. *** MDG 
+		CALL plataf:CDSset_curr_state(op:op_operator_id,READYTOSTART) 
+		estado_presu = 1
+		cli_tipo_local = cli_tipo
+		CALL post:CDSgrbEstadosVarios("T__", estado_presu)
+		; Esta grabacion es identica a la grbEstado, con la diferencia que recibe
+		; el estado_presu como parametro. Esto antes se hacia en dos rutinas distintas
+		; pero habia problemas si se caia entre ellas, asi que se lo junto. Req 3127.
+		PresNro = PresNro_Tmp
+		CALL post:MISCBot_estado_presu
+	ELSE
+		CALL MISCreverso_sesion
+		LET loc_Retval = RETVAL
+		UNGETKEY RT_ESC
+		;PAW: se agrego una inhibición del ESC en teclas rapidas, y por seguridad
+		;se la vuelve a habilitar.
+		CALL csr:f_orskunlk
+		RETURN (loc_Retval)
+	END IF
+	
+	/*ACP-Graba en PresuAct el campo post:pasadaMP en 1 */	
+	CALL plataf:CDSset_pasadaMP(op:op_operator_id,PRIMER_PASADA)
+
+	// PJM 21-12-98
+	CALL post:MISCactivar_buts
+	/* Habilito los botones de menu ppal y activ */
+	CALL post:MISCEnabl_BloqN_Act
+	CLEARFIELD revTicket
+	CLEARFIELD siaf:importe
+	CLEARFIELD PresGrupoIva
+	CLEARFIELD CliUP_FechaInic
+	CLEARFIELD CliUP_FechaFin
+	CLEARFIELD CliUP_Importe
+	CLEARFIELD CliUP_Porcentaje
+	CLEARFIELD CliUP_Nis
+	CLEARFIELD post:progressBar
+	;PAW: se agrego una inhibición del ESC en teclas rapidas, y por seguridad
+	;se la vuelve a habilitar.
+	CALL csr:f_orskunlk
+
+	RESETFLAG giros:giros_masivos,proc_anul_masivos
+	RESETFLAG post:pagos_masivos,proc_pagos_masivos
+	RESETFLAG giros:giros_masivos,proc_gir_masivos
+	
+	//NI50295
+	RESETFLAG giros:giros_importacion,proc_imp_lg
+	RESETFLAG giros:giros_importacion,proc_em_lg
+	CLEARFIELD giros:nro_sesion_lg
+	CLEARFIELD giros:Lista_sel_lg
+    
+	//cgw:NI50361 - CCT
+	//Se limpia marca y codigo de barra de CCT por que no es autoclear
+	CLEARFIELD post:es_CCT
+	CLEARFIELD post:cod_barra_CCT
+	
+	//gpb:NI50479
+	CALL post:SVALimpre_fiscal_ped(cli_tipo_local)
+	
+END SUB
+
+/*******/

@@ -1,0 +1,182 @@
+/****o* Tratamiento de Cheque/OFB:post:RCVErecep_reemp_Chk
+* NOMBRE
+*   OFB:post:RCVErecep_reemp_Chk
+* DESCRIPCION
+*    Rutina de Receive del viaje de Recepcion/Reemplazo de Cheque ().Si vuelve codigo de respuesta 03 (Aceptado) entonces
+*	se graba en la nueva tabla jnl_AdelantoChq el consumo de Adelanto que deberá realizarse por RT BATCH 8solo
+* 	para las TX de Reemplazo y Cancelacion
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:CDSctrl_trx_giros,LST:post:TRAN99175,LST:post:TRAN99190,LST:post:TRAN99195
+*	LST:post:TRAN99200,LST:post:TRAN99205,LST:post:TRAN99240,LST:post:TRAN99242
+*	LST:post:TRAN99245,OFB:post:MISCanula_Reemp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postrcve.h"
+
+SUB post:RCVErecep_reemp_Chk
+	
+	local del_retval like lib:err_retval
+	
+	//Obtengo todos los datos del mensaje enviado por el switch
+	Call post:RCVEhdr_up
+	IF (RETVAL < 0) // Codigo de respuesta != "00" o != ""	
+		lib:err_retval = RETVAL
+
+	ELSE
+		//Verifico la firma y termino la tx segun el el estado de la misma (Registro, 
+		//Recuperacion o Cancelacion) y el codigo de respuesta 
+		CALL RCVEend_UP
+		IF (RETVAL < 0)
+		
+			IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+				//La tx fue rechazada en la verificacion de la firma...
+				if (hcomm:tran_status != HOST_ACCEPTED && \
+				    (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242)) then
+					call post:MISCanulo_reemp
+				end if
+		
+				//La tx fue rechazada en la verificacion de la firma...
+				MSGBOX giros:mensaje_transaccion,OFB_OK,"ERROR"
+				//Tengo que ver si se journalizo o no y mandar una cancelación automática al switch???
+		
+			END IF
+			
+			lib:err_retval = -2
+			
+		ELSE
+			
+			lib:err_retval = 0
+
+			IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+				//La firma está OK - transaccion Aceptada
+				MSGBOX giros:mensaje_transaccion,OFB_OK,"Mensaje"
+			END IF
+
+			SELECT (siaf:codigo_siaf)			
+				CASE 99190
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion)) //Directa
+					
+						//Actualizo estos campos con el importe real del cheque que me devuelve el switch
+						// en el bit #6 para grabar este dato en el journal y en la CheqRech
+						monto_chk_dif = limite_up
+						imp_aux = Imp_chk_dif
+						
+						//Comision que se cobra devuelta en el bit #15 
+						comision_rechazo = jnl_interes_diferido
+						
+						//Actualizo estos campos con las fechas reales del cheque que me devuelve el switch
+						fec_e = giros:fechaEmi_comm
+						fec_d = fecha_vto
+						
+						CALL CDSSaveCheqRech
+					ELSE
+						CALL CDSDelCheqRech //Reversa
+					END IF
+					BREAK
+				CASE 99195	
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion)) //Directa
+						CALL CDSDelCheqRech
+					ELSE
+						CALL CDSSaveCheqRech //Reversa
+					END IF				
+					BREAK
+				CASE 99200
+				
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion)) //Directa
+					 	call post:MISCTotalTransac(siaf:codigo_siaf)
+					 	CALL CDSupd_stat_pres
+					 	//50295
+						if (post:imp_adel_mon > 0) then
+							post:jnl_cheques_tipo = "D" //Directa: codigo proc = 997032
+							CALL CDSAdelChq_save(post:imp_adel_mon,post:cheq_adel_nro,post:cheqrech_moneda,tes:banco_codigo)
+						endif
+					end if
+// FGB 21.11.05 - Trat Chq					
+					call CDSupd_canc_reemp									
+					BREAK
+				CASE 99240
+				CASE 99242
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion)) //Directa
+					 	call post:MISCTotalTransac(siaf:codigo_siaf)
+					 	CALL CDSupd_stat_pres
+						CALL CDSsaveCheqRob
+						//50295
+						if (post:imp_adel_mon > 0) then //hay que afectar saldo
+							post:jnl_cheques_tipo = "D" //Directa: codigo proc = 997032
+							CALL CDSAdelChq_save(post:imp_adel_mon,post:cheq_adel_nro,post:cheqrech_moneda,post:cod_banco)
+						endif
+					END IF
+					BREAK
+				CASE 99245
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion)) //Directa
+						CALL CDSdelCheqRob
+						//50295
+						if (post:imp_adel_mon > 0) then
+							
+							post:jnl_cheques_tipo = "C" //Cancelacion: codigo proc = 997033
+							CALL CDSAdelChq_save(post:imp_adel_mon,post:cheq_adel_nro,post:cheqrech_moneda,post:cod_banco)
+						endif
+					END IF
+					
+					BREAK
+// FGB fin									
+				CASE 99205 
+				CASE 99170	//Para cancelacion por comprobantes		
+					CALL CDSupd_canc_reemp
+					//50295
+					if (post:imp_adel_mon > 0) then
+					//Esta rutina borra un registro en la jnl_AdelantoChq si aun no impacto en el host
+						CALL post:CDSAdelantoChq_del(tes:banco_codigo,siaf:cheqcuenta,siaf:nro_cheque ,post:cheqrech_moneda)
+						IF (retval == 1) //retval = 1 ya impacto entonces genero registro de cancelacion
+							post:jnl_cheques_tipo = "C" //Cancelacion: codigo proc = 997033
+							post:climed_tipo = CLIMED
+							post:sequence_aux = tlr:jnl_sequence
+							CALL CDSAdelChq_save(post:imp_adel_mon,post:cheq_adel_nro,post:cheqrech_moneda,tes:banco_codigo)
+						ENDIF
+					endif
+					BREAK
+				CASE 99175
+					//call op:CDSop_marca_reverso(SET_MARCA_REV) //cgw:se cambio de lugar.
+			   		/*if (!testflag(tlr:controla_marca,cancel))
+	       				if (TESTFLAG(common:rt_flags,batch_mode) && \
+							(batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+							fprint common:csr_string_171,\
+							"%s\n . Hora: %e ",mensaje_transaccion,common:time_of_day
+							call batch:MISCgeneraLog(common:csr_string_171,"AMBOS","N")
+						end if
+					end if*/
+					CALL CDSupd_canc_reemp
+					//50295
+					if (post:imp_adel_mon > 0) then
+						//Esta rutina borra un registro en la jnl_AdelantoChq si aun no impacto en el host
+						CALL post:CDSAdelantoChq_del(post:cod_banco,post:cuenta,post:nro_cheque,post:cheqrech_moneda)
+						IF (retval == 1) //retval = 1 ya impacto entonces genero registro de cancelacion
+							post:jnl_cheques_tipo = "C" //Cancelacion: codigo proc = 997033
+							post:sequence_aux = tlr:jnl_sequence
+							post:climed_tipo = CLIMED
+							CALL CDSAdelChq_save(post:imp_adel_mon,post:cheq_adel_nro,post:cheqrech_moneda,post:cod_banco)
+						END IF
+					endif
+					//cgw:cambio de lugar marca de reverso, luego de actualizar tablas CheqRech o borrar CheqRob segun corresponda.
+					//    Esto es realizado para que no reverse la sesion al levantar el RT, en el caso que se produzca una
+					//    caida del mismo antes de actualizar tablas CheqRech o de borrar CheqRob. 
+					call op:CDSop_marca_reverso(SET_MARCA_REV)
+					BREAK
+			END SELECT			
+		END IF
+	END IF
+	/*IF (siaf:codigo_siaf == 99200 && !TESTFLAG(giros:tran_send_mode,cancelacion))
+		CALL CDSupd_stat_pres
+	END IF*/  
+	RETURN (lib:err_retval)
+END SUB
+
+/*******/

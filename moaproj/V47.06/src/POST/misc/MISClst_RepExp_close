@@ -1,0 +1,72 @@
+/****o* Reportes/OFB:post:MISClst_estCM_close
+* NOMBRE
+*   OFB:post:MISClst_estCM_close
+* DESCRIPCION
+*   Extrae los datos del archivo para imprimir el reporte.
+*   NI 50580 - Se solicita reemplazar la impresión del Reporte de Corte Operativo que se genera a continuación de las guías de despacho por un archivo en formato
+*		 digital (PDF). Se requiere que este reporte esté disponible para la oficina al menos por un período de 60 días (para esto se debera enviar a Onbase, se espera definicion de usuario).
+* ENTRADAS
+*   tipo: "I"
+*   tipo: "N"
+*   link_num :
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISClst_RepExp
+* DOCUMENTACION
+*   NI 50580 - Corte de Linea Agil
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_RepExp_close(tipo,link_num)
+
+	FYIMSG CLEAR
+  CALL CSR:file_close(link_num)
+ 
+	IF (tipo == "I") THEN
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "RepExp.lis"
+		CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+		IF (RETVAL < 0) THEN
+			MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+			RETURN 
+		END IF
+		//NI 50580 - Corte de Linea Agil - Se elimina la impresion del Reporte de Corte Operativo cuando estoy en corte de linea
+		//cuando estoy imprimiendolo a demanda desde el Menu de Servicios se sigue imprimiendo.
+		IF (siaf:codigo_siaf != 99056) THEN //Estoy en el menu de Servicios del Reporte de Corte Operativo.
+			PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+			IF (PRTRETVAL != 0) THEN
+				FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+				MSGBOX siaf:mensaje,0x00000000,"Error"
+			END IF
+			CALL CSR:file_close(7)
+		ELSE
+			CALL CSR:file_close(7)
+			// NI 50580 - Corte de Linea Agil - Se genera el pdf y se envía a Onbase. NO SE IMPRIME
+			// Hay que levantar la parametria de la  tabla listados
+			CALL MISCVerifListado ("CORTE OPERATIVO")
+			IF (RETVAL == 0) THEN
+				//gpb:PS10950 - Validacion de mapeo contra la unidad W:
+				CALL post:MISCcheck_MoaPDF
+				IF (RETVAL < 0) THEN
+					MSGBOX "CONTINGENCIA: Se imprimira el reporte por Laser",0x00000000,"Error"
+				END IF
+				CALL tes:MISCflowPDF("RepExp.lis")
+			END IF
+			FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "RepExp.pdf"
+			CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+			EXEC common:csr_string
+		END IF
+	END IF
+  
+	//borro el archivo generado 
+	FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "RepExp.lis"
+	CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+	EXEC common:csr_string
+   
+END SUB
+
+/*******/
+	

@@ -1,0 +1,103 @@
+/****o* Anulación de Documentos/OFB:post:MISCCancel_PagoDif
+* NOMBRE
+*   OFB:post:MISCCancel_PagoDif
+* DESCRIPCION
+*   Recupera los datos del journal de la captura de medio de pago de cheque diferido para realizar el viaje correspondiente de anulación.
+*   Si es anulacion de una sesion por Excepcion de UP se setea el viaje 997006 (Cancelación de pago por excepcion)
+*   Si es anulacion de una sesion de UP con cheque diferido se setea el viaje 997005 (CCancelación de pago diferido)
+*   Si es anulacion de una sesion de UP que usó Adelanto y Cheque diferido se setea el viaje 997031 (Cancelacion Consumo Adelanto)
+*   Si es anulacion de una sesion de CM con cheque diferido se setea el viaje 997005 (Cancelacion de pago diferido cliente medio)
+*   Si es anulacion de una sesion de CM por excepcion con multiples cheques diferidos se setea el viaje 997027 (Cancelacion de pago diferido cliente medio Mult. Cheques)
+*   Si es anulacion de una sesion de CM que usó Adelanto y Cheque diferido se setea el viaje 997031 (Cancelacion Consumo Adelanto)
+*   Si es anulacion de una sesion de cobranza CM que usó Cheque diferido se setea el viaje 997041 (Cancelacion Cobranza CM)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:PRES99170
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCCancel_PagoDif
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id  && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence_corr == "" && \
+	tlr:jnl_status != 002 && \
+	siaf:codigo_siaf == 99099 && \
+	siaf:moneda == 02 && \
+	post:PresNro == giros:PresNro_canc
+	
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	IF (CDSRETVAL == -801)
+		CDS ENDSELECT DSC:tlr:jnl_context
+		RETURN -2
+	END IF
+
+	/*Obtengo los datos del cheque diferido */
+	call MISCDatos_Diferidos
+	IF (retval < 0)
+		return (retval)
+	END IF	
+	giros:cod_tran_canc = giros:codigo_procesamiento
+
+	if ( post:id_cliente == CLIUP )
+		IF (!post:ConsumoAnticipo) THEN
+			IF (VentaUP_Excepcion == "S") THEN
+				giros:codigo_procesamiento = 997006 //Cancelación de pago por excepcion
+			ELSE
+				giros:codigo_procesamiento = 997005 //Cancelación de pago diferido
+			END IF
+		
+    			//Completo los campos indirectos necesarios
+   			hcomm:INDhost_sndrt = OFB:post:SENDPago_Cancel_UP
+			hcomm:INDhost_rcvrt = OFB:post:RCVEPago_Cancel_UP
+		ELSE
+			giros:codigo_procesamiento = 997031
+   			hcomm:INDhost_sndrt = OFB:post:SENDclimed_canc_ant
+			hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_canc_ant
+		ENDIF
+	else
+		if (post:id_cliente == CLIMED )
+
+			if (giros:codigo_procesamiento == 997002 )
+				;Cancelacion de pago diferido cliente medio
+				giros:codigo_procesamiento = 997005
+   				hcomm:INDhost_sndrt = OFB:post:SENDclimed_pagocanc
+				hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_pagocanc
+			end if
+
+			if (giros:codigo_procesamiento == 997026)
+				;Cancelacion de pago diferido cliente medio Mult. Cheques
+				post:consulta_pagodif = 0
+				giros:codigo_procesamiento = 997027
+   				hcomm:INDhost_sndrt = OFB:post:SENDclimed_canc_cheq
+				hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_canc_cheq
+			end if
+
+			if (giros:codigo_procesamiento == 997030)
+				giros:codigo_procesamiento = 997031
+   				hcomm:INDhost_sndrt = OFB:post:SENDclimed_canc_ant
+				hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_canc_ant
+			end if
+
+			if (giros:codigo_procesamiento == 997040)
+				giros:codigo_procesamiento = 997041
+   				hcomm:INDhost_sndrt = OFB:post:SENDclimed_ingr_fact
+				hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_fact_canc
+			end if
+
+		end if
+	end if
+
+END SUB
+
+/*******/

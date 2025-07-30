@@ -1,0 +1,353 @@
+/****o* Pendientes de agrupación/OFB:post:MISCumov
+* NOMBRE
+*   OFB:post:MISCumov
+* DESCRIPCION
+*   Ejecuta el reporte de Ultimos Movimientos de Merchandicing
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TOTScons_umov_merch
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-454
+* CRQ35336-SC50620-REPORTEULTMOVMERCHA
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCumov
+	LOCAL copias_aux LIKE siaf:i //para cant. de copias del listado.
+	LOCAL l_line LIKE common:csr_string_200 
+	LOCAL l_line_aux LIKE common:csr_string_200 
+	LOCAL line_csr LIKE common:csr_string_200 
+	LOCAL line_csr_aux LIKE common:csr_string_200 
+	LOCAL idx_item LIKE siaf:i
+	LOCAL l_deposito_aux LIKE common:csr_string 
+	LOCAL l_cod_prod_aux LIKE common:csr_string 
+	LOCAL l_tran_aux LIKE common:csr_string 
+	LOCAL l_deposito LIKE common:csr_string 
+	LOCAL l_cod_prod LIKE common:csr_string 
+	LOCAL l_tran LIKE common:csr_string 
+	LOCAL l_tran_desc LIKE common:csr_string 
+	LOCAL split LIKE common:csr_string_aux
+	LOCAL l_cuenta LIKE siaf:i
+	LOCAL l_contador LIKE siaf:i
+	LOCAL l_fecha LIKE common:csr_string
+	LOCAL l_hora LIKE common:csr_string
+
+	idx_item = PL_GETITEM
+	l_deposito_aux = ""
+	l_cod_prod_aux = ""
+	l_tran_aux = ""
+	l_deposito = "" 
+	post:tmp_umov_coddep = "0" //cuando exista otro codigo de deposito dejar post:tmp_umov_coddep = "1"
+	l_cod_prod = ""
+	l_tran = ""
+	l_tran_desc = ""
+	split = "-----------------------------------------------------------------------------------------------------------------------------------------------"
+	l_cuenta = 0
+	l_contador = 0
+	
+	siaf:indica_calcu = 0
+
+	SELECT (umov_total_parcial)
+		CASE "T"
+			CDS SELECT FROM DSC:adt_umov_table BECOMES DSC:adt_umov_context \
+				WHERE (adt_umov_fecha >= adt_umov_fecha_ini) && \
+				(adt_umov_fecha <= adt_umov_fecha_fin)
+		BREAK
+		CASE "P"
+			CDS SELECT FROM DSC:adt_umov_table BECOMES DSC:adt_umov_context \
+				WHERE (adt_umov_codprod >= fld:umov_codprod_desde) && \
+				(adt_umov_codprod <= fld:umov_codprod_hasta) && \
+				(adt_umov_fecha >= adt_umov_fecha_ini) && \
+				(adt_umov_fecha <= adt_umov_fecha_fin)
+		BREAK
+	END SELECT
+
+	IF (CDSRETVAL != 0) THEN
+		ERRMSG LST:common:errmsg_list,ERRumov_select
+		RESET TRAN
+		CDS ENDSELECT DSC:adt_umov_context
+		CALL csr:file_close(1)
+		FPRINT post:linea_spvCM "cmd /c del %s%s", common:dirTemporal, "umov.lis"
+		CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+		EXEC post:linea_spvCM      	
+		RETURN (-2)
+	END IF
+
+	CDS FINDFIRST DSC:adt_umov_context NOLOCK
+  err_retval = CDSRETVAL
+    
+	IF (err_retval != 0) THEN
+	  //si es cierre suc o cierre forzado suc NO debe emitir mesaje
+  	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550) THEN  
+			MSGBOX "NO SE REGISTRARON MOVIMIENTOS DE MERCHANDISING",OFB_OK,"AVISO"
+		END IF
+		
+		CDS ENDSELECT DSC:adt_umov_context
+		CALL csr:file_close(1)
+		FPRINT post:linea_spvCM "cmd /c del %s%s", common:dirTemporal, "umov.lis"
+		CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+		exec post:linea_spvCM       
+		RETURN (-2)
+	END IF
+
+	//Creo picklist para guardar los movimientos de merchandising
+	CALL csr:f_sadroppl("movMerchan")
+	CALL csr:f_sanewpl("movMerchan",PIC:movMerchan)
+
+	//Creo picklist para guardar codigo de transaccion y descripcion
+	CALL csr:f_sadroppl("tranMerchan")
+	CALL CSR:f_sanewpl("tranMerchan",PIC:tranMerchan)
+
+	WHILE (err_retval == 0)
+		CDS EXTRACT DSC:adt_umov_context ALL
+		
+		adt_prodvs_cod = adt_umov_codprod
+		CALL CDSprodvs_load
+		
+		CALL post:MISCpadNmb(post:adt_umov_coddep,2,"0")
+		
+		l_fecha = ""
+		l_hora = ""
+		
+		MOVE SUBSTR(post:adt_umov_fecha,0,8) TO SUBSTR(l_fecha,0,8)
+		MOVE SUBSTR(post:adt_umov_hora,0,4) TO SUBSTR(l_hora,0,4)
+		
+		FPRINT l_line_aux "%2.2e %10e %-40.40s %8e %5.5e %5.5e %4.4e %4.4e",\
+			post:adt_umov_coddep, post:adt_umov_codprod, post:adt_prodvs_desc, post:adt_umov_fecha,\
+			post:adt_umov_hora, post:adt_umov_op, post:adt_umov_sequence, post:adt_umov_seq_corr
+			
+		FPRINT l_line "%87.87s %1.1s %5.5e %5.5s %8s %5.5e %5.5e %5.5e %5.5e",\
+			l_line_aux,post:adt_umov_rev, siaf:codigo_siaf, post:adt_motpv_motivo, post:adt_umov_formfisca,\
+			post:adt_umov_entrada, post:adt_umov_salida, post:prim_stock_stock, post:adt_stock_stock
+  	
+  	//NI50620-Se agrega NIS al Reporte
+
+		FPRINT l_line_aux "%s %s %s %5.5s" ,l_line,l_fecha,l_hora,post:adt_umov_nis
+		//DPRINT "%s\n" ,l_line_aux
+  	    
+       
+    ;Ej I
+    ;00  632027002 BASE PLANA CPA HASTA 250.000             29/09/2009 17:20 70002 0102      N 40004              -   100     0     0   100 20090929 1720
+    ;Ej II
+    ;00  632027002 BASE PLANA CPA HASTA 250.000             18/09/2009 12:07 70001 0037      N 40001 00003        -   100     0     9   109 20090918 1207
+
+		CALL CSR:f_saaddpl "movMerchan" l_line_aux
+
+		CDS FINDNEXT DSC:adt_umov_context NOLOCK
+		err_retval = CDSRETVAL
+		
+		IF (err_retval != 0)
+			BREAK
+		END IF
+		
+	END WHILE
+	
+	CALL post:MISCUltMovMerchaEnc
+
+	CALL csr:PickOp 4  "movMerchan" "0,2" "3,10" "135,8" "144,4"
+	
+  DO
+		//Leer picklist
+		CALL csr:myPickcontrol("movMerchan",line_csr,idx_item)
+		
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF 
+		
+		l_line = ""
+		
+		l_deposito_aux = SUBSTR(line_csr,0,2)
+		l_cod_prod_aux = SUBSTR(line_csr,3,10)
+		CALL CSR:trimfield (l_deposito_aux)
+		CALL CSR:trimfield (l_cod_prod_aux)
+		
+		IF (post:tmp_umov_coddep == "1") THEN
+			IF (l_deposito != l_deposito_aux) THEN
+				MOVE SUBSTR(line_csr,0,2)  TO SUBSTR(l_line,0,2)   //DEP			//post:adt_umov_coddep
+				l_deposito = l_deposito_aux
+				l_cod_prod = l_cod_prod_aux
+				CALL post:MISCwrite_file_umov(1,split)
+			END IF
+			
+			IF (l_cod_prod != l_cod_prod_aux) THEN
+				CALL post:MISCwrite_file_umov(1,split)
+				l_cod_prod = l_cod_prod_aux
+			END IF
+		ELSE
+			IF (l_cod_prod != l_cod_prod_aux) THEN
+			    IF (siaf:lineas_cl > 43) THEN
+	          LET siaf:lineas_cl = 1
+	          CALL FLD:tes:INDsheet_header
+			    ELSE
+			        IF (siaf:lineas_cl > 11) THEN
+				        CALL post:MISCwrite_file_umov(1,split)
+				    END IF
+				END IF
+				l_cod_prod = l_cod_prod_aux
+			END IF
+		END IF
+
+    MOVE SUBSTR(line_csr,55,10) TO SUBSTR(l_line,4,10)  	//FECHA			    //post:adt_umov_fecha
+    MOVE SUBSTR(line_csr,66,5) TO SUBSTR(l_line,15,5)   	//HORA      	  //post:adt_umov_hora
+    MOVE SUBSTR(line_csr,3,10) TO SUBSTR(l_line,21,10) 	 	//COD.PROD 		  //post:adt_umov_codprod
+    MOVE SUBSTR(line_csr,14,40) TO SUBSTR(l_line,32,40) 	//DESCRIPCION	  //post:adt_prodvs_desc
+    MOVE SUBSTR(line_csr,90,5) TO SUBSTR(l_line,73,5)   	//TRAN.			    //siaf:codigo_siaf
+    MOVE SUBSTR(line_csr,96,5) TO SUBSTR(l_line,80,5)   	//MOTIVO		    //post:adt_motpv_motivo
+    MOVE SUBSTR(line_csr,123,5) TO SUBSTR(l_line,87,5)    //STK.I         //post:prim_stock_stock        
+    MOVE SUBSTR(line_csr,111,5) TO SUBSTR(l_line,93,5)    //ENT.          //post:adt_umov_entrada        
+    MOVE SUBSTR(line_csr,117,5) TO SUBSTR(l_line,99,5)    //SAL.          //post:adt_umov_salida        
+    MOVE SUBSTR(line_csr,129,5) TO SUBSTR(l_line,105,5)   //STK.F         //post:adt_stock_stock        
+    MOVE SUBSTR(line_csr,71,6) TO SUBSTR(l_line,110,6)    //OPER.         //post:adt_umov_op      
+    MOVE SUBSTR(line_csr,78,4) TO SUBSTR(l_line,118,4)    //SEC.          //post:adt_umov_sequence
+    MOVE SUBSTR(line_csr,88,1) TO SUBSTR(l_line,124,1)    //REV.          //post:adt_umov_rev        
+    MOVE SUBSTR(line_csr,83,4) TO SUBSTR(l_line,127,4)    //REF.          //post:adt_umov_seq_corr        
+    MOVE SUBSTR(line_csr,149,5) TO SUBSTR(l_line,132,5)    //NIS          //post:adt_umov_nis       
+
+   	CALL post:MISCwrite_file_umov(1,l_line)
+     
+		l_tran_aux = SUBSTR(line_csr,90,5)
+		CALL CSR:trimfield (l_tran_aux)
+		line_csr_aux = ""
+		siaf:adt_msg_desc = ""
+		siaf:adt_msg_tran = l_tran_aux
+		CALL  post:CDStran_load
+		l_tran_desc = siaf:adt_tran_desc
+		CALL CSR:trimfield (l_tran_desc)
+
+		CALL csr:StrConcat(line_csr_aux,l_tran_aux,line_csr_aux)
+		CALL csr:StrConcat(line_csr_aux,":",line_csr_aux) 
+		CALL csr:StrConcat(line_csr_aux,l_tran_desc,line_csr_aux) 
+    CALL CSR:f_saaddpl("tranMerchan",line_csr_aux)
+       
+		idx_item = idx_item + 1
+  LOOP 
+	
+	idx_item = PL_GETITEM
+	
+	LET FLD:tes:INDsheet_header = OFB:post:MISCU_M_MerTranEnc
+
+	//Se ordena por codigo de transaccion
+	CALL csr:PickOp 4 "tranMerchan" "0,5" 
+
+	line_csr = ""
+	line_csr_aux = ""
+	//Realizo la carga de las transacciones
+	DO
+		//Leer picklist
+		CALL csr:myPickcontrol("tranMerchan",line_csr,idx_item)
+		
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF 
+        
+		l_contador = l_contador + 1
+		
+		IF (l_contador == 1 ) THEN
+			IF (siaf:lineas_cl < 41) THEN
+				CALL post:MISCU_SubEnc
+			ELSE
+				siaf:lineas_cl = 1
+				CALL post:MISCwrite_file_umov(1,"<FORMFEED>")
+				CALL post:MISCU_M_MerTranEnc
+			END IF
+		END IF
+		
+		l_tran_aux = SUBSTR(line_csr,0,5)
+		CALL CSR:trimfield (l_tran_aux)
+       	
+		IF (l_tran != l_tran_aux) THEN
+			l_cuenta = l_cuenta + 1
+			IF (l_cuenta == 1) THEN
+				line_csr_aux = line_csr
+			ELSEIF (l_cuenta == 2) THEN 
+				CALL csr:StrConcat(line_csr_aux," ",line_csr_aux) 
+				CALL csr:StrConcat(line_csr_aux,line_csr,line_csr_aux) 
+				IF (siaf:lineas_cl == 43) THEN
+					siaf:lineas_cl = 1
+					CALL post:MISCwrite_file_umov(1,"<FORMFEED>")
+					CALL post:MISCU_M_MerTranEnc
+				END IF
+				CALL post:MISCwrite_file_umov(1,line_csr_aux)
+				line_csr_aux = ""
+				l_cuenta = 0
+			END IF
+			l_tran = l_tran_aux
+		END IF
+		
+		idx_item = idx_item + 1
+	LOOP
+
+	IF (l_cuenta < 2) THEN
+		IF (line_csr_aux != "") THEN
+			IF (siaf:lineas_cl == 43) THEN
+				siaf:lineas_cl = 1
+				CALL post:MISCwrite_file_umov(1,"<FORMFEED>")
+				CALL post:MISCU_M_MerTranEnc
+			END IF   		
+			CALL post:MISCwrite_file_umov(1,line_csr_aux)
+		END IF
+	END IF
+	
+	CALL CSR:file_close(1)
+	
+	//Libero los picklist de memoria
+	CALL csr:f_sadroppl("movMerchan")
+	CALL csr:f_sadroppl("tranMerchan")
+
+	CLEARFIELD post:tmp_umov_coddep
+
+	SELECT (siaf:pantalla_impreso)
+		CASE "P"
+			CALL MISCumov_viewer
+		BREAK
+		CASE ELSE	
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "umov.lis"
+			LET copias_aux = 1
+		
+			//gpb:NI50752
+			CALL tes:MISCflowPDF("umov.lis")
+			//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("umov.lis")
+
+;;				/* Se modifica el manejo del archivo temporal para que lo abra y cierre para
+;;				cada copia a imprimir ya que como lo hacía antes sólo imprimía una copia. Al imprimir
+;;				una segunda, el puntero del achivo estaba al final y asumía que había terminado, por lo
+;;				tanto no imprimía nada más - Gabriel Falciola*/	       
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;					IF (RETVAL < 0) THEN
+;;						MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;						RETURN 
+;;					END IF 
+;;					PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;					IF (PRTRETVAL != 0) THEN
+;;						FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;						MSGBOX siaf:mensaje,0x00000000,"Error"
+;;					END IF
+;;					CALL CSR:file_close(7) 
+;;					LET copias_aux = copias_aux + 1 			
+;;				END WHILE		
+			END IF
+		BREAK
+	END SELECT
+
+	CALL post:MISCfile_exists(common:tmpDirTemporal)
+	IF (RETVAL == 0)  THEN
+		CLEARFIELD common:csr_string	
+    FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "umov.lis"
+    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+    EXEC common:csr_string
+	END IF
+
+END SUB
+
+/*******/

@@ -1,0 +1,175 @@
+/****o* Pendientes de agrupación/OFB:post:MISCParam_Asoc
+* NOMBRE
+*   OFB:post:MISCParam_Asoc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCParam_Asoc
+
+local prov like post:adt_pcia_cod
+	//Necesario para las restricciones de las especies
+	prov = substr(common:sucursal_activa,0,1)
+
+    /* MLD Agrego para que Me cargue los datos del producto asociado en Memoria */
+	clearfield codesp_prod
+	clearfield subcod_prod
+	clearfield prod_serv
+	clearfield codesp_serv
+	clearfield subcod_serv
+
+
+	/*Me fijo si el servicio utiliza caja. Si utiliza, el producto asociado dependera del tipo de caja.
+	Por lo tanto aca no se carga nada, se hara en el picklist del tipo de caja*/
+	if (post:adt_serv_usa_caja != "S") && (post:adt_serv_usa_formu != "S") then
+	    IF (post:adt_serv_prodvs.numchars != 0)
+	    	;prod_serv = adt_serv_prodvs
+	        adt_prodvs_cod = adt_serv_prodvs
+	        CALL post:CDSprodvs_load
+	        if (retval == 0) then
+	        	prod_serv = adt_serv_prodvs
+	        	bck_prodvs_desc = post:adt_prodvs_desc
+				call post:MISCvalidaVentasRest("PRD", prod_serv, "", "", common:sucursal_activa, post:cli_tipo, "")
+				if (retval < 0)
+					select (retval)
+						case -1
+							fprint common:csr_string "Las restricciones cargadas de regiones no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -2
+							fprint common:csr_string "Las restricciones cargadas de provincias no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -3
+							fprint common:csr_string "Las restricciones cargadas de sucursales no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -4
+							fprint common:csr_string "Las restricciones cargadas de clientes no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+					end select
+					msgbox common:csr_string,OFB_OK,"ERROR"
+					RETURN -2
+				endif
+	        	if (post:adt_prodvs_espv_cod.numchars != 0) && (post:cli_tipo != 1) then
+	        		tes:adt_espv_cod = post:adt_prodvs_espv_cod
+	        		tes:adt_espv_subcod = post:adt_prodvs_espv_scod
+	        		/* Si el cliente es CC, no se le vende NUNCA la especie asociada al
+	        		producto */
+	        		CALL tes:CDSadt_esp_load
+					if (retval == 0) then
+	        			codesp_prod = adt_prodvs_espv_cod
+						subcod_prod = adt_prodvs_espv_scod
+						if (post:cli_tipo == CLIUP) then
+							call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, post:NisUP)
+						else
+							call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, "")
+						endif
+						if (RETVAL < 0) then
+							select (retval)
+	 							case -1
+								fprint common:csr_string_aux "Las restricciones cargadas de regiones no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+								break
+								case -2
+								fprint common:csr_string_aux "Las restricciones cargadas de provincias no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+								break
+								case -3
+								fprint common:csr_string_aux "Las restricciones cargadas de sucursales no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+								break
+								case -4
+								fprint common:csr_string_aux "Las restricciones cargadas de clientes no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+								break
+								case -5
+								fprint common:csr_string_aux "Las restricciones cargadas de up no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+								break
+							end select
+							msgbox common:csr_string_aux,OFB_OK,"ERROR"
+							RETURN -2
+						endif
+					end if
+				end if
+			end if
+		End if
+	end if
+
+	/* Use o no caja la especie asociada al servicio se toma de la tabla de Servicio */
+	if (post:cli_tipo != 1 && (post:consulta_ordenCM != "S" || post:cli_tipo !=5) ) then
+		if (post:adt_serv_espv_cod.numchars != 0) then
+			tes:adt_espv_cod = post:adt_serv_espv_cod
+		    tes:adt_espv_subcod = post:adt_serv_espv_subcod
+		    CALL tes:CDSadt_esp_load
+			if (retval == 0) then
+				codesp_serv = adt_serv_espv_cod
+				subcod_serv = adt_serv_espv_subcod
+				//chequeo restricciones de especies
+				if (post:cli_tipo == CLIUP) then
+					call post:MISCvalidaVentasRest("ESP", codesp_serv, subcod_serv, "", common:sucursal_activa, post:cli_tipo, post:NisUP)
+				else
+					call post:MISCvalidaVentasRest("ESP", codesp_serv, subcod_serv, "", common:sucursal_activa, post:cli_tipo, "")
+				endif
+				if (RETVAL < 0) then
+					select (retval)
+	 					case -1
+						fprint common:csr_string_aux "Las restricciones cargadas de regiones no permiten la venta de la especie %s %s asociada a este servicio!", codesp_serv,subcod_serv
+						break
+						case -2
+						fprint common:csr_string_aux "Las restricciones cargadas de provincias no permiten la venta de la especie %s %s asociada a este servicio!", codesp_serv,subcod_serv
+						break
+						case -3
+						fprint common:csr_string_aux "Las restricciones cargadas de sucursales no permiten la venta de la especie %s %s asociada a este servicio!", codesp_serv,subcod_serv
+						break
+						case -4
+						fprint common:csr_string_aux "Las restricciones cargadas de clientes no permiten la venta de la especie %s %s asociada a este servicio!", codesp_serv,subcod_serv
+						break
+						case -5
+						fprint common:csr_string_aux "Las restricciones cargadas de up no permiten la venta de la especie %s %s asociada a este servicio!", codesp_serv,subcod_serv
+						break
+					end select
+					msgbox common:csr_string_aux,OFB_OK,"ERROR"
+					RETURN -2
+				endif
+			end if
+		end if
+	else
+	    IF (post:adt_serv_prodvsCC.numchars != 0)
+	    	;prod_serv = adt_serv_prodvs
+	        adt_prodvs_cod = adt_serv_prodvsCC
+	        CALL post:CDSprodvs_load
+	        if (retval == 0) then
+	        	prodCC_serv = adt_serv_prodvsCC
+	        	call post:MISCvalidaVentasRest("PRD", prod_serv, "", "",common:sucursal_activa, post:cli_tipo, "")
+				if (retval < 0)
+					select (retval)
+						case -1
+							fprint common:csr_string "Las restricciones cargadas de regiones no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -2
+							fprint common:csr_string "Las restricciones cargadas de provincias no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -3
+							fprint common:csr_string "Las restricciones cargadas de sucursales no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -4
+							fprint common:csr_string "Las restricciones cargadas de clientes no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+					end select
+					msgbox common:csr_string,OFB_OK,"ERROR"
+					RETURN -2
+				endif
+	        	/* Restauro la descripcion */
+	        end if
+	    end if
+	end if
+
+end sub
+
+/*******/

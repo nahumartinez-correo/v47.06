@@ -1,0 +1,170 @@
+/****o* Tratamiento de Cheques/OFB:post:SVALcanc_reemp
+* NOMBRE
+* OFB:post:SVALcanc_reemp
+* DESCRIPCION
+* Rutina SVAL de Cancelacion Reemplazo de Cheques Rechazados/Observados.
+* ENTRADAS
+* SALIDAS
+* RETURN (-1): No existe el dinero suficiente en caja como para hacer la cancelacion.
+* RETURN (-2): No se selecciono el cheque a cancelar.
+* RETURN (-2): Rechazo del Host de la consulta de la cuenta del cliente corporativo, o ESC del popup que muestra esta cuenta.
+* RETURN (-2): Cheque no puede reversarse.
+* IMPACTOS
+*   OFB:post:MISCacredito_adel,post:SVALreemp_chqrob,OFB:post:SVALreemp_chqrech_up,OFB:post:SVALcancReempRob
+*	OFB:post:MISCverif_ch_acred,OFB:post:MISCcalc_adel_lg
+* REFERENCIADO POR
+* LST:post:TRAN99205
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+
+#include "postsval.h"
+
+SUB post:SVALcanc_reemp
+    local lidx like siaf:idx
+    local mon like tes:teso_cheq_moneda
+    local bco like tes:teso_cheq_banco
+    local nro like tes:teso_cheq_nro
+    local cta like tes:teso_cheq_cuenta
+    local Lclimed_tipo like post:climed_tipo
+    local Lclimed_numero like post:climed_numero
+    
+    local l_new_date like post:fec_e
+   	local l_en_plazo like common:csr_string
+    //LOCAL imp2 LIKE siaf:importe
+
+    //No habría que setear el flag de correccion? para que reste el importe de totales En el caso de que
+    //el codigo_siaf = 99205?
+    ;local imp2 like siaf:importe
+	
+    IF (CliUP.numchars              == 0 || \
+	tes:banco_codigo.numchars   == 0 || \
+	siaf:cheqcuenta.numchars    == 0 || \
+	siaf:nro_cheque.numchars    == 0 || \
+	post:imp_aux.numchars       == 0 || \
+	siaf:f_emision.numchars     == 0) THEN
+	MSGBOX "Seleccione el cheque a cancelar",0x00,"Error"
+	RETURN (-2)
+    END IF
+
+    //cgw:realiza consulta al Host del numero de cuenta para cliente corporativo.
+    clearfield post:CliCod_aux
+    if (post:Recep_CliTipo == 1) then
+        //cgw: reserva variables para luego recuperar despues de ser instanciadas para la consulta al Host
+        //     de la cuenta del cliente corporativo.
+        Lclimed_tipo = post:climed_tipo
+        Lclimed_numero = post:climed_numero
+        //cgw: se instancia para la consulta al Host de la cuenta del cliente corporativo.
+        post:climed_tipo = substr(post:cliente,0,1)
+        post:climed_numero = substr(post:cliente,1,11)
+        call MISCctacte_nro_cta
+        if (retval < 0) then
+    	    post:climed_tipo = Lclimed_tipo
+            post:climed_numero = Lclimed_numero
+	    return (-2)
+        end if
+        post:climed_tipo = Lclimed_tipo
+        post:climed_numero = Lclimed_numero	
+    else
+	// para el resto de los clientes...
+	clearfield post:CliCod_aux 
+    end if
+
+    //Verifico que exista el dinero suficiente en caja como para hacer la cancelacion
+    CALL post:CDSverifMonto
+    IF (RETVAL < 0)
+	RETURN (-1)
+    END IF
+
+    SETFLAG giros:tran_send_mode,cancelacion
+    //Calculo el STAN
+    IF (!testflag(tlr:controla_firma,cancelacion))
+	Call post:CDSobtiene_secuen("STAN")
+	giros:hora_viaje = siaf:hora
+	giros:dia_viaje = siaf:fecha
+    END IF	
+    giros:codigo_procesamiento = 997008
+
+    /**Para totales reuso codigo de Cobranza Cta Cte**/
+    tes:es_tesoro = "S"        
+    call csr:cleararray(post:ValorPago)
+    call csr:cleararray(post:ImporteBanco)
+    call csr:cleararray(post:ImporteBase)
+    call csr:cleararray(BancoPago)
+    call csr:cleararray(Bco_Cuenta)
+    call csr:cleararray(NumCuenta)
+    call csr:cleararray(Emision_Fecha)
+    call csr:cleararray(Valor_Fecha)
+    call csr:cleararray(Cod_Interno)    
+
+    /*
+    IF (post:tipo_mpago.numchars != 0 && siaf:moneda.numchars != 0)
+	cant_valores = 2
+    ELSE
+	cant_valores = 1
+    END IF    
+    */
+	//50295 - Verificar si el cheque reemplazado es un cheque certificado en plazo
+
+	if (post:cheqrech_moneda == 15) then
+		post:adt_mp_cod = post:cheqrech_moneda
+		CALL post:CDSadt_MedPago_load
+		call  csr:date_add (siaf:f_emision,  post:adt_mp_dias_plazo,  "d",  l_new_date)
+		call csr:date_compare(common:system_date ,l_new_date)
+		/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+		If (RETVAL == 0 || RETVAL == 2) Then
+			l_en_plazo = "S"
+		else
+			l_en_plazo = "N"
+		endif
+	else
+		l_en_plazo = "N"
+	endif
+	
+	CALL MISCpago_reemp_up(l_en_plazo)
+		
+    lidx = 0		
+     do	
+	if (ValorPago[lidx].numchars == 0) then
+	    break
+	end if
+	let post:adt_mp_cod = post:ValorPago[lidx]
+        call post:CDSadt_MedPago_load
+        if (post:adt_mp_adm == "I") then
+
+	    //call post:MISCcargo_valor(siaf:moneda,cod_banco,cuenta,nro_cheque,codigo_interno,NroCompPago2)
+	    /*
+            tes:teso_cheq_moneda = post:ValorPago[lidx]
+            tes:teso_cheq_banco  = post:BancoPago[lidx]
+            tes:teso_cheq_nro    = post:NumCuenta[lidx]
+            tes:teso_cheq_cuenta = post:Bco_Cuenta[lidx]
+            */
+            mon = post:ValorPago[lidx]
+            bco  = post:BancoPago[lidx]
+            nro    = post:NumCuenta[lidx]
+            cta = post:Bco_Cuenta[lidx]
+
+	    call post:MISCcargo_valor(mon,bco,cta,nro,cta,nro)
+
+            call tes:MISCbusco_cheque_rev
+            if (retval < 0) then
+                fyimsg clear
+                return (-2)
+            end if
+        end if
+        lidx = lidx + 1
+    loop
+
+    //cant_valores = 2
+
+    //sea o no reversa se debe hacer esto    
+    call MISCcalc_Tot_PagCli
+    ;siaf:importe_calc = siaf:importe_chq + siaf:importe2 
+    ;siaf:importe = siaf:importe_chq + siaf:importe2 
+    /* Es el importe del cheque */
+
+    // Convierto a Moneda Base.
+
+END SUB
+/*******/

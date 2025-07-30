@@ -1,0 +1,245 @@
+/****o* Anulación de Documentos/OFB:post:MISCrevTrans
+* NOMBRE
+* OFB:post:MISCrevTrans
+* DESCRIPCION
+* Genera las Reversas por Anulación de Documentos o Reimpresion de comprobantes.
+* ENTRADAS
+* p_presup: post:PresNro (Numero de Presupuesto).
+* p_cayoSistema: post:sistCaido ("S" - indica si se produjo una caida de RT).
+* p_sesion: post:enSesion (Estado en la que se encuentra la sesion, entre que se confirma y se imprime el comprobante).
+* SALIDAS
+* RETURN (RETVAL): Resultado de la rutina OFB:siaf:SVALnivel_sup, controla si el Supervisor puede autorizar la transaccion.
+* REFERENCIADO POR
+* OFB:post:MISCbloqueRev
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrevTrans(p_presup, p_cayoSistema, p_sesion)
+
+	/********************************************************************************************************/
+	/*                                                                                                      */
+	/* [PAW - 22/04/99] Esta rutina se encarga de generar las reversas de la anulación parcial.             */
+	/*                                                                                                      */
+	/********************************************************************************************************/
+	
+	local j like siaf:i
+	local l_retval like lib:err_retval
+	LOCAL track_trace_aux LIKE track_trace
+	LOCAL Pieza_aux LIKE Pieza
+	local auxTipo like post:Tipo_Formulario
+	local tmpPresNew like presNroNew
+	local l_sequence like tlr:jnl_sequence
+	    
+	call post:MISCclrrevTrans
+	
+	/*Seteo el flag para la reversa - Gabriel Falciola*/
+	setflag tlr:tran_flags,correction
+	post:ovr_sup_id_aux  = ovr:ovr_sup_id
+	post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+	// PJM 5-10-1998
+	// Me fijo si hay transacciones de Galicia
+	Call post:CDSanul_tran_galicia
+	If ( Retval >= 0 &&  post:ovr_sup_id_aux == op:op_operator_id )
+		MsgBox "Para Autorizar las transacciones de Galicia se requiere un Supervisor distinto al Utilizado",OFB_OK,"ERROR"
+		Swapdup post:jnl_flia_tran
+		post:jnl_flia_tran = "BG"
+		Call siaf:SVALnivel_sup
+		Swapdup post:jnl_flia_tran
+		If (RETVAL < 0) THEN
+			Return (Retval) //-2
+		End If
+		post:ovr_sup_id_gali  = ovr:ovr_sup_id
+		post:ovr_siaf_id_gali = siaf:ovr_sup_siaf_id
+	Endif
+	ovr:ovr_sup_id = post:ovr_sup_id_aux
+	siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+	post:siaf_flags_aux = siaf:siaf_flags
+	
+	if (p_sesion == "S" || estAnul == "R2_")
+		Call post:CDSinic_jou("journal", dsc:post:Jounarl_anul_Ctx, p_presup, "NO 99023")
+		l_retval = RETVAL
+		CALL csr:trimfield post:jnl_flia_tran
+		siaf:adt_tran_codigo = siaf:codigo_siaf
+		CALL MISCmuevo_campos_jou
+		tlr:sequence_corr = tlr:jnl_sequence
+		SETFLAG tlr:tran_flags,correction
+		if (p_sesion != "S")
+			SETFLAG tlr:tran_flags,supovr_granted
+		Endif
+		siaf:siaf_flags = siaf_flags_aux
+		tlr:state_flags = tlr:jnl_tran_flags
+		Call siaf:MISClleno_modalidad
+		clearfield NotaCreditoRev
+	else
+		NotaCreditoRev = "S"
+		Call siaf:MISClleno_modalidad
+		CALL tlr:JNLtran
+		Call post:CDSinicParaJou("S", "NO 99023")
+		l_retval = RETVAL
+	endif
+	
+	LET lib:err_retval = l_retval
+	post:PreDNroTrn = post:adt_PreDNroTrn
+	siaf:hora = common:time_of_day
+	While (lib:err_retval >= 0 )
+		/*Antes de hacer las reversas chequeo si no se hicieron anteriormente
+		Esta rutina solo se ejecuta cuando la anulacion quedo incompleta - Gabriel Falciola*/
+		if (p_cayoSistema == "S")
+			call CDScheck_rev_anul
+		end if
+		LET lib:err_retval = RETVAL
+		l_retval = lib:err_retval
+	
+		LET sequence_aux = tlr:jnl_sequence
+		LET track_trace_aux = track_trace
+		LET Pieza_aux = Pieza
+		/*Genero tablas auxiliares especificas para la impresion - Gabriel Falciola*/
+		call MISCgen_tab_auxNC
+		   
+		if (l_retval == 0 || p_cayoSistema != "S")
+			CALL csr:trimfield post:jnl_flia_tran
+			siaf:adt_tran_codigo = siaf:codigo_siaf
+			If (post:jnl_flia_tran == "BG")
+				If (testflag(hcomm:state_flags,on_line) || siaf:posible_off == "S" )
+					// Supervisor de Gali
+					SwapDup  tlr:jnl_sequence
+					DupField tlr:jnl_sequence
+					ovr:ovr_sup_id = post:ovr_sup_id_gali
+					siaf:ovr_sup_siaf_id = post:ovr_siaf_id_gali
+					Call post:CDScodigo_gali_load
+					Call post:MISCreversa_transac2
+					if (p_sesion != "S" && estAnul != "R2_")
+						call CDSestadoRevOk
+					endif
+				Else
+					// Salteo la Transaccion
+				Endif
+			Else // Otra Flia que no sea Galicia
+
+				//CCT-CREM borro la tabla "cupon_rep"
+				IF (siaf:codigo_siaf == 18701 && post:adt_stockp_es_grancl == "T")
+					CALL CDScupon_rep_del(tlr:jnl_sequence)
+				END IF
+		
+				ovr:ovr_sup_id = post:ovr_sup_id_aux
+				siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+				call MISCActInterfaz("REVERSA",p_sesion)
+				l_sequence = tlr:jnl_sequence
+
+				Call  post:MISCreversa_transac2
+				
+				//CCT-CREM Genero un registro de Cancelacion en la "cupon_rep"
+				IF (siaf:codigo_siaf == 18701 && post:adt_stockp_es_grancl == "T")
+					CALL MISCgenCupCanc_CREM(l_sequence)
+				END IF					
+
+				; en caso de PF y caida en el envio de reversa cambio el status de la original.
+				call post:MISCcambiaStatusPF(l_sequence)
+				if (p_sesion != "S" && estAnul != "R2_")
+					call CDSestadoRevOk
+				endif
+			Endif
+		end if
+	
+		call post:CDSgrbEstado("")
+	
+		
+		/*Si no es vacio es pieza de control - Se verifica para reversar el scaneo
+		de imposiciones*/
+		IF (track_trace_aux != "")
+			CALL MISCtrat_scaneoO(p_sesion)
+		END IF
+	
+		/*Si no es vacio es una Pieza de stock - Se verifica para reversar el
+		scaneo de Entrega de Piezas*/
+		IF (Pieza_aux != "")
+			/*Llamo a una rutina que borra el scaneo P de las Entregas de Piezas
+			reversadas*/
+			CALL CDSBorro_Scaneos("E")
+		END IF
+	
+		//Tratamiento jnl_cheques
+		//cgw:(99097) - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+		if (p_sesion != "S" && (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097) && post:Tipo_Adm == "I") then
+			CALL post:CDSjnl_chequesCANC
+		endif
+	
+		// Si uso franqueadora, hay que poner una marca de anulacion del registro
+		// en la control_franq
+		if (post:usa_franqueadora == "S")
+			call post:CDScfranq_anul
+		end if
+	
+		clearfield jnl_nuevo_medpag
+		clearfield siaf:importe
+		clearfield tlr:jnl_amount_1
+		auxTipo = post:Tipo_Formulario
+		if (p_sesion == "S" || estAnul == "R2_")
+			//cgw: Limpia campos para el calculo anticipado de los impuestos - Sellados.
+			//     De esta manera no arrastraran valores de transacciones anteriores.
+			clearfield giros:Impuesto
+			clearfield giros:Impuesto_abonado
+			clearfield post:adt_auximpp_impdesc		
+			clearfield giros:Impp_impdesc_emi
+			clearfield giros:Impp_impdesc_pag
+			Call post:CDSbusca_tabla(dsc:post:Jounarl_anul_Ctx)
+			LET lib:err_retval = CDSRETVAL
+		else
+			/*Agrego un control para saber si es una transaccion que graba track-trace y va
+			a ser anulada definitivamente. En caso afirmativo voy a la tabla de track-trace
+			y marco el registro correspondiente para saber que esta anulado - Gabriel Falciola*/
+			if ((jnl_flia_tran == "CSP" || jnl_flia_tran == "CSE") && adt_serv_piezacont == "T" && \
+				jnl_sequence_dire == "ND")
+				call CDSmarco_tt_anul
+				/*MFM - Borro el registro de la TranCont*/
+				call CDSBorroRegTranCont(track_trace)
+				clearfield adt_serv_piezacont
+				
+				//Vuelvo el tt_giro a NO USADO
+				CALL giros:CDSupd_TTgiros(track_trace,"N")
+	
+			end if
+	
+			//Si estoy reversando un giro que tiene tt asociado, elimino el tt de la TTgiros
+			if (jnl_flia_tran == "CSM" && giros:TrackTrace_giros.numchars != 0 && jnl_sequence_dire == "ND")
+				CALL giros:CDSdel_TTgiros(giros:TrackTrace_giros,giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld,giros:flia_giro_fld)
+			end if
+		
+			if (jnl_flia_tran == "CST" && jnl_sequence_dire == "ND")
+				call CDSmarco_cctrl_anul
+			end if
+		
+			call post:MISCclrrevTrans
+			CDS FINDNEXT dsc:NC_CON LOCK
+			LET lib:err_retval = CDSRETVAL
+			if (lib:err_retval == 0)
+				clearfield giros:Impuesto
+				clearfield giros:Impuesto_abonado
+				clearfield post:adt_auximpp_impdesc		
+				clearfield giros:Impp_impdesc_emi
+				clearfield giros:Impp_impdesc_pag
+				CDS EXTRACT dsc:NC_CON all
+			endif
+		endif
+		post:PreDNroTrn = post:adt_PreDNroTrn
+		siaf:hora = common:time_of_day
+#ifdef COMPCONBARRA
+		call post:MISCactProgressBar("REVERSANDO - ", 1, BARRAPORCENT, 1)
+#endif
+	End While
+#ifdef COMPCONBARRA
+	call post:MISCactProgressBar("REVERSANDO - ", 1, BARRAPORCENT, 1)
+#endif
+	if (p_sesion == "S" || estAnul == "R2_")
+		Call post:CDSfin_tabla(dsc:post:Jounarl_anul_Ctx)
+	else
+		Call post:CDSfin_tabla(dsc:NC_CON)
+	endif
+	Call post:MISCclear_campos_jou
+	Resetflag lib:state_flags,scan_mode
+	resetflag tlr:tran_flags,correction
+	clearfield NotaCreditoRev
+	call post:MISCfinProgressBar
+END SUB
+/*******/

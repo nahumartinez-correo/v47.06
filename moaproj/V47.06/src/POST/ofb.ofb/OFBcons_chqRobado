@@ -1,0 +1,97 @@
+/****o* Pendientes de agrupación/OFB:post:OFBcons_chqRobado
+* NOMBRE
+*   OFB:post:OFBcons_chqRobado
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postOFB.OFB.h"
+
+SUB post:OFBcons_chqRobado
+local l_tipo_cli like post:climed_tipo
+local l_cliente like post:climed_numero
+
+	//Dispara la consulta para saber si el cheque que se quiere reemplazar
+	//está marcado como robado en el switch
+	setflag giros:tran_send_mode,consulta_simple
+
+	call post:CDSobtiene_secuen("STAN")
+	giros:codigo_procesamiento = 998210
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	
+
+	hcomm:INDhost_sndrt = OFB:SENDcons_chqRobado 
+	hcomm:INDhost_rcvrt = OFB:RCVEcons_chqRobado 
+
+	call hcomm:COMM_stat_init
+	call siaf:CDSchk_trxs_caidas
+	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+			clearfield hcomm:INDhost_sndrt 
+			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+	elseif (retval == -5) then
+		// quedaron trx's pendientes de recuperacion por el proc. batch...
+		clearfield hcomm:INDhost_sndrt
+		clearfield hcomm:INDhost_rcvrt
+		resetflag giros:tran_send_mode,consulta_simple
+	end if
+
+	call giros:OFBdisable_bt_msg
+	call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh    lib:stat_message
+	refresh    statusline
+
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+		//ungetkey RT_ESC //???
+		resetflag giros:tran_send_mode,consulta_simple
+		return -2
+	else
+		//obtengo los datos del cheque para saber si es robado o no
+		CALL MISCdatos_cheque(BulkFld_108,Longitud_108)
+		//si el cheque no es robado no puede seguir con la transaccion
+		If (estado_cheque != "B" && estado_cheque != "L")
+			MSGBOX "El cheque ingresado NO esta registrado como ROBADO",0x00,"Error"
+			resetflag giros:tran_send_mode,consulta_simple
+			return -2
+		end if
+		//PS 9515 Si el cheque no pertenece al cliente entonces no puede continuar con el reemplazo
+		l_tipo_cli = post:cliente_tipo
+		if (l_tipo_cli == CTACTE_HOST) then
+			l_tipo_cli = CTACTE
+		else
+			if (l_tipo_cli == CTACTE) then
+				l_tipo_cli = CLIUP
+			endif
+		endif
+		l_cliente = post:cliente_nro
+		if (l_tipo_cli != post:climed_tipo || l_cliente != post:climed_numero) then
+			MSGBOX "El cliente de la sesión no se corresponde \ncon el cliente del cheque!",0x00,"Error"    
+			resetflag giros:tran_send_mode,consulta_simple
+			return -2
+		end if
+	end if
+
+	resetflag giros:tran_send_mode,consulta_simple
+END SUB
+
+
+
+/*******/

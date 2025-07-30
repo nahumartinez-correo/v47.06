@@ -1,0 +1,158 @@
+/****o* Pago en Destino/OFB:post:CDSped_msg_rech
+* NOMBRE
+*   OFB:post:CDScupon_msg_rech
+* DESCRIPCION
+* 	Actualiza contadores y detalle de la tabla alertas
+*		N , NO ENVIA MENSAJE AL HOST
+*		D , NO ENVIA MENSAJE AL HOST - ERROR DESARROLLO 
+*		S , ENVIA MENSAJE AL HOST - AGRUPAR ERROR
+*		T , ENVIA MENSAJE AL HOST - SOLO UN MENSAJE PARA TODA LA TABLA CUPON	
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  	post:OFBmonitoreo_ped
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDSped_msg_rech(p_tabla)
+	LOCAL l_cdsretval  LIKE lib:err_retval
+	LOCAL l_off_set LIKE lib:err_retval
+	LOCAL l_tabla LIKE common:csr_string
+	LOCAL l_terminal LIKE op:op_node_id
+	LOCAL l_info LIKE common:csr_string
+
+	LET l_tabla = p_tabla
+	//estadoPED
+	IF (l_tabla == "estadoPED") THEN
+		l_terminal = post:estadoPED_node
+		FPRINT l_info,"%s%s",post:estadoPED_id_pieza post:estadoPED_estado
+	ELSE	
+	//CompPED
+		l_terminal = post:CompPED_node
+		FPRINT l_info,"%s%s",post:id_pieza_ped post:estado_pieza_ped
+	END IF
+
+	//Registro sin enviar
+	IF (tlr:jnl_status == "001") THEN
+		LET giros:CodRespuesta_comm = "SE"
+	END IF
+
+	CDS SELECT FROM DSC:post:alertas_tbl BECOMES DSC:post:alertas_ctx \
+		WHERE post:adt_alerta_grupo == "PED" && post:adt_alerta_cod == giros:CodRespuesta_comm
+		
+	CDS FINDFIRST DSC:post:alertas_ctx LOCK
+	LET l_cdsretval = CDSRETVAL
+	IF (l_cdsretval == 0) THEN
+		CLEARFIELD post:adt_alerta_cod
+		CLEARFIELD post:adt_alerta_desc
+		CLEARFIELD post:adt_alerta_msg 
+		CLEARFIELD post:adt_alerta_cant
+		CLEARFIELD post:adt_alerta_info		
+		
+		CDS EXTRACT DSC:post:alertas_ctx ALL 
+
+    LET post:adt_alerta_send = "X"
+	  LET post:adt_alerta_cant = post:adt_alerta_cant + 1
+	  
+	  IF (post:adt_alerta_cod == "SE") THEN
+			post:adt_alerta_estado = "001"
+ 		ELSE
+			post:adt_alerta_estado = "100"
+		ENDIF	
+
+		SELECT (giros:CodRespuesta_comm)
+			CASE "06"
+			CASE "50"
+				//Capturo la Terminal
+				l_terminal = op:op_node_id
+				CALL post:MISCFtrim(l_terminal)
+				CALL CSR:fld_to_upper (l_terminal)
+				
+				CALL post:MISCFtrim(post:adt_alerta_info)
+				CALL CSR:fld_to_upper(post:adt_alerta_info)
+				
+				CALL CSR:str_search(post:adt_alerta_info,l_terminal,l_off_set)
+				IF (l_off_set < 0 ) THEN
+					FPRINT post:adt_alerta_info,"%s-%s",post:adt_alerta_info,l_terminal
+				END IF
+			BREAK
+			CASE "51"
+			CASE "52"
+				//Capturo el Operador
+				CALL post:MISCFtrim(tlr:jnl_operator)
+				CALL CSR:fld_to_upper(tlr:jnl_operator)
+				
+				CALL post:MISCFtrim(post:adt_alerta_info)
+				CALL CSR:fld_to_upper(post:adt_alerta_info)
+				
+				CALL CSR:str_search(post:adt_alerta_info,tlr:jnl_operator,l_off_set)
+				IF (l_off_set < 0 ) THEN
+					FPRINT post:adt_alerta_info,"%s-%s",post:adt_alerta_info,tlr:jnl_operator
+				END IF
+			BREAK
+			CASE ELSE
+				FPRINT post:adt_alerta_info,"%s-%s",post:adt_alerta_info,l_info
+			BREAK			
+		END SELECT
+	  
+	 	CDS APPEND DSC:post:alertas_ctx \
+	 		post:adt_alerta_send \
+			post:adt_alerta_cant \
+			post:adt_alerta_estado \
+			post:adt_alerta_info
+			
+		CDS UPDATE DSC:post:alertas_ctx LOCK 
+		LET l_cdsretval = CDSRETVAL
+	
+	//No encontro el codigo de respuesta del HOST	
+	//Es una Excepcion
+	ELSEIF (l_cdsretval == -801) THEN
+		CDS ENDSELECT DSC:post:alertas_ctx
+		
+		CDS SELECT FROM DSC:post:alertas_tbl BECOMES DSC:post:alertas_ctx \
+			WHERE post:adt_alerta_cod == "EE"
+		
+		CDS FINDFIRST DSC:post:alertas_ctx LOCK
+		LET l_cdsretval = CDSRETVAL
+		IF (l_cdsretval == 0) THEN
+			CDS EXTRACT DSC:post:alertas_ctx ALL 
+		  
+		  LET post:adt_alerta_send = "X"
+			LET post:adt_alerta_cant = post:adt_alerta_cant + 1
+			
+			//Capturo el codigo de respuesta
+			CALL post:MISCFtrim(giros:CodRespuesta_comm)
+			CALL CSR:fld_to_upper (giros:CodRespuesta_comm)
+
+			IF (giros:CodRespuesta_comm.NUMCHARS == 0) THEN
+				giros:CodRespuesta_comm = "  "
+			END IF
+			
+			CALL CSR:str_search(post:adt_alerta_info,giros:CodRespuesta_comm,l_off_set)
+			IF (l_off_set < 0 ) THEN
+				FPRINT post:adt_alerta_info,"%s-%s",post:adt_alerta_info,giros:CodRespuesta_comm
+			END IF
+			
+		 	CDS APPEND DSC:post:alertas_ctx \
+		 		post:adt_alerta_send \
+				post:adt_alerta_cant \
+				post:adt_alerta_estado \
+				post:adt_alerta_info
+		 
+			CDS UPDATE DSC:post:alertas_ctx LOCK 
+			LET l_cdsretval = CDSRETVAL
+		END IF
+	END IF	
+  CDS ENDSELECT DSC:post:alertas_ctx
+	RETURN (l_cdsretval)
+
+END SUB
+
+/*******/

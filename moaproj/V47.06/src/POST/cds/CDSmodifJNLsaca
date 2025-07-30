@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:post:CDSmodifJNLsaca
+* NOMBRE
+*   OFB:post:CDSmodifJNLsaca
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:LINKcontXsaca
+*	post:LINKdetSurPostal
+*	post:MISCjnl_DetCSaca
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSmodifJNLsaca
+    /* Cte. Op.: Llenado Saca.                      */
+    /* May. 1998 - B. Petrella -                    */
+
+    LOCAL guia_esp_aux LIKE jnl_guia_especial
+
+        /* Resguardo el nro. de saca */
+        swapdup adt_codseq_nro
+
+	  /* Select según clave completa del Journal - Jun.'98 */
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(tlr:jnl_branch == post:jnl_branch_ori && \
+            tlr:jnl_operator == post:jnl_operator_ori && \
+		tlr:jnl_date == post:jnl_date_ori && \
+		tlr:jnl_time == post:jnl_time_ori && \
+		tlr:jnl_bus_date == post:jnl_bus_date_ori && \
+            tlr:jnl_sequence == post:jnl_sequence_ori)
+
+        CDS FINDFIRST DSC:tlr:jnl_context LOCK
+        CDS EXTRACT tlr:jnl_context tlr:jnl_branch tlr:jnl_operator \
+		 tlr:jnl_date tlr:jnl_time tlr:jnl_bus_date \
+		 tlr:jnl_sequence
+
+        /* Recupero el nro. de saca */
+        swapdup adt_codseq_nro
+
+	    /*Si el detalle de saca que estoy journalizando es simple especial
+	    debo jounalizar el codigo de la guia en caso contrario lo journalizo
+	    en blanco*/	
+		IF (jnl_simp_esp == "S")
+		    guia_esp_aux = jnl_guia_especial
+		END IF
+        CDS APPEND DSC:tlr:jnl_context \
+           	guia_esp_aux AS jnl_guia_especial
+
+        Cds APPEND DSC:tlr:jnl_context      \
+             tlr:jnl_branch tlr:jnl_operator tlr:jnl_date \
+             tlr:jnl_time tlr:jnl_bus_date tlr:jnl_sequence \
+             post:adt_codseq_nro as post:jnl_guia_saca \
+             common:system_date as post:jnl_fecha_llensaca\
+             common:time_of_day as post:jnl_hora_llensaca
+       
+            
+       Cds UPDATE DSC:tlr:jnl_context LOCK
+    
+    
+    if (substr(Pieza_id,0,2) != "SU" && substr(Pieza_id,0,2) != "SR" && \
+    	substr(Pieza_id,0,2) != "GS" && substr(Pieza_id,0,2) != "GR") then
+       /*MFM - Si la pieza proviene de una devolucion minorista/mayorista
+        verificar que el track_trace sea valido para generar el scaneo*/
+        IF (siaf:jnl_codigo_siaf != 99062) THEN
+            /*MFM - Grabo Scaneo A*/
+            CALL MISCgrabo_scaneosA
+	  
+        ELSE 
+            CALL MISCes_TT(Pieza_id)
+            IF (RETVAL == 0) THEN
+                /*MFM - Grabo Scaneo A*/
+                CALL MISCgrabo_scaneosA
+            END IF
+        END IF
+    endif
+    
+    /*MFM - Actualizo los Scaneos Correspondientes*/
+    CALL MISCAct_Scaneos("S",0)
+    
+    //Actualizo la stockpUP indicando que la pieza fue expedida
+    CALL CDSact_pieza_exp("S")
+      
+END SUB
+
+/*******/

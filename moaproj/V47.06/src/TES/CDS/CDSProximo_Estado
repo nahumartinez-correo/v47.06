@@ -1,0 +1,143 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSProximo_Estado
+* NOMBRE
+*   OFB:tes:CDSProximo_Estado
+* DESCRIPCION
+*   Establece cual será el próximo estado del cierre de caja.
+* ENTRADAS
+*   CONSULTA_FRANQUEADORAS
+*   CONSULTA_MOTIVOS
+*   RENDICION_ESPECIES
+*   SALIDA_CAJA
+*   SALIDA_VALORES
+*   INICIAL
+*   CONSULTA_TOTALES
+*
+* SALIDAS
+*   tes:estado_cierre es el estado por el que debe continuar el cierre de caja
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANcons_franq
+*   siaf:SVAL_con_totmot
+*   tes:SVALrendi_espv
+*   tes:SVALsalida
+*   tes:SVALsalida_cheques
+*   tlr:PRETProcesoCierre
+*   tlr:TRANteller_tot 
+*
+* DOCUMENTACION
+*   Solicitud 50088 - Iniciativas Varias.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=531861&
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSProximo_Estado(est)
+	local idx like tes:rend_paso_cierre
+	local LRetval like lib:err_retval
+	
+	if (est == INICIAL) then	
+		;Me fijo si el cierre ya había comenzado para retomar desde donde iba 
+	    CDS SELECT from DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context \
+	    WHERE tes:rend_suc_id == common:sucursal_activa && \
+	    tes:rend_op_id == op:op_operator_id
+	    cds findfirst dsc:rend_caj_context nolock
+	    ;Aunque tengamos el estado en donde deberíamos continuar, debemos corroborar
+	    ;que ese estado aun nos interesa. Ej si tengo que declarar especies y salgo
+	    ;de la rendición y hago una salida de todas las especies ya no tendría que
+	    ;entrar a la rendición de estas. *** MDG
+	    if (cdsretval == 0) then
+	    	cds extract dsc:rend_caj_context tes:rend_inicio_cierre tes:rend_paso_cierre
+	    	if (tes:rend_inicio_cierre == "S") then
+	    		idx = tes:rend_paso_cierre - 1
+				;tes:estado_cierre = tes:rend_paso_cierre 
+			;else
+				;tes:estado_cierre = CONSULTA_MOTIVOS
+			end if
+		end if
+		;return (0)
+		
+		;tes:estado_cierre = CONSULTA_MOTIVOS
+	else
+		idx = est
+	end if
+	
+	
+	LRetval = 0
+	do
+		idx = idx + 1
+
+		if (LRetval == 1) then
+			break
+		end if
+		select (idx)
+			case CONSULTA_MOTIVOS
+				tes:estado_cierre = CONSULTA_MOTIVOS
+				LRetval = 1
+			break	
+
+			case CIERRE_LOTE
+				//Si la terminal tiene POS integrado hago el cierre de lote
+				IF (common:adt_vpi_termi_integ == "S")
+					//Si la terminal tiene Lote Pendiente hago el cierre de lote
+					CALL post:MISCver_LoteCie_pend("CIERRE_CAJA")
+					IF (RETVAL == 0) 
+						tes:estado_cierre = CIERRE_LOTE
+						LRetval = 1
+					END IF			
+				END IF
+			break			
+			
+			case SALIDA_CAJA
+				post:tipo_rest = GLOBAL
+				call CDSVerifico_MP
+				;if (retval == 0) then
+					tes:estado_cierre = SALIDA_CAJA
+					LRetval = 1
+				;end if
+			break
+			//case FALLO_CAJA_POSITIVO
+				/*call CDSVerifico_Falla*/
+				;if (retval == 0) then
+					;tes:estado_cierre = FALLA_POSITIVA
+					;LRetval = 1
+				;end if
+			//break
+			//case FALLO_CAJA_NEGATIVO
+				/*call CDSVerifico_Falla*/
+				;if (retval == 0) then
+					;tes:estado_cierre = SALIDA_NEGATIVA
+					;LRetval = 1
+				;end if
+			//break
+			case SALIDA_VALORES
+				post:tipo_rest = ITEMIZADO
+				call CDSVerifico_MP
+				if (retval == 0) then
+					tes:estado_cierre = SALIDA_VALORES
+					LRetval = 1
+				end if
+			break
+			case RENDICION_ESPECIES
+				call CDSVerifico_Especies
+				if (retval == 0) then
+					tes:estado_cierre = RENDICION_ESPECIES
+					LRetval = 1
+				end if
+			break
+			case CONSULTA_TOTALES
+				tes:estado_cierre = CONSULTA_TOTALES
+				LRetval = 1
+			break
+			case CONSULTA_FRANQUEADORAS
+				tes:estado_cierre = CONSULTA_FRANQUEADORAS
+				LRetval = 1
+			break
+			case CIERRE_CAJA
+				tes:estado_cierre = CIERRE_CAJA
+				LRetval = 1
+			break
+		end select
+	loop
+END SUB
+
+/*******/

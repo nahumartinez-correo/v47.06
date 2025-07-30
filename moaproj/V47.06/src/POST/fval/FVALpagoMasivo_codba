@@ -1,0 +1,255 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpagoMasivo_codba
+* NOMBRE
+*   OFB:post:FVALpagoMasivo_codba
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpagoMasivo_codba
+local l_abm like siaf:i
+LOCAL L_ESTADO LIKE adt_benTmp_estado
+    if (currentfield.numchars == 0 || lastkey == RT_SEND) then
+        return 0
+    end if
+    l_abm = 0
+    IF (TESTFLAG(admin:mode_flags,grb)) then
+        l_abm = 1
+    END IF
+    IF (TESTFLAG(admin:mode_flags,bor)) then
+        l_abm = 1
+    END IF
+    IF (TESTFLAG(admin:mode_flags,act)) then 
+        l_abm = 1               
+    END IF 
+    IF (TESTFLAG(admin:mode_flags,todos)) then
+        l_abm = 1                 
+    END IF
+    IF (TESTFLAG(admin:mode_flags,ninguno)) then     
+        l_abm = 1            
+    END IF
+    if (lastkey == RT_SEND && l_abm == 0) then
+        return 0
+    end if
+    call FVALbenef_cod_barr
+    if (retval == -2) then
+    	clearfield adt_benTmp_benef
+        ;clearfield adt_benTmp_fecha_pag
+        clearfield adt_benTmp_importe
+        clearfield adt_benTmp_nombre
+        clearfield adt_benTmp_cli
+        clearfield adt_benTmp_cli_desc
+        clearfield adt_benTmp_suc_cli
+        clearfield adt_benTmp_cod_siaf
+        refresh adt_benTmp_benef
+        refresh adt_benTmp_fecha_pag
+        refresh adt_benTmp_importe
+        refresh adt_benTmp_nombre
+        nextfield adt_benTmp_operativo
+        call admin:ABMresetflag
+    	return -2
+    end if
+    resetvaldone adt_benTmp_benef
+    resetvaldone adt_benTmp_operativo
+    
+    adt_benTmp_operativo = operativo_on_site
+    adt_benTmp_benef = benef_on_site
+    
+    call post:FVALpagoMasivo_Oprtv
+    if (retval == -2) then
+        clearfield adt_benTmp_benef
+        ;clearfield adt_benTmp_fecha_pag
+        clearfield adt_benTmp_importe
+        clearfield adt_benTmp_nombre
+        clearfield adt_benTmp_cli
+        clearfield adt_benTmp_cli_desc
+        clearfield adt_benTmp_suc_cli
+        clearfield adt_benTmp_cod_siaf
+        clearfield codigo_barras
+        clearfield adt_benTmp_operativo
+    	refresh codigo_barras
+        refresh adt_benTmp_benef
+        refresh adt_benTmp_fecha_pag
+        refresh adt_benTmp_importe
+        refresh adt_benTmp_nombre
+        refresh adt_benTmp_operativo
+        nextfield codigo_barras
+        call admin:ABMresetflag
+        return 0
+    end if
+    
+    select (siaf:codigo_siaf)
+        case 6640
+            L_ESTADO = "S"
+            call post:CDSbenefTmp_benef(L_ESTADO)
+            if (retval < 0) then
+                L_ESTADO = "I"
+                call post:CDSbenefTmp_benef(L_ESTADO)
+                IF (RETVAL < 0 ) THEN
+                    msgbox "El beneficio no existe o el estado no permite su ingreso", OFB_OK ,"Error"
+                    call admin:ABMresetflag
+                    CALL drv:MISCdis_enablePB_ABM(0,0,0)
+                    clearfield adt_benTmp_benef
+        			;clearfield adt_benTmp_fecha_pag
+        			clearfield adt_benTmp_importe
+        			clearfield adt_benTmp_nombre
+        			clearfield adt_benTmp_cli
+        			clearfield adt_benTmp_cli_desc
+        			clearfield adt_benTmp_suc_cli
+        			clearfield adt_benTmp_cod_siaf
+        			clearfield codigo_barras
+        			clearfield adt_benTmp_operativo
+    				refresh codigo_barras
+        			refresh adt_benTmp_benef
+        			refresh adt_benTmp_fecha_pag
+        			refresh adt_benTmp_importe
+        			refresh adt_benTmp_nombre
+        			refresh adt_benTmp_operativo
+        			nextfield codigo_barras
+        			call admin:ABMresetflag
+                    RETURN (-2)
+                ELSE
+                    CALL drv:MISCdis_enablePB_ABM(1,0,0)
+                    call drv:but_number(OFB:drv:PBagregar)
+    				drv:last_button = retval
+                    call drv:PBagregar
+                END IF
+            else
+            	refresh adt_benTmp_operativo
+    			refresh adt_benTmp_benef
+    			refresh adt_benTmp_fecha_pag
+    			refresh adt_benTmp_importe
+    			refresh adt_benTmp_nombre
+                CALL drv:MISCdis_enablePB_ABM(0,1,1)
+                MSGBOX "Esta seguro que desea eliminar este beneficio ?",0x21,"Aviso"
+				IF (RETVAL == 1) THEN
+					call drv:but_number(OFB:drv:PBborrar)
+    				drv:last_button = retval
+                	call drv:PBborrar
+				end if
+            end if
+            break
+        case 6650
+            Select (drv:screen_active)
+                case 0
+                    L_ESTADO = "X"
+                    call post:CDSbenefTmp_benef(L_ESTADO)
+                    break
+                CASE 1
+                    L_ESTADO = "Y"
+                    call post:CDSbenefTmp_benef(L_ESTADO)
+                	break
+            End select
+            if (retval == -801) then
+                call post:CDSbeneficios_benef("E")
+                IF (RETVAL == -801) THEN
+                    msgbox "El beneficio ingresado no está pendiente de rendición", OFB_OK ,"Error"
+                    call admin:ABMresetflag
+                    CALL drv:MISCdis_enablePB_ABM(0,0,0)
+                    clearfield adt_benTmp_benef
+        			;clearfield adt_benTmp_fecha_pag
+        			clearfield adt_benTmp_importe
+        			clearfield adt_benTmp_nombre
+        			clearfield adt_benTmp_cli
+        			clearfield adt_benTmp_cli_desc
+        			clearfield adt_benTmp_suc_cli
+        			clearfield adt_benTmp_cod_siaf
+        			clearfield codigo_barras
+        			clearfield adt_benTmp_operativo
+    				refresh codigo_barras
+        			refresh adt_benTmp_benef
+        			refresh adt_benTmp_fecha_pag
+        			refresh adt_benTmp_importe
+        			refresh adt_benTmp_nombre
+        			refresh adt_benTmp_operativo
+        			nextfield codigo_barras
+        			call admin:ABMresetflag
+                    RETURN (-2)
+                ELSE
+                    CALL drv:MISCdis_enablePB_ABM(1,0,0)
+                    call drv:PBagregar
+                END IF
+            ELSEIF (retval == -2) then
+                Select (drv:screen_active)
+                    case 1
+                
+                        SELECT (L_ESTADO)
+                            case "X"
+                            case "RX"
+                            case "AX"
+                                msgbox "¡El beneficio está cargado para rendirlo como pagado!", OFB_OK ,"Error"
+                                BREAK
+                            case "JX"
+                                msgbox "¡El beneficio está cargado y rendido como pagado!", OFB_OK ,"Error"
+                                BREAK
+                        end select
+                        break
+                    case 0
+                        SELECT (L_ESTADO)
+                            case "Y"
+                            case "RY"
+                            case "AY"
+                                msgbox "¡El beneficio está cargado para rendirlo como no pagado!", OFB_OK ,"Error"
+                                BREAK
+                            case "JY"
+                                msgbox "¡El beneficio está cargado y rendido como no pagado!", OFB_OK ,"Error"
+                                BREAK
+                        end select
+                        break
+                END SELECT
+                CALL drv:MISCdis_enablePB_ABM(0,0,0)
+                clearfield adt_benTmp_benef
+        		;clearfield adt_benTmp_fecha_pag
+        		clearfield adt_benTmp_importe
+        		clearfield adt_benTmp_nombre
+        		clearfield adt_benTmp_cli
+        		clearfield adt_benTmp_cli_desc
+        		clearfield adt_benTmp_suc_cli
+        		clearfield adt_benTmp_cod_siaf
+        		clearfield codigo_barras
+        		clearfield adt_benTmp_operativo
+    			refresh codigo_barras
+        		refresh adt_benTmp_benef
+        		refresh adt_benTmp_fecha_pag
+        		refresh adt_benTmp_importe
+        		refresh adt_benTmp_nombre
+        		refresh adt_benTmp_operativo
+        		nextfield codigo_barras
+        		call admin:ABMresetflag
+            ELSE
+                refresh adt_benTmp_operativo
+    			refresh adt_benTmp_benef
+    			refresh adt_benTmp_fecha_pag
+    			refresh adt_benTmp_importe
+    			refresh adt_benTmp_nombre
+                CALL drv:MISCdis_enablePB_ABM(0,1,1)
+                MSGBOX "Esta seguro que desea eliminar este beneficio ?",0x21,"Aviso"
+                IF (RETVAL == 1) THEN
+                	call drv:PBborrar
+				end if                	
+            end if
+            break
+    end select
+    refresh adt_benTmp_operativo
+    refresh adt_benTmp_benef
+    refresh adt_benTmp_fecha_pag
+    refresh adt_benTmp_importe
+    refresh adt_benTmp_nombre
+    setvaldone adt_benTmp_benef
+    setvaldone adt_benTmp_operativo
+    setvaldone adt_benTmp_fecha_pag
+    setvaldone codigo_barras 
+END SUB
+
+/*******/

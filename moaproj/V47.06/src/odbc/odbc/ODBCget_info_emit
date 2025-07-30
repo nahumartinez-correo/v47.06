@@ -1,0 +1,430 @@
+/****o* Pendientes de agrupación/OFB:odbc:ODBCget_info_emit
+* NOMBRE
+*   OFB:odbc:ODBCget_info_emit
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "odbcodbc.h"
+
+SUB odbc:ODBCget_info_emit
+    LOCAL tipo_giro             LIKE common:local_ascii
+	LOCAL nro_factura			LIKE post:NroFact_Inic
+    LOCAL serie                 LIKE giros:Serie_fld
+    LOCAL nro_cheque            LIKE giros:NroGiro_fld
+    LOCAL digito                LIKE giros:digito_fld
+    LOCAL suc_pagadora          LIKE giros:CodSucPag_fld
+    LOCAL importe_giro          LIKE giros:Importe_fld
+    LOCAL importe_opc           LIKE giros:Importe_fld
+    LOCAL importe_iva           LIKE giros:Importe_fld
+    LOCAL impuesto              LIKE giros:Importe_fld
+    LOCAL imp_sellos            LIKE giros:Importe_fld
+    LOCAL imp_opc_pp            LIKE post:adt_opcserv_valor
+    LOCAL imp_opc_pt            LIKE post:adt_opcserv_valor
+    LOCAL imp_opc_en            LIKE post:adt_opcserv_valor
+    LOCAL importe_total         LIKE giros:Importe_fld
+    LOCAL usuario               LIKE tlr:jnl_op_login_id
+    LOCAL imp_tot_centro        LIKE giros:Importe_fld
+    LOCAL imp_tot_sucursales    LIKE giros:Importe_fld
+    LOCAL importe_giro_tot      LIKE giros:Importe_fld
+    LOCAL importe_opc_tot       LIKE giros:Importe_fld
+    LOCAL impuesto_tot          LIKE giros:Importe_fld
+    LOCAL imp_sellos_tot        LIKE giros:Importe_fld
+    LOCAL importe_total_tot     LIKE giros:Importe_fld
+    LOCAL estado_tran           LIKE giros:CodSucPag_fld
+    LOCAL codsiaf_temp          LIKE siaf:codigo_siaf
+    LOCAL sucANT                LIKE giros:CodSucPag_fld
+    LOCAL usuarioANT            LIKE giros:CodCajero_fld
+    LOCAL x                     LIKE giros:gir_cantidad
+    LOCAL cant_items_pick       LIKE giros:gir_cantidad
+    LOCAL cant_tot_centro       LIKE giros:gir_cantidad
+    LOCAL cant_tot_sucursales   LIKE giros:gir_cantidad
+    LOCAL cuenta                LIKE common:local_int
+    LOCAL path_name             LIKE admin:msg_dir_name
+;    DECLARE DBfetch LIB "odb.dll" ( BYVAL ) 
+;    DECLARE DBdefineQuery LIB "odb.dll" ( BYOBJ BYVAL DATAREF BYVAL DATAREF BYOBJ ... ) 
+
+    FYIMSG LST:common:fyimsg_list,MSGbuscando
+    cuenta = 0
+    importe_giro_tot = 0
+    imp_opc_pp = 0
+    imp_opc_pt = 0
+    imp_opc_en = 0
+    importe_opc_tot = 0
+    impuesto_tot = 0
+    imp_sellos_tot = 0
+    importe_total_tot = 0
+    cant_tot_centro = 0
+    cant_tot_sucursales = 0
+    imp_tot_centro = 0
+    imp_tot_sucursales = 0
+    sucANT = giros:CodSucEmis_fld
+	giros:pag = 0
+	siaf:i = 1
+    ;Abro archivo listado.lis
+    CLEARFIELD cant_items_pick 
+	IF (siaf:pantalla_impreso == "P") THEN
+	    CALL CSR:f_sadroppl(DSC:pick)
+	    CALL CSR:f_sanewpl(DSC:pick,PIC:giros:giros5)
+		IF (RETVAL < 0) THEN
+			MSGBOX "ERROR AL CREAR EL PICKLIST",OFB_OK,"ERROR"
+			RETURN (-2)
+		END IF 
+	END IF 
+    CALL siaf:MISCopen_lis	
+    CALL siaf:MISCencab_emitidos
+
+    if (giros:CodCajero_fld.NUMCHARS == 0) then
+	    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	                 ((siaf:codigo_siaf >= 70030 && siaf:codigo_siaf <= 70060) || \
+	                   siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323 || \
+	                   siaf:codigo_siaf == 70391 || siaf:codigo_siaf == 70383) && \
+	                   tlr:jnl_status <= HOST_REJECTED && \
+	                   tlr:jnl_date >= FLD:giros:gir_fec_desde && \
+	                   tlr:jnl_date <= FLD:giros:gir_fec_hasta 
+    else               
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	                 ((siaf:codigo_siaf >= 70030 && siaf:codigo_siaf <= 70060) || \
+	                   siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323 || \
+	                   siaf:codigo_siaf == 70391 || siaf:codigo_siaf == 70383) && \
+	                   tlr:jnl_status <= HOST_REJECTED && \
+					   tlr:jnl_op_login_id == giros:CodCajero_fld && \
+	                   tlr:jnl_date >= FLD:giros:gir_fec_desde && \
+	                   tlr:jnl_date <= FLD:giros:gir_fec_hasta 
+		
+    end if              
+    CDS FINDFIRST DSC:tlr:jnl_context NOLOCK 
+    WHILE (CDSRETVAL == 0)
+		cuenta = cuenta + 1
+		imp_opc_pp = 0
+		imp_opc_pt = 0
+		imp_opc_en = 0
+		nro_factura = 0
+		
+		// Limpio los campos antes de extraerlos porque no todas las transacciones
+		// graban lo mismo - sba 20001108
+		CALL CSR:proc_list(F_CLEAR,LST:LISTodbc_get_emit)
+		
+        CDS EXTRACT DSC:tlr:jnl_context \
+       			  FLD:tlr:jnl_op_login_id  FLD:tlr:jnl_operator \
+       			  FLD:tlr:jnl_date FLD:tlr:jnl_branch  \
+                  FLD:giros:Serie_fld FLD:giros:NroGiro_fld FLD:giros:digito_fld FLD:giros:clave_hdr_giros \
+                  FLD:giros:CodSucEmis_fld FLD:giros:CodSucBenef_fld FLD:giros:ImporteNeto FLD:post:costo_opc  \
+                  FLD:post:TasaIva FLD:giros:IvaComision_fld FLD:giros:Impuesto  \
+                  FLD:giros:Impuesto_abonado FLD:siaf:importe FLD:post:PresNro  \
+                  FLD:tlr:jnl_status FLD:tlr:jnl_sequence FLD:tlr:jnl_sequence_corr FLD:giros:Comision_fld \
+                  FLD:siaf:codigo_siaf into codsiaf_temp \
+                  FLD:post:siniva_opc[0] \
+                  FLD:post:siniva_opc[1] \
+                  FLD:post:siniva_opc[2] \
+                  FLD:post:siniva_opc[3] \
+                  FLD:post:siniva_opc[4] \
+                  FLD:post:siniva_opc[5] \
+                  FLD:post:cos_opc[0] \
+                  FLD:post:cos_opc[1] \
+                  FLD:post:cos_opc[2] \
+                  FLD:post:cos_opc[3] \
+                  FLD:post:cos_opc[4] \
+                  FLD:post:cos_opc[5] \
+                  FLD:giros:IvaTasa_fld FLD:giros:ComisionSinIva_fld \
+                  FLD:giros:TasaSinIva_fld \
+                  FLD:siaf:cancelacion 
+        
+        IF (codsiaf_temp == 70383) //Para Transferencias Internacionales se necesitan otros campos
+            CLEARFIELD giros:ImporteSelloEmis
+            CLEARFIELD post:ImporteSinIva
+            CLEARFIELD post:ImporteConIva
+            CLEARFIELD giros:CodPaisBenef_fld
+            CLEARFIELD giros:comision_siniva
+            CLEARFIELD giros:ImporteTotal_fld
+            CLEARFIELD giros:cons_nro_ctrol
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:giros:ImporteSelloEmis \
+                FLD:post:ImporteSinIva \
+                FLD:giros:CodPaisBenef_fld \
+                FLD:giros:comision_siniva \
+                FLD:giros:ImporteTotal_fld \
+                FLD:post:ImporteConIva \
+                FLD:giros:cons_nro_ctrol
+        END IF
+        
+        /*Este IF se hace debido a que esta condicion se tuvo que sacar del SELECT al journal 
+        porque tenia demasiadas clauses y daba error de compilación*/
+    	// FGB 16.8.2001: a pedido de Nina, tienen que ser identificables las EMGP con ruptura de cheque, por parte 
+    	// de la interfaz. 
+		// NOTA: a pedido de Luis Gaspar estos giros tienen que salir en el listado de emitidos (por mas que tengan
+		// siaf:cancelacion distinto de vacio)
+        IF (tlr:jnl_branch == common:sucursal_activa && (siaf:cancelacion == "" || siaf:cancelacion == DSCERR_PRT_CHQ)) then
+            
+                              
+            // Si el estado es distinto de Aceptado o Rechazado tengo que pasar al siguiente
+			if (tlr:jnl_status != HOST_ACCEPTED && tlr:jnl_status != HOST_REJECTED && tlr:jnl_status != UNPOSTED ) then
+				cds findnext DSC:tlr:jnl_context NOLOCK
+				continue
+			end if
+            
+            CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context WHERE \
+                  tlr:jnl_branch ==  FLD:tlr:jnl_branch && \
+                  tlr:jnl_operator == FLD:tlr:jnl_operator && \
+                  tlr:jnl_date == FLD:tlr:jnl_date &&  \
+                  siaf:codigo_siaf == 99023 && \
+                  post:PresNro == FLD:post:PresNro
+		    CDS FINDFIRST DSC:tlr:aux_context NOLOCK 
+		    IF (CDSRETVAL == 0)
+		        CDS EXTRACT DSC:tlr:aux_context FLD:post:NroFact_Inic into nro_factura
+		    END IF    
+		    CDS ENDSELECT DSC:tlr:aux_context
+            SELECT (codsiaf_temp)
+                CASE 70030
+                    tipo_giro = "GIROS POSTALES:"
+                    BREAK 
+                CASE 70322
+                    tipo_giro = "GIROS POSTALES C/CHQ:"
+                    BREAK 
+                CASE 70040
+                    tipo_giro = "GIROS POSTALES OFICIO:"
+                    BREAK 
+                CASE 70041
+                    tipo_giro = "GIROS POSTALES CONTRARREMB."
+                    BREAK 
+                CASE 70050
+                    tipo_giro = "GIROS TELEGRAFICOS:"
+                    BREAK 
+                CASE 70323
+                    tipo_giro = "GIROS TELEGRAFICOS C/CHQ:"
+                    BREAK 
+                CASE 70060
+                    tipo_giro = "GIROS TELEGRAFICOS OFICIO:"
+                    BREAK 
+                CASE 70391
+                    tipo_giro = "ENVIO DE TRANSFERENCIA"
+                    BREAK       
+	            CASE 70383
+                    tipo_giro = "ENVIO DE TRANSFERENCIA INTERNACIONAL"
+                    BREAK       
+            END SELECT 
+            
+            estado_tran = "ACEP"
+            IF (tlr:jnl_status == 100) THEN
+                estado_tran = "RECH"
+            END IF 
+            IF (tlr:jnl_sequence_corr != 0 && (tlr:jnl_sequence > tlr:jnl_sequence_corr)) THEN
+                estado_tran = "REV."
+            END IF 
+            
+            
+            //Seteo campos para el PRINT
+            
+            serie           = giros:Serie_fld
+            nro_cheque      = giros:NroGiro_fld
+            digito          = giros:digito_fld
+            importe_giro    = giros:ImporteNeto
+            
+            IF (codsiaf_temp == 70383) //Transferencia Internacional
+                suc_pagadora = giros:CodPaisBenef_fld
+                CALL CSR:trimfield(suc_pagadora)
+                impuesto = giros:comision_siniva
+                imp_sellos = giros:ImporteSelloEmis
+                importe_total = giros:ImporteTotal_fld
+                importe_opc = post:siniva_opc[0] + post:siniva_opc[1] + post:siniva_opc[2] + \
+                              post:siniva_opc[3] + post:siniva_opc[4] + post:siniva_opc[5]
+                importe_iva = post:ImporteConIva - post:ImporteSinIva
+            ELSE
+                suc_pagadora = giros:CodSucBenef_fld
+                //??????????????????????
+                ;Ahora los calculo asi porque el Capitan desgloso los importes en el JNL
+                ;Obviamente estos campos los agregue en el EXTRACT (que hago mas arriba) del journal 
+                impuesto        = giros:ComisionSinIva_fld + giros:TasaSinIva_fld
+                imp_sellos      = giros:Impuesto + giros:Impuesto_abonado
+                importe_iva     = (post:cos_opc[0] + post:cos_opc[1] + post:cos_opc[2] + \
+                                  post:cos_opc[3] + post:cos_opc[4] + post:cos_opc[5]) - \
+                                  (post:siniva_opc[0] + post:siniva_opc[1] + post:siniva_opc[2] + \
+                                  post:siniva_opc[3] + post:siniva_opc[4] + post:siniva_opc[5]) + \
+                                  (giros:IvaTasa_fld + giros:IvaComision_fld)
+                importe_opc     = post:siniva_opc[0] + post:siniva_opc[1] + post:siniva_opc[2] + \
+                                  post:siniva_opc[3] + post:siniva_opc[4] + post:siniva_opc[5]
+                importe_total   = importe_giro + importe_opc + impuesto + imp_sellos + importe_iva
+            END IF            
+
+            usuario         = tlr:jnl_op_login_id
+            
+		    SELECT (estado_tran)
+			    CASE "RECH"
+			        BREAK
+			    CASE "REV."	
+			        imp_tot_sucursales = imp_tot_sucursales - importe_total
+			        /* cant_tot_sucursales = cant_tot_sucursales - 1 */
+			        BREAK
+			    CASE ELSE
+			        imp_tot_sucursales = imp_tot_sucursales + importe_total
+			        /* sba 20001124 - para que sume solo las que no estan reversadas */
+			        if ( ( tlr:jnl_status == HOST_ACCEPTED || tlr:jnl_status == UNPOSTED ) && tlr:jnl_sequence_corr == "") then
+				        cant_tot_sucursales = cant_tot_sucursales + 1
+			        end if
+			        BREAK
+		    END SELECT
+		    
+		    IF (giros:CodSucEmis_fld != sucANT) THEN
+			    IF (siaf:pantalla_impreso == "I") THEN
+				    siaf:nota_1 = " "
+				    CALL siaf:MISCwrite_consultas
+				    FPRINT siaf:nota_1,"SUCURSAL: %5s",giros:CodSucEmis_fld
+				    CALL giros:MISCpantalla_impres2
+				    siaf:nota_1 = " "
+				    CALL giros:MISCpantalla_impres2
+				    FPRINT siaf:nota_1,"----------------------- "
+				    CALL giros:MISCpantalla_impres2
+				ELSE 
+    				FPRINT siaf:nota_1,"      SUCURSAL: %5s",giros:CodSucEmis_fld
+	    			CALL giros:MISCpantalla_impres2
+		    	END IF 
+			    sucANT = giros:CodSucEmis_fld
+		    END IF 
+		    IF (siaf:pantalla_impreso == "P") THEN
+			    if (codsiaf_temp == 70391 || codsiaf_temp == 70383 ) then
+			        FPRINT siaf:nota_1,"%-50s",tipo_giro
+			        CALL giros:MISCpantalla_impres2
+			        IF (codsiaf_temp == 70383)
+			            FPRINT siaf:nota_1, \
+			                " %8s%14s    %12s           %-2s %12s %12s", \
+			                usuario,nro_factura,giros:cons_nro_ctrol,suc_pagadora,importe_giro, \
+			                importe_opc
+			        ELSE
+			            FPRINT siaf:nota_1, \
+			                " %8s%14s    %12s           %5s %12s %12s", \
+			                usuario,nro_factura,giros:clave_hdr_giros,suc_pagadora,importe_giro, \
+			                importe_opc
+			        END IF
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "      %12s     %12s       %12s     %12s      %s",importe_iva,impuesto,imp_sellos, \
+			            importe_total,estado_tran
+			        call   giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "------------------------------------------------------------------------------------ "
+			        call giros:MISCpantalla_impres2 
+			    else
+		            FPRINT siaf:nota_1,"%-50s",tipo_giro
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            " %8s %14s   %s-%6s/%s         %5s        %12s %12s", \
+			            usuario,nro_factura,serie,nro_cheque,digito,suc_pagadora,importe_giro, \
+			            importe_opc
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "      %12s     %12s       %12s     %12s      %s",importe_iva,impuesto,imp_sellos, \
+			            importe_total,estado_tran
+			        call   giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "------------------------------------------------------------------------------------ "
+			        call giros:MISCpantalla_impres2 
+			    end if   
+		    ELSE        
+			    if (codsiaf_temp == 70391 || codsiaf_temp == 70383 ) then
+			        FPRINT siaf:nota_1,"%-50s",tipo_giro
+			        CALL giros:MISCpantalla_impres2
+			        IF (codsiaf_temp == 70383)
+			            FPRINT siaf:nota_1, \
+			                " %8s  %14s    %12s     %-2s  %12s %12s", \
+			                usuario,nro_factura,giros:cons_nro_ctrol,suc_pagadora,importe_giro, \
+			                importe_opc
+			        ELSE
+			            FPRINT siaf:nota_1, \
+			                " %8s  %14s    %12s     %5s  %12s %12s", \
+			                usuario,nro_factura,giros:clave_hdr_giros,suc_pagadora,importe_giro, \
+			                importe_opc
+			        END IF			            
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            " %-12s  %-12s       %-12s   %-12s %s",importe_iva,impuesto,imp_sellos, \
+			            importe_total,estado_tran
+			        call   giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "------------------------------------------------------------------------------------ "
+			        call giros:MISCpantalla_impres2 
+			    else
+			        FPRINT siaf:nota_1,"%-50s",tipo_giro
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "%8s   %14s     %s-%6s/%s      %5s  %12s %12s", \
+			            usuario,nro_factura,serie,nro_cheque,digito,suc_pagadora,importe_giro, \
+			            importe_opc
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "%-12s   %-12s     %-12s      %-12s %s" ,importe_iva,impuesto,imp_sellos, \
+			            importe_total,estado_tran
+			        CALL giros:MISCpantalla_impres2
+			        FPRINT siaf:nota_1, \
+			            "------------------------------------------------------------------------------------ "
+			        CALL giros:MISCpantalla_impres2
+			    end if   
+		    END IF 
+		    cant_items_pick = cant_items_pick + 1
+		END IF
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK 
+	END WHILE 
+	CDS ENDSELECT DSC:tlr:jnl_context 
+	giros:gir_cantidad = cant_items_pick
+	IF (cant_items_pick == 0) THEN
+		MSGBOX "NO EXISTEN GIROS/TRANSFERENCIAS EMITIDOS",OFB_OK,""
+		CALL siaf:MISCclose_lis
+		RETURN (-2)
+	ELSE 
+		IF (siaf:pantalla_impreso == "I") THEN
+			if (giros:CodCajero_fld.NUMCHARS == 0)
+			    FPRINT siaf:nota_1, \
+			        "     CANT. DE GIROS/TRANSFERENCIAS EMITIDAS POR SUCURSAL: %-12e",cant_tot_sucursales
+			    CALL giros:MISCpantalla_impres2
+			    siaf:nota_1 = "   "
+			    CALL giros:MISCpantalla_impres2
+			    FPRINT siaf:nota_1,"     TOTALES POR SUCURSAL: %12e ", \
+			    imp_tot_sucursales
+			ELSE
+			    FPRINT siaf:nota_1, \
+			        "     CANT. DE GIROS/TRANSFERENCIAS EMITIDAS POR EL OPERADOR: %-12e",cant_tot_sucursales
+			    CALL giros:MISCpantalla_impres2
+			    siaf:nota_1 = "   "
+			    CALL giros:MISCpantalla_impres2
+			    FPRINT siaf:nota_1,"     TOTALES DEL OPERADOR: %12e ", \
+			    imp_tot_sucursales			    
+			END IF
+			CALL giros:MISCpantalla_impres2
+			
+		ELSE 
+			if (giros:CodCajero_fld.NUMCHARS == 0)			
+			    FPRINT siaf:nota_1, \
+			    "     CANT. DE GIROS/TRANSFERENCIAS EMITIDAS POR SUCURSAL: %-12e ",cant_tot_sucursales
+			    call giros:MISCpantalla_impres2 
+			    FPRINT siaf:nota_1,"     TOTALES POR SUCURSAL: %12e ", \
+			    imp_tot_sucursales
+			    call giros:MISCpantalla_impres2
+			else
+			    FPRINT siaf:nota_1, \
+			    "     CANT. DE GIROS/TRANSFERENCIAS EMITIDAS POR EL OPERADOR: %-12e ",cant_tot_sucursales
+			    call giros:MISCpantalla_impres2 
+			    FPRINT siaf:nota_1,"     TOTALES DEL OPERADOR: %12e ", \
+			    imp_tot_sucursales
+			    call giros:MISCpantalla_impres2			    
+			end if    
+		END IF 
+	END IF 
+    REFRESH giros:gir_cantidad 
+	CALL giros:MISCpantalla_viewer (cuenta)
+	if (cuenta > 70) then
+		RETURN (-1)
+	else	
+		RETURN (0)
+	end if 
+END SUB
+
+/*******/

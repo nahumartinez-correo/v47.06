@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrestoTotalesUP
+* NOMBRE
+*   OFB:post:MISCrestoTotalesUP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrestoTotalesUP
+	local seq_aux like tlr:tots_sequence
+	local estado_aux like hcomm:tran_status
+
+	if (tlr:INDtots_append == 0 && siaf:codigo_siaf != 99023) then
+		return
+	end if
+
+	setflag tlr:tran_flags,correction
+	setflag tlr:jnl_tran_flags,correction
+	estado_aux = hcomm:tran_status
+	hcomm:tran_status = 3
+
+	CDS CLEARBUFFER DSC:tlr:CONtots_write
+
+	cds beginwork
+
+    ;call siaf:CDSdatos_rjournal
+    select (siaf:codigo_siaf)
+    case 99023
+        /*SMC Control Caja
+         Se agrega rutina de grabacion de Totales Para todas las transacciones */
+        let tlr:INDtots_append_gral = LST:tes:TOTS_CCGRAL
+        call CSR:total_list(tlr:INDtots_append_gral,DSC:tlr:CONtots_write,tlr:jnl_tran_flags,0)
+        clearfield tlr:INDtots_append_gral
+        clearfield siaf:codigo_siaf
+        break
+    case else
+      ;siaf:INDscratch = OFB:tlr:TOTSopen_day
+      ;IF (tlr:INDtots_append != siaf:INDscratch) THEN
+        ;siaf:INDscratch = OFB:tlr:TOTSclose_day
+        ;IF (tlr:INDtots_append != siaf:INDscratch) THEN
+          ;siaf:INDscratch = OFB:TOTScustom_clear
+          ;IF (tlr:INDtots_append != siaf:INDscratch) THEN
+         
+            call CSR:total_list(tlr:INDtots_append,DSC:tlr:CONtots_write,tlr:jnl_tran_flags,0)
+          ;END IF
+        ;END IF
+      ;END IF
+      break
+    end select
+    /*
+	tlr:INDtots_append = OFB:TOTSappend_uno
+	CDS BEGINWORK
+	call tlr:TOTScommit
+	call tlr:TOTSwait
+
+	tlr:INDtots_append = OFB:TOTSappend_dos
+	CDS BEGINWORK
+	call tlr:TOTScommit
+	call tlr:TOTSwait
+
+	tlr:INDtots_append = OFB:TOTSappend_gir
+	CDS BEGINWORK
+	call tlr:TOTScommit
+	call tlr:TOTSwait
+	*/
+
+	hcomm:tran_status = estado_aux
+	
+	cds append DSC:tlr:CONtots_write \
+		tlr:jnl_bus_date AS tlr:tots_bus_date \
+		tlr:cctl_cash_in AS tlr:tots_cash_in \
+		tlr:cctl_cash_out AS tlr:tots_cash_out \
+		tlr:cctl_net_cash AS tlr:tots_net_cash
+	#if TLR_TOTS_WAIT == 0
+		cds update DSC:tlr:CONtots_write lock commitwork nowait
+	#else
+		cds update DSC:tlr:CONtots_write lock commitwork
+	#endif
+	resetflag tlr:tran_flags,correction
+	resetflag tlr:jnl_tran_flags,correction
+
+	if (cdsretval < 0)
+		call  OFB:lib:MISCcds_find_err /* display error msg */
+		return (-1)
+	END IF
+	call tlr:TOTSwait
+END SUB
+
+/*******/

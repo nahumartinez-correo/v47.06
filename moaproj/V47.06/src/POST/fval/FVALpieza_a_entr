@@ -1,0 +1,435 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpieza_a_entr
+* NOMBRE
+*   OFB:post:FVALpieza_a_entr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*	crq32349-NI50606 - Captura imagen
+* NI 50569-RPP
+* SUC853-PAS
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpieza_a_entr
+	LOCAL modifica LIKE siaf:i
+	LOCAL l_mensaje LIKE common:csr_string
+	LOCAL l_indice_total LIKE post:indice_total
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL loc_retval LIKE lib:err_retval
+	
+	//gpb:resguardo el valor del campo
+	LET l_indice_total = post:indice_total
+	
+	CALL CSR:proc_list(F_PROTECT,LST:post:LISTentrega_pieza)
+	sel_entrPieza:    
+	;leo EntPzas_tmp
+	CALL CDSEntPzas_tmp_lee
+	IF (RETVAL == 0) THEN
+		CALL drv:MISCdis_enablePB_ABM(0,1,1)
+		IF (estado_presu == 2) THEN
+			modifica = 1
+		END IF
+  ELSE
+		/*En esta rutina chequeo que campos deben estar protegidos y cuales no:*/
+		CALL CSR:trimfield(Pieza)
+		IF (Pieza.NUMCHARS == 0) THEN
+			IF (TESTFLAG(admin:mode_flags,grb) || TESTFLAG(admin:mode_flags,act)) THEN
+				MSGBOX "CAMPO REQUERIDO.",0x00,"Error"
+				CALL post:PBNuevaEntrePieza
+				CALL admin:ABMresetflag
+				RETURN (-2)
+			END IF
+			RETURN (0)
+		END IF
+    	
+		IF (post:estado_presu == 2) THEN
+			CALL CSR:proc_list(F_CLEAR,LST:post:LISTentrega_piezaAll)
+			CALL CSR:proc_list(F_REFRESH,LST:post:LISTentrega_piezaAll)
+		ELSE
+			CALL CSR:proc_list(F_CLEAR,LST:post:LISTentrega_pieza)
+			CALL CSR:proc_list(F_REFRESH,LST:post:LISTentrega_pieza)
+		END IF
+    	
+		//hago el select a la stockp con la pieza ingresada
+		CALL CDSentrPieza_sel
+		IF (RETVAL == -801) THEN
+			//si no la encuentra y es de 11 digitos le agrego "AR" y vuelvo a hacer el select
+			IF (Pieza.numchars == 11) THEN
+				CDS ENDSELECT DSC:STOCKP_CTX
+				//Controlo la cantidad de dígitos, si es de 11 le agrego "AR"
+				CALL MISCcant_digitos_tt(Pieza,"8")
+				GOTO sel_entrPieza:
+			END IF	
+			CDS ENDSELECT DSC:STOCKP_CTX
+			CLEARFIELD Pieza
+			REFRESH Pieza
+			MSGBOX "LA PIEZA INGRESADA NO EXISTE EN STOCK O HA SIDO ENTREGADA.",0x00,"Error"
+			CALL admin:ABMresetflag
+			RETURN (-2)    	
+		END IF
+    	
+  	CDS FINDAGAIN DSC:STOCKP_CTX NOLOCK
+  	CDS EXTRACT DSC:STOCKP_CTX ALL
+ 		
+ 		//ENTREGA PAS (PRODUCTO ALTA SEGURIDAD)
+ 		CALL MISCentrega_PAS
+ 		
+ 		//ENTREGA CON PALABRA CLAVE
+ 		CALL MISCentrega_Ecomm
+ 		/* nunca se impide la entrega de pieza con palabra clave
+ 		if (RETVAL < 0) THEN
+				return -2
+	 ENDIF*/
+  	
+  	lugar_guarda_pieza = adt_stockp_lugarGuar
+  	ord_guarda_pieza = adt_stockp_ordGuarda
+  	
+  /* 	//crq32349-NI50606 - Se consulta si la pieza en la stockp captura imagen en F y se envía la consulta a T&T
+  	CALL post:CDSConsulta_Imagen("E")
+  	IF (RETVAL == -2)
+  		RETURN (-2)
+  	END IF*/
+  	
+    
+    //gpb:NI50437	 -VAP
+    IF (post:adt_stockp_destino == DSC:post:minoristaRPP_desc) THEN
+			IF (climed_tipo == 5) THEN
+				//valido que el cliente corresopnda con el de la pieza
+				IF (post:climed_numero != post:climed_nro_stockp) THEN
+					MSGBOX "Asegurese de haber realizado el REGISTRO de VAP Manual previamente.\nLuego vuelva a iniciar una sesión con el cliente asociado a esta pieza." ,0x00,"Error"
+					CALL admin:ABMresetflag
+					RETURN (-2)    
+				END IF	
+			END IF
+			//valido que la pieza haya pasado previamente por la transaccion Registro VAP
+			IF (post:serv_stockp.numchars == 0) THEN
+				MSGBOX "Antes de realizar la entrega de esta pieza debera cargarla por la transaccion REGISTRO de VAP Manual.",0x00,"Error"
+				CALL admin:ABMresetflag
+				RETURN (-2)    
+			END IF
+			
+			//gpb:valido que exista el codigo en la tabla indiceVAP para que pueda totalizar
+			//sino da error
+			CALL  post:MISCcargoIndiceVAP(post:serv_stockp)
+			//gpb:recupero el valor de campo
+			LET post:indice_total = l_indice_total 
+			IF (RETVAL < 0)
+				return (-2)
+			END IF
+			
+    END IF
+     //NI50569-RPP
+    IF (post:adt_stockp_destino == "RTA POSTAL PAGA" && post:adt_stockp_rpp_corp != "S") THEN
+			if (climed_tipo == 5) THEN
+				//valido que el cliente corresponda con el de la pieza
+				IF (post:climed_numero != post:climed_nro_stockp) THEN
+					MSGBOX "Asegurese de haber realizado el REGISTRO RPP previamente.\nLuego vuelva a iniciar una sesion con el cliente asociado a esta pieza." ,0x00,"Error"
+					CALL admin:ABMresetflag
+					RETURN (-2)    
+				END IF	
+			END IF
+			//valido que si es una pieza RPP Minorista haya pasado previamente por la transaccion Registro RPP
+			IF (post:adt_stockp_rpp_corp == "N" && post:adt_stockp_rpp_reg == "N") THEN
+				MSGBOX "Antes de realizar la entrega de esta pieza deberá cargarla por la transacción REGISTRO RPP.",0x00,"Error"
+				CALL admin:ABMresetflag
+				RETURN (-2)    
+			END IF
+		ENDIF
+ 	//PAGO EN DESTINO
+    IF (post:adt_stockp_destino == DSC:post:PED_desc) THEN
+    	LET impCobro_ped = stockp_impCobro_ped
+			IF (adt_stockp_en_devol == "S") THEN //Entrega en Origen
+				//Verifico en que estado de proceso esta la pieza pied antes de ser entregada
+				SELECT (stockp_ped_estAct)
+					CASE "RECI" //Recibida
+						MSGBOX "IMPOSIBLE ENTREGAR LA PIEZA. FALTA GENERAR NOTA DE CREDITO Y FACTURA POR PAGO EN DESTINO",0x00,"AVISO"
+						l_retval = -2
+						BREAK
+					CASE "PROC" //Tomada para Facturar o Generar Nota de Credito
+						MSGBOX "IMPOSIBLE ENTREGAR LA PIEZA. LA MISMA ESTA EN PROCESO DE GENERACION DE NOTA DE CREDITO O FACTURA POR PAGO EN DESTINO",0x00,"AVISO"
+						l_retval = -2
+						BREAK
+					CASE "NTCR" //Nota de Crédito Generada
+						MSGBOX "IMPOSIBLE ENTREGAR LA PIEZA. FALTA GENERAR FACTURA POR PAGO EN DESTINO",0x00,"AVISO"
+						l_retval = -2
+						BREAK
+					CASE "FACT" //Facturada 
+					//Nunca puede llegar aca porque si se recibe en destino no puede estar devuelta o sea adt_stockp_en_devol != S
+					//CASE "RECI" //Recibidas en destino
+						l_retval = 0
+						BREAK
+				END SELECT
+				IF (l_retval < 0)
+					RETURN -2
+				END IF
+				IF (emite_fact_stockp == "N")
+					//En este caso el cliente tiene modalidad pactada lo que la deuda ya se saldo
+					//al momento de la refacturacion por lo que en la entrega no se cobra nada
+					CLEARFIELD impCobro_ped
+				END IF
+			END IF
+    END IF 
+    	
+		/* Pieza Pactada en Suc */
+		IF (adt_stockp_destino == "PIEZA PACTADA EN SUC" || adt_stockp_dest_ant == "PIEZA PACTADA EN SUC") THEN
+			CDS ENDSELECT DSC:STOCKP_CTX
+			CLEARFIELD Pieza
+			REFRESH Pieza
+			MSGBOX "LA PIEZA INGRESADA ES UNA PIEZA PACTADA EN SUC Y NO PUEDE SER ENTREGADA A TRAVES DE ESTA TRANSACCION",0x00,"Error"
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+    	
+    CALL drv:MISCdis_enablePB_ABM(1,0,0)
+	END IF	
+	
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle
+	CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle
+	/*-CONTRA REEMBOLSO*/
+	IF (adt_stockp_crem_imp > 0 && adt_stockp_en_devol == "N") THEN
+		IF (cli_tipo == 1) THEN
+			MSGBOX "NO SE PUEDE ENTREGAR  UNA PIEZA CON CONTRA REEMBOLSO A UN CLIENTE CUENTA CORRENTISTA.",0x00,"ERROR"
+			CALL CDSlimpFechStockp
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+		LET CRimp_a_cobr = adt_stockp_crem_imp
+		UNPROTFIELD CRimp_cobrado
+	ELSE
+		CLEARFIELD CRimp_a_cobr
+		CLEARFIELD CRimp_cobrado
+	END IF
+    
+	/*-PRESENTACION ADUANA*/
+	IF (adt_stockp_destino == "DEPOSITO INTER")
+		UNPROTFIELD PresAd_prod
+		UNPROTFIELD PresAd_imp
+		ENABLECONTROL drv:PBcb0
+	ELSE
+		DISABLECONTROL drv:PBcb0
+	END IF
+    
+	/*-CORRESPONDENCIA DE CARGO*/
+	IF (adt_stockp_franq_inc == "S") THEN
+		CALL post:MISCventasRestGen("CSM", "18201")
+		IF (RETVAL < 0) THEN
+			UNGETKEY RT_ESC
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+		UNPROTFIELD falta_franq
+	END IF
+    
+	/*-ALMACENAJE*/
+	IF (adt_stockp_dias_alm > 0) THEN
+		adt_serv_umstd = "DIA"
+		IF (adt_stockp_destino == "DEPOSITO INTER")
+			CALL CDSbasico("28402",adt_stockp_dias_alm,"DIA","INTERNACIONAL")
+		ELSE
+			CALL CDSbasico("18401",adt_stockp_dias_alm,"DIA","NACIONAL")
+		END IF
+		IF (RETVAL < 0)
+			CALL CDSlimpFechStockp
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+		
+		CALL post:MISCtarifa_canal
+		IF (RETVAL < 0)
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+    		
+		UNPROTFIELD almac_dias //Linea nueva
+		
+		IF (cli_tipo != 1) THEN
+			almac_imp = adt_tarif_precio
+			//almac_imp = adt_tarif_precio * adt_stockp_dias_alm
+			tarif_desde_alm = adt_tarif_desde
+			tarif_hasta_alm = adt_tarif_hasta
+			tarif_modo_alm = adt_tarif_modo
+			uni_med_alm = adt_tarif_um
+			tarif_dest_alm = adt_tarif_dest
+    
+			/* Se agregan estos campos para que se journalice el hasta eq. para SAP y la
+			Unidad de Medida Eq. para SAP en las Transacciones de Almacenaje -  ML 2/4/2000 */
+			LET tarif_hasta_eq_alm = adt_tarif_hasta_eq
+			LET tarif_um_eq_alm = adt_tarif_um_eq
+			/*Fin ML*/
+			
+			CALL MISCformulaDeCalculo(adt_stockp_dias_alm,adt_tarif_modo,tarif_aux,adt_tarif_fijo,adt_tarif_precio,adt_tarif_um)
+			formuCalc_alm = formuCalc
+		END IF
+  ELSE
+		;CLEARFIELD almac_imp
+		/***Agregado por MFM***/
+		IF (cli_tipo != 1) THEN
+			UNPROTFIELD almac_dias //Linea nueva
+		END IF
+		/**********************/
+	END IF
+    
+	/*-LISTA*/
+	IF (adt_stockp_destino == "LISTAS") THEN
+		adt_serv_umstd = "UNI"
+		envios = 1
+		post:aux_cod_serv = "18301"
+		CALL post:MISCventasRestGen("CSM", post:aux_cod_serv)
+		IF (RETVAL < 0) THEN
+			UNGETKEY RT_ESC
+			RETURN (0)
+		END IF
+		
+		CALL CDSbasico("18301",1,"UNI","UNICO")
+		IF (RETVAL < 0) THEN
+			CALL CDSlimpFechStockp
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+    
+		CALL post:MISCtarifa_canal
+		IF (RETVAL < 0) THEN
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+		
+    	CLEARFIELD promo_imp_srv
+		CALL post:MISCLimpioPromo("Lista")
+		adt_tarif_precio = adt_tarif_precio
+		post:destino = "UNICO"
+		CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+		
+		IF (aplica_bonif_serv ==	"S") THEN
+			CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_SERVICIO, adt_tarif_desde)
+		END IF
+		
+		IF (RETVAL == 1) THEN
+			CDS ENDSELECT DSC:post:promoDetalleCli_ctx
+			CDS ENDSELECT DSC:post:promoCabeSucu_ctx   
+			
+			IF (promoSrvTipoBon == TIPO_BONIF_PORCENTUAL || (promoSrvTipoBon == TIPO_BONIF_VALOR && \
+				adt_tarif_precio >= promo_srv_bon)) THEN
+				CALL post:MISCcalcBonifGral(promoSrvTipoBon, TIPO_ENTREGA_DE_PZA)
+				IF (promoSrvTipoBon == TIPO_BONIF_VALOR) THEN
+					CALL post:MISCdetalleBonifGral(adt_promo_desc,adt_tarif_precio,"----",promo_imp_srv_ind,"Lista", "")
+				ELSE
+					CALL post:MISCdetalleBonifGral(adt_promo_desc,adt_tarif_precio,adt_promo_bon,promo_imp_srv_ind,"Lista", "")
+				END IF
+				promo_desc_lista = promo_desc
+				promo_imp_lista  = promo_imp_srv_ind
+				promo_bon_lista = promo_bon
+				promo_cod_lista = promo_cod
+				promoLisTipoBon = promoSrvTipoBon
+				promo_inhibeUpList = promo_inhibeUpServ
+				CALL post:MISCBonifEntrPieza
+			END IF
+		END IF
+    
+		IF (cli_tipo != 1) THEN
+			LET lista_imp = adt_tarif_precio
+			LET tarif_desde_lista = adt_tarif_desde
+			LET tarif_hasta_lista = adt_tarif_hasta
+			tarif_modo_lista = adt_tarif_modo
+			uni_med_lista = adt_tarif_um
+			tarif_dest_lista = adt_tarif_dest
+			
+			/* Se agregan estos campos para que se journalice el hasta eq. para SAP y la
+			Unidad de Medida Eq. para SAP en las Transacciones de Listas-  ML 2/4/2000 */
+			LET tarif_hasta_eq_lista = adt_tarif_hasta_eq
+			LET tarif_um_eq_lista = adt_tarif_um_eq
+			/*Fin ML*/
+		
+			CALL MISCformulaDeCalculo(adt_tarif_desde,adt_tarif_modo,tarif_aux,adt_tarif_fijo,adt_tarif_precio,adt_tarif_um)
+			formuCalc_lista = formuCalc
+		END IF
+	ELSE
+		CLEARFIELD lista_imp
+	END IF
+
+	//gpb:NI50437
+	/*-VUELTA A PAGAR (VAP)*/ 
+	/*SUMO EL TRATAMIENTO DE RPP*/
+	IF ((post:adt_stockp_destino == DSC:post:minoristaRPP_desc || post:adt_stockp_destino == "RTA POSTAL PAGA") && (post:emite_fact_stockp == "S") ) THEN
+		//traigo el campo post:adt_serv_umstd de la tabla Servicio y otros datos
+		CALL post:CDSuniMedServ
+		IF (RETVAL < 0) THEN
+			l_mensaje = "NO SE PUDO OBTENER LA UNIDAD DE MEDIDA PARA EL SERVICIO."
+			FPRINT l_mensaje "%s %s",l_mensaje,serv_stockp
+			MSGBOX l_mensaje,0x00,"Error"
+			CALL CDSlimpFechStockp
+			CALL admin:ABMresetflag
+			RETURN (-2)  		  	
+		END IF
+	  
+		IF (adt_serv_umstd == "KGS") 
+			post:adt_tarif_desde = post:peso_en_kgs
+		ELSE
+			post:adt_tarif_desde = post:peso_en_grs
+		END IF
+		//PS 10861
+		// Si tiene valor el rel_vol quiere decir que tiene que tarifar por peso volumetrico y no por aforo
+		//por lo tanto se desestima el camop post:aforo
+		IF (post:rel_vol > 0)
+			CLEARFIELD post:aforo
+		ELSE
+			post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+		END IF
+		CALL post:CDSbasico(serv_stockp,adt_tarif_desde,adt_serv_umstd ,dest_stockp)
+		IF (RETVAL < 0) THEN
+			CALL CDSlimpFechStockp
+			CALL admin:ABMresetflag
+			RETURN (-2)
+		END IF
+		if (post:adt_stockp_destino == "RTA POSTAL PAGA")
+			rpp_imp = adt_tarif_precio //campo en pantalla
+				
+		else
+			imp_ff_aux = adt_tarif_precio
+			refresh rpp_imp
+		endif
+	  	tarif_desde_ff = adt_tarif_desde
+	  	tarif_hasta_ff = adt_tarif_hasta
+	  	tarif_modo_ff = adt_tarif_modo
+	  	uni_med_ff = adt_tarif_um
+	  	tarif_dest_ff = adt_tarif_dest
+  	
+	  	/* Se agregan estos campos para que se journalice el hasta eq. para SAP y la 
+	  	Unidad de Medida Eq. para SAP en las Transacciones de Correspondencia de Cargo-
+	  	ML 2/4/2000 */
+	  	LET tarif_hasta_eq_ff = adt_tarif_hasta_eq
+	  	LET tarif_um_eq_ff = adt_tarif_um_eq
+	  	/*Fin ML*/
+  	if (post:adt_stockp_destino == "RTA POSTAL PAGA")
+  		CALL MISCformulaDeCalculo(0,adt_tarif_modo,tarif_aux,adt_tarif_fijo,imp_ff_aux,uni_med_ff)
+		else
+		  		CALL MISCformulaDeCalculo(0,adt_tarif_modo,tarif_aux,adt_tarif_fijo,rpp_imp,uni_med_ff)
+		endif
+		formuCalc_ff = formuCalc
+		//CALL post:MISCimp_entrPieza
+	END IF  
+    
+	IF (post:estado_presu == 2) THEN
+		CALL CSR:proc_list(F_REFRESH,LST:post:LISTentrega_piezaAll)
+	ELSE
+		CALL CSR:proc_list(F_REFRESH,LST:post:LISTentrega_pieza
+	END IF
+	
+	CALL post:MISCimp_entrPieza
+	SETVALDONE Pieza
+	
+	IF (modifica) THEN
+		SETFLAG admin:mode_flags,todos
+		UNGETKEY RT_SEND
+	END IF
+END SUB
+
+/*******/

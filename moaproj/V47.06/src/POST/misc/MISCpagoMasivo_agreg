@@ -1,0 +1,155 @@
+
+/****o* Pendientes de agrupación/OFB:post:MISCpagoMasivo_agreg
+* NOMBRE
+*   OFB:post:MISCpagoMasivo_agreg
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+*   OFB:post:SVALpagos_masivos
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+sub post:MISCpagoMasivo_agreg
+    Select (drv:screen_active)
+        case 0
+            ;El código de reimpresión no se incorpora hasta nuevo aviso. Cuando
+            ;se decida habilitarlo solo se deberá sacar el break.
+            break
+            CLEARFIELD adt_benef_cod_reimp
+            label_3 = "Código de reimpresión"
+            POPUP post:SCRNpagosMsv_popup
+            IF (LASTKEY == RT_ESC) THEN
+                RETURN -2
+            END IF
+    end select
+    
+    //CORRECCION BUG AUT-1742 - NAM
+    if (siaf:codigo_siaf == "6650") then
+       //CORRECCION BUG AUT-1746 - NAM (Se agrega "drv:screen_active")
+       Select (drv:screen_active)
+           case 0
+               if (post:adt_benTmp_fecha_pag.numchars == 0)
+  	              MSGBOX "DEBE INGRESAR FECHA.",0X00,"ERROR"
+	              RETURN -2
+               else    
+                  //CORRECCION BUG AUT-878 - NAM (se agrega rutina CSR:valid_date)
+	              CALL  CSR:valid_date post:adt_benTmp_fecha_pag "yyyy/mm/dd"
+	              if (retval != 0)   
+                      MSGBOX "LA FECHA ES INVALIDA.",0x00,"ERROR"
+                      RETURN (-2)        
+                  else
+ 
+                  		CALL csr:date_compare (adt_benTmp_fecha_pag, common:system_date)
+                    	if (retval == 1) then
+                    		MSGBOX "LA FECHA EFECTIVA DEL PAGO NO PUEDE SER MAYOR A LA FECHA DEL DIA",0X00,"AVISO"
+                    		call admin:ABMresetflag
+                       		return (-2)
+	                	end if
+ 
+                  
+                  end if
+               end if	           
+           case 1
+                break
+       End Select
+    end if
+    
+    clearfield giros:codigo_procesamiento
+    select (siaf:codigo_siaf)
+        case 6640
+            call post:MISCpagoMsv_valSaldo
+            if (retval == -2) then
+                return (-2)
+            end if
+            
+            call post:CDSbenefTmp("E","S","","")
+            break
+        case else
+            call post:CDSbenefTmp("E","","","")
+    end select
+    if (retval == -801) then
+        select (siaf:codigo_siaf)
+            case 6640
+                adt_benTmp_fecha_pag = common:system_date
+                call post:CDSbenefTmp("A","S","","")
+                if (retval == 0) then
+                    pagoMsvImpPagCarg = pagoMsvImpPagCarg + adt_benTmp_importe
+                    refresh pagoMsvImpPagCarg
+                end if
+                break
+            case 6650
+                Select (drv:screen_active)
+                    case 0
+                        call post:CDSbenefTmp("A","X","","")
+                        if (retval == 0) then
+                            pagoMsvImpPagCarg = pagoMsvImpPagCarg + adt_benTmp_importe
+                            refresh pagoMsvImpPagCarg
+                        end if
+                        break
+                    CASE 1
+                        call post:CDSbenefTmp("A","Y","","")
+                        if (retval == 0) then
+                            pagoMsvImpNoPagCarg = pagoMsvImpNoPagCarg + adt_benTmp_importe
+                            refresh pagoMsvImpNoPagCarg
+                        end if
+                        break
+                End select
+                break
+        end select
+        
+        if (retval == -2) then
+            MSGBOX "FALLO EL ALTA",0X00,"AVISO"
+        else
+            clearfield adt_benTmp_benef    
+            ;clearfield adt_benTmp_fecha_pag
+            clearfield adt_benTmp_importe  
+            clearfield adt_benTmp_nombre
+            clearfield adt_benTmp_cli
+            clearfield adt_benTmp_cli_desc
+            clearfield adt_benTmp_suc_cli
+            clearfield adt_benTmp_cod_siaf
+            ;clearfield adt_benTmp_sucCliSel
+            refresh adt_benTmp_benef    
+            refresh adt_benTmp_fecha_pag
+            refresh adt_benTmp_importe 
+            refresh adt_benTmp_nombre
+            refresh adt_benTmp_sucCliSel
+            nextfield adt_benTmp_benef  
+        end if
+    elseif (retval == 0) then
+        MSGBOX "EL REGISTRO YA EXISTE",0X00,"AVISO"
+        clearfield adt_benTmp_benef    
+        ;clearfield adt_benTmp_fecha_pag
+        clearfield adt_benTmp_importe  
+        clearfield adt_benTmp_nombre
+        clearfield adt_benTmp_cli
+        clearfield adt_benTmp_cli_desc
+        clearfield adt_benTmp_suc_cli
+        clearfield adt_benTmp_cod_siaf
+        clearfield adt_benTmp_sucCliSel
+        refresh adt_benTmp_benef    
+        refresh adt_benTmp_fecha_pag
+        refresh adt_benTmp_importe
+        refresh adt_benTmp_nombre
+        refresh adt_benTmp_sucCliSel
+        nextfield adt_benTmp_benef
+    end if
+    CALL drv:MISCdis_enablePB_ABM(0,0,0)
+    if (codigo_barras.numchars != 0 ) then
+        clearfield codigo_barras
+        refresh codigo_barras
+        nextfield codigo_barras
+        clearfield adt_benTmp_operativo
+        refresh adt_benTmp_operativo
+    end if
+end sub    
+/*******/

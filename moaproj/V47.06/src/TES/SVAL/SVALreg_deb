@@ -1,0 +1,186 @@
+/****o* Tratamiento de Cheques/OFB:tes:SVALreg_deb
+* NOMBRE
+* OFB:tes:SVALreg_deb
+* DESCRIPCION
+* Rutina SVAL de la transaccion de Debito en Cuenta - Cheque Depositado.
+* ENTRADAS
+* SALIDAS
+* RETURN (-1): Si la transaccion se realiza desde Tesoro, el cheque no se encuentra en el Tesoro.
+* RETURN (-1): Si la transaccion se realiza desde un Cajero, el cheque no se encuentra en la Caja.
+* RETURN (-1): El cheque ya ha sido Reemplazado.
+* RETURN (-2): Cheque no seleccionado.
+* RETURN (-2): El Supervisor no puede autorizar esta transaccion.
+* RETURN (-2): Se cargo comision al rechazar un cheque de cliente cuentacorrentista.
+* RETURN (-2): No se deseo continuar, al avisar que no se cargó la comisión.
+* RETURN (-2): No se pudo acceder a la tabla de Cuentas Bancarias, CtasBanco.
+* RETURN (-2): No se pudo acceder a la tabla de Saldos, SaldoCta.
+* RETURN (-2): Falta Medio de Pago en tabla de Productos.
+* RETURN (-2): Supera el Saldo de la Cuenta, o este mas el descubierto.
+* RETURN (-2): La fecha valor es menor a la fecha de depósito.
+* RETURN (-2): No se confirmo la transaccion.
+* REFERENCIADO POR
+* LST:tes:TRAN7580
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+
+SUB tes:SVALreg_deb
+
+    local saldo_cuenta like siaf:importe
+    local varl_importe like common:csr_string
+
+    if (!testflag(tlr:tran_flags,correction) && siaf:adt_motvarios_ctrl == "S") then
+    	//cgw:controla que para una transaccion con concepto que requiere control (7590) se haya ingresado el cheque.
+        if (siaf:cod_banco.numchars == 0 || siaf:cheqcuenta.numchars == 0 || siaf:nro_cheque.numchars == 0) then
+            msgbox "DEBE SELECCIONAR UN CHEQUE.",OFB_OK,"ERROR"
+            return (-2)
+        end if
+    end if
+
+    call siaf:SVALnivel_sup
+    if (retval < 0)
+    	return (-2)
+    end if 
+    // FGB 08.11.06 - PS 9625: no se permite cargar comisión al rechar un cheque de cliente corporativo.
+    if (siaf:comision > 0 && post:cli_tipo_aux == CTACTE) then
+    	move "No se puede cargar comision al rechazar un cheque de cliente corporativo" to common:csr_string
+	msgbox FLD:common:csr_string,OFB_OK,"Error"
+	return (-2)
+    else
+        if (cobra_comision == "S" && siaf:comision == 0) then
+	    move "No cargó la Comisión. Desea continuar?" to common:csr_string
+	    msgbox FLD:common:csr_string,OFB_YESNO,"Aviso"
+	    if (retval == 7) then
+	        return (-2)
+	    end if
+        end if
+    end if
+    /* Si es una reversa igual lockeo la cuenta */
+    if (testflag(tlr:tran_flags,correction)) then
+        if (siaf:adt_motvarios_ctrl == "S") then
+	    setflag giros:flags_back,cancelacion
+
+            /*Verifico que el cheque siga estando en la caja y además que no haya sido 
+            reemplazado */
+            call tes:CDSverif_cheque_tes(siaf:moneda,siaf:nro_cheque,siaf:cod_banco,siaf:cheqcuenta)
+            if (drv:dt_app == 4) then
+                if (retval == 0) || (retval == -1 && tes:teso_cheq_estado != "T") then
+ 		    errmsg lst:common:errmsg_list, "El Cheque debe estar en el Tesoro"        	
+ 		    return (-1)    
+ 	        end if
+ 	    else
+                if (retval == 0) || (retval == -1 && tes:teso_cheq_estado != "O") then
+ 		    errmsg lst:common:errmsg_list, "El Cheque debe estar en la Caja"        	
+ 		    return (-1)
+ 	        end if
+	    end if
+	    call post:CDSLeo_cheqRech(post:CliUP,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque)
+ 	    if (retval == 0 && post:fecha_reemp != "99999999")
+	        errmsg lst:common:errmsg_list, "El Cheque ya ha sido Reemplazado"
+	        return (-1)
+ 	    end if
+	    if (hcomm:INDhost_sndrt != 0 && hcomm:INDhost_rcvrt != 0 )
+	        setflag giros:tran_send_mode,trat_cheques
+	        call post:CDSobtiene_secuen("STAN")
+	        giros:codigo_procesamiento = 998051
+	        giros:hora_viaje = common:time_of_day
+	        giros:dia_viaje  = common:system_date
+	    else
+	        clearfield drv:INDhcomm_rtn
+	        clearfield drv:INDspc_rtn[1]
+	    end if    
+
+	    call tes:CDSctasbanc_lock
+	    /* Esta lockeado */
+            if (retval < 0)
+                return (-2)
+            end if
+            /* Deslockeo la cuenta */
+            cds unlock tes:adt_cta_ctx
+            cds endselect tes:adt_cta_ctx
+        else
+            //cgw:limpia campos indirectos para viajes. 
+            clearfield drv:INDhcomm_rtn
+	    clearfield drv:INDspc_rtn[1]
+        end if    
+    end if
+
+    call tes:CDSSaldo_cta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,saldo_cuenta)
+    if (retval < 0) 
+        return (-2)
+    end if
+
+    if (!testflag(tlr:tran_flags,correction)) then
+    	/* Si el debito es sobre un cheque rechazado acreditado o
+    	un debito comun controlo el tema de los saldo */
+        tes:adt_tipo_cod = tipo_cuenta
+        call tes:CDSadt_tipo_load
+        siaf:moneda = tes:adt_tipo_medio
+
+        if (tes:adt_tipo_medio.numchars == 0)
+            errmsg lst:common:errmsg_list, "Falta Medio de Pago en tabla de Productos"
+            return (-2)
+        end if
+
+        //let moneda_dep  = tes:adt_tipo_medio
+      	let post:adt_mp_cod = siaf:moneda
+    	call post:CDSadt_MedPago_load
+        post:medio_pago_desc = post:adt_mp_desc
+    	
+        call post:MISCconvierto_coti(post:importe_origen)
+
+    	if (siaf:adt_motvarios_ctrl == "S" && tes:teso_cheq_acred == "S") || \
+    	   (siaf:adt_motvarios_ctrl == "N") 
+    	    call MISCdebitos(sdo_cta_efvo)
+    	    if (retval < 0)
+    		return (-2)
+    	    end if
+    	else
+    	    popup tes:SCRNconfirma
+       	    if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+          	return (-2)
+       	    end if
+        end if
+    	clearfield tes:estado_cheque
+    	clearfield tes:clearing
+    	if (siaf:adt_motvarios_ctrl == "S")
+	    if (teso_cheq_fdep > fecha_valor)
+    		errmsg lst:common:errmsg_list, "La fecha valor es menor a la fecha de depósito"
+    		return (-2)
+    	    end if
+            let mov_facred = fecha_valor
+            let tes:clearing = teso_cheq_clearing
+            let tes:estado_cheque  = teso_cheq_acred
+            /* Si es un rechazo de cheque, agrego para que totalice el ingreso del mismo */
+            if (drv:dt_app != 4) then
+            	//cgw: Totaliza para Cheque Depositado Rechazado (7590).
+            	fld:drv:INDspc_rtn[0] = LST:siaf:TOTS7590
+            	fld:tlr:INDtots_append = LST:siaf:TOTS7590
+            end if
+            siaf:moneda = tes:teso_cheq_moneda
+        end if
+    else
+        fld:drv:INDspc_rtn[0] = fld:tlr:INDtots_append
+    end if 
+
+    if (!testflag(tlr:tran_flags,correction))
+    	if (siaf:adt_motvarios_ctrl == "S")
+	    setflag giros:tran_send_mode,trat_cheques
+    	    call post:CDSobtiene_secuen("STAN")
+    	    giros:codigo_procesamiento = 998050
+    	    giros:hora_viaje = common:time_of_day
+    	    giros:dia_viaje  = common:system_date
+
+	    varl_importe = siaf:comision * 100
+	    fprint post:datos_msg108,"%09.9s%1.1s%012.12s%4.4s%2.2s%2.2s",tes:motivo,tipo_responsable,varl_importe,\
+	    substr(tes:fecha_valor,0,4),\
+	    substr(tes:fecha_valor,4,2),substr(tes:fecha_valor,6,2)
+    	else
+            clearfield drv:INDhcomm_rtn
+            clearfield drv:INDspc_rtn[1]
+    	end if
+    end if
+    
+END SUB
+/*******/

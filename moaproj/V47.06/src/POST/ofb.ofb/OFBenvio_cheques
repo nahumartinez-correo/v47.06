@@ -1,0 +1,146 @@
+/****o* Tratamiento de Cheques/OFB:post:OFBenvio_cheques
+* NOMBRE
+*   OFB:post:OFBenvio_cheques
+* DESCRIPCION
+*   PROCESO DE ENVIO DE CHEQUES (MSG = 0200 -> INGRESO DE CHEQUES 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:OFBproc_batch_cheque
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBenvio_cheques
+
+	;PROCESO DE ENVIO DE CHEQUES (MSG = 0200 -> INGRESO DE CHEQUE) 
+	;---------------------------------------------------------------
+
+	local loc_retval like lib:err_retval
+	
+	;Guardar numero de operador
+ 	op:operator_tmp = op:op_operator_id
+
+	;Resetear flags
+    	resetflag tlr:controla_firma,cancelacion
+    	resetflag tlr:controla_marca,cancel
+    	resetflag tlr:controla_marca,reverso_auto
+
+	post:NisIngresoChq_comm = common:sucursal_activa
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	call post:CDSobtiene_secuen("STAN")
+
+	if (post:jnl_cheques_tipo == "D" )
+		;TRX.DIRECTA
+		//si son cheques que se ingresan por un Adelanto
+		if (post:jnl_cheques_adel == "S")
+			giros:codigo_procesamiento = 998002
+			hcomm:INDhost_sndrt = OFB:post:SENDalta_cheque_adel
+        	hcomm:INDhost_rcvrt = OFB:post:RCVEalta_cheque_adel
+		else
+			giros:codigo_procesamiento = 998000
+			hcomm:INDhost_sndrt = OFB:post:SENDingreso_cheque 
+        	hcomm:INDhost_rcvrt = OFB:post:RCVEingreso_cheque 
+		endif
+	else
+		;TRX.CANCELACION
+		//si son cheques que se cancelan por un Adelanto
+		if (post:jnl_cheques_adel == "S")
+			giros:codigo_procesamiento = 998003
+			hcomm:INDhost_sndrt = OFB:post:SENDalta_cheque_adel 
+        	hcomm:INDhost_rcvrt = OFB:post:RCVEalta_cheque_adel 
+		else
+			giros:codigo_procesamiento = 998001
+			hcomm:INDhost_sndrt = OFB:post:SENDingreso_cheque 
+        hcomm:INDhost_rcvrt = OFB:post:RCVEingreso_cheque 
+		endif
+	end if
+        
+	//50295
+	if (post:jnl_cheques_adel == "S")
+		call post:MISCarmar_cheq_adel
+	else
+		call post:MISCarmar_cheq_adic
+	endif
+	
+	clearfield siaf:importe
+	
+	setflag giros:tran_send_mode,trat_cheques
+
+	;JOURNALIZAR TRANSACCION INFORMATIVA DEL CHEQUE
+	// FGB (18.09.06): se comenta por no ser de utilidad (?)
+	// call post:OFBjnl_cheque_env
+	loc_retval = -6 // retval  // fuerzo retval con error
+	
+	call hcomm:COMM_stat_init
+	if (retval == -2 )
+		return -2
+	end if	
+
+	fprint siaf:nota_1,\
+	"FECHA: %e HORA: %e STAN: %s PCODE: %s",giros:dia_viaje,giros:hora_viaje,\
+	post:adt_codseq_nro,giros:codigo_procesamiento
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	fprint siaf:nota_1,\
+	"CHEQUE BIT 105: %s",post:datos_msg105
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	fprint siaf:nota_1,\
+	"Enviando transaccion al host ..."
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+ 	call hcomm:COMM_host_tran
+    	if (retval == TRAN_CAIDA_VUELO) then
+    		resetflag tlr:controla_firma,cancelacion
+    		resetflag tlr:controla_marca,cancel
+    		resetflag tlr:controla_marca,reverso_auto
+		clearfield siaf:tran_retval
+		fprint siaf:nota_1,"%s","Transaccion Caida en Vuelo ... "
+		call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+		return TRAN_CAIDA_VUELO
+	end if
+
+    	resetflag tlr:controla_firma,cancelacion
+    	resetflag tlr:controla_marca,cancel
+    	resetflag tlr:controla_marca,reverso_auto
+
+        if (hcomm:tran_status == HOST_ACCEPTED )
+		fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_ACCEPTED
+	 	fprint common:csr_string "\nTransaccion Aprobada. CodRespuesta = %e. Hora: %e ",\
+	 	giros:CodRespuesta_comm,common:time_of_day
+		call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")
+	else
+		if (hcomm:tran_status == HOST_REJECTED )
+			fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_REJECTED
+		else
+			if (hcomm:tran_status > HOST_REJECTED )
+			    	fprint common:csr_string "\nTransaccion Caida en Vuelo. Hora: %e ",\
+			    	common:time_of_day
+			    	call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")	
+
+				fprint siaf:nota_1,\
+				"Transaccion caida en vuelo ...",
+				call batch:OFBlog_batch(siaf:nota_1,0,"N","S","AMBOS","N")
+			end if
+		end if
+        end if
+
+	;UPDATE TRANSACCION INFORMATIVA DEL CHEQUE
+	if (loc_retval == 0 )
+		call post:OFBupd_cheque_env
+	end if
+
+    	CLEARFIELD siaf:cancelacion
+    	op:op_operator_id = op:operator_tmp
+
+END SUB
+
+/*******/

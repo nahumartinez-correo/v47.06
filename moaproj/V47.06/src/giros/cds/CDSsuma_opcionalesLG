@@ -1,0 +1,157 @@
+/****o* Lista de Giros/OFB:giros:CDSsuma_opcionalesLG
+* NOMBRE
+*   OFB:giros:CDSsuma_opcionalesLG
+* DESCRIPCION
+*   Suma el valor de los opcionales asociado al producto de Lista de Giros (Modo Directo).
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+*   RETURN (-2): No se puede determinar la tarifa del opcional, por no hallarse en el tarifario.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCactualizo_opc_lg, giros:MISCactualiz_1opc_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSsuma_opcionalesLG (tarif_servicio,lista,tarif_cantidad,tarif_destino)
+
+    LOCAL cant          LIKE post:adt_epp_nro
+    LOCAL totopc        LIKE post:adt_tarif_precio
+    LOCAL l_importe_aux LIKE post:adt_tarif_precio
+    LOCAL lista_aux     LIKE common:csr_string
+    LOCAL destino_aux   LIKE common:csr_string
+    LOCAL posi          LIKE post:adt_epp_nro
+    LOCAL posi1         LIKE post:adt_epp_nro
+    LOCAL posi2         LIKE post:adt_epp_nro
+    LOCAL lista_tmp     LIKE common:csr_string
+    LOCAL opcional_tmp  LIKE common:csr_string
+    LOCAL opci          LIKE post:adt_opc_opci
+    LOCAL opcional      LIKE post:adt_opc_opci
+    LOCAL l_retval      LIKE lib:err_retval
+	LOCAL cont_opc      LIKE cantidad
+    LOCAL l_impopc_lg   LIKE post:adt_opclg_impopc
+    LOCAL l_cantidad    LIKE siaf:i
+    
+    LOCAL l_rdesde_opc     LIKE post:adt_itemlg_rdesde
+    LOCAL l_opclg_impopc   LIKE post:adt_opclg_impopc
+    LOCAL l_opclg_mod_calc LIKE post:adt_opcserv_tipo
+    LOCAL l_mod_calc_opc   LIKE post:adt_opcserv_tipo
+    LOCAL l_encontro       LIKE giros:a_emitir
+    
+    l_cantidad = tarif_cantidad
+
+    CALL csr:trimfield(tarif_servicio)
+    CALL csr:trimfield(lista)
+    CALL csr:trimfield(tarif_destino)
+
+    lista_tmp = lista
+    LET totopc = 0
+    post:costo_opc_uni = 0
+    WHILE (lista_tmp != "")
+        CALL csr:str_search(lista_tmp,",",posi)
+        IF (posi == 0) THEN
+            LET opcional = lista_tmp
+            LET lista_tmp = ""
+        ELSE
+            LET posi1 = posi
+            MOVE substr(lista_tmp,0,posi1) to opcional
+            LET posi1 = posi + 1
+            LET lista_aux = lista_tmp
+            CALL csr:trimfield(lista_aux)
+            LET cant = lista_aux.numchars
+            LET posi2 = cant - posi1
+            MOVE substr(lista_tmp,posi1,posi2) to lista_tmp
+    	END IF
+    	
+    	WHILE (opcional != "")
+              //obtiene el importe del opcional del servicio por convenio del rango tarifario   	
+              CDS SELECT FROM DSC:post:TABopc_lg BECOMES DSC:post:CTXopc_lg WHERE  \
+                  post:op_operator_id == op:op_operator_id && \
+                  post:adt_itemlg_codprod == post:tipo_produc2 && \
+                  post:adt_itemlg_destino == post:adt_tarif_dest && \
+                  post:adt_opclg_codopc == opcional && \
+                  post:adt_itemlg_rdesde <= giros:ImporteNeto
+              CDS FINDFIRST DSC:post:CTXopc_lg LOCK
+              IF (CDSRETVAL == -801 ) THEN
+                  MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA DEL OPCIONAL POR NO HALLARSE EN EL TARIFARIO",0x00,"Error"
+                  CDS ENDSELECT DSC:post:CTXopc_lg
+                  RETURN (-2)
+              END IF
+              
+              lib:err_retval = CDSRETVAL
+			  l_encontro = "N"
+              DO
+				 IF (lib:err_retval < 0 || l_encontro == "S") THEN
+        		  	//supero el rango tarifario de los opcionales.
+        	        BREAK
+        		 END IF	
+		         CDS EXTRACT DSC:post:CTXopc_lg ALL
+		         CDS EXTRACT DSC:post:CTXopc_lg \
+		             post:adt_itemlg_rdesde INTO l_rdesde_opc \
+		             post:adt_opclg_impopc  INTO l_impopc_lg \
+		             post:adt_opclg_mod_calc INTO l_mod_calc_opc
+				 IF (giros:ImporteNeto >= l_rdesde_opc) THEN
+				 	 //reservo el importe y el modo del calculo del rango tarifario opcional convenio.
+    		         l_opclg_impopc = l_impopc_lg
+			         l_opclg_mod_calc = l_mod_calc_opc
+		         ELSE
+			        //supero el rango tarifario de los opcionales.
+		            l_encontro = "S"
+				 END IF
+				 CDS FINDNEXT DSC:post:CTXopc_lg LOCK
+				 lib:err_retval = CDSRETVAL
+			  LOOP
+		      //se recupera el importe y el modo del calculo del rango tarifario opcional convenio.	  	          	          
+              l_impopc_lg = l_opclg_impopc
+			  l_mod_calc_opc = l_opclg_mod_calc
+	          CDS ENDSELECT DSC:post:CTXopc_lg
+
+        	  //obtiene datos de la parametria OpcServ necesarios.       	        	        	        	
+        	  CDS SELECT FROM DSC:post:OPC_SERV_TAB BECOMES DSC:post:OPC_SERV_CTX WHERE\
+                  post:adt_opcserv_serv == tarif_servicio && \
+                  post:adt_opcserv_opci == opcional
+                  IF (CDSRETVAL == 0) THEN
+                      CDS FINDFIRST DSC:post:OPC_SERV_CTX NOLOCK
+                      IF (CDSRETVAL == 0) THEN
+                          opci = opcional
+                          CDS EXTRACT DSC:post:OPC_SERV_CTX ALL
+                          CDS ENDSELECT DSC:post:OPC_SERV_CTX
+                          
+                          //Obtiene Modo de Calculo (que debera ser siempre "S" - Suma Directamente)
+						  //instancio el modo de calculo del rango tarifario de los opcionales por convenio.
+						  post:adt_opcserv_tipo = l_mod_calc_opc
+						
+                          cant = 1
+                          CALL post:MISCopcCantPart(opcional, post:tipo_produc, cant)
+		                  l_retval = RETVAL
+                          IF (opci == opcional) THEN
+                              CLEARFIELD opcional
+                          END IF
+                          //En otro modo de cálculo, se lo fija en modo "S" para Opcionales (Lista de Giros).
+                          //Se calcula el importe del opcional en modo "S" - Suma Directamente.
+                          IF (post:adt_opcserv_tipo.numchars == 0 || post:adt_opcserv_tipo != "S") THEN
+                              post:adt_opcserv_tipo = "S"
+                          END IF
+                          l_importe_aux = l_impopc_lg
+                          IF (l_retval == 1) THEN
+		                      post:costo_opc_uni = post:costo_opc_uni + l_importe_aux
+		                  END IF
+                          LET totopc = totopc + l_importe_aux
+                      ELSE
+                          CDS ENDSELECT "opc"
+                          LET opcional = ""
+                      END IF
+                  ELSE
+                      LET opcional = ""
+                  END IF
+        END WHILE
+    END WHILE
+    LET post:tarif_resultado = totopc
+END SUB
+
+/*******/

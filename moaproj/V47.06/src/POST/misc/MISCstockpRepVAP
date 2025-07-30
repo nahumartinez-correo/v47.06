@@ -1,0 +1,125 @@
+/****o* Registro VAP/OFB:post:MISCstockpRepVAP
+* NOMBRE
+*   OFB:post:MISCstockpRepVAP
+* DESCRIPCION
+*   Tratamiento de Querys segun filtros del Reporte de Piezas de VAP
+* ENTRADAS
+*   p_fec_d = fecha DESDE de Piezas VAP
+*   p_fec_a = fecha HASTA de Piezas VAP
+*   p_piezaVAP = track and trace
+* SALIDAS
+*   RETURN (-2): No Existen datos para el Reporte.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:MISCcargoRepVAP
+* DOCUMENTACION
+*   NI50437
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCstockpRepVAP(p_fec_d, p_fec_a,p_piezaVAP)
+	LOCAL l_err_cds LIKE lib:err_retval
+	LOCAL l_err_cds2 LIKE lib:err_retval
+  LOCAL l_fec_d LIKE common:csr_string
+  LOCAL l_fec_a LIKE common:csr_string
+  LOCAL l_piezaVAP LIKE post:track_trace
+
+  LET l_fec_d = p_fec_d
+  LET l_fec_a = p_fec_a    
+  LET l_piezaVAP = p_piezaVAP  
+
+	//Si no es busqueda por track and trace
+	IF (!TESTFLAG (pieza_vap_rep, pieza_vap)) THEN
+		//Lo invoca el Cierre/Cierre Forzado de Sucursal
+		IF (l_fec_d.NUMCHARS == 0) THEN
+			CDS SELECT \
+			FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+			WHERE post:adt_stockp_recepfech <= l_fec_a && \
+						post:adt_stockp_destino == DSC:post:minoristaRPP_desc			
+		ELSE
+			CDS SELECT \
+			FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+			WHERE post:adt_stockp_recepfech >= l_fec_d && post:adt_stockp_recepfech <= l_fec_a && \
+						post:adt_stockp_destino == DSC:post:minoristaRPP_desc
+		END IF
+	ELSE
+		CDS SELECT \
+		FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+		WHERE post:adt_stockp_pieza == l_piezaVAP && \
+					post:adt_stockp_destino == DSC:post:minoristaRPP_desc	
+	END IF
+	
+	CDS FINDFIRST DSC:post:stockp_ctx NOLOCK
+	LET l_err_cds = CDSRETVAL
+	
+	IF (l_err_cds == -801) THEN
+		CDS ENDSELECT DSC:post:stockp_ctx 
+		RETURN (-2)
+	END IF
+	
+	WHILE (l_err_cds == 0)	
+		//limpio campos
+		CLEARFIELD post:vap_rep_pieza 
+		CLEARFIELD post:vap_rep_recepfech 
+		CLEARFIELD post:vap_rep_recephora 
+		CLEARFIELD post:vap_rep_recepop 
+		CLEARFIELD post:vap_rep_entrega_f 
+		CLEARFIELD post:vap_rep_entrega_h 
+		CLEARFIELD post:vap_rep_entrega_o
+		CLEARFIELD post:vap_rep_modlist 
+		CLEARFIELD post:vap_rep_modlist 
+		CLEARFIELD post:vap_rep_CliRaz
+	
+		CDS EXTRACT DSC:post:stockp_ctx \
+			post:adt_stockp_pieza INTO post:vap_rep_pieza \
+			post:adt_stockp_recepfech INTO post:vap_rep_recepfech \
+			post:adt_stockp_recephora INTO post:vap_rep_recephora \
+			post:adt_stockp_recepop INTO post:vap_rep_recepop \
+			post:adt_stockp_entrega_f INTO post:vap_rep_entrega_f \
+			post:adt_stockp_entrega_h INTO post:vap_rep_entrega_h \
+			post:adt_stockp_entrega_o INTO post:vap_rep_entrega_o \
+			post:stockp_modlist INTO post:vap_rep_modlist \
+			post:stockp_modlist INTO post:vap_rep_modlist \
+			post:CliRaz_stockp INTO post:vap_rep_CliRaz
+			
+		//proceso los datos
+		CALL post:MISCprocesoRepVAP	
+		
+		CDS SELECT FROM DSC:post:vap_rep_tbl BECOMES DSC:post:vap_rep_ctx \
+		WHERE post:vap_rep_pieza == post:vap_rep_pieza && post:vap_rep_recepfech == post:vap_rep_recepfech
+		
+		CDS FINDFIRST DSC:post:vap_rep_ctx LOCK
+		l_err_cds2 = CDSRETVAL
+		IF (l_err_cds2 == -801) THEN
+			CDS CLEARBUFFER DSC:post:vap_rep_ctx
+			
+			CDS APPEND DSC:post:vap_rep_ctx \
+				post:vap_rep_pieza \
+				post:vap_rep_recepfech \
+				post:vap_rep_recephora \
+				post:vap_rep_recepop \
+				post:vap_rep_modlist \
+				post:vap_rep_reg_vap \
+				post:vap_rep_entrega_f \
+				post:vap_rep_entrega_h \
+				post:vap_rep_entrega_o \
+				post:vap_rep_cobrado \
+				post:vap_rep_entregado \
+				post:vap_rep_CliRaz
+
+			CDS INSERT DSC:post:vap_rep_ctx LOCK
+		ENDIF
+		CDS UNLOCK DSC:post:vap_rep_ctx 
+		CDS ENDSELECT DSC:post:vap_rep_ctx 
+ 
+ 		CDS FINDNEXT DSC:post:stockp_ctx NOLOCK
+		LET l_err_cds = CDSRETVAL
+	END WHILE
+
+	CDS ENDSELECT DSC:post:stockp_ctx
+
+END SUB
+
+/*******/

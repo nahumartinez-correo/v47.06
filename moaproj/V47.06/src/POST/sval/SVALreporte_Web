@@ -1,0 +1,78 @@
+/****h* MOSAIC/Caja Unificada/OFB:post:SVALreporte_Web
+* NOMBRE
+*   OFB:post:SVALreporte_Web
+* DESCRIPCION
+*   Rutina SVAL del Reporte de Operaciones web
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No Existen Operadores con Nivel Cajero
+*   RETURN (-2): No hay filtros de seleccion para el reporte
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:TRANReporte_Web
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postsval.h"
+
+
+SUB post:SVALreporte_Web
+    LOCAL l_oper_Web           LIKE post:operador_RWeb
+    LOCAL l_fecha_Rweb         LIKE common:csr_string
+    LOCAL l_oper_id_Web        LIKE op:op_operator_id
+   
+    LET l_oper_Web = post:operador_RWeb
+    LET l_fecha_Rweb = post:fecha_Rweb
+    CALL post:MISCFtrim(l_oper_Web)
+    CALL post:MISCFtrim(l_fecha_Rweb) 
+
+    IF (l_fecha_Rweb.NUMCHARS == 0) THEN
+        MSGBOX "Debe ingresar la fecha.",0x00000000,"Error"
+        RETURN (-2)
+    END IF
+    
+    //Tratamiento filtro de Operadores. 
+    IF (l_oper_Web == "TODOS") THEN
+        CLEARFIELD post:oper_id_Web     
+    ELSE
+        //Obtiene el codigo id de operador para filtro del reporte.
+        CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+            WHERE op:op_branch_id == fld:common:sucursal_activa && \
+                  op:op_login_id == l_oper_Web
+        CDS FINDFIRST DSC:op:adt_op_context LOCK
+        IF (CDSRETVAL < 0) THEN
+            CDS UNLOCK DSC:op:adt_op_context
+            CDS ENDSELECT DSC:op:adt_op_context
+            MSGBOX "No Existen Operadores con Nivel Cajero",0x00000000,"Error"
+            RETURN (-2)
+        END IF
+        CDS EXTRACT DSC:op:adt_op_context op:op_operator_id INTO post:oper_id_Web
+        LET l_oper_id_Web = post:oper_id_Web
+        CDS UNLOCK DSC:op:adt_op_context
+        CDS ENDSELECT DSC:op:adt_op_context
+    END IF
+
+    IF (RETVAL < 0) THEN
+        //No hay filtros de seleccion para el reporte.
+        RETURN (-2)
+    END IF
+	
+		//gpb:PS10672
+    UNDISPLAY post:SCRNreporte_Web
+    IF (LASTKEY == 0x0190) THEN
+        RETURN (-2)
+    END IF
+    FYIMSG LST:common:fyimsg_list, "(L) PROCESANDO LISTADO..."
+    common:csr_string_tmp = "REPORTE DE TOTALES DE OPERACIONES WEB"
+
+    clearfield siaf:codigo_siaf
+    CALL post:MISCcaseRepWeb(l_oper_id_Web,l_oper_Web,l_fecha_Rweb)
+    CALL CSR:f_sadroppl "PICoperador_Web" 
+    
+END SUB
+
+/*******/
+

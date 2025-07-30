@@ -1,0 +1,155 @@
+/****o* Lista de Giros/OFB:giros:PCOLSelGirosAEmitir
+* NOMBRE
+*   OFB:giros:PCOLSelGirosAEmitir
+* DESCRIPCION
+*   Pre colect de la transaccion de listas de giros / Seleccion de giros a emitir.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:giros:TRANSelGirosAEmitir,giros:CDSlock_cabec_lg,giros:PBeliminarLG,giros:PBmodificarLG, 
+*	giros:PBEnvio_Post_LG, giros:PBEnvio_Teleg_LG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1206
+* SOURCE
+*/
+#include "girospcol.h"
+
+SUB giros:PCOLSelGirosAEmitir
+	LOCAL codPais LIKE giros:CodPaisResidBenef
+	LOCAL PaisDescri LIKE giros:PaisResidBenef
+
+   IF (post:estado_presu != 4) THEN
+    //DUPFIELD siaf:codigo_siaf  ;se saca el dupfield estaba trayendo problemas en el arrastre del codigo.
+    PROTFIELD giros:Lista_sel_lg
+    PROTFIELD giros:Giros_sel_lg
+    PROTFIELD giros:Giros_emi_env_lg
+		//giros:SaldoAdelMon = post:AdelMon_CM
+    PROTFIELD post:AdelMon_CM
+    PROTFIELD giros:cantidad_lg
+    PROTFIELD giros:SumImpGir_lg
+    PROTFIELD giros:ImpTotGir_lg
+    PROTFIELD giros:ImpGirEmitidos_lg
+    PROTFIELD giros:lggiros_a_emitir
+    PROTFIELD giros:SumImpGir_a_emitir
+    PROTFIELD giros:ImpTotGir_a_emitir
+    PROTFIELD post:ImpTotRG3337
+    
+    CLEARFIELD giros:Giros_emi_env_lg
+    CLEARFIELD giros:Giros_sel_lg
+    
+    //CLEARFIELD giros:SaldoAdelMon
+    CLEARFIELD giros:cantidad_lg
+    CLEARFIELD giros:SumImpGir_lg
+    CLEARFIELD giros:ImpTotGir_lg
+    CLEARFIELD giros:ImpGirEmitidos_lg
+    CLEARFIELD giros:nro_sesion_lg
+    CLEARFIELD giros:lggiros_a_emitir
+    CLEARFIELD giros:SumImpGir_a_emitir
+    CLEARFIELD giros:ImpTotGir_a_emitir
+    CLEARFIELD post:ImpTotRG3337
+    
+    CALL giros:MISCextract_nroseslg
+    
+    IF (giros:nro_sesion_lg.NUMCHARS > 0) THEN
+			CALL giros:CDSsel_cabec_LG
+			FPRINT giros:Lista_sel_lg "%-9.9s %-15.15s %-8.8s" nro_sesion_lg, SumImpGir_lg, fecha_cabec
+			REFRESH giros:Lista_sel_lg
+			CLEARFIELD giros:SumImpGir_lg
+			CALL giros:CDScont_giros_a_emi
+			CALL giros:CDStotLG_emitidos(giros:nro_sesion_lg)
+			
+			//gpb:PS10778
+			//CACULO LA PERCEPCION
+			CALL giros:OFBprocTotRG3337_lg(giros:nro_sesion_lg)
+
+		  REFRESH cantidad_lg 
+		  REFRESH SumImpGir_lg 
+		  REFRESH ImpTotGir_lg
+		  REFRESH post:ImpTotRG3337
+			
+			drv:button = 0
+			CALL drv:but_disable
+    END IF
+    
+    REFRESH giros:Giros_emi_env_lg
+    REFRESH giros:Giros_sel_lg
+    
+    //REFRESH giros:SaldoAdelMon
+    REFRESH giros:cantidad_lg
+    REFRESH giros:SumImpGir_lg
+    REFRESH giros:ImpTotGir_lg
+    REFRESH giros:ImpGirEmitidos_lg
+    REFRESH giros:lggiros_a_emitir
+    REFRESH giros:SumImpGir_a_emitir
+    REFRESH giros:ImpTotGir_a_emitir
+    REFRESH post:ImpTotRG3337
+    
+    CALL giros:MISClimpia_op_cabec
+    
+    CALL giros:CDSbusca_primer_pais(codPais,PaisDescri)
+		IF (PaisDescri == "") THEN
+			/*No se puede obtener el pais asociado a la moneda*/
+			RETURN (-2)
+		END IF
+		CALL post:CDSmone_MedioPago
+		CDS ENDSELECT post:MEDIOS_CTX	
+		CALL giros:CDSMonPasWU(codPais,post:adt_mp_mon)
+		IF (RETVAL == -2) THEN
+			MSGBOX "No se encontró la moneda seleccionada en la tabla MonPas",OFB_OK,"Atención"
+			RETURN (-2)
+		END IF
+	
+		//gpb - AUT-1239
+		//Si entro por primera vez seteo el default, sino traigo el ultimo radio button seleccionado
+		IF (giros:tipo_sel_emi_lg.NUMCHARS == 0) THEN
+			giros:tipo_ing_lg  = "P"
+		ELSE
+			LET giros:tipo_ing_lg = giros:tipo_sel_emi_lg
+		END IF
+    
+    ALTERCONTROLSET op:chk0
+    ALTERCONTROLSET op:chk1
+    giros:Giros_emi_lg = "A"
+    ALTERCONTROLSET op:chk2
+    //AUT-1044 Se estaba haciendo un altercontrolset del op:chk4!
+    ALTERCONTROLSET op:chk3
+    
+    giros:tipo_sel_lg = giros:tipo_ing_lg
+    
+    CALL giros:MISDupEmisor
+    
+    //cgw: Setea si debe cobrarse el Impuesto Abonado, es utilizado para el calculo del sellado del giro.
+    CALL giros:MISCImpAbonadoCheq
+    
+    drv:button = 5
+    CALL drv:but_disable
+    drv:button = 7
+    CALL drv:but_disable
+  ELSE
+		PROTFIELD giros:NroDocEmisLG_fld 
+		PROTFIELD post:CliRazon
+		PROTFIELD post:CloTipDoc 
+		PROTFIELD giros:NroDocEmisLG_fld 
+		PROTFIELD post:CloCuit 
+		PROTFIELD giros:Giros_sel_lg 
+		PROTFIELD giros:nro_sesion_lg 
+		PROTFIELD post:AdelMon_CM 
+		PROTFIELD giros:cantidad_lg 
+		PROTFIELD giros:SumImpGir_lg 
+		PROTFIELD giros:ImpTotGir_lg 
+		PROTFIELD giros:ImpGirEmitidos_lg
+		PROTFIELD giros:Giros_emi_env_lg 
+		PROTFIELD giros:Lista_sel_lg
+		PROTFIELD giros:lggiros_a_emitir
+		PROTFIELD giros:SumImpGir_a_emitir
+		PROTFIELD giros:ImpTotGir_a_emitir
+		PROTFIELD post:ImpTotRG3337
+  END IF
+END SUB
+
+/*******/

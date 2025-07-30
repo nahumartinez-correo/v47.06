@@ -1,0 +1,236 @@
+/****o* Pendientes de agrupación/OFB:giros:PRESgral_giro
+* NOMBRE
+*   OFB:giros:PRESgral_giro
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospres.h"
+
+SUB giros:PRESgral_giro
+    siaf:nombre_transac.HIGHLITE = 0
+
+    clearfield siaf:pantalla_impreso //cgw: limpia porque puede arrastrar valor
+
+    clearfield giros:es_servicio //cgw::limpia campo que indica que es un servicio pos venta.
+
+    /**********************************************************/
+    /* Limpio todos los campos que voy a utilizar, por si     */
+    /* falla alg£n AutoClear, m s los que debo journalizar    */
+    /* vac¡os pues est n relacionados con el Corte Operativo. */
+    /**********************************************************/
+//    CALL CSR:proc_list(F_CLEAR,LST:post:LISTgral_clear)
+//    CALL CSR:proc_list(F_CLEARARRAY,LST:post:LISTgral_clear_vec)
+
+    /********************************************************/
+    /* Llamo a la PRESfecha_hora que luego llama a la OFB   */
+    /* CDSadt_tran_load, la cual lee la Tabla de Transacc.  */
+    /* De esta forma obtengo toda la informacion referente  */
+    /* a la transaccion y accedo con el C¢digo de Producto  */
+    /* a la Tabla de Servicios para obtener la parametr¡a   */
+    /* del Producto. 					    */
+    /********************************************************/
+    /*MFM - Tratamiento Cliente Medio*/
+   	call giros:MISCValidoCliMed
+    IF (RETVAL < 0) THEN
+		/* No puedo continuar */
+		RETURN (-2)
+    END IF
+
+    CALL siaf:PRESfecha_hora
+    IF (RETVAL < 0) THEN
+	/* No puedo continuar */
+	RETURN (-2)
+    END IF
+
+     /********************************************************/
+    /* Protejo el campo Importe porque en las Transacciones */
+    /* Postales se calcula mediante una Funci¢n en vez de   */
+    /* ser digitado por el Cajero.			    */
+    /********************************************************/
+     PROTFIELD ImporteIva_fld
+     PROTFIELD Comision_fld
+     PROTFIELD ImpSellos_fld
+     Protfield siaf:importe
+
+
+    /*********************************************************/
+    /* Por default asigno como Medio de Pago, Efectivo Pesos */
+    /* Despues se puede modificar, pero conviene asignarle   */
+    /* ese valor para agilizar ya que en el 95% de los casos */
+    /* se paga mediante ese Medio de Pago.		     */
+    /*********************************************************/
+    siaf:moneda = "00"
+    post:medio_pago_desc = "PESOS"
+    post:cantidad = 1
+
+    /*********************************************************/
+    /* Por default asigno a Producto-CLiente el valor en 0.   */
+    /*********************************************************/
+    post:prod_cli = "0000000000"
+
+    /*********************************************************/
+    /* Por default asigno a cantidad de cartas el valor 1,   */
+    /* y peso 0.                                		     */
+    /*********************************************************/
+
+    /* Inicio de Agregado para manejo de IVAS en Productos Telegraficos */
+    if (post:PresGrupoIva == "G2" && post:tipo_produc2.NUMCHARS != 0) then
+	post:tipo_produc = post:tipo_produc2
+    else
+	post:tipo_produc2 = post:tipo_produc
+    endif
+
+//PS 9488
+    IF (siaf:codigo_siaf == 70050 && post:IvaCod == "SNC") THEN
+	post:tipo_produc  = 14123
+	post:tipo_produc2 = 14123
+    ENDIF
+	
+	/* Fin de Agregado para manejo de IVAS en Productos Telegraficos */
+	;Restricciones a servicios *** MDG
+	call post:MISCventasRestGen("CSM", post:tipo_produc2)
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+    	END IF
+	
+	
+    /*********************************************************/
+    /* Accedo a la Tabla de Servicios Postales para obtener  */
+    /* la parametr¡a del producto.  		             */
+    /*********************************************************/
+    CALL giros:PRESserv_gral_giro
+    IF (RETVAL < 0) THEN
+		msgbox "SERVICIO NO EXISTE EN TABLAS",OFB_OK,"Error"
+		RETURN (-2)
+    END IF
+
+		/*Comienzo de Control de cliente con el canal*/
+    /*Agrego modificacion para que cuando controle el canal de la transaccion, al
+    no dejar realizarla por distinto tipo de cliente, cierre la sesion. Diego Priore 16/5/2000*/
+
+	if (post:cli_tipo != 0)
+		if (post:cli_tipo == 1)
+			/*CLIENTE MAYORISTA O CTA CTES*/
+			/*Si se esta trabajando la 14101(giro postal) no permito el acceso 26.3.2004*/
+			// if (post:adt_serv_canal == "MINORISTA")
+				msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",OFB_OK,"Error"
+				;UNGETKEY RT_ESC
+				return (-2)
+			// endif
+		else
+			/* cLIENTE ES MINORISTA */
+			if (post:adt_serv_canal == "MAYORISTA") THEN
+				msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",OFB_OK,"Error"
+				;UNGETKEY RT_ESC
+				return (-2)
+			endif
+		endif
+	endif
+
+    /*Fin de Control de cliente con el canal*/
+
+    /*********************************************************/
+    /* Verifico si el Servicio tiene definido Opcionales.    */
+    /* Lo necesito saber antes de dibujar la Pantalla de la  */
+    /* Transacci¢n para decidir si debo displayar el Combo   */
+    /* para seleccionar los Opcionales o no.		     */
+    /*********************************************************/
+    CALL post:PRESopc_gral
+    IF (RETVAL < 0) THEN
+	    RETURN (-2)
+    END IF
+
+    /********************************************************/
+    /* Si el Cliente no es Mayorista, le asigno al campo    */
+    /* tarifa la tarifa b sica para ese Servicio, siempre   */
+    /* y cuando sea un Servicio Postal con alcance Nacional */
+    /* ya que en los Postales Internacionales y Encomiendas */
+    /* debo saber el destino para tarifar.		    */
+    /********************************************************/
+    IF (post:cli_tipo != 1 ) THEN
+        post:adt_tarif_dest = "BASICO NACIONAL"
+        post:adt_tarif_desde = 1
+    END IF
+
+    CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+    post:tarifa =  post:adt_tarif_precio
+    IF (post:estado_presu == 2 || post:estado_presu == 3)  THEN
+     	IF (post:enCombo != "S") THEN
+      	    //cgw:si no es un producto de un combo, calcula importes.
+         	//SC 50170
+         	CALL post:MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+        ELSE
+        	//cgw:si es un producto de un combo.
+        	post:SobreTasaIva = 0
+        END IF
+		post:sobretasa_prod = post:SobreTasaIva
+    END IF
+ 	post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+
+ 	IF (post:enCombo != "S") THEN
+      	//cgw:si no es un producto de un combo, calcula importes.
+        siaf:importe = post:tarifa + post:sobretasa
+    END IF
+
+    /*********************************************************/
+    /* Si estoy haciendo la transacci¢n sin sesi¢n, coloco   */
+    /* un peso por default.				     */
+    /*********************************************************/
+	IF (post:estado_presu == 1) THEN
+    	CDS SELECT FROM dsc:post:Tarifas_tbl BECOMES dsc:post:Tarifas_ctx \
+   			WHERE (post:adt_tarif_serv == post:tipo_produc2) &&\
+   			(post:adt_tarif_dest == FLD:post:adt_tarif_dest) &&\
+   			(post:adt_tarif_um == post:adt_serv_umstd)
+    	CDS FINDFIRST dsc:post:Tarifas_ctx NOLOCK
+    	IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT dsc:post:Tarifas_ctx post:adt_tarif_hasta
+			post:peso_en_grs = post:adt_tarif_hasta
+    	END IF
+    	CDS ENDSELECT dsc:post:Tarifas_ctx
+	END IF
+
+    /* Verifico si es una Directa o una Reversa */
+    IF (!TESTFLAG(tlr:tran_flags,correction))
+	    /* Es una Directa */
+	    CALL post:MISCprotege(LST:post:LISTgral_prot,LST:post:LISTgral_unprot)
+        /* Verifico en que modo estoy */
+    END IF
+
+    /*********************************************************/
+    /* Para las Cartas Documentos no se puede modificar la   */
+    /* cantidad de páginas, la cual debe ser siempre 1.      */
+    /*********************************************************/
+
+    /*********************************************************/
+    /* Si el Cliente es Mayorista, protejo el Medio de Pago  */
+    /* ya que los Mayoristas no pueden elegir el mismo.	     */
+    /*********************************************************/
+    IF (post:cli_tipo == 1 || post:estado_presu == 1) THEN
+      	PROTFIELD siaf:moneda
+      	DISABLECONTROL drv:PBcb0
+    END IF
+
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+        /*Genero el picklist para los medios de pago*/
+        post:tipo_rest = TODOS
+        IF (post:adt_serv_formfiscal == "FACTU" || post:adt_serv_formfiscal == "TICKE")
+            CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",0)
+        ELSE
+            CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",1)
+        END IF
+    END IF
+    RETURN (0)
+END SUB
+
+/*******/

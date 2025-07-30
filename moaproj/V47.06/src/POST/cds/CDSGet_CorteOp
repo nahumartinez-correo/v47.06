@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:post:CDSGet_CorteOp
+* NOMBRE
+*   OFB:post:CDSGet_CorteOp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGet_CorteOp
+
+LOCAL codtt LIKE post:track_trace
+LOCAL codigo LIKE post:adt_uneg_sitecode
+LOCAL corte LIKE post:adt_serv_corteop
+
+
+	IF (adt_novtt_corte.numchars > 0) THEN
+		corte = adt_novtt_corte
+		//según reunión con G:Persico, siempre deberá buscarse el registro con apertura Expedición.
+		//apertura = adt_novtt_apertura
+		apertura = "E"
+	ELSE ;pieza recepcionada, busco en la tabla de servicios por codigo de track_trace
+		CLEARFIELD corte
+		CLEARFIELD apertura
+		codtt = substr (post:id_excepcion,0,2)
+		/*1-Busco en la tabla de Servicios el corte operativo de la pieza*/
+		CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx \
+		WHERE post:adt_serv_ttcod == codtt || \
+		post:adt_serv_ttcod1 == codtt || \
+		post:adt_serv_ttcod2 == codtt || \
+		post:adt_serv_ttcod3 == codtt || \
+		post:adt_serv_ttcod4 == codtt || \
+		post:adt_serv_ttcod5 == codtt || \
+		post:adt_serv_ttcod6 == codtt || \
+		post:adt_serv_ttcod7 == codtt 
+		CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+		IF (lib:err_retval == 0) THEN
+			CLEARFIELD adt_serv_corteop
+			CDS EXTRACT DSC:Servicio_ctx adt_serv_corteop INTO corte
+			apertura = "E"
+			CDS ENDSELECT DSC:Servicio_ctx
+		ELSE
+			CDS ENDSELECT DSC:Servicio_ctx
+			//Busco por modelo y corte en la tabla RelMod
+			corte = codtt
+			apertura = "E"
+		END IF
+	END IF
+	
+	/*2-Busco en la RelMod el despacho de ese corte operativo,
+	que tenga apertura expedición*/
+	
+	CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+	WHERE (post:adt_relMod_modelos == common:br_modelo && \
+	post:adt_relMod_corteop == corte && \
+	post:adt_relMod_apertura == apertura)
+	CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CLEARFIELD adt_relMod_desptipos
+		CLEARFIELD adt_relMod_despacho
+		CDS EXTRACT DSC:adt_relMod_ctx adt_relMod_desptipos adt_relMod_despacho
+		IF (adt_relMod_desptipos == "DM") THEN
+			/*3-BUSCAR EN LA UNEG CON LOS PRIMEROS TRES CARACTERES DEL CAMPO adt_relMod_despacho*/
+			codigo = substr(adt_relMod_despacho,0,3)
+		END IF
+		IF (adt_relMod_desptipos == "DN") THEN
+			/*3-BUSCAR EN LA UNEG CON EL CAMPO common:br_ctpnormal*/
+			codigo = common:br_ctpnormal 
+		END IF
+		IF (adt_relMod_desptipos == "DP") THEN
+			/*3-BUSCAR EN LA UNEG CON EL CAMPO common:br_ctpTT2*/
+			codigo = common:br_ctpTT2
+		END IF
+		CDS ENDSELECT DSC:adt_relMod_ctx
+	END IF
+
+	/*4-Obtengo la unidad de negocio (destino secundario de excepcion)*/
+	CALL CDSGet_Uneg(codigo)	
+	
+END SUB
+
+/*******/

@@ -1,0 +1,89 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSterminales_save
+* NOMBRE
+*   OFB:giros:CDSterminales_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+/* ABM Terminales de Oracle */
+SUB giros:CDSterminales_save
+    local i like giros:adt_dgralsuc_tout
+    local j like giros:adt_dgralsuc_tout
+    local error like common:csr_string
+    MOVE common:system_date TO fecha_camb_semi
+    MOVE common:login_id TO cod_usuario
+    IF ((nis_sucursal == "     ") || (nis_terminal == "                   ")) THEN
+		ERRMSG LST:common:errmsg_list,"HAY CAMPOS EN BLANCO"
+		CLEARFIELD flag_semilla 
+		RETURN (-2)
+	ELSE 
+		/*Seteo en ON el Auto Commit - Gabriel Falciola*/
+		DLL "DBsetConnectOption" (odbc:db_handle_giros,SQL_AUTOCOMMIT,SQL_AUTOCOMMIT_OFF)	
+
+		FPRINT odbc:ODBCwhere, \
+		"SELECT * FROM TERMINALES WHERE TERMI = '%s' FOR UPDATE NOWAIT", \
+		nis_terminal
+		DLL DBsqlExecute ( odbc:db_handle_giros odbc:ODBCwhere )       
+		IF (RETVAL != 0) THEN
+			/*Seteo en ON el Auto Commit - Gabriel Falciola*/
+			DLL "DBsetConnectOption" (odbc:db_handle_giros,SQL_AUTOCOMMIT,SQL_AUTOCOMMIT_ON)	
+			
+			DLL DBsqlState ( odbc:ascii odbc:db_handle_giros )
+			DLL DBlastmsg (common:csr_string, odbc:db_handle_giros) 
+			call csr:str_search(common:csr_string,"ORA-",i)
+			if (retval == 0) then
+				call csr:str_search(common:csr_string,":",j,i)
+				let i = i+4
+				let j = j-i
+				error = substr(common:csr_string,i,j)
+				IF (error == "00054") THEN
+					msgbox "Tabla Bloqueada, Intente la conexion en otro momento",0x00,"ERROR"
+					return -1
+				else
+					/* ver que otras cosas van */
+					CLEARFIELD odbc:ascii 
+					msgbox "Error en Conexion, Reintentela en otro momento",0x00,"ERROR"
+					return -1
+				end if
+			else
+				/* ver que otras cosas van */
+				CLEARFIELD odbc:ascii 
+				msgbox "Error en Conexion, Reintentela en otro momento",0x00,"ERROR"
+				return -1
+			end if
+		
+		ELSE
+			/*Seteo en ON el Auto Commit - Gabriel Falciola*/
+			DLL "DBsetConnectOption" (odbc:db_handle_giros,SQL_AUTOCOMMIT,SQL_AUTOCOMMIT_ON)
+		END IF 
+
+		FPRINT odbc:ODBCwhere, \
+		"UPDATE TERMINALES SET FLAG_SEMILLA = '%s',USU_CODI = '%s',FECHA_CAMB_SEMI = to_date('%d-%d-%d','dd-mm-yyyy') WHERE TERMI = '%s'", \
+		flag_semilla,cod_usuario,SUBSTR(fecha_camb_semi,6,2), \
+		SUBSTR(fecha_camb_semi,4,2),SUBSTR(fecha_camb_semi,0,4),nis_terminal
+      	DLL DBsqlExecute ( odbc:db_handle_giros odbc:ODBCwhere ) 
+      	IF (RETVAL == 0) THEN
+        	FPRINT odbc:ODBCwhere,"COMMIT"
+        	DLL DBsqlExecute ( odbc:db_handle_giros odbc:ODBCwhere ) 
+      	END IF 
+      	tlr:INDdcol_scrn[0] = SCR:SCRNadt_terminales
+      	tlr:INDjnl_append = OFB:JNLterminales
+      	siaf:codigo_siaf = 97000
+      	CALL tlr:JNLout_of_tran
+    END IF 
+    RETURN (0)
+END SUB 
+
+/*******/

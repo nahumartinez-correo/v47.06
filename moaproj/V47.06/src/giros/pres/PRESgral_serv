@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:giros:PRESgral_serv
+* NOMBRE
+*   OFB:giros:PRESgral_serv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospres.h"
+
+SUB giros:PRESgral_serv
+   
+    /* si estoy en teclas rápidas y tiene captura protejo el 
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+       
+    if (post:estado_presu == 1) then        
+          
+     	     ;Busco el medio de pago que tenga captura de CL	
+     	    call post:CDSMPago_Clegal_load
+     	    if (retval == 0) then
+     	    	siaf:moneda = post:adt_mp_cod
+     	        protfield siaf:moneda
+     	        DISABLECONTROL drv:PBcb10
+     	    else
+     	       errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+               return (-2)
+             end if    
+        
+      end if   
+   
+   
+    if (siaf:codigo_siaf == 70090 || siaf:codigo_siaf == 70110 || siaf:codigo_siaf == 70120) then
+      
+	    CALL siaf:PRESfecha_hora
+	    IF (RETVAL < 0) THEN
+	      RETURN (-1)
+	    END IF
+
+		// FGB 25.6.2002 - PS 5940 : no puede haber transacciones monetarias
+		// dentro de una sesion de cuentas corrientes...
+		if (post:cli_tipo == CTACTE) then
+			msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",OFB_OK,"Error"
+			return (-1)
+		endif
+
+	else
+	    CALL giros:PRESgral_giro
+	    IF (RETVAL < 0) THEN
+	      RETURN (-1)
+	    END IF
+	endif
+    
+    /****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.    17/10/2000                                  */
+    /****************************************************************/
+    
+    /*if (post:estado_presu == 2 || post:estado_presu == 3) then 
+          
+      if (siaf:adt_tran_med_pago != "S") then
+        post:captura_mp = siaf:adt_tran_med_pago
+        protfield siaf:moneda
+        siaf:moneda = 99
+        clearfield post:medio_pago_desc
+        DISABLECONTROL drv:PBcb10
+      else  
+            IF (post:estado_presu == 2)
+                clearfield siaf:moneda
+                clearfield post:medio_pago_desc
+                refresh siaf:moneda
+                refresh post:medio_pago_desc
+            END IF
+            ; Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+
+      end if	
+    end if*/ 	
+    
+        
+    call giros:MISCbuscar_oblig
+    IF (RETVAL < 0) THEN
+      RETURN (-1)
+    END IF
+    call giros:MISCBusca_flia(siaf:codigo_siaf)
+    IF (RETVAL < 0) THEN
+      RETURN (-1)
+    END IF
+    INIT 56,1
+    post:INDPresuD_Dat = OFB:giros:CDSPresDet_Gral
+	//
+	CALL csr:proc_list(F_PROTECT,LST:LISTgral_flds)
+	//
+	select (siaf:codigo_proc)
+		case 993001
+		case 993002
+		   CALL MISCTranPresD(LST:LIST70090)
+			break
+		case 992007
+		  	call MISCTranPresD(LST:LIST70140)
+			break
+		case 992005
+		    CALL MISCTranPresD(LST:LIST70180_fld)
+			break
+		case else
+		    CALL MISCTranPresD(LST:LIST70200)
+			break
+	end select
+	//
+	if (testflag(flags_back,vencido)) then
+		altercontrolset drv:PBcb0
+	endif
+	//
+	if (testflag(flags_back,tiene_titulo)) then
+		altercontrolset drv:PBcb16
+	endif
+	//
+	IF ((post:estado_presu == "1") || (post:estado_presu == "2")) THEN
+		call common_pres_rtn
+		if (retval < 0) then
+			return -2
+		end if	
+	ELSE	    		
+		siaf:importe = imp_servicio_fld + imp_revalida_fld
+		REFRESH siaf:importe
+	END IF
+END SUB
+
+/*******/

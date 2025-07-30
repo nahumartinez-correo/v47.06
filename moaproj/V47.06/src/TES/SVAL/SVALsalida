@@ -1,0 +1,254 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALsalida
+* NOMBRE
+*   OFB:tes:SVALsalida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALsalida
+local superviso like tes:rend_marca_cierre
+local i like siaf:i
+local primero like tes:es_tesoro
+local imp like siaf:importe 
+local hay_pase like tes:marca_dif
+
+    if (testflag(tlr:tran_flags,correction))
+    	/*Recupero datos perdidos*/
+    	siaf:moneda = tmov_moneda
+    	post:importe_origen = tmov_total
+    	
+    	call tes:CDSteso_mov_lock
+     	/* Esta lockeado */
+        if (retval < 0)
+        	call MISClimpia_pase
+            return (-2)
+        end if
+        cds extract dsc:teso_mov_context tmov_marca_ing         
+    end if
+
+    if (!(testflag(tlr:tran_flags,correction))) THEN
+    	/* Si no estoy en cierre estoy obligado a cargar algo */
+        call CDSverif_pase
+		select (retval)
+	        case -1
+	        	if (tes:en_cierre != "S") then
+	            	errmsg lst:common:errmsg_list,"No hay ningún movimiento cargado"
+	            	call MISClimpia_pase
+	            	return (-2)
+	           	else
+	           	     call MISClimpia_pase
+	           	     MSGBOX "NO HAY MOVIMIENTOS CARGADOS. CONTINUA?",0x00000104,"ATENCION"
+        			 IF (RETVAL == 7) THEN			            	
+						return (-2)
+					 end if
+				end if
+				break
+		end select
+		
+		/* Si estoy haciendo el cierre guiado tiene que confirmar los importes */
+		if (tes:en_cierre == "S" && drv:dt_app != 4) then
+			call MISCconfirma_imp
+			if (retval != 0) then
+				call tes:MISClimpia_pase
+				return (-2)
+			end if
+		else
+			popup tes:SCRNconfirma
+       		if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+       			call tes:MISClimpia_pase
+	    		return (-2)
+	       	end if
+	    end if
+	    	
+    else
+	    //verificar que no fue rechazada, en ese caso no se puede reversar
+       call tes:MISCmsg_salida(tmov_marca_ing)
+       if (retval < 0)
+            return (-2)
+       end if
+    end if
+    
+    
+    //Controla el usuario y en caso que corresponda pide clave
+    Call MISCclave_salida
+    if (retval < 0)
+    	return (-2)
+    end if
+        
+    if (tes:en_cierre == "S" && drv:dt_app != 4) then
+    	if (pasada_rend == 1) then
+    		pasada_rend = 2
+    		call MISCerror_rend
+    		if (retval < 0) then
+    			return (-2)
+    		end if	
+    	else
+    		call MISCcontrol_dif
+    	end if
+    end if
+            
+    call siaf:SVALnivel_sup
+    if (retval < 0)
+    	return (-2)
+    end if
+
+	 // Guardo si fue supervisada para marcar las otras
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+		let superviso = "S"
+    else
+		let superviso = "N"
+    end if
+    
+    hay_pase = "N"
+    
+    if (!testflag(tlr:tran_flags,correction)) then
+        if (drv:dt_app == 4) then
+        	adt_cheqaux_tesoro = "S"
+        else
+        	adt_cheqaux_tesoro = "N"
+        end if
+        cds select from dsc:AuxCheq_tbl BECOMES dsc:AuxCheq2_ctx where \
+		tes:adt_cheqaux_suc    == op:op_branch_id   && \
+		tes:adt_cheqaux_op     == op:op_operator_id && \
+	    tes:adt_cheqaux_tesoro == tes:adt_cheqaux_tesoro
+	       
+        cds findfirst dsc:AuxCheq2_ctx lock
+		let lib:err_retval = cdsretval	
+		if (lib:err_retval == -803)	then
+			errmsg lst:common:errmsg_list,"Error al leer los movimientos. Registro lockeado"
+			return (-2)
+		end if
+        //Recorro la tabla temporal
+        do
+            if (lib:err_retval != 0) then
+                break
+            end if
+            cds extract dsc:AuxCheq2_ctx all
+
+			if (tes:adt_cheqaux_clave == 1)
+				tmov_marca_ing = "S"
+			else
+				tmov_marca_ing = ""
+			end if
+			
+			//Por cada MP grabo un pase, como se hacia antes, pero sin las denominaciones.
+			//y para cada uno guardo la secuencia del primero en tmov_sequence_pase
+			i = 0
+			primero = "S"
+			do
+				if (i > (cant_mp - 1))
+					break
+				end if
+				
+				if (importes_pase[i] != 0)
+					if (primero == "S")
+						clearfield tmov_sequence_pase
+						primero = "N"
+					end if	
+					siaf:moneda = mp_codigo[i]
+					siaf:desc_moneda = mp_texto[i]
+					post:medio_pago_desc = siaf:desc_moneda
+					siaf:importe = importes_pase[i]
+					post:importe_origen = siaf:importe
+					operator_id_dest = adt_cheqaux_cuenta
+					
+					if (tes:en_cierre == "S" && drv:dt_app != 4) then
+						/* Si no hay marca de agregar la plata, hago el ajuste */
+						if (tes:adt_cheqaux_marca[i] == "N") then
+							imp = tes:adt_cheqaux_dif[i]
+							call tes:MISCgrabo_fallo(imp)
+						end if
+					end if
+							    	
+			        let drv:INDscr         = scr:tes:SCRNsalida_jnl
+			        let tes:es_tesoro      = "S"
+			        call siaf:MISClleno_modalidad
+			    	call post:MISCconvierto_coti(post:importe_origen)
+		            
+		            /* MLD Cierre Guiado: Si hubo diferencia en el pase, realiza 
+		            guarda una marca estadística en el journal */
+		            if (superviso == "S") then
+			     		// si la primera fue supervisada , marco todas
+			        	setflag tlr:tran_flags,supovr_granted
+		    	    end if
+		    	    clearfield marca_dif
+		    	    
+		    	    if (adt_cheqaux_marca[i] == "S") then
+		    	    	marca_dif = "S"
+		    	    	siaf:importe_dif = tes:adt_cheqaux_dif[i]
+		    	    end if
+		    	    
+		    	    	
+		            ungetkey RT_SEND
+		            call tlr:JNLtran
+		            hay_pase = "S"
+				else
+					siaf:moneda = mp_codigo[i]
+					siaf:desc_moneda = mp_texto[i]
+					post:medio_pago_desc = siaf:desc_moneda
+					siaf:importe = importes_pase[i]
+					post:importe_origen = siaf:importe
+									
+					/* Puede haber ajuste y que no haga pase (se queda en 0) */
+					if (tes:en_cierre == "S" && drv:dt_app != 4) then
+						/* Si no hay marca de agregar la plata, hago el ajuste */
+						if (tes:adt_cheqaux_marca[i] == "N") then
+							imp = tes:adt_cheqaux_dif[i]
+							call tes:MISCgrabo_fallo(imp)
+						end if
+					end if
+				end if
+				i = i + 1
+			loop			
+            
+            if (hay_pase == "S") then
+				Call TRANprint_sal_caja
+				/*Solicitud 50088 - Evento 6: Cuando el se hacen pases a si mismo
+				no debe mandarse un mensaje*/ 
+            	IF (tes:login_dest != op:op_login_id)
+            		call MISCsend_msg_dest(tes:login_dest,"LE HA HECHO UN PASE") 	    	
+            	END IF
+            end if
+ 	    	
+ 	    	cds delete dsc:AuxCheq2_ctx
+            cds unlock dsc:AuxCheq2_ctx
+            
+            cds findnext dsc:AuxCheq2_ctx lock
+	    	let lib:err_retval = cdsretval
+        loop
+		
+		clearfield tes:es_tesoro
+		clearfield drv:INDjnl_rtn
+		clearfield drv:INDspc_rtn[2]
+        cds unlock dsc:AuxCheq2_ctx
+        cds endselect dsc:AuxCheq2_ctx
+        call post:MISCactivar_buts
+        
+        if (tes:en_cierre == "S" && drv:dt_app != 4) then
+            /* Recibe el estado Actual*/
+            INIT 33,0
+        	call tes:CDSProximo_Estado(SALIDA_CAJA)
+        end if
+ 
+    else
+        call MISCreverso_sesion
+		if (retval < 0) then
+	    	return (-2)
+		end if
+    end if
+
+END SUB
+
+/*******/

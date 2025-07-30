@@ -1,0 +1,212 @@
+/****o* Sesion Correo/OFB:post:CDSpresudet_save
+* NOMBRE
+*   OFB:post:CDSpresudet_save
+* DESCRIPCION
+*   Actualiza distintos campos de la tabla PresuDet de acuerdo a los estados del presupuesto
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCGrabaDetalleTrn
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpresudet_save()
+
+	IF (siaf:codigo_siaf == 99006) THEN
+		;le pidieron a Pablo que siempre que sea RG3337 este campo tenga una "S"
+		post:percep_r212 = "S"
+	END IF
+	         
+	//Este Pcl O OFB en mosaic se encarga de Grabar o Reeplazar segun el Estado
+	//Las Distintas Transaccion de los Presupuesto que se van Cotizando
+	//El Campo Indirecto INDPresuD_Dat tiene que estar lleno con el Append de los Datos
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+		WHERE (FLD:post:fecha == FLD:post:fecha ) && \
+		(FLD:post:op_operator_id == FLD:post:op_operator_id )&& \
+		(FLD:post:PresNro == FLD:post:PresNro) && \
+		(FLD:post:PreDNroTrn == FLD:post:PreDNroTrn)
+                 	  
+	CDS FINDFIRST DSC:CONPresuDeta LOCK
+	LET lib:err_retval = CDSRETVAL
+          
+	//Segun El Estado del Presupuesto
+	SELECT (estado_presu)
+		//Insertando
+		CASE 2
+			PreDEst = 1
+			PrePEst = 1
+			//Obtengo El Numero de la Transaccion en el Presupuesto
+
+			//FGB 20.01.2004 - Combos
+			IF (post:enCombo == "S") THEN
+				/* En el caso combos se necesita que la confirmacion se tenga en cuenta en primer lugar 
+				la tx cabecera como todos los productos asociados .. antes que el resto de tx de la sesion*/
+				siaf:adt_tran_jer_pres = 2
+				
+				IF (adt_concb_principal == "S") THEN
+					IF (siaf:adt_tran_afec_efvo == "+")
+						Total_importe = Total_importe + siaf:importe
+					ELSE
+						Total_importe = Total_importe - siaf:importe
+					END IF
+				END IF
+			ELSE
+				CALL CDSprox_PreDNroTrn
+				IF (siaf:adt_tran_afec_efvo == "+")
+					Total_importe = Total_importe + siaf:importe
+				ELSE
+					Total_importe = Total_importe - siaf:importe
+				END IF
+			END IF
+	          	
+			Cuenta_Postal = Cuenta_Postal + 1
+			CALL post:CDSadt_presuact_save
+			CALL post:CDSpresD_cab_appen
+			IF (siaf:codigo_siaf == 99028 || siaf:codigo_siaf == 99006) THEN
+				CDS APPEND DSC:CONPresuDeta post:Percepcion_desc post:NroCompPago \
+					post:ImporteNeto post:TasaPerc post:percep_r212 post:tasaAlicAcrePerc	post:porcExentoRG3337	// [PAW] --> se iba la leyenda
+			END IF
+             
+			CALL FLD:post:INDPresuD_Dat
+			
+			//FGB 20.01.2004 - Combos
+			IF (enCombo == "S") THEN
+				CDS REPLACE DSC:CONPresuDeta  LOCK
+				IF (siaf:codigo_siaf != 99480) THEN
+					//01-12-98 [PAW] ---> Llamo a una rutina propia para generar el IVA.
+					CALL MISCgenerarIva
+				END IF
+			ELSE
+				CDS INSERT DSC:CONPresuDeta LOCK
+				IF (siaf:codigo_siaf != 99480) THEN
+					//01-12-98 [PAW] ---> Llamo a una rutina propia para generar el IVA.
+					CALL MISCgenerarIva
+				END IF
+			END IF
+		BREAK
+		//Modificando
+		CASE 3
+			PreDEst = 1
+			PrePEst = 1
+			IF (lib:err_retval == -801) THEN
+				MSGBOX "La Clave No Existe(Presdet)",OFB_OK,"ERROR"
+			ELSE
+				CALL post:CDSpresD_cab_appen
+				IF (siaf:codigo_siaf == 99028 || siaf:codigo_siaf == 99006)
+					CDS APPEND DSC:CONPresuDeta post:Percepcion_desc post:NroCompPago \
+						post:ImporteNeto post:TasaPerc post:percep_r212 post:tasaAlicAcrePerc	post:porcExentoRG3337	// [PAW] --> se iba la leyenda
+				END IF
+				//gpb:NI50479
+				//IF (siaf:codigo_siaf == 99300) THEN //Descuento Cliente Medio
+				IF (siaf:codigo_siaf == 99300 || siaf:codigo_siaf == 30300) THEN //Descuento Cliente Medio - Cliente Medio PED
+					CDS APPEND DSC:CONPresuDeta post:tarifa post:TotalSesionCM \
+						prod_DescuentoCM  PreDNroTrnAsoc post:AliTrnCM
+					//se estaban grabando dos veces !!!
+					/*post:bonificaCM post:AdmiteMP post:Dcto_CliMed */
+					CDS APPEND DSC:CONPresuDeta siaf:importe \
+						siaf:ImporteSinIva siaf:ImporteConIva //MFM ---> estos campos se borraban*/
+				END IF
+				IF (siaf:codigo_siaf == 99480) THEN //Facturacion de Intereses Punitorios
+					post:INDPresuD_Dat = OFB:CDSappend_99480
+				END IF
+
+				CALL FLD:post:INDPresuD_Dat
+				CDS REPLACE DSC:CONPresuDeta  LOCK
+			END IF
+			//CALL MISCgenerarIva      // [PAW] ---> Si apreta ESC qué pasa?
+			CALL MISCgenerarIva
+			//Aceptando el Presupuesto
+		BREAK
+		CASE 4
+			PreDEst = 2
+			//PrePEst = 1
+			CALL post:CDSpresD_cab_appen
+			IF (siaf:codigo_siaf == 99028 || siaf:codigo_siaf == 99006) THEN
+				CDS APPEND DSC:CONPresuDeta post:Percepcion_desc post:NroCompPago    \
+					post:ImporteNeto post:TasaPerc post:tasaAlicAcrePerc post:percep_r212 post:porcExentoRG3337		// [PAW] --> se iba la leyenda
+			END IF
+			
+			IF (siaf:codigo_siaf == 99160) THEN
+				CDS APPEND DSC:CONPresuDeta siaf:importe post:jnl_interes_diferido post:jnl_iva_int_dif \
+					post:iva_Porcentaje post:moneda_status	//MFM ---> se borraban los importes del interes y el iva
+			END IF
+			
+			//gpb:NI50479
+			//IF (siaf:codigo_siaf == 99300) THEN //Descuento Cliente Medio
+			IF (siaf:codigo_siaf == 99300 || siaf:codigo_siaf == 30300) THEN //Descuento Cliente Medio - Cliente Medio PED
+				CDS APPEND DSC:CONPresuDeta post:tarifa post:TotalSesionCM \
+					prod_DescuentoCM  PreDNroTrnAsoc post:AliTrnCM
+				//se estaban grabando dos veces!!
+				/*post:bonificaCM post:AdmiteMP post:Dcto_CliMed */
+				CDS APPEND DSC:CONPresuDeta siaf:importe \
+					siaf:ImporteSinIva siaf:ImporteConIva //MFM ---> estos campos se borraban
+				//MLD Los grabo porque al reemplzarce el registro lo pierdo
+				CDS APPEND DSC:CONPresuDeta \
+					post:remito_nro post:PorSesion
+				
+				//Borro este campo porque estaba quedando sucion cuando se hacia un Anticipo
+				CLEARFIELD post:INDPresuD_Dat
+			END IF
+			
+			IF (siaf:codigo_siaf == 99450) THEN //Consumo de Adelanto CM
+				CDS APPEND DSC:CONPresuDeta siaf:importe \
+					siaf:ImporteSinIva siaf:ImporteConIva post:anticipo_CM
+			END IF
+			//NI 50552
+			IF (siaf:codigo_siaf == 99451) THEN //Aplicacion TB
+				post:INDPresuD_Dat = OFB:CDSappend_99451
+			END IF
+			
+			IF (siaf:codigo_siaf == 99440) THEN //Cobro Diferido
+				CDS APPEND DSC:CONPresuDeta siaf:importe \
+					siaf:ImporteSinIva siaf:ImporteConIva
+			END IF
+			
+			IF (siaf:codigo_siaf == 99480) THEN //Facturacion de Intereses Punitorios
+				post:INDPresuD_Dat = OFB:CDSappend_99480
+			END IF
+			
+			IF (siaf:codigo_siaf == 99350) THEN //Dcto CM por OC
+				CDS APPEND DSC:CONPresuDeta siaf:importe
+			END IF
+                
+			IF (siaf:codigo_siaf == 99510) THEN //Emision de NC por Incumplimiento
+				CDS EXTRACT DSC:CONPresuDeta adt_oc_desc
+				CDS APPEND DSC:CONPresuDeta adt_oc_desc  adt_oc_nro  stock_linea1 \
+					post:importe_nc_inc AS siaf:importe  post:fact_id  post:fact_nro  post:fact_fec_emis \
+					array vec_remitos post:importe_nc_inc
+			END IF
+			
+			IF (siaf:codigo_siaf == 99511 || siaf:codigo_siaf == 99513) THEN 
+				CDS APPEND DSC:CONPresuDeta array docfis_tasa_por  array docfis_importe \
+					array docfis_imp_siva
+			END IF
+			IF (siaf:codigo_siaf == 99512) then
+				post:INDPresuD_Dat = OFB:CDSTRAN99512_append
+				CDS APPEND DSC:CONPresuDeta	post:item_importe_oc post:item_desc_factura
+			END IF
+
+		IF (siaf:codigo_siaf == 99461) then
+				post:INDPresuD_Dat = OFB:CDSappend_99461
+			END IF
+			
+			CALL FLD:post:INDPresuD_Dat
+			CDS REPLACE DSC:CONPresuDeta LOCK
+	END SELECT
+	
+	CDS UNLOCK DSC:CONPresuDeta
+	CDS ENDSELECT DSC:CONPresuDeta
+	REFRESH Total_importe
+	REFRESH Cuenta_Postal
+	//MFM - OBS246 PUNTO 1
+	CALL post:MISCexcepConsumida
+END SUB
+
+/*******/

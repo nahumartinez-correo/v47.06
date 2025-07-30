@@ -1,0 +1,122 @@
+/****o* Registro RPP/OFB:post:SVALregistroSRPP
+* NOMBRE
+*   OFB:post:SVALregistroSRPP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANregistroSRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALregistroSRPP
+	LOCAL medPago_tx LIKE siaf:adt_tran_med_pago
+	IF (post:NroCompPago == "")
+		post:NroCompPago = 0
+	END IF
+	
+	medPago_tx = siaf:adt_tran_med_pago
+
+	select (post:estado_presu)
+		case 2
+			
+			PreDForFis = adt_serv_formfiscal
+			IF (post:cli_tipo == CLIMED) //cliente medio
+				IF (post:modalidad_CM == "S")
+					IF (post:ConsumoAnticipo)
+						post:stockp_modlist = "A"
+						post:emite_fact_stockp = "N"
+					ELSE
+						post:stockp_modlist = "S"
+						post:emite_fact_stockp = "S"
+					END IF
+				ELSE
+					post:stockp_modlist = "D"
+					post:emite_fact_stockp = "N"
+				END IF
+			ELSE // post:modalidad_CM = "D" / "C"
+				post:stockp_modlist = "S"
+				post:emite_fact_stockp = "S"
+			END IF
+	
+			CALL drv:MISCdis_enablePB_ABM(0,0,0)
+		case 3    
+		
+		
+				post:captura_mp = siaf:adt_tran_med_pago
+				protfield siaf:moneda
+				siaf:moneda = 99
+				clearfield post:medio_pago_desc
+			
+				post:hasta_fac = post:peso_en_kgs
+				post:unidad_fac = post:adt_tarif_um
+				siaf:importe = siaf:importe_tot_serv
+		
+			/*Devuelve la formula de calculo usada para determinar la tarifa del producto*/
+	CALL SVALgral_formuCalc
+	
+	/*CSZ - Guardo el modelo de la sucursal para tenerlo journalizado si hay problemas*/
+	modelo_suc = common:br_modelo
+
+		
+				//Desgloso IVA
+				CALL MISCdesglosaIva(tarifa,adt_serv_aliciva,1,0)
+				ImpSinIva_serv = ImporteSinIva
+				siaf:ImporteSinIva = ImporteSinIva
+				siaf:ImporteConIva = siaf:importe	
+		
+				//este importe viene de la desglosa iva pero por las dudas si hay alguna dif?
+				ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+				post:AliServUP = post:adt_serv_aliciva
+				/* Campos Necesarios Para el reverso de operaciones */
+				post:ImporteConIvaNeto = siaf:ImporteConIva
+				post:ImporteSinIvaNeto = siaf:ImporteSinIva
+		
+				//si es cliente medio hago tratamiento para vap	  
+				if (cli_tipo == CLIMED)
+					CALL MISCclimed_vap //USO LA MISMA PARA RPP PORQUE ME SIRVE
+				end if
+		
+				//if (cli_tipo != 2)
+				/* Limpio campos que no utilizo */
+				call csr:cleararray(post:ali_opc)
+				call csr:cleararray(post:ali_opc)
+				call csr:cleararray(post:flia_opc)
+				call csr:cleararray(post:cos_opc)
+		
+				call post:MISCSinIva_CSP
+				;Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago
+				CALL MISCAcumTotalesSes
+				call MISCRestFlia
+			CALL post:MISCGrabaDetalleTrn
+			//Tratamiento tx descuento de Cliente Medio
+			CALL MISCgenTxDctoCM_vap
+			break
+	
+		case 4
+			tes:es_tesoro = "S"
+			ver_anulacion = "S"
+	
+			//Si llego aca es porque se hace solo el registro para clientes Minoristas.
+			//No se totaliza, no se journaliza el servicio, no se factura.
+			
+			//Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago
+			CALL MISCAcumTotalesSes
+			call MISCRestFlia
+			CALL post:MISCGrabaDetalleTrn
+	
+		tes:es_tesoro = "S"
+
+		
+	end select
+END SUB
+
+/*******/

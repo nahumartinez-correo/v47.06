@@ -1,0 +1,154 @@
+/****o* Pendientes de agrupación/OFB:gali:PINPADleer_tarj_i
+* NOMBRE
+*   OFB:gali:PINPADleer_tarj_i
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "galipinpad.h"
+
+SUB gali:PINPADleer_tarj_i
+    	LOCAL COMANDO LIKE drv:dis_info_work
+    	LOCAL RESPUESTA LIKE common:csr_string
+    	LOCAL eodbytes LIKE drv:dis_info_work
+   	LOCAl list_save LIKE drv:INDbutton_list
+
+   	/* Preparacion del Port */
+    	IF ((CURRENTFIELD.NUMCHARS > 0) && (CURRENTFIELD != 0)) THEN
+      		RETURN (0)
+   	END IF
+
+    	CALL gali:PINPADabrir_port_i
+    	IF (RETVAL < 0) THEN
+      		CALL gali:PINPADcerrar_port_i
+      		RETURN (-2)
+   	END IF
+
+    	CALL gali:PINPADsetear_port_i
+    	IF (RETVAL < 0) THEN
+      		CALL gali:PINPADcerrar_port_i
+      		RETURN (-2)
+    	END IF
+
+    	/*
+    	CALL gali:PINPADchecking_i
+    	IF (RETVAL < 0) THEN
+      		CALL gali:PINPADcerrar_port_i
+      		RETURN (-2)
+    	END IF
+    	*/
+
+    	/* Saco los side bar mientras uso el pinpad para ahorrar problemas */
+    	LET list_save = drv:INDbutton_list
+   	LET drv:INDbutton_list = LST:plataf:LISTside_bar
+    	CALL drv:but_disable_list
+
+    	/* Limpio el key buffer para que si tiene algo guardado no
+       	    moleste en la lectura */
+	INIT 33,0
+	CLEARFIELD drv:last_key
+    	DO
+      		/* Salida del DO-LOOP y del OFB */
+      		IF (((gali:numero_tarjeta.NUMCHARS > 0) && (gali:numero_tarjeta != 0)) || \
+		    (COMANDO == SALIR_POR_PEDIDO)) THEN
+			CALL gali:PINPADcerrar_port_i
+			IF (COMANDO == SALIR_POR_OK) THEN
+				FYIMSG LST:common:fyimsg_list, dsc:plataf:tarjeta_ingresada
+				UNGETKEY RT_TAB
+				DPRINT " Salir de Leer tarjeta con RETURN 0\n "
+				RETURN (0)
+			END IF
+			DPRINT " Salir de Leer tarjeta con RETURN -2\n "
+
+			/* Restauro los side bar.... */
+			LET drv:INDbutton_list = LST:plataf:LISTside_bar
+			CALL drv:but_enable_list
+			LET drv:INDbutton_list = list_save
+			RETURN (-2)
+      		END IF
+
+      		/* Preparacion del mensaje para el PINPAD */
+      		CALL CSR:wingsp(GSP_PURGE,fd)
+     		//CALL CSR:wingsp(GSP_SET_TIMEOUT,15,15,15)
+     		CALL CSR:wingsp(GSP_SET_TIMEOUT,60,60,60)
+      		CLEARFIELD eodbytes
+     		CLEARFIELD COMANDO
+      		CLEARFIELD RESPUESTA
+      		MOVE "]" TO eodbytes
+
+      		CALL CSR:wingsp(GSP_PURGE,fd)
+      		MOVE "El cliente debe ingresar su tarjeta" \
+			TO common:csr_string
+     		FYIMSG LST:common:fyimsg_list,FLD:common:csr_string
+      		INIT 33,0
+
+      		MOVE "[2|]" TO COMANDO
+      		CALL CSR:wingsp(GSP_WRITE,COMANDO,5,fd)
+      		CALL CSR:wingsp(GSP_READ,RESPUESTA,50,eodbytes,fd)
+      		DPRINT " Devolvio el control despues del READ \n"
+      		lib:err_retval = RETVAL
+      		INIT 33,0
+     		IF (lib:err_retval == GSPERR_RESET ||  \
+          			lib:err_retval == GSPERR_KEY_OUT) THEN
+			FYIMSG common:fyimsg_list, \
+			    "Cancelando... un momento por favor"
+			CALL gali:MISCopcion_cajero
+			IF (lastkey == RT_ESC) THEN
+				LET COMANDO = SALIR_POR_PEDIDO // Quiere salir de la lectura
+			END IF
+     		ELSEIF (lib:err_retval == GSPERR_TIMEOUT || RESPUESTA == "[0|]") THEN
+			FYIMSG common:fyimsg_list, \
+			    "Cancelando por tiempo vencido, un momento por favor"
+			CALL gali:MISCopcion_cajero
+			IF (lastkey == RT_ESC) THEN
+				LET COMANDO = SALIR_POR_PEDIDO // Quiere salir de la lectura
+			END IF
+     		ELSEIF (RESPUESTA == "[2|]") THEN
+			FYIMSG common:fyimsg_list, \
+			    "Error en la lectura, un momento por favor"
+			CALL gali:MISCopcion_cajero
+			IF (lastkey == RT_ESC) THEN
+				LET COMANDO = SALIR_POR_PEDIDO // Quiere salir de la lectura
+			END IF
+     		ELSE
+			DPRINT "Track de la tarjeta: %s\n",RESPUESTA
+			//`CALL gali:PINPADok_prompt_i
+
+			/* De acuerdo al encabezado del numero de tarjeta verifico si la
+			     misma es de las predeterminadas para esta operacion */
+			IF (substr(RESPUESTA,3,4) == "4517") THEN
+				LET gali:numero_tarjeta = substr(RESPUESTA,3,16) // BANELCO Electron
+			ELSE
+				IF (substr(RESPUESTA,3,10) == "5892440067") THEN
+					gali:numero_tarjeta = SUBSTR(RESPUESTA,3,18) // BANELCO comun
+				ELSE
+					/***************************************************/
+					gali:numero_tarjeta = SUBSTR(RESPUESTA,3,18) // para probar
+	;				MSGBOX "TARJETA INVALIDA para esta operacion",OFB_OK,"Atencion"
+				END IF
+			END IF
+
+			/* Valido lo ingresado como el numero de la tarjeta */
+			CALL gali:FVALcampo_requerido
+			IF  (RETVAL < 0) then
+				CLEARFIELD gali:numero_tarjeta
+			END IF
+			REFRESH gali:numero_tarjeta
+			NAP 900
+			LET COMANDO = SALIR_POR_OK // La tarjeta ha sido ingresada
+		END IF
+      	//CALL gali:PINPADclear_prompt_i
+	LOOP
+END SUB
+
+/*******/

@@ -1,0 +1,358 @@
+/****o* Reportes/OFB:siaf:MISClst_constotct_st
+* NOMBRE
+*   OFB:siaf:MISClst_constotct_st
+* DESCRIPCION
+*   Reporte Consulta de Totales Consolidado de Caja.
+*   Imprime Seccion Detalle de Servicios-Transferencias-Impuestos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALrtot_fecha_ct
+*   siaf:SVALconsoltots_ct
+*   siaf:TRANteller_tots
+*   siaf:TRANteller_tots_aux
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISClst_constotct_st
+	LOCAL ciclo      LIKE i    
+	LOCAL mone       LIKE i
+	LOCAL medpag     LIKE i
+	LOCAL Tmonto     LIKE siaf:aux_suma_monto
+	LOCAL Tcant      LIKE siaf:aux2
+	LOCAL Tpiezas    LIKE siaf:aux2
+	LOCAL Tsinimp    LIKE siaf:aux_suma_monto
+	LOCAL Tpminor    LIKE siaf:aux2
+	LOCAL Tot_monto  LIKE siaf:aux_suma_monto
+	LOCAL Tot_sinimp LIKE siaf:aux_suma_monto
+	LOCAL loc_aux    LIKE siaf:aux_suma_monto
+	LOCAL total      LIKE tefectivo_pes
+	LOCAL Tcm_ctdo   LIKE siaf:aux2  /*cliente medio contado*/
+	LOCAL Tcm_cd     LIKE siaf:aux2  /*cliente medio cobro diferido*/
+	LOCAL Tcm_fd     LIKE siaf:aux2  /*cliente medio facturacion diferida*/
+  /*Para los resultados finales*/    
+  LOCAL Lefec      LIKE tefectivo_pes
+
+  lineas_cl    = 0
+  indica_calcu = 0
+
+  //cgw: SC50276 - Genera picklist para entradas y para salidas del consolidado de caja.
+  CALL CSR:f_sanewpl("serv_trf_ent",PIC:serv_trf_ent)
+  CALL CSR:f_sanewpl("serv_trf_sal",PIC:serv_trf_sal)
+
+  CALL MISCconstotct_encab
+
+  FPRINT common:csr_string,"SERVICIOS-TRANSFERENCIAS-IMPUESTOS"
+  CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+  common:csr_string = " "
+  CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+
+  loc_aux = 0 
+  ciclo   = 1
+  DO
+		IF (ciclo > 2) THEN
+		  BREAK
+		END IF
+	
+		IF ((62 - lineas_cl) < 4) THEN
+			lineas_cl = 92
+			common:csr_string = "   "
+			CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+		END IF
+	
+		CALL MISCsubenc_consolct(ciclo, 0)
+	
+		Tot_monto  = 0
+		Tot_sinimp = 0
+		cant       = 0
+	
+		/* Luego proceso la parte de totales internos */
+		WHILE (cant < IDX_USOINT)
+			IF (pantalla_impreso == "P") THEN
+				lineas_cl = 0
+			END IF
+		
+			;if (cant != 10 && cant != 11)
+			Tmonto   = 0
+			Tcant    = 0
+			Tpiezas  = 0
+			Tsinimp  = 0
+			Tpminor  = 0                   
+			Tcm_ctdo = 0
+			Tcm_cd   = 0
+			Tcm_fd   = 0
+	
+			;IF (cant != 0 && cant != 9)
+			IF ((((ciclo == 1) && (opera_vect2[cant] == "+" || opera_vect2[cant] == SAL_INVERSA))  || \
+			((ciclo == 2) && (opera_vect2[cant] == "-" || opera_vect2[cant] == ENT_INVERSA)))) THEN                    
+				IF (suma_cant2_vec[cant] != 0) THEN                            
+					Tmonto   = Tmonto   + suma_monto2_vec[cant]
+					Tcant    = Tcant    + suma_cant2_vec[cant]
+					Tpiezas  = Tpiezas  + suma_piezas2_vec[cant]
+					Tsinimp  = Tsinimp  + suma_sinimp2_vec[cant]			        
+					Tpminor  = Tpminor  + suma_pminor2_vec[cant]
+					Tcm_ctdo = Tcm_ctdo + suma_pcm2_vec[cant]
+					Tcm_fd   = Tcm_fd   + suma_pcmCC2_vec[cant]
+					Tcm_cd   = Tcm_cd   + suma_pcmDf2_vec[cant]
+				END IF
+			END IF
+			
+			IF (Tcant != 0) THEN
+				aux2 = Tpiezas - (Tpminor + Tcm_ctdo + Tcm_cd + Tcm_fd)
+			#ifdef SUCU_VIRTUAL               
+				/* Carta Electronica */         
+				IF (cant == 86) && (post:sucu_virtual == "S") THEN
+					CALL tes:CDSFproceso_load(post:fecha_virtual)
+					FPRINT common:csr_string, "%e-%-4.4s %10e %4.4e %6.6e %6.6e %6.6e %6.6e %6.6e", \
+					cod_tran_vec2[cant],desc_vec2[cant],post:adt_fecfact_web,Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd			    
+					FPRINT common:csr_string, "%61.61s %6.6e %17.17e %17.17e", \
+					common:csr_string,Tpiezas,Tsinimp,Tmonto
+				ELSE
+					FPRINT common:csr_string, "%e-%-15.15s %4.4e %6.6e %6.6e %6.6e %6.6e %6.6e", \
+					cod_tran_vec2[cant],desc_vec2[cant],Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd
+					FPRINT common:csr_string, "%61.61s %6.6e %17.17e %17.17e", \
+					common:csr_string,Tpiezas,Tsinimp,Tmonto
+				END IF                                
+			#else
+				;FPRINT common:csr_string, "%e-%-15.15s     %4.4e     %6.6e    %6.6e   %6.6e    %17.17e    %17.17e", \
+				;cod_tran_vec[cant],desc_vec[cant],Tcant,Tpminor,aux2,Tpiezas,Tsinimp,Tmonto
+				IF (opera_vect2[cant] == ENT_INVERSA || opera_vect2[cant] == SAL_INVERSA)
+					//Para poner parentesis son el largo justo del campo
+					FPRINT imp_neg1,"%e",Tsinimp
+					CALL csr:trimfield(imp_neg1)
+					FPRINT imp_neg1,"(%e)",imp_neg1
+					FPRINT imp_neg2,"%e",Tmonto
+					CALL csr:trimfield(imp_neg2)
+					FPRINT imp_neg2,"(%e)",imp_neg2                      
+					;FPRINT common:csr_string, "%e-%-15.15s     %4.4e                                   %17.17e    %17.17e", \
+					;cod_tran_vec[cant],desc_vec[cant],Tcant,imp_neg1,imp_neg2                                
+					FPRINT common:csr_string, "%e-%-15.15s %4.4e %6.6e %6.6e %6.6e  %6.6e %6.6e %6.6e %17.17e %17.17e", \
+					cod_tran_vec2[cant],desc_vec2[cant],Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd,Tpiezas,imp_neg1,imp_neg2
+				ELSE
+					;FPRINT common:csr_string, "%e-%-15.15s     %4.4e                                  %17.17e    %17.17e", \
+					;cod_tran_vec[cant],desc_vec[cant],Tcant,Tsinimp,Tmonto
+					FPRINT common:csr_string, "%e-%-15.15s %4.4e %6.6e %6.6e %6.6e %6.6e %6.6e %6.6e %17.17e %17.17e", \
+					cod_tran_vec2[cant],desc_vec2[cant],Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd,Tpiezas,Tsinimp,Tmonto
+				END IF                                    
+			#endif		                        
+				//cgw: SC50276 - Segun ciclo, cargo detalle en el picklist de entrada o salida correspondiente,
+				//     a fin de poder posteriormente imprimirse desde estos ordenado por codigo de trx.
+				//call tes:MISCwrite_file1(1,fld:common:csr_string)
+				IF (ciclo == 1) THEN
+					CALL csr:f_saaddpl "serv_trf_ent" common:csr_string
+				ELSE
+					CALL csr:f_saaddpl "serv_trf_sal" common:csr_string
+				END IF
+			END IF
+	
+			IF (opera_vect2[cant] == SAL_INVERSA || opera_vect2[cant] == ENT_INVERSA) THEN
+				Tot_monto  = Tot_monto  - Tmonto
+				Tot_sinimp = Tot_sinimp - Tsinimp                   
+			ELSE
+				Tot_monto  = Tot_monto  + Tmonto
+				Tot_sinimp = Tot_sinimp + Tsinimp                
+			END IF
+		
+			;END IF     
+			;end if   
+			cant = cant + 1
+		END WHILE
+	
+		cant = 0
+		/* Luego proceso la parte de totales Genéricos */
+		WHILE (cant < IDX_USOINT)
+			IF (pantalla_impreso == "P") THEN
+				i = 0
+			END IF
+	
+			Tmonto   = 0
+			Tcant    = 0
+			Tpiezas  = 0
+			Tsinimp  = 0
+			Tpminor  = 0
+			Tcm_ctdo = 0
+			Tcm_cd   = 0
+			Tcm_fd   = 0
+	
+			IF ((((ciclo == 1) && (opera_vect[cant] == "+" || opera_vect[cant] == SAL_INVERSA))  || \
+				((ciclo == 2) && (opera_vect[cant] == "-" || opera_vect[cant] == ENT_INVERSA)))) THEN                    
+				IF (suma_cant_vec[cant] != 0) THEN                            
+					Tmonto   = Tmonto   + suma_monto_vec[cant]
+					Tcant    = Tcant    + suma_cant_vec[cant]
+					Tpiezas  = Tpiezas  + suma_piezas_vec[cant]
+					Tsinimp  = Tsinimp  + suma_sinimp_vec[cant]					
+					Tpminor  = Tpminor  + suma_pminor_vec[cant]
+					Tcm_ctdo = Tcm_ctdo + suma_pcm_vec[cant]
+					Tcm_fd   = Tcm_fd   + suma_pcmCC_vec[cant]
+					Tcm_cd   = Tcm_cd   + suma_pcmDf_vec[cant]					
+				END IF
+			END IF
+	
+			IF (Tcant != 0) THEN
+				aux2 = Tpiezas - (Tpminor + Tcm_ctdo + Tcm_cd + Tcm_fd)
+				IF (opera_vect[cant] == ENT_INVERSA || opera_vect[cant] == SAL_INVERSA) THEN
+					//Para poner parentesis son el largo justo del campo
+					FPRINT imp_neg1,"%e",Tsinimp
+					CALL csr:trimfield(imp_neg1)
+					FPRINT imp_neg1,"(%e)",imp_neg1
+					FPRINT imp_neg2,"%e",Tmonto
+					CALL csr:trimfield(imp_neg2)
+					FPRINT imp_neg2,"(%e)",imp_neg2
+					;FPRINT common:csr_string, "%e-%-15.15s     %4.4e                                   %17.17e    %17.17e", \
+					;cod_tran_vec[cant],desc_vec[cant],Tcant,imp_neg1,imp_neg2                                
+					FPRINT common:csr_string, "%e-%-15.15s %4.4e %6.6e %6.6e %6.6e %6.6e %6.6e", \
+						cod_tran_vec[cant],desc_vec[cant],Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd
+					FPRINT common:csr_string, "%61.61s %6.6e %17.17e %17.17e", \
+						common:csr_string,Tpiezas,imp_neg1,imp_neg2
+				ELSE
+					;FPRINT common:csr_string, "%e-%-15.15s     %4.4e                                  %17.17e    %17.17e", \
+					;cod_tran_vec[cant],desc_vec[cant],Tcant,Tsinimp,Tmonto
+					FPRINT common:csr_string, "%e-%-15.15s %4.4e %6.6e %6.6e %6.6e %6.6e %6.6e", \
+						cod_tran_vec[cant],desc_vec[cant],Tcant,Tpminor,aux2,Tcm_ctdo,Tcm_cd,Tcm_fd
+					FPRINT common:csr_string, "%61.61s %6.6e %17.17e %17.17e", \
+						common:csr_string,Tpiezas,Tsinimp,Tmonto
+				END IF
+				//cgw: SC50276 - Segun ciclo, cargo detalle en el picklist de entrada o salida correspondiente,
+				//     a fin de poder posteriormente imprimirse desde estos ordenado por codigo de trx.
+				//call tes:MISCwrite_file1(1,fld:common:csr_string)
+				IF (ciclo == 1) THEN
+					CALL csr:f_saaddpl "serv_trf_ent" common:csr_string
+				ELSE
+					CALL csr:f_saaddpl "serv_trf_sal" common:csr_string
+				END IF
+			END IF
+	            
+			IF (opera_vect[cant] == SAL_INVERSA || opera_vect[cant] == ENT_INVERSA) THEN
+				Tot_monto  = Tot_monto  - Tmonto
+				Tot_sinimp = Tot_sinimp - Tsinimp                   
+			ELSE
+				Tot_monto  = Tot_monto  + Tmonto
+				Tot_sinimp = Tot_sinimp + Tsinimp                
+			END IF
+			cant = cant + 1
+		END WHILE              
+	
+		//cgw: SC50276 - Ordena picklist del detalle segun ciclo (entrada o salida), ordenado por codigo de trx.
+		IF (ciclo == 1) THEN
+			CALL csr:PickOp 4 "serv_trf_ent" "0,5"
+		ELSE
+			CALL csr:PickOp 4 "serv_trf_sal" "0,5"
+		END IF
+		//cgw: SC50276 - Imprime detalle de trx's de entrada o salida segun ciclo,
+		//        contenida en los picklist y ordenado por codigo de trx.
+		CALL siaf:MISCimpri_serv_trf(ciclo)
+	
+		common:csr_string = "         "
+		CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+		;FPRINT common:csr_string,"TOTAL                                                           %17.17e    %17.17e",Tot_sinimp,Tot_monto
+			
+		IF (Tot_sinimp < 0 && Tot_monto < 0) THEN
+			FPRINT imp_neg1,"%e",Tot_sinimp
+			imp_neg1 = SUBSTR(imp_neg1,1,18)    /*Para sacarle el signo "-" */
+			CALL csr:trimfield(imp_neg1)
+			FPRINT imp_neg1,"(%e)",imp_neg1
+			FPRINT imp_neg2,"%e",Tot_monto
+			imp_neg2 = SUBSTR(imp_neg2,1,18)    /*Para sacarle el signo "-" */
+			CALL csr:trimfield(imp_neg2)
+			FPRINT imp_neg2,"(%e)",imp_neg2
+			
+			//SC50276: Totales en Negrita (solo por impresion).
+			IF (pantalla_impreso == "P") THEN
+				FPRINT common:csr_string,"TOTAL                                                                %17.17e %17.17e",imp_neg1,imp_neg2
+			ELSE			        
+				//Inicio gpb:ART-706
+				/*
+				FPRINT common:csr_string,"<st>1</st>TOTAL                                                         %17.17e%17.17e",imp_neg1,imp_neg2
+				*/
+;				FPRINT common:csr_string,"<txS>105</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",imp_neg1,imp_neg2
+				FPRINT common:csr_string,"<txS>85</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",imp_neg1,imp_neg2
+				//Fin gpb:ART-706
+			END IF
+		ELSE
+			IF (Tot_sinimp < 0 && Tot_monto > 0) THEN
+				FPRINT imp_neg1,"%e",Tot_sinimp
+				CALL csr:trimfield(imp_neg1)
+				FPRINT imp_neg1,"(%e)",imp_neg1
+				
+				//cgw: SC50276 - Totales en Negrita (solo por impresion).
+				IF (pantalla_impreso == "P") THEN
+					FPRINT common:csr_string,"TOTAL                                                                %17.17e %17.17e",imp_neg1,Tot_monto
+				ELSE
+					//Inicio gpb:ART-706
+					/*
+					FPRINT common:csr_string,"<st>1</st>TOTAL                                                         %17.17e%17.17e",imp_neg1,Tot_monto
+					*/
+;					FPRINT common:csr_string,"<txS>105</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",imp_neg1,Tot_monto
+					FPRINT common:csr_string,"<txS>85</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",imp_neg1,Tot_monto
+					//Fin gpb:ART-706
+				END IF
+			ELSE
+				IF (Tot_sinimp > 0 && Tot_monto < 0) THEN
+					FPRINT imp_neg2,"%e",Tot_monto
+					CALL csr:trimfield(imp_neg2)
+					FPRINT imp_neg2,"(%e)",imp_neg2
+					
+					//cgw: SC50276 - Totales en Negrita (solo por impresion).
+					IF (pantalla_impreso == "P") THEN
+						FPRINT common:csr_string,"TOTAL                                                                %17.17e %17.17e",Tot_sinimp,imp_neg2
+					ELSE
+						//Inicio gpb:ART-706
+						/*
+						FPRINT common:csr_string,"<st>1</st>TOTAL                                                         %17.17e%17.17e",Tot_sinimp,imp_neg2
+						*/
+;						FPRINT common:csr_string,"<txS>105</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",Tot_sinimp,imp_neg2
+						FPRINT common:csr_string,"<txS>85</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",Tot_sinimp,imp_neg2
+						//Fin gpb:ART-706
+					END IF
+				ELSE
+					//cgw: SC50276 - Totales en Negrita (solo por impresion).
+					IF (pantalla_impreso == "P") THEN
+						FPRINT common:csr_string,"TOTAL                                                                %17.17e %17.17e",Tot_sinimp,Tot_monto
+					ELSE
+						//Inicio gpb:ART-706
+						/*
+						FPRINT common:csr_string,"<st>1</st>TOTAL                                                         %17.17e%17.17e",Tot_sinimp,Tot_monto
+						*/
+;						FPRINT common:csr_string,"<txS>105</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",Tot_sinimp,Tot_monto
+						FPRINT common:csr_string,"<txS>85</txS><st>1</st>TOTAL                                                                %17.17e %17.17e",Tot_sinimp,Tot_monto
+					//Fin gpb:ART-706
+					END IF
+				END IF
+			END IF
+		END IF
+			
+		CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+		CLEARFIELD Tot_monto
+		CLEARFIELD Tot_sinimp
+		common:csr_string = "         "
+		CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+	
+		ciclo = ciclo + 1
+	LOOP
+	
+	IF (siaf:pantalla_impreso !=  "P") THEN
+		WHILE (siaf:lineas_cl < 61) 
+			LET common:csr_string = "    "
+			CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+		END WHILE 
+	ELSE             
+		common:csr_string = "         "
+		CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+		common:csr_string = "         "
+		CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+	END IF
+	
+	//cgw: SC50276 - elimina picklist para entradas y para salidas del consolidado de caja.
+	CALL csr:f_sadroppl "serv_trf_ent"
+	CALL csr:f_sadroppl "serv_trf_sal"
+
+END SUB             
+
+/*******/

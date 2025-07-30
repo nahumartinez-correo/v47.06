@@ -1,0 +1,283 @@
+/****o* Facturación/OFB:post:MISCgen_dif_dir_par
+* NOMBRE
+*   OFB:post:MISCgen_dif_dir_par
+* DESCRIPCION
+*   Esta rutina calcula si existe diferencia en la directa de una anulación parcial,
+*   entre los imp de iva  de 2 y 11 decimales de opcionales, bloques adicionales y servicio telegrafico.
+*   Si existe diferencia se aplica solo al primer item.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCmanejoImpre
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+SUB post:MISCgen_dif_dir_par
+LOCAL anterior like post:adt_PreDNroTrn
+LOCAL flia_anterior like post:jnl_flia_tran
+LOCAL l_cant_opc like cant_opc
+LOCAL cont like siaf:i
+LOCAL x like siaf:i
+LOCAL l_sin_iva like post:ImporteSinIva
+LOCAL l_sin_iva4 like post:ImporteSinIva_bis
+LOCAL l_dif_opc LIKE post:ImporteSinIva
+LOCAL l_dif_blq LIKE post:imp_bloques_siva
+LOCAL l_dif_serv LIKE tele:imp_siniva_serv
+
+    CDS SELECT FROM DSC:NC_TAB BECOMES "NC_SECUENCIAL" \
+    where post:jnl_sequence_dire == "D" && \
+          (post:jnl_flia_tran == "CST" || \
+          post:jnl_flia_tran == "CSP" || \
+          post:jnl_flia_tran == "CSE" )
+    
+    anterior = 0
+    cont = 0
+    CDS BEGINWORK
+    DO
+        cds findnext "NC_SECUENCIAL" nolock
+        if (cdsretval != 0) then
+            break
+        end if
+        
+        cds extract "NC_SECUENCIAL" post:adt_PreDNroTrn post:jnl_flia_tran
+        if (anterior != post:adt_PreDNroTrn) then
+            
+            ;Multiplico los importes por la cantidad y calculo diferencia.
+            if (cont > 0) then
+                SELECT (flia_anterior)
+                    CASE "CST"
+                        CALL MISCdesglosaIva(tele:imp_serv_tele,post:adt_serv_aliciva,1,0)
+                        init 22,1
+                        l_sin_iva = post:ImporteSinIva * cont
+	                l_sin_iva4 = post:ImporteSinIva_bis * cont
+	                l_dif_serv = l_sin_iva - l_sin_iva4
+	                init 22,0
+	                post:jnl_dif_serv = l_dif_serv
+	                tele:imp_siniva_serv = tele:imp_siniva_serv - l_dif_serv
+                        adt_dump_siniva = adt_dump_siniva - l_dif_serv
+                        //bloques adicionales
+                        CALL MISCdesglosaIva(post:imp_bloques,post:adt_serv_aliciva,1,0)
+                	init 22,1
+                	l_sin_iva = post:ImporteSinIva * cont
+	            	l_sin_iva4 = post:ImporteSinIva_bis * cont 
+	            	l_dif_blq = l_sin_iva - l_sin_iva4
+	            	init 22,0   
+	            	post:jnl_dif_blq = l_dif_blq
+               		post:imp_bloques_siva = post:imp_bloques_siva - l_dif_blq
+                   	BREAK
+                    /*CASE "CSP"
+                    CASE "CSE"
+                        CALL MISCdesglosaIva(tarifa,post:adt_serv_aliciva,1,0)
+                        init 22,1
+                        l_sin_iva = post:ImporteSinIva * cont
+	                    l_sin_iva4 = post:ImporteSinIva_bis * cont
+	                    l_dif_serv = l_sin_iva - l_sin_iva4
+	                    init 22,0
+	                    post:jnl_dif_serv = l_dif_serv
+                        post:ImpSinIva_serv =  post:ImpSinIva_serv - l_dif_serv
+                        adt_dump_siniva = adt_dump_siniva - l_dif_serv
+                        
+                        CALL MISCdesglosaIva(post:imp_bloques,post:adt_serv_aliciva,1,0)
+                        init 22,1
+                        l_sin_iva = post:ImporteSinIva * cont
+	                    l_sin_iva4 = post:ImporteSinIva_bis * cont 
+	                    l_dif_blq = l_sin_iva - l_sin_iva4
+	                    init 22,0   
+	                    post:jnl_dif_blq = l_dif_blq
+                        post:BloqueSinIva_serv = post:BloqueSinIva_serv - l_dif_blq
+                    BREAK*/
+                END SELECT                    
+                
+                x = 0
+                WHILE (x < cant_opc)
+                    CALL MISCdesglosaIva(cos_opc[x],ali_opc[x],1,0)
+                    init 22,1
+                    l_sin_iva = siniva_opc[x] * cont
+                    ;l_sin_iva = post:ImporteSinIva * cont
+	                l_sin_iva4 = post:ImporteSinIva_bis * cont
+	                l_dif_opc = l_sin_iva - l_sin_iva4 
+	                init 22,0
+	                post:jnl_dif_opc[x] = l_dif_opc
+                    siniva_opc[x] = siniva_opc[x] - l_dif_opc
+                    x = x + 1
+                END WHILE
+                
+                ;Actualizo NcTable por codigo de agrupación y según flia.
+                CDS SELECT FROM DSC:NC_TAB BECOMES "NC_ACTUALIZAR" \
+                where cod_agrupacion == cod_agrupacion && \
+                post:jnl_flia_tran == flia_anterior
+                                
+                CDS FINDFIRST "NC_ACTUALIZAR" LOCK
+                IF (CDSRETVAL == 0) THEN
+                    CDS CLEARBUFFER "NC_ACTUALIZAR"
+                    SELECT (flia_anterior)
+                        case "CST"
+                            CDS APPEND "NC_ACTUALIZAR" tele:imp_siniva_serv post:jnl_dif_serv \
+                            adt_dump_siniva post:imp_bloques_siva post:jnl_dif_blq
+                            BREAK
+                        /*case "CSP"
+                        case "CSE"
+                            CDS APPEND "NC_ACTUALIZAR" post:ImpSinIva_serv post:jnl_dif_serv \
+                            post:BloqueSinIva_serv post:jnl_dif_blq adt_dump_siniva
+                            BREAK*/
+                    END SELECT
+                    x = 0
+                    WHILE (x < l_cant_opc)
+	                    CDS APPEND "NC_ACTUALIZAR" siniva_opc[x] post:jnl_dif_opc[x]
+                        x = x + 1
+                    END WHILE
+                    CDS FINDAGAIN "NC_ACTUALIZAR" LOCK
+                    CDS UPDATE "NC_ACTUALIZAR" LOCK
+                END IF
+                CDS ENDSELECT "NC_ACTUALIZAR"
+                cont = 0
+            end if
+            
+            ;Leo nuevo registro
+            if (cont == 0) then
+                cds findagain "NC_SECUENCIAL" nolock
+                cds extract "NC_SECUENCIAL" cod_agrupacion
+                select (post:jnl_flia_tran)
+                    case "CST"
+                        clearfield tele:imp_serv_tele
+                        clearfield tele:imp_siniva_serv
+                        clearfield post:adt_serv_aliciva
+                        clearfield post:imp_bloques
+                        clearfield post:imp_bloques_siva
+                        clearfield post:cant_opc
+                        cds extract "NC_SECUENCIAL" \
+                        tele:imp_serv_tele tele:imp_siniva_serv post:adt_serv_aliciva \
+                        post:imp_bloques post:imp_bloques_siva cant_opc \
+                        adt_dump_siniva
+                        break
+                    case "CSP"
+                    case "CSE"
+                    /*    clearfield post:tarifa
+                        clearfield post:ImpSinIva_serv
+                        clearfield post:adt_serv_aliciva
+                        clearfield post:imp_bloques
+                        clearfield post:BloqueSinIva_serv*/
+                        clearfield post:cant_opc
+                        cds extract "NC_SECUENCIAL" post:cant_opc /*\
+                        tele:imp_serv_tele post:tarifa post:adt_serv_aliciva \
+                        post:imp_bloques post:BloqueSinIva_serv  \
+                        adt_dump_siniva*/
+                        break
+                end select           
+                x = 0
+                WHILE (x < cant_opc)
+                    clearfield cos_opc[x]
+                    clearfield siniva_opc[x]
+                    clearfield ali_opc[x]
+                    cds extract "NC_SECUENCIAL" \
+                    cos_opc[x] siniva_opc[x] ali_opc[x]
+                    x = x + 1
+                END WHILE
+                l_cant_opc = cant_opc
+                anterior = post:adt_PreDNroTrn
+                flia_anterior = post:jnl_flia_tran
+            end if
+        end if
+        cont = cont + 1
+    loop
+    
+    ;Multiplico los importes por la cantidad y calculo diferencia.
+    if (cont > 0) then
+        SELECT (flia_anterior)
+            CASE "CST"
+                CALL MISCdesglosaIva(tele:imp_serv_tele,post:adt_serv_aliciva,1,0)
+                init 22,1
+                l_sin_iva = post:ImporteSinIva * cont
+	            l_sin_iva4 = post:ImporteSinIva_bis * cont
+	            l_dif_serv = l_sin_iva - l_sin_iva4
+	            init 22,0
+	            post:jnl_dif_serv = l_dif_serv
+                tele:imp_siniva_serv = tele:imp_siniva_serv - l_dif_serv
+                adt_dump_siniva = adt_dump_siniva - l_dif_serv
+                
+                CALL MISCdesglosaIva(post:imp_bloques,post:adt_serv_aliciva,1,0)
+        	init 22,1
+        	l_sin_iva = post:ImporteSinIva * cont
+	    	l_sin_iva4 = post:ImporteSinIva_bis * cont 
+	    	l_dif_blq = l_sin_iva - l_sin_iva4
+	    	init 22,0   
+	    	post:jnl_dif_blq = l_dif_blq
+        	post:imp_bloques_siva = post:imp_bloques_siva - l_dif_blq
+           	BREAK
+           /* CASE "CSP"
+            CASE "CSE"
+                CALL MISCdesglosaIva(tarifa,post:adt_serv_aliciva,1,0)
+                init 22,1
+                l_sin_iva = post:ImporteSinIva * cont
+	            l_sin_iva4 = post:ImporteSinIva_bis * cont
+	            l_dif_serv = l_sin_iva - l_sin_iva4
+	            init 22,0
+	            post:jnl_dif_serv = l_dif_serv
+                post:ImpSinIva_serv =  post:ImpSinIva_serv - l_dif_serv
+                adt_dump_siniva = adt_dump_siniva - l_dif_serv
+                
+                CALL MISCdesglosaIva(post:imp_bloques,post:adt_serv_aliciva,1,0)
+                init 22,1
+                l_sin_iva = post:ImporteSinIva * cont
+	            l_sin_iva4 = post:ImporteSinIva_bis * cont 
+	            l_dif_blq = l_sin_iva - l_sin_iva4
+	            init 22,0   
+	            post:jnl_dif_blq = l_dif_blq
+                post:BloqueSinIva_serv = post:BloqueSinIva_serv - l_dif_blq
+            BREAK*/
+        END SELECT                    
+        
+        x = 0
+        WHILE (x < cant_opc)
+            CALL MISCdesglosaIva(cos_opc[x],ali_opc[x],1,0)
+            init 22,1
+            l_sin_iva = siniva_opc[x] * cont
+            ;l_sin_iva = post:ImporteSinIva * cont
+	        l_sin_iva4 = post:ImporteSinIva_bis * cont
+	        l_dif_opc = l_sin_iva - l_sin_iva4 
+	        init 22,0
+	        post:jnl_dif_opc[x] = l_dif_opc
+            siniva_opc[x] = siniva_opc[x] - l_dif_opc
+            x = x + 1
+        END WHILE
+        
+        ;Actualizo NcTable por codigo de agrupación y según flia.
+        CDS SELECT FROM DSC:NC_TAB BECOMES "NC_ACTUALIZAR" \
+        where cod_agrupacion == cod_agrupacion  && \
+        post:jnl_flia_tran == flia_anterior
+         
+        CDS FINDFIRST "NC_ACTUALIZAR" LOCK
+        IF (CDSRETVAL == 0) THEN
+            CDS CLEARBUFFER "NC_ACTUALIZAR"
+            SELECT (flia_anterior)
+                case "CST"
+                    CDS APPEND "NC_ACTUALIZAR" tele:imp_siniva_serv post:jnl_dif_serv \
+                    adt_dump_siniva post:imp_bloques_siva post:jnl_dif_blq
+                    BREAK
+              /*case "CSP"
+                case "CSE"
+                    CDS APPEND "NC_ACTUALIZAR" post:ImpSinIva_serv post:jnl_dif_serv \
+                    post:BloqueSinIva_serv post:jnl_dif_blq adt_dump_siniva
+                    BREAK*/
+            END SELECT
+            
+            x = 0
+            WHILE (x < l_cant_opc)
+	            CDS APPEND "NC_ACTUALIZAR" siniva_opc[x] post:jnl_dif_opc[x]
+                x = x + 1
+            END WHILE
+            CDS FINDAGAIN "NC_ACTUALIZAR" LOCK
+            CDS UPDATE "NC_ACTUALIZAR" LOCK
+        END IF
+        CDS ENDSELECT "NC_ACTUALIZAR"
+        cont = 0
+    end if
+    
+    CDS ENDSELECT "NC_SECUENCIAL"
+    CDS COMMITWORK
+END SUB        

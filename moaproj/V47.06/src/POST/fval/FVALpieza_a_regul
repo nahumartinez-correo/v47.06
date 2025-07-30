@@ -1,0 +1,82 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpieza_a_regul
+* NOMBRE
+*   OFB:post:FVALpieza_a_regul
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpieza_a_regul
+	LOCAL modifica LIKE siaf:i
+	
+	sel_Pieza:    
+	;leo ReguPza_tmp
+	CALL CDSReguPza_tmp_lee
+	IF (RETVAL == 0) THEN
+		CALL drv:MISCdis_enablePB_ABM(0,1,1)
+		IF (estado_presu == 2) THEN
+			modifica = 1
+		END IF
+  	ELSE
+		/*En esta rutina chequeo que campos deben estar protegidos y cuales no*/
+		CALL CSR:trimfield(pieza_ped)
+		IF (pieza_ped.NUMCHARS == 0)
+			IF (TESTFLAG(admin:mode_flags,grb) || TESTFLAG(admin:mode_flags,act)) then
+				MSGBOX "CAMPO REQUERIDO.",0x00,"Error"
+				CALL post:PBnuevaPza_a_regul //PBNuevaEntrePieza
+				CALL admin:ABMresetflag
+				RETURN (-2)
+			END IF
+			RETURN (0)
+		END IF
+    	
+		CALL CSR:proc_list(F_CLEAR,LST:post:LISTregulPza_PED)
+		CALL CSR:proc_list(F_REFRESH,LST:post:LISTregulPza_PED)
+    	
+		CALL CDSselNCpedOr_fact	//CDSentrPieza_sel
+		IF (retval == -801) THEN
+			//si no la encuentra y es de 11 digitos le agrego "AR" y vuelvo a hacer el select
+			IF (pieza_ped.numchars == 11) THEN
+				CDS ENDSELECT DSC:post:NCpedEnOrigen_ctx
+				//Controlo la cantidad de dígitos, si es de 11 le agrego "AR"
+				CALL MISCcant_digitos_tt(pieza_ped,"11")
+				GOTO sel_Pieza:
+			END IF	
+			CDS ENDSELECT DSC:post:NCpedEnOrigen_ctx
+			CLEARFIELD pieza_ped
+			REFRESH pieza_ped
+			MSGBOX "LA PIEZA INGRESADA NO ESTA EN CONDICIONES DE SER REGULARIZADA.",0x00,"Error"
+			CALL admin:ABMresetflag
+			RETURN (-2)    	
+		END IF
+    	
+  		CDS FINDAGAIN DSC:post:NCpedEnOrigen_ctx NOLOCK
+  		CDS EXTRACT DSC:post:NCpedEnOrigen_ctx ALL
+   	
+    	CALL drv:MISCdis_enablePB_ABM(1,0,0)
+	END IF	
+	
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle
+	CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle
+    
+	REFRESH post:ImporteFACTU
+	SETVALDONE pieza_ped
+	
+	IF (modifica) THEN
+		SETFLAG admin:mode_flags,todos
+		UNGETKEY RT_SEND
+	END IF
+END SUB
+
+/*******/

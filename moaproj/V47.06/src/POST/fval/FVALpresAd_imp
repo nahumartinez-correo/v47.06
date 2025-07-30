@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpresAd_imp
+* NOMBRE
+*   OFB:post:FVALpresAd_imp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpresAd_imp
+    LOCAL cod_servicio LIKE post:adt_serv_serv
+    LOCAL l_rango LIKE common:csr_string
+	
+	IF (TESTFLAG(admin:mode_flags,todos) || TESTFLAG(admin:mode_flags,grb) || TESTFLAG(admin:mode_flags,act) || post:estado_presu == 3) then
+		/* IF (PresAd_imp.NUMCHARS == 0)
+    	    MSGBOX "INGRESE EL IMPORTE DE PRESENTACION DE ADUANA",0x00,"Error"
+    	    RETURN (-2)
+    	END IF */
+    	SELECT (PresAd_prod)
+    	    CASE "PIEZA ENTRANTE"
+    	        cod_servicio = "18601"
+    	        post:aux_cod_serv = cod_servicio
+    	        Break
+    	    CASE ELSE
+    	        cod_servicio = "18602"
+    	        post:aux_cod_serv = cod_servicio
+    	        Break
+    	END SELECT
+    	call post:MISCventasRestGen("CSM", post:aux_cod_serv)
+		IF (RETVAL < 0) THEN
+			CLEARFIELD cod_servicio
+			CLEARFIELD post:aux_cod_serv
+			CLEARFIELD post:PresAd_prod
+			REFRESH post:PresAd_prod
+			NEXTFIELD post:PresAd_prod
+			RETURN (0)
+    	END IF
+    	/*IF (cli_tipo == 1)
+    	    RETURN (0)
+    	END IF*/
+    	adt_serv_umstd = "PES"
+    	CALL CDSbasico(cod_servicio,PresAd_imp,"PES","INTERNACIONAL")
+    	IF (RETVAL < 0)
+    	    call admin:ABMresetflag
+    	    RETURN (-2)
+    	END IF
+    	
+    	
+    	CALL post:MISCtarifa_canal
+    	IF (RETVAL < 0)
+    	    call admin:ABMresetflag
+    	    RETURN (-2)
+    	END IF
+    	
+    	
+    	IF (cli_tipo == 1 || \
+    	    post:enCombo == "S") THEN
+    	    //cgw:si es producto de un combo, no calcula importes.
+    	    RETURN (0)
+    	END IF
+    	
+    	imp_pad_aux = adt_tarif_precio
+    	tarif_desde_PAd = adt_tarif_desde
+    	tarif_hasta_PAd = adt_tarif_hasta
+    	tarif_modo_PAd = adt_tarif_modo
+    	uni_med_PAd = adt_tarif_um
+    	tarif_dest_PAd = adt_tarif_dest
+		CLEARFIELD promo_imp_srv
+		CALL post:MISCLimpioPromo("PresAdu")
+		costo_presAd = adt_tarif_precio - PresAd_imp
+		CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+		IF (aplica_bonif_serv ==	"S") THEN
+			FPRINT l_rango, "%12.12e",post:adt_tarif_desde
+			CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_SERVICIO, l_rango)
+		END IF
+		IF (RETVAL == 1) THEN
+			CDS ENDSELECT DSC:post:promoDetalleCli_ctx
+			CDS ENDSELECT DSC:post:promoCabeSucu_ctx
+			post:destino = "INTERNACIONAL"
+			IF (promoSrvTipoBon == TIPO_BONIF_PORCENTUAL || (promoSrvTipoBon == TIPO_BONIF_VALOR && \
+					 	costo_presAd >= promo_srv_bon)) THEN
+				adt_tarif_precio = adt_tarif_precio - PresAd_imp
+				CALL post:MISCcalcBonifGral(promoSrvTipoBon, TIPO_ENTREGA_DE_PZA)
+				adt_tarif_precio = adt_tarif_precio + PresAd_imp
+				if (promoSrvTipoBon == TIPO_BONIF_VALOR) then
+					CALL post:MISCdetalleBonifGral(adt_promo_desc,costo_presAd,"----",promo_imp_srv_ind,"PresAdu", "")
+				else
+					CALL post:MISCdetalleBonifGral(adt_promo_desc,costo_presAd,adt_promo_bon,promo_imp_srv_ind,"PresAdu", "")
+				end if
+				promo_desc_presAd = promo_desc
+				promo_imp_presAdu = promo_imp_srv_ind
+				promo_bon_presAdu = promo_bon
+				promo_cod_presAd = promo_cod
+				promo_inhibeUpPrAd = promo_inhibeUpServ
+				promoPrsAdTipoBon = promoSrvTipoBon
+			end if
+		ELSE
+			promo_imp_presAdu = 0
+		END IF
+		CALL post:MISCBonifEntrPieza
+    	/* Se agregan estos campos para que se journalice el hasta eq. para SAP y la
+    	Unidad de Medida Eq. para SAP en las Presentacion de Aduana -  ML 2/4/2000 */
+    	LET tarif_hasta_eq_PAd = adt_tarif_hasta_eq
+    	LET tarif_um_eq_PAd = adt_tarif_um_eq
+    	/*Fin ML*/
+    	
+    	CALL MISCformulaDeCalculo(PresAd_imp,adt_tarif_modo,tarif_aux,adt_tarif_fijo,imp_pad_aux,uni_med_PAd)
+    	formuCalc_PAd = formuCalc
+    	CALL post:MISCimp_entrPieza
+	END IF
+END SUB
+
+/*******/

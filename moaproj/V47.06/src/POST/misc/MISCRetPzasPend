@@ -1,0 +1,123 @@
+/****o* Expedición/OFB:post:MISCRetPzasPend
+* NOMBRE
+*   OFB:post:MISCRetPzasPend
+* DESCRIPCION
+*   Esta rutina verifica que el operador logueado no tenga piezas pendientes de recepción.
+* ENTRADAS
+*   p_tipo ,p_operator_id
+* SALIDAS
+*   Retval = 0 : no tiene piezas pendientes de recepcion
+*	Retval = -2: tiene piezas pendientes de recepcion
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  tes:MISClist_cieforsuc
+*  tes:MISCmarca_ciefor_caj
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRetPzasPend(p_tipo,p_operator_id)
+	LOCAL l_cuenta LIKE siaf:i
+	LOCAL l_tipo LIKE common:csr_string
+	LOCAL l_cdsretval LIKE lib:err_retval
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_operator_id LIKE op:op_operator_id
+	LOCAL l_jnl_branch_ori LIKE post:jnl_branch_ori       
+    LOCAL l_jnl_operator_ori LIKE post:jnl_operator_ori     
+    LOCAL l_jnl_date_ori LIKE post:jnl_date_ori         
+    LOCAL l_jnl_time_ori LIKE post:jnl_time_ori         
+    LOCAL l_jnl_bus_date_ori LIKE post:jnl_bus_date_ori    
+    LOCAL l_jnl_sequence_ori LIKE post:jnl_sequence_ori  
+
+	l_cuenta = 0
+	l_tipo = p_tipo
+	l_operator_id = p_operator_id
+
+    SELECT (l_tipo)
+    	CASE "O" //Origen
+			CDS SELECT FROM "TranPend" BECOMES "TranPend_Ret_ctx" \
+		    	WHERE op:op_operator_id == l_operator_id 
+    	BREAK
+    	
+    	CASE "D" //Destino
+    	    CDS SELECT FROM "TranPend" BECOMES "TranPend_Ret_ctx" \
+   				WHERE post:CodOperador == l_operator_id 
+    	BREAK
+    	
+    	CASE "A" //Ambos
+    	    CDS SELECT FROM "TranPend" BECOMES "TranPend_Ret_ctx" \
+	   			WHERE post:CodOperador == l_operator_id \
+   				|| op:op_operator_id == l_operator_id 
+    	BREAK
+    	
+    	CASE "T" //Total
+    	    CDS SELECT FROM "TranPend" BECOMES "TranPend_Ret_ctx" \
+				WHERE post:Sucursal_id == common:sucursal_activa \
+   				|| post:jnl_branch_ori == common:sucursal_activa 
+    	BREAK
+    END SELECT
+    
+	CDS FINDFIRST "TranPend_Ret_ctx" LOCK
+
+	LET l_cdsretval = CDSRETVAL
+	
+	IF (l_cdsretval == -801) THEN
+	    CDS ENDSELECT "TranPend_Ret_ctx"
+	    RETURN 0
+	END IF
+	
+	DO
+		IF (l_cdsretval != 0) THEN
+			BREAK
+		END IF
+
+        CDS EXTRACT "TranPend_Ret_ctx" post:jnl_branch_ori INTO l_jnl_branch_ori \
+            post:jnl_operator_ori INTO l_jnl_operator_ori \
+            post:jnl_date_ori INTO l_jnl_date_ori \
+            post:jnl_time_ori INTO l_jnl_time_ori \
+            post:jnl_bus_date_ori INTO l_jnl_bus_date_ori \
+            post:jnl_sequence_ori INTO l_jnl_sequence_ori
+        
+        //Actulalizo la NovTT
+		CALL MISCRetNovtt(l_jnl_operator_ori,l_jnl_sequence_ori,l_jnl_date_ori,l_jnl_time_ori)  
+
+		LET l_retval = RETVAL
+	
+    	IF (l_retval == -801) THEN
+    	    CDS ENDSELECT "TranPend_Ret_ctx"
+    	    RETURN 0
+    	END IF
+		
+		//Actualizo el Journal
+		CALL MISCRetJournal(l_jnl_branch_ori,l_jnl_operator_ori,l_jnl_date_ori,l_jnl_time_ori,l_jnl_bus_date_ori,l_jnl_sequence_ori)
+
+		LET l_retval = RETVAL
+	
+    	IF (l_retval == -801) THEN
+    	    CDS ENDSELECT "TranPend_Ret_ctx"
+    	    RETURN 0
+    	END IF
+		
+		CDS DELETE "TranPend_Ret_ctx" 
+	
+		CDS FINDNEXT "TranPend_Ret_ctx" LOCK
+		LET l_cdsretval = CDSRETVAL
+		
+		CDS CLEARBUFFER "TranPend_Ret_ctx"
+		cuenta = cuenta + 1
+	LOOP
+	
+	CDS ENDSELECT "TranPend_Ret_ctx"
+	
+	IF (cuenta > 0) THEN
+		MSGBOX "Se detectaron piezas transferidas pendientes de aceptación,\n para realizar el cierre se devolverán al operador de origen.",0x00,"AVISO"
+	END IF
+	
+	RETURN -2
+    
+END SUB      
+
+/*******/

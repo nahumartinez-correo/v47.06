@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:post:CDSadt_presuact_save
+* NOMBRE
+*   OFB:post:CDSadt_presuact_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+* http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=640583&
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSadt_presuact_save()
+    LET post:op_operator_id = op:op_operator_id
+    LET post:fecha          = common:system_date
+
+    if (estado_presu == 1)
+        LET PresNro         = 0
+        LET presNroNew      = 0
+        LET cli_tipo        = 0
+        LET PreDNroTrn      = 0
+        LET PreAUltTrn      = 0
+        LET PreAUltPag      = 0
+        LET adt_PreDNroTrn  = 0
+        Let Total_importe   = 0
+        Let Cuenta_Postal   = 0
+	    Let estAnul         = "T__"
+	    Let cadenaErr       = ""
+;	    Let importe_sesion  = 0
+	    let presNewObten    = "N"
+    endif
+
+    CDS SELECT FROM DSC:TABPresuActi BECOMES DSC:CONPresuActi WHERE \
+    post:op_operator_id == fld:post:op_operator_id
+    CDS FINDFIRST DSC:CONPresuActi LOCK
+    let lib:err_retval = cdsretval
+    CDS CLEARBUFFER DSC:CONPresuActi
+    CDS APPEND DSC:CONPresuActi     					 \
+    FLD:post:op_operator_id      FLD:post:fecha  		 \
+    FLD:post:estado_presu        FLD:post:PresNro 		 \
+    FLD:post:presNroNew          FLD:post:cli_tipo 		 \
+    FLD:post:PreDNroTrn          FLD:post:PreAUltTrn 	 \
+    FLD:post:PreAUltPag          FLD:post:adt_PreDNroTrn \
+    FLD:post:Total_importe       FLD:post:Cuenta_Postal  \
+    FLD:post:estAnul             FLD:post:DocFiscal      \
+    FLD:post:IvaCod 	         FLD:post:revTicket      \
+    FLD:post:PresGrupoIva        FLD:post:cantidad2      \
+    FLD:post:entraEnUnaPag       FLD:post:adt_DocInic    \
+    FLD:post:adt_DocFin          FLD:post:docAnulado     \
+    FLD:post:Tipo_Formulario	 FLD:post:presNewObten   \
+    FLD:post:PresGrupoIva        FLD:post:cadenaErr      \
+    FLD:post:contador_directas   FLD:post:auxFactConvAnt \
+    FLD:post:auxDescConvAnt      FLD:post:auxFactConvNue \
+    FLD:post:auxDescConvNue	     FLD:post:journal_flags	 \
+	FLD:post:rechazoDiferido	 FLD:post:pasadaMP		 \
+	FLD:plataf:current_state
+
+	/*Si el Cliente es UP guardo los campos necesarios para calcular el Impuesto - Gabriel Falciola*/
+	if (cli_tipo == CLIUP)
+	    CDS APPEND DSC:CONPresuActi \
+		FLD:post:CliUP_Nis          \
+		FLD:post:CliUP_FechaFin     \
+		FLD:post:CliUP_Importe      \
+		FLD:post:CliUP_Porcentaje   \
+		FLD:post:NisUP
+	end if
+
+	if (post:DocInic.numchars != 0)
+	    CDS APPEND DSC:CONPresuActi \
+	    FLD:post:DocInic            \
+	    FLD:post:DocFin
+	endif
+
+    #ifdef SUCU_VIRTUAL
+    if (post:sucu_virtual != "S")
+        post:adt_nroDocFac_web = 0
+    end if
+    CDS APPEND DSC:CONPresuActi                        \
+	FLD:post:adt_tipoDoc_web   FLD:post:adt_nroDoc_web \
+    FLD:post:NroLote_inic_web  FLD:post:NroLote_web    \
+    FLD:post:adt_nroDocFac_web FLD:post:adt_pasivo_web \
+    FLD:post:adt_Tipo_Sistema_web
+    #endif
+
+// FGB: (11.9.2000) - SAP - Ctas/Ctes
+// Agrego el estado de la conexion con SAP para que si se cae la aplicacion o
+// se sale de la misma, al regresar vuelva a conectarse
+    if (cli_tipo == 1) then
+        CDS APPEND DSC:post:CONPresuActi \
+        FLD:estado_conexion_sap \
+        FLD:CliCod              \
+        FLD:CliClasPed          \
+        FLD:ClsuCod \
+        FLD:CliBUICorreo
+    end if
+// FGB fin
+    IF (cli_tipo == CLIUP)
+        CDS APPEND DSC:post:CONPresuActi \
+        FLD:CliUP_bco       \
+        FLD:CliUP_cuenta    \
+        FLD:CliUP_credito   \
+        FLD:NisUP           \
+        FLD:CloTipDoc       \
+        FLD:CloCuit		\
+        FLD:cheque_dif	   
+    END IF
+    
+    IF (cli_tipo == CLIUP || cli_tipo == CLIMED) then
+    	CDS APPEND DSC:post:CONPresuActi \
+        FLD:jnl_interes_diferido \
+        FLD:iva_Porcentaje
+    END IF
+
+    //cgw: Hay cheque acreditado Giros Masivos
+    CDS APPEND DSC:post:CONPresuActi \
+    FLD:chq_acre_GM
+    ; Guardo la secuencia de factura otorgada por si se cae el sistema. PS 9454 *** MDG
+    CDS APPEND CONPresuActi \
+           adt_secuen_nro adt_secuen_nro_final
+    //SC 50364 - Grabar una marca para que la TX no pueda ser cancelada/borrada/modificada/reversada ni anulada .
+    CDS APPEND CONPresuActi \
+    post:es_WEB
+    
+    if (lib:err_retval == -801)
+        CDS INSERT DSC:CONPresuActi lock
+    else
+        CDS REPLACE DSC:CONPresuActi lock
+    end if
+    CDS UNLOCK DSC:CONPresuActi
+    CDS ENDSELECT DSC:CONPresuActi
+END SUB
+
+/*******/

@@ -1,0 +1,169 @@
+/****o* Pendientes de agrupación/OFB:tes:PRES_8500
+* NOMBRE
+*   OFB:tes:PRES_8500
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRES.h"
+
+SUB tes:PRES_8500
+    LOCAL l_importe like tes:adt_espv_valor
+    LOCAL l_retval like lib:err_retval
+    
+    CALL giros:CDSdatgralsuc_impesp //cgw:busca el importe minimo especie.
+
+	/*Reingenieria.MFM - borro el campo de descuento a cliente Medio por si quedò sucio*/
+    if (post:estado_presu == 2) then
+    	clearfield post:Dcto_CliMed
+    	clearfield post:Imp_DctoCliMed
+    endif
+
+    SETFLAG exit_prec,do_prec
+    siaf:nombre_transac.HIGHLITE = 0
+    siaf:codigo_siaf = 8500
+    //siaf:moneda = "00"
+    //post:medio_pago_desc = "PESOS"
+    siaf:restr_otra_casa = "N"
+    siaf:linea_validacion = "S"
+    siaf:exhibe_pantalla = "S"
+    siaf:imprime_comprobante = "D"
+    siaf:afecta_efectivo = "-"
+    es_tesoro = "S"
+    viaja_nro_tesoro = "N"
+//    siaf:INDhost_snd_fv = drv:INDspc_rtn[6]
+    IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+        let drv:INDscreen[drv:screen_active] = scr:SCRNmov_venta_ev
+        dupfield adt_espv_suc
+        dupfield adt_espv_orig
+        dupfield adt_espv_dest
+        dupfield adt_espv_hora
+        dupfield adt_espv_subcod
+        dupfield adt_espv_cod
+    END IF
+
+      /* si estoy en teclas ráìdas y tiene curso legal protejo el
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+
+    if (post:estado_presu == 1) then
+
+          call post:CDSMPago_Clegal_load
+      	  if (retval == 0) then
+      	     siaf:moneda = post:adt_mp_cod
+      	     protfield siaf:moneda
+      	     DISABLECONTROL drv:PBcb6
+          else
+             errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+             return (-2)
+          end if
+
+   end if
+
+    CALL siaf:PRESfecha_hora
+    IF (RETVAL < 0) THEN
+      RETURN (-2)
+    END IF
+
+    /****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.     17/10/2000                                 */
+    /****************************************************************/
+     if (post:estado_presu == 2 ||post:estado_presu == 3) then
+
+      if (siaf:adt_tran_med_pago != "S") then
+         post:captura_mp = siaf:adt_tran_med_pago
+         protfield siaf:moneda
+         siaf:moneda = 99
+         clearfield post:medio_pago_desc
+         DISABLECONTROL drv:PBcb6
+      else
+         ;  Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+      end if
+     end if
+
+     /* MLD Estos campos están quedando sucios */
+     if (post:estado_presu == 1 || post:estado_presu == 2) then
+	   	clearfield post:cod_agrupacion
+	   	clearfield post:secuencia_vta
+	 end if
+
+    /* Si vuelve del modo rapido */
+  /*  IF (RETVAL == 4)  THEN
+      RETURN (-2)
+    END IF */
+
+    fld:leeEspVsConSaldo  = "S"
+    fld:adt_evaux_es_venta = "S"
+    fld:adt_evaux_prestran = 0
+    fld:post:adt_umev_prestran = 0
+    fld:post:adt_umev_docfisc = ""
+    fld:post:adt_umev_nrofisc = 0
+
+    select (post:estado_presu)
+    case 1
+    case 2
+         if (post:cli_tipo == 1) then
+             let drv:INDscreen[drv:screen_active] = scr:SCRNventa_ev
+             protfield adt_evaux_importe2
+             protfield siaf:moneda
+         end if
+         PDM ENABLEITEM drv:menubar, ALL, 2  // --> desactivar menúes.
+         call CDSauxesp_pend_del(0)
+         break
+    case 3
+         if (post:cli_tipo == 1) then
+             let drv:INDscreen[drv:screen_active] = scr:SCRNventa_ev
+             protfield adt_evaux_importe2
+             protfield siaf:moneda
+         end if
+         call CDSauxesp_pend_del(0)
+         fld:adt_evaux_prestran = 0
+         call CDSevauxCopiaRecords
+		 CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+		 CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle	//MDG
+		 IF (siaf:codigo_siaf != "8500") THEN
+		 	IF (post:fld_promo_imp > 0) THEN
+		 		l_importe = tes:adt_espv_valor * tes:adt_evaux_cantidad
+		 		IF (post:promoEsvsTipoBon == TIPO_BONIF_VALOR)
+					CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,"----", post:promo_tot_EspVdas,"Espec.Val.", "")
+				ELSE
+					CALL post:MISCdetalleBonifGral(post:promo_desc,l_importe,post:promo_bon, post:promo_tot_EspVdas,"Espec.Val.", "")
+		 		END IF
+		 	END IF
+		 END IF
+    	 break
+    case 4
+         espv_subcod = TOTAL_TESO
+         let drv:INDscreen[drv:screen_active] = scr:SCRNmov_venta_ev
+         call CDSauxesp_pend_del(0)
+         break
+    end select
+    clearfield espv_cod
+    CLEARFIELD adt_evaux_subcod
+    refresh espv_cod
+    refresh adt_evaux_subcod
+
+    post:INDPresuD_Dat = OFB:CDSTRAN8500_append
+    CALL post:MISCLeo_PresDet
+    CALL post:MISCprotege(LST:fld8500protege,LST:fld8500desprotege)
+    l_retval = RETVAL
+    
+    /*Si esta procesando un combo de productos. Deshabilito el boton de Detalle*/
+    CALL tes:MISCevCombo
+    
+    RETURN (l_retval)
+    
+END SUB
+
+/*******/

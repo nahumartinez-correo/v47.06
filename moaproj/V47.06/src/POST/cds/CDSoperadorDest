@@ -1,0 +1,132 @@
+/****o* Expedición/OFB:post:CDSoperadorDest
+* NOMBRE
+*   OFB:post:CDSoperadorDest
+* DESCRIPCION
+*   Esta rutina busca los operadores que estan en condiciones de recibir una transferencia de piezas:
+*	aquellos que no se encuentran inhibidos y que tienen caja abierta y no cerrada aun en el dia.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PBoperadorDest,OFB:post:PBoperadorDest
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSoperadorDest
+    /* Transf. a otro Contenedor */
+    /* Jul. 1998 - B. Petrella -    */
+ 
+ //50242 - SE MODIFICA EL TRATAMIENTO DE SWAPDUP POR VARIABLES LOCALES
+    
+LOCAL l_retval like lib:err_retval
+LOCAL l_operador_id like op:op_operator_id
+LOCAL l_login_id like op:op_login_id
+LOCAL l_branch_id like op:op_branch_id
+LOCAL l_encontro like op:op_login_id
+
+
+    /* Resguardo los campos del operador 
+    swapdup op:op_login_id
+    dupfield op:op_login_id
+    swapdup op:op_operator_id
+    dupfield op:op_operator_id*/
+    
+	//CREO EL PICKLIST
+	call csr:f_sadroppl(DSC:op_destino)
+	call csr:f_sanewpl(DSC:op_destino,PIC:PICop_destino)
+	l_encontro = "N"
+	
+    /*Se agrega marca de borrado logico - Gabriel Falciola*/
+    if (siaf:codigo_siaf != "99110")
+    	CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context WHERE \
+		(op:op_branch_id == op:op_branch_id && \
+		op:op_login_id != op:op_login_id && \
+		op:op_tlr_auth == "X" && op:op_borrado_logico != "S" && \
+		op:op_inhibido != "S")
+	else
+	 	CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context WHERE \
+		(op:op_branch_id == op:op_branch_id && \
+		op:op_login_id != post:adt_op_login_id && \
+		op:op_tlr_auth == "X" && op:op_borrado_logico != "S")
+	endif
+
+	CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+	l_retval = CDSRETVAL
+	
+	WHILE (l_retval == 0)	
+		
+		CDS EXTRACT DSC:op:adt_op_context op:op_operator_id into l_operador_id \
+		op:op_login_id into l_login_id \
+		op:op_branch_id into l_branch_id
+		
+		
+		//50242 - SE DEBE VERIFICAR QUE EL OPERADOR TENGA CAJA ABIERTA EN EL DIA, SIN CERRAR
+		CDS SELECT FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context WHERE \
+		tes:rend_op_id == l_operador_id && tes:rend_fecha == common:system_date && \
+		tes:rend_tipo_cierre == "" && tes:rend_inicio_cierre != "S"
+		
+		CDS FINDFIRST DSC:tes:rend_caj_context NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			//GUARDO EL ID DEL OPERADOR Y OTROS DATOS EN UN PICKLIST...
+			//l_login_id,l_operador_id,l_branch_id
+			
+			//fprint common:csr_string,"   %14.14s    %5.5s %5.5s",l_login_id,l_operador_id,l_branch_id
+			fprint common:csr_string,"%14.14s   %5.5s     %5.5s",l_login_id,l_operador_id,l_branch_id
+			call csr:f_saaddpl(DSC:op_destino,common:csr_string) 
+  			clearfield common:csr_string
+			
+			l_encontro = "S"
+		END IF
+		CDS ENDSELECT DSC:tes:rend_caj_context 
+		
+		CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+		l_retval = CDSRETVAL
+		
+	END WHILE
+	
+    CDS ENDSELECT DSC:op:adt_op_context
+   
+   //muestro el picklist
+	IF (l_encontro == "S") THEN
+		/*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+		SETFLAG drv:mode_flags,picklist_mode
+    	/*Mediante esta rutina csr se muestra el picklist*/
+		CALL csr:f_sadopl DSC:op_destino common:csr_string
+    	LET lib:err_retval = RETVAL
+    	/*Reseteo de flags de modo picklist*/
+		RESETFLAG drv:mode_flags,picklist_mode
+    ELSE
+    	MSGBOX "NO HAY OPERADORES CON CAJA ABIERTA EN EL DIA.",0X00,"ATENCION"
+    	CLEARFIELD Operador_id 
+    	REFRESH Operador_id
+    	call csr:f_sadroppl(DSC:op_destino)
+    	RETURN -2
+    END IF
+	IF (lib:err_retval >= 0) THEN
+   		 Let Operador_id = substr(common:csr_string,0,14) //l_login_id
+   		 Let CodOperador = substr(common:csr_string,17,5)//l_operador_id
+   		 Let Sucursal_id = substr(common:csr_string,27,5)//op:op_branch_id
+		//Inicio agrego German
+		CALL post:MISCFtrim(Operador_id)
+		CALL post:MISCFtrim(CodOperador)
+		CALL post:MISCFtrim(Sucursal_id)
+		//Fin agrego German
+	else
+		call csr:f_sadroppl(DSC:op_destino)
+		return -2
+    endif
+    call csr:f_sadroppl(DSC:op_destino)
+
+    /* Recupero op:op_login_id 
+    dupfield op:op_login_id
+    dupfield op:op_operator_id*/
+
+END SUB
+
+/*******/

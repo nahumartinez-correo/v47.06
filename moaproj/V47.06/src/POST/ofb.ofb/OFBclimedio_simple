@@ -1,0 +1,345 @@
+/****o* Clientes Medios/OFB:post:OFBclimedio_simple
+* NOMBRE
+*   OFB:post:OFBclimedio_simple
+* DESCRIPCION
+*  Se realiza la consulta simple al host para Cliente Medio,donde se traen los datos 
+*  del cliente.
+*  Segun el/los campo/s BULK/'s de retorno (105,106,107) de datos se borran al inicio
+*  y luego se van grabando las Inscripciones de IB en la tabla CliIngBr. 
+*  Segun el/los campo/s BULK/'s de retorno (108) de datos se obtienen  los datos del
+*  cliente EJ: Categoria de IVA,IB y el convenio asociado.
+*  Segun el/los campo/s BULK/'s de retorno (109) de datos se obtienen  los datos del
+*  domicilio del cliente EJ: Calle, Nro, Piso, Localidad, Partido, Provincia, CP, Tel.
+*  Segun el/los campo/s BULK/'s de retorno (110) de datos se obtienen los datos de las
+*  transferencias bancarias del cliente.
+*  Segun el/los campo/s BULK/'s de retorno (111) de datos se obtienen  los datos de
+*  los adelantos realizados por el cliente.
+*  Segun el/los campo/s BULK/'s de retorno (112) de datos se obtienen  los datos de
+*  los adelantos monetarios realizados por el cliente.
+*  PROC_CODI : 997021
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSbusca_cliente,OFB:post:FVALcliraz_excepCM,OFB:post:FVALcliraz_ordenCM
+*	OFB:post:FVALcliraz_sal_pv_CM,OFB:post:OFBclimed_consultas,OFB:post:PBcliraz
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*	http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBclimedio_simple
+    LOCAL ret LIKE lib:err_retval
+    local l_retval like lib:err_retval
+
+   
+
+    setflag giros:tran_send_mode,consulta_simple
+    resetflag  giros:tran_send_mode,consulta_multiple
+    clearfield post:estado_consulta
+    clearfield post:CliRazBusq
+    refresh post:CliRazBusq
+    call post:CDSobtiene_secuen("STAN")
+   // giros:codigo_procesamiento = 997021
+   /*50295 - Se genera un nuevo codigo de procesamiento porque al agregar el bit 112 al mensaje
+     no pueden convivir dos versiones diferentes de dicc con el mismo autorizador.*/
+    giros:codigo_procesamiento = 997036
+    giros:hora_viaje = common:time_of_day
+    giros:dia_viaje  = common:system_date
+
+    hcomm:INDhost_sndrt = OFB:SENDclimed_simple
+    hcomm:INDhost_rcvrt = OFB:RCVEclimed_simple
+
+    call hcomm:COMM_stat_init
+    call siaf:CDSchk_trxs_caidas
+    if (retval == 0 && testflag(hcomm:state_flags,on_line))
+	FYIMSG drv:fyimsg_list,\
+	"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+	call siaf:CDSjnl_mayor_cien	
+	if (retval == TRAN_CAIDA_VUELO)
+    	    clearfield hcomm:INDhost_sndrt 
+    	    clearfield hcomm:INDhost_rcvrt 
+	end if
+	FYIMSG CLEAR
+    elseif (retval == -5) then
+	    // quedaron trx's pendientes de recuperacion por el proc. batch...
+    	    clearfield hcomm:INDhost_sndrt
+    	    clearfield hcomm:INDhost_rcvrt
+    end if
+
+    call giros:OFBdisable_bt_msg
+    call hcomm:COMM_host_tran
+    common:trap_reset = OFB:drv:KEYSreset_esc
+    call giros:OFBenable_bt_msg
+    clearfield lib:stat_message
+    refresh lib:stat_message
+    refresh statusline
+
+    if (hcomm:tran_status != HOST_ACCEPTED) then
+		//si es cliente UP no debe borrar estos datos pues puede continuar con la sesión.
+		if (climed_tipo != UP_HOST)
+			clearfield post:CloTipDoc
+			clearfield post:CloCuit
+			refresh    post:CloTipDoc
+			refresh    post:CloCuit
+		endif
+		if (hcomm:tran_status == HOST_REJECTED)
+	    	post:estado_consulta = RECH_CONS_CLIMED
+	    	move siaf:mensaje to post:motivo_rechazo
+	    	//cgw:controles de checkbox de pago en inicio de sesion, o Consulta Exepciones CM.	    
+	    	if (siaf:codigo_siaf == 99021 || siaf:codigo_siaf == 99400) then
+	    		//Deshabilita cheqkbox de cheques.
+		        clearfield post:MPcheque
+		        resetflag MPcheque,MPpago_cheque
+	    	    altercontrolset TAG:post:CHK6 // Trat Chq
+  	        	disablecontrol  TAG:post:CHK6 // Trat Chq
+		        clearfield post:cheque_dif
+		        resetflag cheque_dif,UPpago_dif
+	    	    altercontrolset TAG:post:CHK9
+	        	disablecontrol  TAG:post:CHK9
+            end if
+	    	SELECT (climed_tipo)
+		    CASE 5
+			   if (siaf:codigo_siaf == 99400 || post:OperacionAut || \
+			       giros:CodRespuesta_comm == 46  || siaf:codigo_siaf == 99505)
+			       ;SEGUN RECHAZO EN VENTAS DE EXCEPCIONES
+			       ;DE CLIENTE MEDIO
+			       return -2
+			   else
+			       ;SEGUN METODOLOGIA DE CLIENTE MEDIO
+			       ;EN EL CONVENIO
+			       ;Si el MSG retorno rechazado, si existe el 
+			       ;Cliente Local se inicia la sesion y se 
+			       ;realizaria la venta sin descuento
+			       call post:CDSclimed_ver_existe
+			       if (retval < 0)
+				   return -2
+			       else
+				   //cgw:si es siaf:codigo_siaf = 40005 no ejecutar el send, para evitar
+				   //que ejecute las FVAL's
+				   if (siaf:codigo_siaf != 40005) then
+				       ungetkey RT_SEND
+				   end if    
+				   return 0
+			       end if
+			   end if
+			   break
+		    CASE 1
+		    ;si viene rechazo del host se debe permitir iniciar la sesion igual 
+		    return 0
+		    
+		    CASE ELSE
+			   RETURN -2
+			   BREAK
+	    END SELECT
+
+	end if
+	return -2
+    else
+	post:estado_consulta = ACEP_CONS_CLIMED
+    end if
+
+    clearfield post:convenio
+    clearfield post:excepcion
+    clearfield post:climed_ult_item
+
+    call csr:trimfield BulkFld_105
+    call csr:trimfield BulkFld_106
+    call csr:trimfield BulkFld_107	
+    call csr:trimfield BulkFld_108
+    call csr:trimfield BulkFld_109
+    call csr:trimfield BulkFld_111
+    call csr:trimfield BulkFld_112
+    
+    singlestep on
+
+    if (BulkFld_108.NUMCHARS != 0)
+	call MISCdatos_climed(BulkFld_108,Longitud_108)
+	ret = retval
+	
+	//cgw:controles de checkbox de pago en inicio de sesion, o Consulta Exepciones CM.
+	if (siaf:codigo_siaf == 99021 || siaf:codigo_siaf == 99400) then
+	    //cgw:Controlo si los checkbox de medio de pago cheques del inicio de sesion
+            //    estan deshabilitados. Puede estar deshabilitados debido a algun rechazo            
+            //    del Host, o a causa de que el Host envie Cliente Inhabilado o que no admita
+            //    Pago diferido.
+            
+          if (post:ModalidadCC || post:ModalidadCD || ConsumoAnticipo || post:ModalidadTB) then
+          //no habilito los check box pues el cliente medio usará el crédito o adelanto o transferencias bancarias
+          else
+            CALL drv:MISCverifica_tag_hab(TAG:post:CHK6) //cheque.
+            if (RETVAL == 1) then //Deshabilitado
+                //Verifica si por parametria debe estar habilitado.
+                CALL post:MISCsetea_mpchq_cli(post:cli_tipo,"cheque")
+            end if
+            CALL drv:MISCverifica_tag_hab(TAG:post:CHK9) //cheque diferido.
+            if (RETVAL == 1) then //Deshabilitado.
+                //Verifica si por parametria debe estar habilitado.
+                CALL post:MISCsetea_mpchq_cli(post:cli_tipo,"cheque_dif")
+            end if
+	  endif
+	    //Si el cliente está inhibido para el pago con cheque reseteo los flags.
+	    if (post:climed_inhibido == "S" || post:esSesionReempChq == "S") then
+	        //cgw:deshabilito cheque si esta inhibido.
+                CLEARFIELD post:MPcheque
+	        RESETFLAG MPcheque,MPpago_cheque
+	        ALTERCONTROLSET TAG:post:CHK6
+	        DISABLECONTROL post:CHK6
+	    end if
+	    if (post:climed_pagodiferido == "N" || post:esSesionReempChq == "S") then
+	    	//si esta inhibido,anteriormente a este campo se le forzo valor "N".
+	        //cgw:deshabilito cheque diferido.
+	        CLEARFIELD post:cheque_dif
+	        RESETFLAG cheque_dif,UPpago_dif
+	        ALTERCONTROLSET TAG:post:CHK9
+	        DISABLECONTROL post:CHK9 
+	    end if
+	end if    
+
+	if (ret < 0)
+	    return -2
+	end if
+    IF (post:climed_tipo == CLIMED) then
+        //call giros:MISClistas_giros_clr
+        CLEARFIELD giros:NInscRegEmisGm_fld      
+        CLEARFIELD giros:CiudadEmisGm_fld
+        CLEARFIELD giros:OcupacionEmisGm_fld
+        CLEARFIELD giros:OtrosOcupEmisGm_fld
+        CLEARFIELD giros:CodPaisResidEmisGm
+        CLEARFIELD giros:TipoDocEmisLG_FCuit
+        CLEARFIELD giros:NroDocEmisLG_FCuit
+        
+        //*FNR - Antes de borrar el registro lo levanto en memoria para poder resguardar
+        //*      algunos datos necesarios para la tx de listas de giros.
+        call giros:CDSCliMedLoadLG
+        l_retval = CDSRETVAL
+        call post:CDSadt_climed_save
+        if (retval < 0)
+            return -2
+        end if
+        //*FNR - Actualizo el nuevo registro con los datos resguardados para la tx de lista de giros
+       //Solo debe actualizarlo cuando el registro existe, si no existia no.
+        if (l_retval == 0) then
+        	call giros:CDSCliMedUpdateLG
+        endif
+	ENDIF
+    end if
+
+    IF (post:climed_tipo == CLIMED) then
+    //*FNR - Antes de borrar el registro lo levanto en memoria para poder resguardar
+    //*      algunos datos necesarios para la tx de listas de giros.
+    CALL giros:CDSCliMedSucuLoadLG
+    l_retval = CDSRETVAL
+	//*MFM - Borro el domicilio del cliente
+	call post:CDSbaja_domic_climed
+	if (retval < 0)
+	    msgbox "ERROR AL ELIMINAR EL DOMICILIO DEL CLIENTE.",OFB_OK,"Atencion"
+	    return -2
+	end if
+    ENDIF 
+
+    /*MFM- Se agrega un bit mas para los datos del domicilio*/
+    if (BulkFld_109.NUMCHARS != 0)
+	call MISCdatos_climed_dom(BulkFld_109,Longitud_109)
+	if (retval < 0)
+	    return -2
+	end if
+    IF (post:climed_tipo == CLIMED) then
+        call post:CDSalta_domic_climed
+        if (retval < 0)
+            return -2
+        end if
+        //*FNR - Actualizo el nuevo registro con los datos resguardados para la tx de lista de giros
+        if (l_retval == 0) then
+        	CALL giros:CDSCliMedSucUpdateLG
+        endif
+    ENDIF
+    end if
+
+    IF (post:climed_tipo == CLIMED) then
+	call post:CDSborrar_ingbrutos
+	if (retval < 0)
+	    msgbox "ERROR AL ELIMINAR LAS INSC. DE IB. DEL CLIENTE.",OFB_OK,"Atencion"
+	    return -2
+	end if
+    ENDIF
+
+    //esto habria que recibirlo solo para cliente medio o para cc tambien?
+    if (BulkFld_105.NUMCHARS != 0)
+	call MISCingbrutos_climed(BulkFld_105,Longitud_105)
+	if (retval < 0)
+	    return -2
+	end if
+    else
+	if (post:CloInscripto == "S")
+	    msgbox "IMPOSIBLE CONTINUAR, EL CLIENTE ESTA INSC. EN IB., PERO FALTAN LAS INSCRIPCIONES DE IB. EN LA CONSULTA DEL CLIENTE MEDIO.",OFB_OK,"Atencion"
+	    return -2
+	end if
+    end if
+
+    if (BulkFld_106.NUMCHARS != 0)
+	call MISCingbrutos_climed(BulkFld_106,Longitud_106)
+	if (retval < 0)
+	    return -2
+	end if
+    end if
+
+    if (BulkFld_107.NUMCHARS != 0)
+	call MISCingbrutos_climed(BulkFld_107,Longitud_107)
+	if (retval < 0)
+	    return -2
+	end if
+    end if
+/*MFM- Se agrega un bit mas para los datos del adelanto*/
+    if (post:ConsumoAnticipo)  then
+    	call post:CDSabmAdelCM("B","","",CM_CSIM)
+    	if (retval < 0)
+		msgbox "ERROR AL ELIMINAR LOS ADELANTOS.",OFB_OK,"Atencion"
+        	return -2
+    	end if
+		if (BulkFld_111.NUMCHARS != 0)
+			call MISCadelantos_climed(BulkFld_111,Longitud_111,CM_CSIM)
+			if (retval < 0)
+	    		return -2
+			end if	
+    	end if
+    endif
+    //Adelantos Monetarios
+     if (post:ConsumoAnticipoMon)  then
+     	call post:CDSabmAdelLG("B","","",CM_CSIM)
+    	if (retval < 0)
+		msgbox "ERROR AL ELIMINAR LOS ADELANTOS DE LISTA DE GIROS.",OFB_OK,"Atencion"
+        	return -2
+    	end if
+    	if (BulkFld_112.NUMCHARS != 0)
+			call MISCadel_mon_climed(BulkFld_112,Longitud_112,CM_CSIM)
+			if (retval < 0)
+	    		return -2
+			end if	
+    	end if
+    endif
+    
+    
+    //50244 - Se agrega un bit mas para recibir las Transferencias Bancarias
+    if (post:ModalidadTB)  then
+    	call post:CDSabmTransfBanc("B","","",CM_CSIM)
+    	if (retval < 0)
+		msgbox "ERROR AL ELIMINAR LAS TRANSFERENCIAS BANCARIAS.",OFB_OK,"Atencion"
+        	return -2
+    	end if
+   
+        if (BulkFld_110.NUMCHARS != 0)
+		call MISCtransf_bancarias(BulkFld_110,Longitud_110,CM_CSIM)
+		if (retval < 0)
+	    		return -2
+		end if
+    	end if
+    endif
+END SUB
+
+/*******/

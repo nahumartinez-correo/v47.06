@@ -1,0 +1,170 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpf_vuelto_bonos
+* NOMBRE
+*   OFB:post:FVALpf_vuelto_bonos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpf_vuelto_bonos
+
+local Lmensaje	like common:csr_string
+local Lauxiliar	like siaf:i 
+local Lencontre	like siaf:i 
+local Lidx	like siaf:idx
+local Lidx2 like siaf:idx
+local Lidx3 like siaf:idx
+local Lresta like siaf:importe
+local Lmin like siaf:importe
+local Lmax like siaf:importe
+
+if (importe_bonos < 0) then
+	errmsg common:errmsg_list,DSC:siaf:ERRimporte_invalido
+	return (-2)
+end if
+
+
+// valido que el importe ingresado sea multiplo de alguna de las denominaciones del bono...
+CALL CSR:proc_list(F_CLEAR,LST:tes:LISTden_mon_flds)
+let tes:den_moneda = siaf:tipo_moneda // tipo_moneda = Cod. moneda de los bonos 
+call tes:CDSden_mon_load 
+
+let Lidx = 0
+clearfield Lencontre
+do 
+   	let Lauxiliar = importe_bonos % tes:den_valor[Lidx]
+   	if (Lauxiliar == 0 && tes:den_valor[Lidx] > 0) then
+		let Lencontre = 1
+   		break
+   	end if
+   	let Lidx = Lidx + 1
+   	if (Lidx > 13 || tes:den_valor[Lidx] <= 0) then
+		break
+   	end if
+loop
+
+let Lidx = 0
+let Lmin = tes:den_valor[Lidx]
+let Lmax = tes:den_valor[Lidx]
+do
+	if (tes:den_valor[Lidx] < Lmin && tes:den_valor[Lidx] > 0) then
+		let Lmin = tes:den_valor[Lidx]
+	endif
+	if (tes:den_valor[Lidx] > Lmax) then
+		let Lmax = tes:den_valor[Lidx]
+	endif
+	let Lidx = Lidx + 1
+	if (Lidx == 13) then
+		break
+	endif
+loop
+
+if (!Lencontre) then
+	// FGB 23.4.2002: el importe ingresado no es multiplo... 
+	// veo si se puede construir con las denominaciones existentes (PS 5498) 
+	Lidx3 = 1
+	do
+		Lidx = 0
+		do
+			if (importe_bonos > (tes:den_valor[Lidx] * Lidx3)) then
+				let Lresta = importe_bonos - (tes:den_valor[Lidx] * Lidx3)
+				let Lidx2 = Lidx + 1
+				do
+					if (Lidx2 > 13 || tes:den_valor[Lidx2] <= 0) then
+						break
+					endif
+					let Lauxiliar = Lresta % tes:den_valor[Lidx2]
+					if (Lauxiliar == 0 && tes:den_valor[Lidx2] > 0) then
+						let Lencontre = 1
+						let Lidx = 13 // <- p' salir del loop externo.
+						break
+					endif
+					let Lidx2 = Lidx2 + 1
+				loop
+			endif
+			if (Lidx >= 13 || tes:den_valor[Lidx] <= 0) then
+				break
+			endif
+			let Lidx = Lidx + 1
+		loop
+		let Lidx3 = Lidx3 + 1
+		if (((Lmin * Lidx3) > importe_bonos) || (Lencontre)) then
+			break
+		endif
+	loop
+endif
+
+if (!Lencontre) then
+	// FGB 23.4.2002: el importe ingresado no es multiplo... 
+	// veo si se puede construir con las denominaciones existentes (PS 5498) 
+	Lidx3 = 1
+	do
+		Lidx = 13 
+		do
+			if (importe_bonos > (tes:den_valor[Lidx] * Lidx3)) then
+				let Lresta = importe_bonos - (tes:den_valor[Lidx] * Lidx3)
+				let Lidx2 = Lidx - 1
+				do
+					if (Lidx2 < 0) then
+						break
+					endif
+					if (tes:den_valor[Lidx2] <= 0) then
+						break
+					endif
+					let Lauxiliar = Lresta % tes:den_valor[Lidx2]
+					if (Lauxiliar == 0 && tes:den_valor[Lidx2] > 0) then
+						let Lencontre = 1
+						let Lidx = (-1) // <- p' salir del loop externo.
+						break
+					endif
+					let Lidx2 = Lidx2 - 1
+				loop
+			endif
+			let Lidx = Lidx - 1
+			if (Lidx < 0) then
+				break
+			endif
+		loop
+		let Lidx3 = Lidx3 + 1
+		if (((Lmin * Lidx3) > importe_bonos) || (Lencontre)) then
+			break
+		endif
+	loop
+endif
+
+if (!Lencontre) then
+	errmsg common:errmsg_list,DSC:siaf:ERRimporte_invalido
+	return (-2)
+endif
+
+// calculo el vuelto en bonos a entregarle al cliente...
+clearfield dif_bonos 
+clearfield dif_pesos
+if (importe_bonos > total_bonos) then 
+	let post:total_pesos = siaf:importe - post:total_bonos
+	let dif_bonos = importe_bonos - total_bonos
+else
+	// si paga menos del maximo en bonos, puede pagar mas en pesos...
+	let post:total_pesos = siaf:importe - post:importe_bonos 
+end if
+if (importe_pesos > total_pesos) then
+    dif_pesos = importe_pesos - total_pesos
+endif
+refresh dif_bonos
+refresh dif_pesos
+refresh total_pesos
+
+END SUB
+
+/*******/

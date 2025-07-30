@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:post:PBmedPago_gral
+* NOMBRE
+*   OFB:post:PBmedPago_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBmedPago_gral
+    CLEARFIELD common:csr_string
+    IF (post:estado_presu == 4 ||  post:cli_tipo == 1 || \
+       (post:estado_presu == 1 && (post:jnl_flia_tran == "CSP" || \
+       post:jnl_flia_tran == "CSE" || post:jnl_flia_tran == "CST"))) THEN
+    	/* En estos modos no se puede abrir los Combos */
+        drv:button = drv:last_button
+    	CALL drv:but_up_enable
+    	RETURN (0)
+    END IF
+    drv:button = drv:last_button
+    CALL drv:but_down_disable
+
+    LET post:tipo_rest = TODOS
+    
+    SELECT (siaf:adt_tran_fliatran)
+		CASE "PCL"
+        CASE "PF" 
+        CASE "CSP" //Postales Nacionales e Internacionales
+        CASE "CSE" //Encomiendas
+        CASE "SVC" //Servicios Varios Correo (Lista, Gestiones Vs., Corresp. Cargo, etc.)
+        CASE "VAP"
+            /*obtengo las monedas del servicio de acuerdo a las restricciones*/
+            IF (adt_serv_formfiscal == "FACTU" || adt_serv_formfiscal == "TICKE")
+                CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",0)
+            ELSE    
+                CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",1)
+            END IF
+            BREAK
+
+        CASE "CME" //Merchandissing
+            /*obtengo las monedas del servicio de acuerdo a las restricciones*/
+            IF (adt_prodvs_formfisca == "FACTU" || adt_prodvs_formfisca == "TICKE")
+                CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",0)
+            ELSE    
+                CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",1)
+            END IF
+            BREAK            
+            
+        CASE "CSV" //Correo Servicios Varios (Motivos, Templates)
+            IF (siaf:codigo_siaf == 6900)
+	            //TEMPLATES
+	            IF (template.NUMCHARS == "") THEN
+		            MSGBOX "DEBE ELEGIR UN TEMPLATE",0x00,"Error"
+		            drv:button = drv:last_button
+		            CALL drv:but_up_enable
+		            NEXTFIELD template
+		            RETURN (-2)
+	            END IF
+	            drv:button = drv:last_button
+                CALL drv:but_down_disable
+                /*Genera los medios de pagos habilitados para esta transaccion*/
+                CALL MISCmedPago_esp
+                LET lib:err_retval = RETVAL
+                drv:button = drv:last_button
+                CALL drv:but_up_enable
+                //Borro el PickList
+                call csr:f_sadroppl PIC:PICmedios
+                RETURN (lib:err_retval)
+            ELSE
+                //MOTIVOS
+                IF (siaf:motivo.numchars == 0)
+                    errmsg lst:common:errmsg_list,"Antes debe seleccionar un motivo"
+                    drv:button = drv:last_button
+                    CALL drv:but_up_enable
+                    RETURN (-2)
+                END IF
+
+                IF (siaf:adt_mot_formfiscal == "FACTU" || siaf:adt_mot_formfiscal == "TICKE")
+                    CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","S",0)
+                ELSE    
+                    CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","S",1)
+                END IF
+
+            END IF
+            BREAK
+            
+        CASE "TES" //Tesoreria (Especies Valorizadas)
+            CALL post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","S","N",0)    
+            CALL post:PBmoneda_gral
+            IF (RETVAL < 0) THEN
+                RETURN (-2)
+            END IF
+            IF (siaf:codigo_siaf == 8500)
+                IF (estado_presu == 3)
+                    CALL CDSval_MPago_ev
+                    IF (RETVAL < 0)
+                        CLEARFIELD siaf:moneda
+                        CLEARFIELD medio_pago_desc
+                        REFRESH siaf:moneda
+                        REFRESH medio_pago_desc
+                        RETURN (-2)
+                    END IF
+                END IF
+            END IF
+            RETURN (0)
+            BREAK
+            
+        CASE "TAV" //Transacciones Actividades Varias (Entrega de Piezas)
+            IF (siaf:codigo_siaf == 99020)//Entrega de Piezas
+	            drv:button = drv:last_button
+                CALL drv:but_down_disable
+	            /*Genera los medios de pagos habilitados para esta transaccion*/
+                CALL MISCmedPago_esp
+                drv:button = drv:last_button
+                CALL drv:but_up_enable
+                LET lib:err_retval = RETVAL
+                //Borro el PickList
+                call csr:f_sadroppl PIC:PICmedios                
+                RETURN (lib:err_retval)
+            END IF
+            BREAK
+            
+    END SELECT
+    /*Selecciono la moneda correspondiente*/
+    CALL post:PBmoneda_gral
+    drv:button = drv:last_button
+    CALL drv:but_up_enable
+END SUB
+
+/*******/

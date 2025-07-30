@@ -1,0 +1,13 @@
+connect to A;
+drop table A:a;
+drop table B:b;
+create table A:a index (:Cds_table_name) buffer size 64;
+create table B:b index (:Cds_num2) buffer size 64;
+connect to C;
+drop table C:c;
+create table C:c index (:Cds_num2) buffer size 64;;
+insert into a (:Cds_table_name, :Cds_table_no) values ("marcl",1);
+insert into b (:Cds_num2, :Cds_table_name) values (1, "bruceo");
+insert into b (:Cds_num2, :Cds_table_name) values (2, "kjellr");
+insert into c (:Cds_num2, :Cds_table_name) values (1, "jimc");
+insert into c (:Cds_num2, :Cds_table_name) values (2, "ricks");

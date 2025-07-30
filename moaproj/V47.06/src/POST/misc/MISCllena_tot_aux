@@ -1,0 +1,142 @@
+/****o* Pendientes de agrupación/OFB:post:MISCllena_tot_aux
+* NOMBRE
+*   OFB:post:MISCllena_tot_aux
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCllena_tot_aux
+   LOCAL operador LIKE op:op_operator_id
+    //borrar totals_aux
+    CDS SELECT FROM DSC:tlr:TABtots_aux BECOMES DSC:tlr:CONtots_write_aux
+    CDS DELETE DSC:tlr:CONtots_write_aux ALL
+    CDS ENDSELECT DSC:tlr:CONtots_write_aux
+
+    /* Tabla profiles */
+    cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context WHERE \
+    op:op_branch_id == op:op_branch_id && \
+    (op:op_ret_auth == "X" || op:op_tlr_auth == "X")
+
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+    lib:err_retval = cdsretval
+
+    WHILE (lib:err_retval == 0)
+	  CDS EXTRACT DSC:op:adt_op_context op:op_operator_id into operador
+	  LET tlr:tots_branch   = op:op_branch_id
+	  LET tlr:tots_operator = op:op_operator_id
+	  LET tlr:tots_bus_date = tlr:bus_date
+	  LET tlr:tots_sequence = tlr:sequence
+	  CALL siaf:CDSall_guardo_total(operador) //copia registro de totals a totals_aux
+	  LET tlr:INDtots_append = ofb:siaf:TOTScustom_clear_aux
+	  LET tlr:jnl_bus_date   = tlr:bus_date
+	  LET tlr:jnl_sequence   = tlr:sequence
+
+	  /*agregado*/
+	  CDS SELECT FROM DSC:tlr:TABtots_aux BECOMES DSC:tlr:CONtots_write_aux WHERE \
+	  (tlr:tots_branch == op:op_branch_id) && \
+	  (tlr:tots_operator == operador)
+
+	  //(tlr:tots_operator == op:op_operator_id))
+	  if (cdsretval == 0)  /* if select ok,...*/
+	     cds findfirst DSC:tlr:CONtots_write_aux lock /* find record */
+	     if (cdsretval == 0)  /* if find ok,...*/
+		cds extract DSC:tlr:CONtots_write_aux ALL
+	     end if
+	  else
+	     break
+	  end if
+	  /*
+	  clearfield hcomm:tran_status
+	  CALL tlr:TOTScommit1
+	  IF (RETVAL != 0) THEN
+	     RESET TRAN
+	  END IF
+*/
+
+	  CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjnl_write WHERE  \
+	  tlr:jnl_branch == FLD:op:op_branch_id           && \
+	  tlr:jnl_bus_date == FLD:siaf:fecha_proceso      && \
+	  tlr:INDtots_append != 0 && tlr:jnl_status < 100 && \
+	  tlr:jnl_operator == operador
+
+	  IF (CDSRETVAL != 0) THEN
+	     ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+	     RESET TRAN
+	  END IF
+	  CDS FINDFIRST DSC:tlr:CONjnl_write NOLOCK
+	  //CALL lib:MISCcds_find_err
+	  IF (CDSRETVAL == 0) THEN
+	     DO
+		CDS CLEARBUFFER DSC:tlr:CONtots_write_aux
+
+                /* Extrae los datos necesarios para la reconstruccion */
+	        call siaf:CDSdatos_rjournal
+	     	IF (tlr:jnl_sequence_corr.NUMCHARS == 0) THEN
+		   LET siaf:INDscratch = ofb:tlr:TOTSopen_day
+		   IF (tlr:INDtots_append != siaf:INDscratch) THEN
+		      LET siaf:INDscratch = ofb:tlr:TOTSclose_day
+		      IF (tlr:INDtots_append != siaf:INDscratch) THEN
+			 LET siaf:INDscratch = ofb:siaf:TOTScustom_clear_aux
+			 IF (tlr:INDtots_append != siaf:INDscratch) THEN
+			    CALL CSR:total_list tlr:INDtots_append \
+			    DSC:tlr:CONtots_write_aux tlr:jnl_tran_flags 0
+			 END IF
+		      END IF
+		   END IF
+		END IF
+		CDS FINDNEXT DSC:tlr:CONjnl_write NOLOCK
+		IF (CDSRETVAL != 0) THEN
+		   BREAK
+		END IF
+	    LOOP
+	tlr:INDtots_append = OFB:siaf:TOTSappend_aux
+	CALL tlr:TOTScommit1
+	CALL tlr:TOTSwait_aux
+	
+	;tlr:INDtots_append = OFB:siaf:TOTSappend_dos_aux
+	;CALL tlr:TOTScommit1
+	;CALL tlr:TOTSwait_aux
+
+	;tlr:INDtots_append = OFB:siaf:TOTSappend_gir_aux
+	;CALL tlr:TOTScommit1
+	;CALL tlr:TOTSwait_aux
+
+     //LET tlr:INDtots_append = ofb:siaf:TOTSappend_aux
+     //CALL tlr:TOTSwait_aux
+     //CALL tlr:TOTScommit1
+
+	  else
+	  // No haría falta borrar todo
+	     ;CDS DELETE DSC:tlr:CONtots_write_aux
+	     ;CDS ENDSELECT DSC:tlr:CONtots_write_aux
+	  END IF
+
+	  CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+	  lib:err_retval = cdsretval
+    END WHILE
+
+	
+    /* restaurar los arreglos de totales del operador de la totals_aux */
+    
+    CDS SELECT from DSC:tlr:TABtots becomes DSC:tlr:CONtots_write where \
+    ((tlr:tots_branch == op:op_branch_id) && (tlr:tots_operator == op:op_operator_id))
+    CDS FINDFIRST DSC:tlr:CONtots_write LOCK
+    if (cdsretval == 0) then
+        CDS EXTRACT DSC:tlr:CONtots_write ALL
+    end if
+    
+END SUB
+
+/*******/

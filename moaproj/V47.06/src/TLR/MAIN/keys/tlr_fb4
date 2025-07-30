@@ -1,0 +1,732 @@
+/****o* Reimpresiones por Journal/OFB:tlr:tlr_fb4
+* NOMBRE
+*   OFB:tlr:tlr_fb4
+* DESCRIPCION
+*   Esta rutina se ejecuta cuando dentro de la busqueda del journal se presiona el boton F5(Duplicacion 
+*	de Documentos). Lo que haces es, dependiendo de la tx seleccionada reimprime un documento, si la transaccion
+*	lo hubiese emitido  y si se encuentra la sentencia para que lo haga.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:drv:but_gettag,tlr:KEYScustom_tlr,tlr:teller_functions,tlr:TAG
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2221
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2499
+* SOURCE
+*/
+#include "mainkeys.h"
+
+SUB tlr:tlr_fb4
+	LOCAL importe_tran LIKE siaf:importe
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_msje LIKE common:csr_string
+		
+	//cgw:No se puede hacer reimpresion para inicio de sesion.
+	//    Estaba perdiendose el inicio de sesion en el journal al pedir reimpresion.    
+	IF (siaf:codigo_siaf == 99021) THEN
+		RETURN (0)
+	END IF
+	
+#if CORREO_DEBUG == CORREO_ON
+	CALL post:MISClogMenues("tlr:tlr_fb4")
+#endif
+
+	// FGB 14.02.05: Si estoy cerrando el presupuesto (llamando a la Captura) 
+	// no dejo que se presion el boton 
+	IF (plataf:current_state == CLOSING_BUDGET) THEN
+		RETURN
+	END IF
+	
+	LET drv:last_button = 61 /*TFB4*/
+	LET drv:button = 61 /*TFB4*/
+	CALL  drv:but_down_disable
+	
+	SELECT (post:jnl_flia_tran)
+		CASE "CSP"
+		CASE "CSE"
+			IF (post:usa_franqueadora == "S") THEN
+				MSGBOX "ESTA TRANSACCION NO IMPRIMIO LABELS - USO FRANQUEADORA RAPIDA",0x190,"IMPOSIBLE REIMPRIMIR"
+				BREAK			
+			END IF
+			SELECT (siaf:codigo_siaf)
+				CASE "99080" //Transferencia a otro contenedor
+				CASE "11104" //Tele Carta Documento				
+					MSGBOX "NO EXISTE UNA REIMPRESION ASOCIADA A ESTA TRANSACCION",0x190,"IMPOSIBLE REIMPRIMIR"
+				BREAK
+				CASE "99050"
+			//CASE "99100"
+					/* Req. 126: Reimpresión Guía de Despacho - */
+					/* Nov. 1998 - B. Petrella */
+					IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+						MSGBOX "LA REIMPRESION DEBE REALIZARSE DESDE EL JOURNAL",0x190,"IMPOSIBLE REIMPRIMIR"
+						l_retval = 0
+						BREAK
+					ELSE
+						post:reimpresion = "S"
+						CALL post:MISCresguardo
+						CALL post:CDSborroDetTmp
+						IF (siaf:codigo_siaf == 99050) THEN
+							CALL post:CDScargaDetCteLin
+						ELSE
+							CALL post:CDScargaDetTmpSPost
+						END IF
+						CLEARFIELD post:orden_max
+						IF (siaf:codigo_siaf == 99050) THEN
+							CALL post:MISCimpDespacho
+						ELSE
+							CALL post:MISCimpSurPostal
+						END IF
+						post:reimpresion = "N"
+						CALL post:MISCrecupero
+					END IF
+					BREAK
+				CASE ELSE
+					IF (tlr:jnl_sequence_corr > 0) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR LABELS DE UNA TRANSACCION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF
+					/* Agregado por JPM para que no quieran reimprimir dentro de una transacci¢n */
+					IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+						MSGBOX "LA REIMPRESION DE LABELS DEBE REALIZARSE DESDE EL JOURNAL",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF
+					IF (common:system_date != tlr:jnl_date) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR UN LABEL DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = -2
+						BREAK
+					END IF
+					CALL tes:CDSbuscar_hora_rend
+					IF (post:hora_apertura > tlr:jnl_time ) THEN
+						MSGBOX "NO PERTENECE A BLOQUE APERTURA CIERRE",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = -2
+						BREAK
+					END IF
+					/*Agregado por MFM para que no permita reimprimir si la transaccion es de ayer o si es de hoy antes del cierre de caja*/
+					IF (op:op_operator_id != tlr:jnl_operator) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR UN LABEL DE OTRO OPERADOR",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = -2
+						BREAK
+					END IF
+
+					/* Agregado por JPM para que no quieran reimprimir un label de valor cero */
+					importe_tran = (post:tarifa + post:valor_ar - post:descuento + post:imp_bloques)
+					IF (importe_tran == 0 && post:tipo_produc != 11113) THEN
+						//Solicitud 50086
+						IF (post:jnl_cli_tipo == 5 && post:ModalidadCC) THEN
+							 //AUT-2499 - Se permite la reimpresión de labels de sesión reversada en forma automática
+							 IF (tlr:jnl_status == MEMO) THEN
+								CALL post:MISCreimpreLabelCM
+								UNGETKEY 0x0190 /* RT_ESC */
+								UNGETKEY 0x0190 /* RT_ESC */
+							ELSE
+								MSGBOX "NO PUEDE REIMPRIMIRSE UN LABEL DE UNA SESION REVERSADA AUTOMATICAMENTE.", 0x0190,"AVISO"
+							ENDIF							
+						ELSE
+							IF (post:cliente_interno != "S") THEN
+								MSGBOX "EL IMPORTE DEL LABEL ES CERO. NO PUEDE REIMPRIMIRSE", 0x0190,"AVISO"
+							END IF
+						END IF
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF
+					
+					//gpb:NI50479
+					IF (post:DocFisPed == "NCRED") THEN
+						l_msje = "NO SE PUEDE REIMPRIMIR UN LABEL DE UNA NOTA DE CREDITO PED"
+					ELSEIF (post:DocFisPed == "FACTU") THEN
+						l_msje = "NO SE PUEDE REIMPRIMIR UN LABEL DE UNA REFACTURACION PED"
+					END IF	
+					IF (post:DocFisPed.NUMCHARS > 0) THEN	
+						MSGBOX l_msje,0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = -2
+						BREAK
+					END IF
+					
+					//Verifico si es OperacionCob u OperacionAut para NO reimprimir Labels
+					IF (post:jnl_cli_tipo == 5) THEN
+						CALL post:MISCverifTipoOp
+						IF (RETVAL < 0) THEN
+							BREAK
+						END IF
+					END IF
+					
+					//Rutina que llama a la transaccion de reimpresion de label
+					CALL post:MISCcall_reimpLabel
+					IF (RETVAL < 0) THEN
+						BREAK
+					END IF
+					UNGETKEY 0x0190 /* RT_ESC */
+					UNGETKEY 0x0190 /* RT_ESC */					   	
+				BREAK
+			END SELECT
+		BREAK
+		CASE "TAV"
+			IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+				MSGBOX "LA REIMPRESION DEBE REALIZARSE DESDE EL JOURNAL",0x190,"IMPOSIBLE REIMPRIMIR"
+				l_retval = 0
+				BREAK
+			ELSE
+				IF (tlr:jnl_sequence_corr > 0) THEN
+					MSGBOX "NO SE PUEDEN REALIZAR REIMPRESIONES DE UNA TRANSACCION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+					LET drv:button = 61 /*TFB4*/
+					CALL  drv:but_up_enable
+					l_retval = 0
+					BREAK
+				END IF
+				SELECT (siaf:codigo_siaf)
+					/*gpb:Reimpresion de Ticko Registracion Web*/
+					CASE "6680"
+						IF (tlr:jnl_sequence_corr != 0) THEN
+							ERRMSG LST:common:errmsg_list,"NO SE PUEDE REIMPRIMIR UNA TRANSACCION REVERSADA"
+							l_retval = 0
+							BREAK
+						END IF
+						IF (post:adt_pweb_motivo == "SENAS")
+							post:reimpresion = "S"
+						END IF
+						//CALL FLD:INDdocs_list
+						//gpb:NI50498 - Mercado Libre
+						//CALL post:MISCprint6680_MeLi
+						//gpb:PS10853- Ecommerce
+						CALL post:MISCprint6680_Ecom
+						IF (RETVAL == -1)THEN
+							CALL post:TRANprint6680_Ecom
+						END IF
+						IF (RETVAL == -2) THEN
+							CALL post:TRANprint6680
+						END IF
+						IF (RETVAL == -3) THEN
+							MSGBOX	"EXISTEN MAS DE 10 PIEZAS,DEBERA SOLICITAR A MESA DE AYUDA LA REIMPRESION DE TICKOS",0x190,"IMPOSIBLE REIMPRIMIR" 
+						END IF
+					BREAK
+					CASE "99030"
+						/* Reimpresión Guía de Contenedor - */
+						/* Oct. 1999 - B. Petrella */
+						post:reimpresion = "S"
+						CALL post:MISCresguardoCont
+						CALL post:CDSborroDetTmp
+						IF (post:adt_corteop_ctrl == "S") THEN
+							CALL post:CDScargaDetTmp_Reimp
+						END IF
+						/*CSZ - Verifico si hay o no piezas seleccionadas que son
+						simple especial y calculo cuantas son*/
+						CALL post:CDShay_simp_esp("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)
+						/*MFM - Verifico si hay piezas reencaminadas y las cuento
+						CALL post:CDShay_piezas_reenc("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)*/
+						/*MFM - 6.12.2001)*/
+						IF (post:mostrar_reenc == "S") THEN
+							post:hay_piezas_reenc = "S"
+						ELSE
+							CLEARFIELD post:hay_piezas_reenc
+						END IF
+						CLEARFIELD post:orden_max
+					  //GDLD-681-No imprimir GUIAS CONTENEDOR
+						//CALL post:MISCimpCont
+						post:reimpresion = "N"
+						CALL post:MISCrecuperoCont
+					BREAK
+					CASE "99040"
+						/* Reimpresión Guía de Saca - */
+						/* Oct. 1999 - B. Petrella */
+						post:reimpresion = "S"
+						CALL post:MISCresguardoCont
+						CALL post:CDSborroDetTmp
+						CALL post:CDScargaDetSaca
+						/*CSZ - Verifico si hay o no piezas seleccionadas que son
+						simple especial y calculo cuantas son*/
+						CALL post:CDShay_simp_esp("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)
+						/*MFM - Verifico si hay piezas reencaminadas y las cuento
+						CALL post:CDShay_piezas_reenc("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)*/
+						/*MFM (20.11.2001)*/
+						IF (post:mostrar_reenc == "S") THEN
+							post:hay_piezas_reenc = "S"
+						ELSE
+							CALL post:CDShay_piezas_reenc("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)
+						END IF
+						CLEARFIELD post:orden_max
+						/*Esta rutina imprime las guias y los labels*/
+						CALL post:MISCimpSaca
+						post:reimpresion = "N"
+						CALL post:MISCrecuperoCont
+					BREAK
+					CASE "99050"
+				//CASE "99100"
+						/* Req. 126: Reimpresión Guía de Despacho - */
+						/* Nov. 1998 - B. Petrella */
+						post:reimpresion = "S"
+						CALL post:MISCresguardo
+						CALL post:CDSborroDetTmp
+						IF (siaf:codigo_siaf == 99050) THEN
+							CALL post:CDScargaDetCteLin
+						ELSE
+							CALL post:CDScargaDetTmpSPost
+						END IF
+						CLEARFIELD post:orden_max
+						IF (siaf:codigo_siaf == 99050) THEN
+							/*CSZ - Verifico si hay o no piezas seleccionadas que son
+							simple especial y calculo cuantas son*/
+							CALL post:CDShay_simp_esp("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)
+							/*MFM - Verifico si hay piezas reencaminadas y las cuento*/
+							CALL post:CDShay_piezas_reenc("Expedicion",DSC:post:DetTmp,DSC:post:DetTmp_ctx1)
+							CALL post:MISCimpDespacho
+						ELSE
+							CALL post:MISCimpSurPostal
+						END IF
+						post:reimpresion = "N"
+						CALL post:MISCrecupero
+					BREAK
+					CASE 99013
+					CASE 99014
+						/*MFM - Si es 99013 se reimprimen los labels de reencaminamiento para las piezas simples
+						Si es 99014 se reimprime el label de reencaminamiento para la pieza de control*/
+						post:reimpresion = "S"
+						IF (siaf:codigo_siaf == 99014 ) THEN
+							post:cantidad = 1
+						END IF
+						CALL post:PRTlabel_reenc
+						post:reimpresion = "N"
+					BREAK
+					CASE 99460 //Reimp. Cobranza CliMed
+						IF (common:system_date != tlr:jnl_bus_date) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UN RECIBO DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = -2
+							BREAK
+						END IF
+						IF (post:estado_presu != 1) THEN
+							MSGBOX "TIENE ABIERTA UNA SESION",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF						
+						IF (tlr:jnl_status == MEMO || tlr:jnl_status == HOST_ACCEPTED) THEN
+							IF (post:vec_facturas[0].NUMCHARS != 0) THEN
+								post:reimpresion = "S"
+								CALL post:DOCS99460
+								post:reimpresion = "N"
+							END IF
+						ELSE
+							MSGBOX "TRANSACCION RECHAZADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF
+					BREAK
+					CASE 99430 //Reimp. Adelanto
+						IF (common:system_date != tlr:jnl_bus_date) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UN RECIBO DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = -2
+							BREAK
+						END IF
+						IF (post:estado_presu != 1) THEN
+							MSGBOX "TIENE ABIERTA UNA SESION",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF						
+						IF (tlr:jnl_status == MEMO || tlr:jnl_status == HOST_ACCEPTED) THEN
+							post:reimpresion = "S"
+							CALL post:DOCS99430
+							post:reimpresion = "N"
+						ELSE
+							MSGBOX "TRANSACCION RECHAZADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF						
+					BREAK
+					CASE "99490"
+						IF (common:system_date != tlr:jnl_bus_date) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UN RECIBO DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = -2
+							BREAK
+						END IF
+						IF (post:estado_presu != 1) THEN
+							MSGBOX "TIENE ABIERTA UNA SESION",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF						
+						IF (tlr:jnl_status == MEMO || tlr:jnl_status == HOST_ACCEPTED) THEN
+							//post:reimpresion = "S"
+							//CALL post:DOCSacuse_recibo
+							//post:reimpresion = "N"
+						ELSE
+							MSGBOX "TRANSACCION RECHAZADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF
+					BREAK	
+					CASE "6635" //FEDE VIDA
+						CALL post:TRANprint_fdv_jnl
+						/*IF (RETVAL == -2) THEN
+							CALL post:TRANprint6680
+						END IF*/											
+					BREAK	
+					CASE "18901"
+						MSGBOX "EL COMPROBANTE DEBERÁ REIMPRIMIRSE DESDE EL FIN DE SESION",0x00,"Error"
+					BREAK 
+				END SELECT
+				BREAK
+			END IF
+		CASE "CSV"
+			IF (tlr:jnl_sequence_corr != 0) THEN
+				ERRMSG LST:common:errmsg_list,"NO SE PUEDE REIMPRIMIR UNA TRANSACCION REVERSADA"
+				l_retval = 0
+			ELSE
+				/*Agrego tratamiento para CCT - Gabriel Falciola*/
+				IF (siaf:codigo_siaf == 6670) THEN
+					//cgw:NI50361 - AUT-1974 - PS10340
+					//Verifica que el cupon a reimprimir no se encuentre cancelado
+					CALL post:CDSverif_cupon_canc
+					IF (RETVAL == -2) THEN
+						ERRMSG LST:common:errmsg_list,"NO SE PUEDE REIMPRIMIR LA COBRANZA DE UN CUPON CANCELADO"
+						BREAK
+					ELSE
+						IF (RETVAL == -3) THEN
+							ERRMSG LST:common:errmsg_list,"NO SE PUEDE REIMPRIMIR, CUPON INEXISTENTE"		
+							BREAK
+						END IF
+					END IF
+					//cgw:NI50361 - AUT-1985 - Obs 9
+					//Se agrego que la reimpresion CCT pida supervision
+					SETFLAG tlr:tran_flags,supovr_request
+					SETFLAG siaf:siaf_flags,req_tes
+					SETFLAG siaf:siaf_flags,req_sup1
+					CALL siaf:MISCovr_process
+					IF (RETVAL < 0) THEN
+						BREAK
+					END IF
+					RESETFLAG tlr:tran_flags,supovr_request							
+					post:reimpresion = "S"
+				ELSE
+					IF (siaf:codigo_siaf == 6630) THEN //pago on site
+						post:reimpresion = "S"
+					ELSE
+						// SMC 13-01-1999 se agrego la reimpresion de ingresos varios
+						MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+						MOVE siaf:codigo_siaf TO siaf:adt_mot_submodulo
+					END IF
+				END IF
+				CALL FLD:INDdocs_list
+			end if
+		BREAK
+		CASE "PF"
+			IF (tlr:jnl_sequence_corr != 0) THEN
+				ERRMSG LST:common:errmsg_list,"NO SE PUEDE REIMPRIMIR TRANSACCION REVERSADA"
+				l_retval = 0
+				BREAK
+			END IF
+			;Se agrego que la reimpresion pida supervision
+			SETFLAG tlr:tran_flags,supovr_request
+			SETFLAG siaf:siaf_flags,req_tes
+			SETFLAG siaf:siaf_flags,req_sup1
+			CALL siaf:MISCovr_process
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+			RESETFLAG tlr:tran_flags,supovr_request
+			// PJM 20-07-1998 se agrego la reimpresion de pago facil
+			CALL FLD:INDdocs_list
+		BREAK
+		CASE "CME" /*merchandasing*/
+			SELECT (siaf:codigo_siaf)
+				CASE "40002"
+					IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+						MSGBOX "LA REIMPRESION DEBE REALIZARSE DESDE EL JOURNAL",0x190,"IMPOSIBLE REIMPRIMIR"
+						l_retval = 0
+						BREAK
+					ELSE
+						post:reimpresion = "S"
+						CALL post:CDSprodvs_load
+						IF (post:adt_prodvs_formfisca != "FACTU" && post:adt_prodvs_formfisca != "TICKE") THEN
+							PRINTDOC OFB:post:PRT_venta_prodvs,docprt,"(L) IMPRIMIENDO COMPROBANTE"
+						END IF
+					END IF
+					BREAK
+			END SELECT
+		BREAK
+		CASE "PCL"
+			SELECT (siaf:codigo_siaf)
+				CASE "99470"
+				CASE "99440"
+					IF (tlr:jnl_sequence_corr > 0 || tlr:jnl_status >= HOST_REJECTED) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR UN COMPROBANTE DE UNA SESION REVERSADA O RECHAZADA.",0x190,"IMPOSIBLE REIMPRIMIR"
+						l_retval = -2
+					ELSE
+						post:reimpresion = "S"
+						CALL post:MISCreimpCIMPO
+					ENDIF
+				BREAK
+				CASE "99451"//Reimp. Recibo de Cancelacion de Facturas Vencidas/Aplicacion de transf. bancarias a Adelantos
+				   //cgw:NI50244 - Transferencias Bancarias.
+					IF (tlr:jnl_sequence_corr > 0) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR UN RECIBO DE UNA SESION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF
+					IF (common:system_date != tlr:jnl_bus_date) THEN
+						MSGBOX "NO SE PUEDE REIMPRIMIR UN RECIBO DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = -2
+						BREAK
+					END IF
+					IF (post:estado_presu != 1) THEN
+						MSGBOX "TIENE ABIERTA UNA SESION",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF						
+					IF (tlr:jnl_status == MEMO || tlr:jnl_status == HOST_ACCEPTED) then
+						IF (post:OperacionCan) THEN
+							post:reimpresion = "S"
+							CALL post:DOCS99461
+							//post:reimpresion = "N"
+						ELSE
+							IF (post:Adelanto_TB) THEN //marca de Adelanto de Transf.Bancarias.
+								//cgw:NI50244 - Aplicacion de transf. bancarias a Adelantos
+								CALL post:DOCS99453
+							END IF    
+						END IF
+						post:reimpresion = "N"
+					ELSE
+						MSGBOX "TRANSACCION RECHAZADA",0x190,"IMPOSIBLE REIMPRIMIR"
+						LET drv:button = 61 /*TFB4*/
+						CALL  drv:but_up_enable
+						l_retval = 0
+						BREAK
+					END IF
+				BREAK			
+				CASE "99023"
+					//gpb:NI50498 - Mercado Libre
+					IF (post:es_WEB == "X") THEN
+						//CALL post:MISCprint6680_MeLi
+						//IF (RETVAL == -1)THEN
+						//	CALL post:TRANprint6680_MeLi
+						//END IF
+
+						//gpb:PS10853- Ecommerce
+						CALL post:MISCprint6680_Ecom
+						IF (RETVAL == -1)THEN
+							//gpb:PS10853- Ecommerce
+							CALL post:TRANprint6680_Ecom
+						END IF
+					END IF
+				
+					IF (post:es_PrePaq == "S")
+						IF (tlr:jnl_sequence_corr > 0)
+							MSGBOX "NO SE PUEDEN REIMPRIMIR COMPROBANTES DE UNA SESION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0							
+						ELSE
+							CALL post:TRANprintPrePaq
+						END IF
+					END IF
+				
+					//gpb:NI50479
+					IF (post:DocFisPed == "NCRED") THEN
+						IF (tlr:jnl_sequence_corr > 0) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR NC PED DE UNA SESION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF
+						
+						IF (post:ReimpDocFisPed == 3) THEN
+							MSGBOX "A SUPERADO LA CANTIDAD DE REIMPRESIONES DE NC PED",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK							
+						ELSE
+							post:reimpresion = "S"
+							//REIMPRESION DE NOTA DE CREDITO PED
+							CALL post:MISCReimpNCped
+							post:reimpresion = "N"
+							IF (RETVAL < 0) THEN
+								LET drv:button = 61 /*TFB4*/
+								CALL  drv:but_up_enable
+								l_retval = 0
+								BREAK		
+							END IF
+							l_retval = 0
+						END IF
+					END IF
+				
+					IF (post:Tipo_Formulario == IRP) THEN
+						IF (tlr:jnl_sequence_corr > 0) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR IRP DE UNA SESION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+							LET drv:button = 61 /*TFB4*/
+							CALL  drv:but_up_enable
+							l_retval = 0
+							BREAK
+						END IF
+						post:es_reimpre = "S"
+						post:cli_tipo = 1
+						CALL post:MISCmanejoImpreIrp()
+						CLEARFIELD post:es_reimpre
+						CLEARFIELD post:cli_tipo
+					ELSE
+						IF (post:OperacionNC) THEN
+							IF (tlr:jnl_sequence_corr > 0 || tlr:jnl_date != common:system_date) THEN
+								MSGBOX "NO SE PUEDE REIMPRIMIR UNA NOTA DE CREDITO DE UNA SESION REVERSADA O DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"
+								LET drv:button = 61 /*TFB4*/
+								CALL  drv:but_up_enable
+								l_retval = 0
+								BREAK
+							ELSE
+								//pido supervision
+								SETFLAG tlr:tran_flags,supovr_request
+								SETFLAG siaf:siaf_flags,req_tes
+								SETFLAG siaf:siaf_flags,req_sup1
+								CALL siaf:MISCovr_process
+								IF (RETVAL < 0) THEN
+									l_retval = -2
+								ELSE
+									post:reimpresion = "S"
+									//REIMPRESION DE NOTA DE CREDITO
+									CALL post:MISCReimpresionNC
+									post:reimpresion = "N"
+									l_retval = 0
+								END IF
+							END IF
+						ELSE
+							//50385 - Impresion de acuse de recibo en la factura de CM con modalidad cobro diferido
+							IF (post:ModalidadCD && !post:OperacionInt && !post:OperacionCob && !post:OperacionAut) THEN
+								IF (tlr:jnl_sequence_corr == "") && (tlr:jnl_status != 100) && \
+									(tlr:jnl_date == common:system_date ) THEN
+									post:reimpresion = "S"
+									CALL post:DOCSacuse_recibo
+									post:reimpresion = "N"
+									l_retval = 0
+									BREAK
+								ELSE
+									MSGBOX "NO SE PUEDE REIMPRIMIR EL ACUSE DE RECIBO DE UNA SESION REVERSADA O DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"                               
+									l_retval = -2
+									BREAK
+								END IF
+							END IF                            
+  
+							IF (post:OperacionAut) THEN
+								IF (tlr:jnl_sequence_corr == "") && (tlr:jnl_status != 100) && \
+									(tlr:jnl_date == common:system_date ) THEN
+									post:reimpresion = "S"
+									CALL post:DOCSacuse_recibo
+									post:reimpresion = "N"
+									l_retval = 0
+									BREAK
+								ELSE
+									MSGBOX "NO SE PUEDE REIMPRIMIR EL ACUSE DE RECIBO DE UNA SESION REVERSADA O DE DIAS ANTERIORES",0x190,"IMPOSIBLE REIMPRIMIR"                               
+									l_retval = -2
+									BREAK
+								END IF
+							END IF
+					    	
+							post:reimpresion = "S"
+							CALL post:DOCSreportesCREM
+							IF (RETVAL == -2) THEN
+								MSGBOX "NO SE PUEDE REIMPRIMIR LOS FORMULARIOS DE RENDICION DE CONTRA REEMBOLSO DE UNA SESION REVERSADA",0x190,"IMPOSIBLE REIMPRIMIR"
+								LET drv:button = 61 /*TFB4*/
+								CALL  drv:but_up_enable
+								l_retval = 0
+								BREAK
+							END IF
+						END IF
+					END IF
+					BREAK
+				END SELECT
+			BREAK
+		CASE "CSM"
+			SELECT (siaf:codigo_siaf)
+				CASE "70120"
+					post:reimpresion = "S"
+					CALL giros:MISCreciboPEC
+					break
+				//NI Reemplazo Cheque Giro Postal
+				case "70030" //REIMPRESION ORDEN DE PAGO POR JOURNAL GP
+				case "70040" //REIMPRESION ORDEN DE PAGO POR JOURNAL GPO
+				case "70041" //REIMPRESION ORDEN DE PAGO POR JOURNAL GP CREM
+				//case "95000" //REIMPRESION ORDEN DE PAGO POR JOURNAL GP CREM sin CONEXION
+					if (tlr:jnl_sequence_corr > 0) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UNA ORDEN DE PAGO DE UNA TRANSACCION REVERSADA.",0x190,"IMPOSIBLE REIMPRIMIR"
+					else
+						IF (common:system_date != tlr:jnl_date) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UNA ORDEN DE PAGO DE DIAS ANTERIORES.",0x190,"IMPOSIBLE REIMPRIMIR"
+						else
+							post:reimpresion = "S"
+							PRINTDOC OFB:giros:PRT_OP_EmisGP,docprt,"(L)IMPRIMIENDO ORDEN DE PAGO"		
+						endif
+					endif
+					BREAK
+				//NI Reemplazo Cheque Giro Postal
+				case "70090" //REIMPRESION ORDEN DE PAGO POR JOURNAL de PAGO DE GP/GPO
+				case "70160" //REIMPRESION ORDEN DE PAGO POR JOURNAL de PAGO DE REEMBOLSO GP
+				case "70161" //REIMPRESION OP POR JOURNAL DE PAGO DE REEMBOLSO DE GIROS POSTAL OFIC.
+					/*if (tlr:jnl_sequence_corr > 0) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UNA ORDEN DE PAGO DE UNA TRANSACCION REVERSADA.",0x190,"IMPOSIBLE REIMPRIMIR"
+					else
+						IF (common:system_date != tlr:jnl_date) THEN
+							MSGBOX "NO SE PUEDE REIMPRIMIR UNA ORDEN DE PAGO DE DIAS ANTERIORES.",0x190,"IMPOSIBLE REIMPRIMIR"
+						else
+							post:reimpresion = "S"
+							PRINTDOC OFB:giros:PRT_OP_PagoGP,docprt,"(L)IMPRIMIENDO ORDEN DE PAGO"		
+						ENDIF
+					endif*/
+					BREAK
+			END SELECT
+			BREAK				
+		CASE ELSE
+			CALL  tlr:KEYSdup_receipt
+		BREAK
+	END SELECT
+	
+	LET drv:button = 61 /*TFB4*/
+	CALL  drv:but_up_enable
+	CLEARFIELD siaf:adt_tran_modpresu
+	IF (l_retval == 0) THEN
+		RETURN 0
+	END IF
+	IF (l_retval < 0) THEN
+		RETURN -2
+	END IF
+END SUB
+
+/*******/

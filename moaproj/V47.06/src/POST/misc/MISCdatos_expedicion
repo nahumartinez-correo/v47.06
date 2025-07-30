@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdatos_expedicion
+* NOMBRE
+*   OFB:post:MISCdatos_expedicion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdatos_expedicion
+/*CREADA POR MFM - Agosto 2000 - Tengo que grabar en el Scaneo 15 y 16 el corte, grupo, apertura, tipo de saca y
+tipo de despacho de la pieza.
+También debo saber si la pieza tiene que ir al contenedor y/o saca y/o despacho*/
+
+	/*Busco en la Tabla de Relaciones por Modelo el Tipo de Saca y Tipo de Despacho*/
+	CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+	WHERE post:adt_relMod_modelos == common:br_modelo && \
+	post:adt_relMod_grucorte ==  adt_novtt_grupo && \
+	post:adt_relMod_corteop == adt_novtt_corte && \
+	post:adt_relMod_apertura == adt_novtt_apertura
+	CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CLEARFIELD adt_relMod_sacatipo
+		CLEARFIELD adt_relMod_desptipos
+		CLEARFIELD adt_relMod_despacho
+		CDS EXTRACT DSC:adt_relMod_ctx \
+		adt_relMod_sacatipo \
+		adt_relMod_desptipos \
+		adt_relMod_despacho					
+		adt_novtt_saca_tipo = adt_relMod_sacatipo
+		adt_novtt_despacho = adt_relMod_desptipos
+	END IF
+	CDS ENDSELECT DSC:adt_relMod_ctx
+	
+	/*Busco en la tabla de Tipo De Despacho la Descripción del Tipo de Despacho*/
+	IF (adt_relMod_despacho.numchars != 0) THEN
+		adt_novtt_desc = adt_relMod_despacho
+	ELSE 
+		CDS SELECT FROM DSC:adt_desptipos_tbl BECOMES DSC:adt_desptipos_ctx \
+		WHERE post:adt_desptipos_cod == adt_novtt_despacho
+		CDS FINDFIRST DSC:adt_desptipos_ctx NOLOCK
+		IF (CDSRETVAL == -801) THEN
+			adt_novtt_desc = "Sin Descripcion"
+		ELSE
+			CLEARFIELD adt_desptipos_desc
+			CDS EXTRACT DSC:adt_desptipos_ctx adt_desptipos_desc
+			adt_novtt_desc = adt_desptipos_desc
+		END IF
+		CDS ENDSELECT DSC:adt_desptipos_ctx
+		
+	END IF
+	CDS ENDSELECT DSC:adt_relMod_ctx
+	
+	/*Busco en la tabla Saca_Tipo la Descripción del Tipo de Saca*/
+	adt_novtt_saca_desc = ""
+	IF (adt_novtt_saca_tipo.numchars != 0) THEN
+		CDS SELECT FROM DSC:adt_sacatipo_tbl BECOMES DSC:adt_sacatipo_ctx \
+		WHERE adt_sacatipo_cod == adt_novtt_saca_tipo
+		CDS FINDFIRST DSC:adt_sacatipo_ctx NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			CLEARFIELD adt_sacatipo_desc
+			CDS EXTRACT DSC:adt_sacatipo_ctx adt_sacatipo_desc
+			adt_novtt_saca_desc = adt_sacatipo_desc
+		END IF
+		CDS ENDSELECT DSC:adt_sacatipo_ctx
+	END IF
+	
+	/*MFM - Obs 430 V4.00*/
+	if (post:adt_novtt_sap == "") then //si no estoy en un cliente cuenta correntista.
+			//NI 50552 - Si la pieza se entrega en la misma sucursal entonces se fuerzan los campos de expedicion en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+					adt_novtt_contenedor = "N"
+					adt_novtt_saca = "N"
+					adt_novtt_desp = "N"
+		else
+			adt_novtt_contenedor = adt_corteop_guiacont
+			adt_novtt_saca = adt_corteop_saca
+			adt_novtt_desp = adt_corteop_despacho	
+		endif
+		//Cuando sea una devolución minorista (99062) o descentralizada sin lote (990624)...
+		IF (siaf:codigo_siaf == 99062 || siaf:codigo_siaf == 99064) THEN
+			adt_novtt_contenedor = jnl_corteop_guiacont 
+			adt_novtt_saca = jnl_corteop_saca
+			adt_novtt_desp = jnl_corteop_despacho	
+		ELSE
+			//Estarán vacíos cuando esté en Carga de T&T ;lo dejo por las dudas.
+			//NI 50552 - Si la pieza se entrega en la misma sucursal entonces se fuerzan los campos de expedicion en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+					adt_novtt_contenedor = "N"
+					adt_novtt_saca = "N"
+					adt_novtt_desp = "N"
+			else
+
+					IF (adt_novtt_contenedor.numchars == 0) THEN
+						adt_novtt_contenedor = jnl_corteop_guiacont 
+					END IF
+					IF (adt_novtt_saca.numchars == 0) THEN
+						adt_novtt_saca = jnl_corteop_saca
+					END IF
+					IF (adt_novtt_desp.numchars == 0) THEN
+						adt_novtt_desp = jnl_corteop_despacho	
+					END if
+			ENDIF
+		END IF
+	else ;es cuenta correntista
+	 	/*MFM - Obs 430 V4.00*/
+    	adt_novtt_contenedor = jnl_corteop_guiacont 
+		adt_novtt_saca = jnl_corteop_saca
+		adt_novtt_desp = jnl_corteop_despacho	
+		//PS 6924 que este campo tenga valor no significa que sea por ser cta cte, puede
+		//ser una carta documento laboral!!
+		IF (adt_novtt_contenedor.numchars == 0) THEN
+			adt_novtt_contenedor = adt_corteop_guiacont
+		end if
+		IF (adt_novtt_saca.numchars == 0) THEN
+			adt_novtt_saca = adt_corteop_saca
+		endif
+		IF (adt_novtt_desp.numchars == 0) THEN
+			adt_novtt_desp = adt_corteop_despacho	
+		endif
+	end if
+
+	/*Busco descripción del tipo de Grupo*/
+	adt_novtt_grupo_desc = ""
+	CDS SELECT FROM DSC:CorteGrupo_table BECOMES DSC:CorteGrupo_ctx \
+	WHERE post:adt_grucorte_cod == adt_novtt_grupo
+	CDS FINDFIRST DSC:CorteGrupo_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CLEARFIELD adt_grucorte_desc
+		CDS EXTRACT DSC:CorteGrupo_ctx FLD:post:adt_grucorte_desc
+		adt_novtt_grupo_desc = adt_grucorte_desc
+	END IF
+	CDS ENDSELECT DSC:CorteGrupo_ctx
+	
+	/*Busco descripción de Apertura*/
+	adt_novtt_apert_desc = ""
+	CDS SELECT FROM DSC:adt_aper_tbl BECOMES DSC:adt_aper_ctx \
+	WHERE post:adt_apertura_cod == post:adt_novtt_apertura
+	CDS FINDFIRST DSC:adt_aper_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:adt_aper_ctx post:adt_apertura_desc
+		adt_novtt_apert_desc = adt_apertura_desc
+	END IF
+	CDS ENDSELECT DSC:adt_aper_ctx
+	
+			
+END SUB	
+
+/*******/

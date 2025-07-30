@@ -1,0 +1,72 @@
+/****o* Pendientes de agrupación/OFB:post:MISCfix_LoteCie_pend
+* NOMBRE
+*   OFB:post:MISCfix_LoteCie_pend
+* DESCRIPCION
+*   Rutina de contingencia, actualiza la marca post:adt_opvpi_batchClose = "S" en la tabla OperacionesVPI
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCver_LoteCie_pend
+* DOCUMENTACION
+*   NI50525 POS Integrado
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCfix_LoteCie_pend(tipo)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_cdsretval LIKE lib:err_retval
+	LOCAL l_issuerCode LIKE post:adt_opvpi_issuerCode
+	LOCAL l_batchNumb LIKE post:adt_opvpi_batchNumb
+	LOCAL l_terminalID LIKE post:adt_opvpi_terminalID
+	LOCAL l_batchClose LIKE post:adt_opvpi_batchClose
+	
+	LET l_batchClose = "S"
+	
+	SELECT (tipo)
+		CASE "APER_CAJA"
+		CASE "CIERRE_CAJA"
+			CDS SELECT FROM DSC:post:OperacionesVPI_tbl BECOMES DSC:OperacionesVPI_ctx \
+				WHERE	post:adt_opvpi_termi_win == common:window_node \
+				&& post:adt_opvpi_batchClose == "N"
+		BREAK
+		CASE "CIERRE_SUC"	
+			CDS SELECT FROM DSC:post:OperacionesVPI_tbl BECOMES DSC:OperacionesVPI_ctx \
+				WHERE post:adt_opvpi_batchClose == "N"		
+		BREAK
+	END SELECT
+		
+	CDS FINDFIRST DSC:OperacionesVPI_ctx LOCK
+	LET l_cdsretval = CDSRETVAL
+	WHILE (l_cdsretval == 0) 
+		CDS EXTRACT DSC:OperacionesVPI_ctx \
+			post:adt_opvpi_issuerCode INTO l_issuerCode \
+			post:adt_opvpi_batchNumb INTO l_batchNumb \
+			post:adt_opvpi_terminalID	INTO l_terminalID
+		
+  	CDS SELECT FROM DSC:post:LoteCIE_tbl BECOMES DSC:post:LoteCIE_ctx \
+  		WHERE post:adt_lcie_issuerCode == l_issuerCode \
+  		&& post:adt_lcie_batchNumber == l_batchNumb \
+  		&& post:adt_lcie_terminalID == l_terminalID
+  	
+  	CDS FINDFIRST DSC:post:LoteCIE_ctx NOLOCK
+  	IF (CDSRETVAL == 0) THEN
+				CDS APPEND DSC:post:OperacionesVPI_ctx l_batchClose AS post:adt_opvpi_batchClose
+				CDS UPDATE DSC:post:OperacionesVPI_ctx LOCK
+  	END IF
+  	CDS ENDSELECT DSC:post:LoteCIE_ctx
+  	
+  	CDS FINDNEXT DSC:OperacionesVPI_ctx LOCK
+  	LET l_cdsretval = CDSRETVAL
+  END WHILE	
+
+	CDS UNLOCK DSC:OperacionesVPI_ctx
+ 	CDS ENDSELECT DSC:OperacionesVPI_ctx
+		
+END SUB
+
+/*******/

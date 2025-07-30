@@ -1,0 +1,147 @@
+/****o* Pendientes de agrupación/OFB:post:MISCselectTxDcto
+* NOMBRE
+*   OFB:post:MISCselectTxDcto
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+/*Si la transaccion seleccionada tiene PreDNroTrnAsoc, entonces se seleccionan 
+automaticamente las demas transcciones que pertenecen a su grupo*/        
+
+SUB post:MISCselectTxDcto(lagrup,lpos)
+    local loc_pos     like siaf:i
+    local loc_pos2    like siaf:i
+    local loc_posorig like siaf:i
+    local loc_agrup   like post:cod_agrupacion
+    local loc_estado  like lib:err_retval
+    local loc_string  like common:csr_string
+    local loc_string2 like common:csr_string
+    local loc_item    like common:csr_string
+    local loc_idx_fin like post:TranAnul_idx
+	local flag 		  like siaf:i
+    local sec 		  like tlr:jnl_sequence
+	local sec_pic	  like tlr:jnl_sequence
+
+		
+	loc_posorig = lpos
+	loc_agrup = lagrup
+	loc_pos = 0	   
+
+	CALL MISCestado_tran(loc_posorig)
+	loc_estado = retval
+
+	sec = TranAnul_vec[lpos][1]
+	
+
+	/* Agrego un chequeo previo para saber si alguna de las transacciones
+	de la agrupacion fue expedida y no se puede anular, por lo tanto no puedo
+	anular ninguna de las transacciones asociadas */
+	if (loc_estado == 0) && (lagrup != 0) then
+		flag = 0
+		idx = PL_GETITEM + 0
+    	call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string,idx)
+    	
+    	WHILE (!(retval < 0) && (flag == 0))
+
+			sec_pic = substr(common:csr_string,61,4)
+            common:csr_string_171 = common:csr_string
+                
+            /*marco o desmarco a todas las tansacciones con igual codigo de agrupacion*/            
+           	fprint common:csr_string "%s"  substr(common:csr_string,138,5)
+            call csr:trimfield(common:csr_string)
+          
+			if (common:csr_string == loc_agrup && sec != sec_pic)            
+				call post:MISCVerif_Marca /*common:csr_string_171*/
+				if (retval < 0) then
+					/* Desmarco la transaccion original  */
+					flag = 1
+					if (loc_estado == 0) //esta marcada
+	                    CALL post:MISCdesmarca_tran(loc_posorig)
+	                else                 //esta desmarcada                    
+	                    CALL post:MISCmarca_tran(loc_posorig)
+	                end if
+				end if					
+            end if
+            
+            loc_pos = loc_pos + 1
+            
+			idx = PL_GETITEM + loc_pos
+			call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string,idx)
+		END WHILE	
+	end if
+	if (flag == 1 ) then
+		return 
+	end if
+	// FIN ML
+
+	loc_pos = 0
+	idx = PL_GETITEM + 0
+    call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string,idx)
+    WHILE (!(retval < 0))
+ 
+ 			sec_pic = substr(common:csr_string,61,4)
+           
+            /*marco o desmarco a todas las tansacciones con igual codigo de agrupacion*/            
+            fprint loc_string2 "%s"  substr(common:csr_string,138,5)
+            call csr:trimfield(loc_string2)
+            if (loc_string2 == loc_agrup && sec != sec_pic)
+                loc_idx_fin = TranAnul_idx + 12
+                if ((loc_pos > TranAnul_idx || loc_pos == TranAnul_idx) && loc_pos < loc_idx_fin) /*La marca se visualiza en la pantalla y tambien se marca el picklist dinamico*/
+                    loc_pos2 = loc_pos - TranAnul_idx
+                    if (loc_estado == 0) //esta marcada
+                        CALL post:MISCmarca_tran(loc_pos2)
+                    else                 //esta desmarcada                    
+                        CALL post:MISCdesmarca_tran(loc_pos2)
+                    end if
+                    /*CALL post:MISCsel_tran(loc_pos2)*/
+                else /*Solo se marca el picklist dinamico*/
+                
+                    if (loc_estado == 0) //esta marcada
+                        loc_string = substr(common:csr_string,61,4)
+			            if (substr(common:csr_string,0,5) == 70322 || substr(common:csr_string,0,5) == 70323)
+				            fprint loc_string "%s S", loc_string
+			            else
+				            fprint loc_string "%s N", loc_string
+			            endif
+			            CALL CSR:f_saaddpl dsc:PICtran_sel loc_string
+			            CALL CSR:f_saaddpl dsc:PICtran_sel_agrupa substr(common:csr_string,138,5)
+                        
+                    else         //esta desmarcada                    
+                        /*borra*/
+                        idx = PL_GETITEM
+                        call csr:myPickcontrol(dsc:PICtran_sel,loc_string,idx)
+                        WHILE (!(retval < 0))                            
+                            if (substr(loc_string,0,4) == substr(common:csr_string,61,4))
+                                idx = idx - PL_GETITEM
+                                CALL CSR:myPickdelete(dsc:PICtran_sel,loc_string,idx)
+                    			CALL CSR:myPickdelete(dsc:PICtran_sel_agrupa,loc_string,idx)
+                    			idx = idx - 1 + PL_GETITEM
+                            end if
+                            idx = idx + 1                            
+                            call csr:myPickcontrol(dsc:PICtran_sel,loc_string,idx)                            
+                        EndWhile
+                        /*fin borrar*/                                 
+                    end if                                                    
+                end if
+            end if
+            
+            loc_pos = loc_pos + 1
+            
+			idx = PL_GETITEM + loc_pos
+			call csr:myPickcontrol(dsc:PICanulacion_tran,common:csr_string,idx)
+	END WHILE		
+END SUB    
+
+/*******/

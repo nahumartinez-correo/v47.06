@@ -1,0 +1,614 @@
+ /****o* Servicios Postales/OFB:post:JNLgral
+* NOMBRE
+*   OFB:post:JNLgral
+* DESCRIPCION
+*   Rutina de Journalizacion de campos de servicios postales
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANgral,OFB:post:MISCCampos_Flia,post:MISCfin_TxCtrol
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLgral
+	LOCAL x LIKE post:cantidad
+	LOCAL siniva_rep like post:ImpSinIva_serv
+	
+	IF (siaf:codigo_siaf == 12901 || siaf:codigo_siaf == 12902)
+		//Bolsines... usa cod_ctrol en lugar de T&T
+		CALL CSR:trimfield(cod_ctrol)
+		IF (cod_ctrol.NUMCHARS > 13)
+			track_trace = SUBSTR(cod_ctrol,0,13)
+		ELSE
+			track_trace = cod_ctrol
+		END IF
+	END IF
+
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:tipo_produc \
+		FLD:post:prod_cli \
+		FLD:post:adt_tarif_cfenix \
+		FLD:post:NroCompPago2 \
+		FLD:post:tarifa \
+		FLD:post:costo_opc \
+		FLD:post:tipo_descto \
+		FLD:post:descuento \
+		FLD:siaf:importe \
+		FLD:post:adt_serv_umstd \
+		FLD:post:adt_serv_nemonico \
+		FLD:post:tipo_caja \
+		FLD:post:destino \
+		FLD:post:via \
+		FLD:post:nro_ctrol
+
+	/* JOURNALIZA PROMOCION MDG */
+	IF (post:promo_tot_Serv == 0 ) then	// ESTO ES PARA SABER SI LA PROMOCION
+		post:promo_aplica = "N"			// SE APLICA O NO MDG
+		post:promo_desc = ""
+		post:promo_inhibeUpServ = "N"
+	ELSE
+		post:promo_aplica = "S"
+	END IF
+    
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:promo_desc \
+		FLD:post:promo_cod \
+		FLD:post:promoSrvTipoBon AS post:promoTipoBon \
+		FLD:post:promoBlqTipoBon \
+		FLD:post:promo_inhibeUpServ AS post:promo_inhibeUp \
+		FLD:post:promo_imp_srv_tot \
+		FLD:post:promo_imp_blq_tot \
+		FLD:post:promo_imp_tot_opc \
+		FLD:post:promo_srv_bon AS promo_bon \
+		FLD:post:promo_blq_bon \
+		FLD:post:promo_aplica \
+		FLD:post:promo_imp_tot_ind \
+		FLD:post:promo_tot_Serv AS post:fld_promo_imp \
+		FLD:post:promo_tot_Serv
+                
+	x = 0
+	DO
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:promo_imp_opc_tot[x] \
+			FLD:post:promo_imp_opc_ind[x] \
+			FLD:post:promo_opc_bon[x] \
+			FLD:post:promoOpcTipoBon[x]
+		x = x + 1
+		IF (x > 5) THEN
+			BREAK
+		END IF
+	LOOP
+    
+	/* Campos Necesarios Para el reverso de operaciones */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:ImporteConIvaNeto \
+		FLD:post:ImporteSinIvaNeto
+
+	/* Campos Necesarios Para Expedición */
+	IF (!TESTFLAG(tlr:tran_flags,correction))
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:adt_serv_corteop AS post:jnl_corteop_cod
+	ELSE
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_corteop_cod
+	END IF
+    
+	/* Para las Simples no journalizo este campo */
+	IF (post:adt_corteop_ctrl == "S" || adt_serv_simp_esp == "S") THEN
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_guia_cont
+	END IF
+        
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_fecha_llencont \
+		FLD:post:jnl_hora_llencont
+                    
+	/* Para las Simples no journalizo este campo */
+	IF (post:adt_corteop_ctrl == "S"|| adt_serv_simp_esp == "S") THEN
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_guia_saca
+	END IF
+        
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_fecha_llensaca \
+		FLD:post:jnl_hora_llensaca
+
+	//Este campo se agregó para poder marcar las piezas recibidas en la TX de recepción de piezas
+	//de otro op., para que en la TX de transf. de pzas no se puedan volver a transferir.
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:jnl_pieza_recibida
+
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_precinto \
+		FLD:post:jnl_caratula \
+		FLD:post:jnl_corteop_apert
+	if (post:adt_corteop_ctrl == "S" || adt_serv_simp_esp == "S") THEN
+		IF (!TESTFLAG(tlr:tran_flags,correction))
+			//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+				post:adt_corteop_guiacont = "N"
+			endif
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:adt_corteop_guiacont AS FLD:post:jnl_corteop_guiacont
+		ELSE
+				//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+					post:jnl_corteop_guiacont = "N"
+				endif
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:jnl_corteop_guiacont
+		END IF
+	END IF
+
+	/* Journalizo el Código Postal */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_corteop_conrest
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:cp
+
+	/* Journalizo los campos del Peso. */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_serv_pesable
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:peso_en_grs \
+		FLD:post:peso_en_kgs
+
+	/* Journalizo el T&T y la Cantidad */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_serv_piezacont
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:track_trace \
+		FLD:post:cantidad \
+		FLD:post:cant_aux
+
+	/* Journalizo las Medidas del Envío */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_serv_medidas
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:aforo1 \
+		FLD:post:aforo2 \
+		FLD:post:aforo3 \
+		FLD:post:aforo
+	                
+	/* Journalizado para SurPostal */
+	IF (!TESTFLAG(tlr:tran_flags,correction))
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:adt_corteop_exprap AS post:jnl_expedic_rapida
+	ELSE
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_expedic_rapida
+	END IF
+
+	/* Carina - Journalizo el flag de Cliente Interno, un campo con una "S" o "N"
+	y el campo observaciones */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:cliente_interno \
+		FLD:cli_int_obs \
+		FLD:uso_int_flag
+
+	/* Journalizo los Datos del Remitente y del Destinatario */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:tiene_ar
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:nombre_rte \
+		FLD:nombre_des \
+		FLD:apellido_rte \
+		FLD:apellido_des \
+		FLD:domicilio_rte \
+		FLD:domicilio_des \
+		FLD:altura_rte \
+		FLD:altura_des \
+		FLD:piso_rte \
+		FLD:piso_des \
+		FLD:depto_rte \
+		FLD:depto_des \
+		FLD:cod_post_rte \
+		FLD:cod_post_des \
+		FLD:localidad_rte \
+		FLD:localidad_des \
+		FLD:provincia_rte \
+		FLD:provincia_des
+
+	/* Journalizo los Opcionales */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:cant_opc
+
+	x = 0
+	DO
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:cod_opc[x] \
+			FLD:post:cos_opc[x] \
+			FLD:post:cor_opc[x] \
+			FLD:post:vec_opc2[x] \
+			FLD:post:ali_opc[x] \
+			FLD:post:inf_opc[x] \
+			FLD:post:siniva_opc[x] \
+			FLD:post:comb_opc[x] \
+			FLD:post:flia_opc[x] \
+			FLD:post:bonifCM_opc[x] \
+			FLD:post:dif_opc[x] \
+			FLD:post:jnl_dif_opc[x]
+		//ACP-SC50170 - Propuesta superadora
+		x = x + 1
+		IF (x > 5) THEN
+			BREAK
+		END IF
+	LOOP
+
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:tiene_vd \
+		FLD:post:tiene_cre \
+		FLD:post:valor_ar \
+		FLD:post:valor_cre \
+		FLD:post:valor_dec \
+		FLD:post:PreDForFis
+
+	;PJM agregado por Teclas Rapida
+	IF ( estado_presu == 1 ) THEN
+		CDS APPEND DSC:tlr:CONjnl_write FLD:post:nro_impre
+	END IF
+    
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:NroCompPago
+
+	;CSZ se journaliza el rango desde/hasta del peso o medida des servicio
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:adt_tarif_desde \
+		FLD:post:adt_tarif_hasta
+
+
+	/*Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	CDS APPEND DSC:tlr:CONjnl_write FLD:INDticket_laser
+
+	/*Journalizo campos para Expedicion Interior*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:apertura
+	IF (!TESTFLAG(tlr:tran_flags,correction))
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:apertura AS post:jnl_apertura_cod \
+			FLD:post:grucorte AS post:jnl_grucorte_cod
+	ELSE
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_apertura_cod \
+			FLD:post:jnl_grucorte_cod
+	END IF
+
+	IF (post:adt_corteop_ctrl == "S" || adt_serv_simp_esp == "S") THEN
+		IF (!TESTFLAG(tlr:tran_flags,correction))
+		//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+				post:adt_corteop_saca = "N"
+			endif
+		
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:adt_corteop_saca AS post:jnl_corteop_saca
+		else
+		//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+				post:jnl_corteop_saca = "N"
+			endif
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:jnl_corteop_saca
+		END IF
+	END IF
+
+	/* Se incorpora el campo adt_corteop_despacho */
+	IF (post:adt_corteop_ctrl == "S" || adt_serv_simp_esp == "S") THEN
+		IF (!TESTFLAG(tlr:tran_flags,correction))
+			//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+				post:adt_corteop_despacho = "N"
+			endif
+		
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:adt_corteop_despacho AS post:jnl_corteop_despacho
+		else
+			//NI 50552 - se fuerza en N porque estas piezas no deben expedirse, solo entregarse
+			if (post:ent_misma_suc == "S")
+				post:jnl_corteop_despacho = "N"
+			endif
+		
+			CDS APPEND  DSC:tlr:CONjnl_write \
+				FLD:post:jnl_corteop_despacho
+		END IF
+	END IF
+
+	//PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+	CALL post:JNLcamp_nota_credito
+	
+	CDS APPEND DSC:tlr:CONjnl_write FLD:post:cont_jnl
+
+	/* Para las Simples no journalizo este campo */
+	IF (post:adt_corteop_ctrl == "S" || adt_serv_simp_esp == "S") THEN
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			FLD:post:jnl_guia_despacho
+	END IF
+    
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:jnl_fecha_despacho \
+		FLD:post:jnl_hora_despacho
+
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:tiene_rafe \
+		FLD:post:cod_ctrol
+
+	/*Se agregan campos para el cálculo de Ingresos Brutos - Gabriel Falciola*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		ImporteConIva ImporteSinIva
+
+	/*Se incorpora el campo que resguarda la medida usada para calcular la tarifa
+	del producto*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:adt_tarif_um
+	
+	/*Se agregan 2 campos equivalentes para el ambiente SAP, Mariano Gecik.- */
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:adt_tarif_hasta_eq \
+		FLD:post:adt_tarif_um_eq
+	
+	/*Journalizo los 3 campos requeridos para el*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:cant_bloq \
+		FLD:post:imp_bloques \
+		FLD:post:adt_bloque_descor
+
+	/* Se agrega un campo necesario de conocer en la reversa - JPM - 07/2000 */
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:adt_corteop_ctrl
+	
+	/* Se agrega un campo necesario para que se dibuje en la pantalla o no el tipo
+	de caja o sobre - Maricel - 25/7/2000 */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:adt_serv_usa_caja
+	
+	/*MFM - Se agrega este campo para saber si la pieza es prioritaria o no*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:es_prioritaria
+
+	/*CSZ - Se agrega un campo que guarda el modelo de la sucursal*/
+	// FGB: agrego campo Franqueo de producto para Ctas/Ctes
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:post:modelo_suc \
+		post:sap_prod_franq
+	
+	/*CSZ - Vectores que acumulan la flia y los importes con y sin Iva de los
+	opcionales y el servicio*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		array FLD:fliatran_vec \
+		array FLD:impciva_vec \
+		array FLD:impsiva_vec
+
+	/*CSZ - pedido para le Calculo de Ventas UP*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:ImpServUP \
+		post:AliServUP
+	
+	/*CSZ - Se agrega el campo para saber si el servicio es Simple Especial o no*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:adt_serv_simp_esp AS jnl_simp_esp
+	
+	/*CSZ - Se agrega el sequenciador de las Guias Simple Especial*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_guia_especial
+	
+	/*MFM - Se agrega el campo del operador al que se le transfiere la pieza*/
+	jnl_op_transf = ""
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_op_transf
+
+	IF (jnl_servicio_en_bh2 != "S") THEN
+		jnl_servicio_en_bh2 = "N"
+	END IF
+
+	/*MFM - Se agrega el campo que indica si una pieza se realizò en Block Horario 2*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_servicio_en_bh2
+
+	/*MFM - Se agregan los campos de reencaminamiento para imprimir la guia de reenc.en la expedición */
+	post:jnl_stockp_reenc = "N"
+	post:jnl_stockp_reenc_cul = ""
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_stockp_reenc \
+		FLD:jnl_stockp_reenc_cul
+
+	/*MFM - Se agrega el campo que indica si una pieza se marcó como excepción*/
+	jnl_marca_excep = "N"
+	jnl_excep_existe = ""
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		FLD:jnl_marca_excep \
+		FLD:jnl_excep_existe
+
+	//siaf:importe_tot_serv = siaf:importe
+
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:cod_agrupacion	\
+		FLD:post:cant_caja_prev \
+		FLD:post:cant_cinta_prev \
+		FLD:siaf:importe_tot_serv
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:prod_serv	\
+		post:codesp_serv \
+		post:subcod_serv \
+		post:codesp_prod \
+		post:subcod_prod \
+		post:adt_prodvs_desc\
+		post:importe_acum \
+		post:adt_serv_usa_formu \
+		post:prodCC_serv
+
+	/*Informacion de los labels para Bienes de Cambio */
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:importe_bc1 \
+		post:abrev_bc1 \
+		post:importe_bc2 \
+		post:abrev_bc2 \
+		post:importe_bc3 \
+		post:abrev_bc3 \
+		post:contador_bc1 \
+		post:contador_bc2
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:adt_serv_desc_corta \
+		post:adt_tarif_imp_nemo \
+		post:adt_tarif_imp_dest \
+		post:adt_tarif_imp_peso
+
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		IF (contador_bc1 > 0) THEN
+			post:contador_bc1 = post:contador_bc1 - 1
+		END IF
+		IF (contador_bc2 > 0) THEN
+			post:contador_bc2 = post:contador_bc2 - 1
+		END IF
+	END IF
+
+	/*MFM - Descuento Cliente Medio*/
+	//PS 6218 - Grabar el descuento por sesion en cada transaccion involucrada en el mismo
+	IF (ConvenioSesionV && bonificaCM == "S") THEN
+		//recupero el descuento para grabarselo a NINA
+		CALL CDSLoadDctoSesion
+	END IF
+
+	IF ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.NUMCHARS != 0 && \
+		post:bonificaCM == "S") THEN
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			post:Dcto_CMPres AS post:Dcto_CliMed
+	ELSE
+		CDS APPEND  DSC:tlr:CONjnl_write \
+			post:Dcto_CliMed 
+	END IF
+
+	//NI 50324
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:bonificaCM \
+		post:DctoCM_bc
+
+	IF (ConvenioSesionV) THEN
+		//lo borro para que no se me grabe luego el campo PreDNroTrn!
+		CLEARFIELD post:Dcto_CliMed
+		CLEARFIELD post:DctoCM_bc
+	END IF
+    
+	//NI 50324
+	IF (post:Dcto_CliMed > 0 || post:DctoCM_bc > 0) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:PreDNroTrn AS post:PreDNroTrnAsoc	 //me sirve para la anulación
+	ELSE
+		CLEARFIELD post:PreDNroTrnAsoc
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:PreDNroTrnAsoc
+	END IF
+
+	//Reingenieria
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:adt_serv_tipo \
+		post:adt_serv_alcance \
+		post:adt_serv_tt \
+		post:usa_franqueadora
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:cant_ori \
+		post:imp_ori \
+		post:cnt_franq_ImpInic \
+		post:cnt_franq_ImpFin
+
+	//pedido para tx postales que discriminan Iva
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:DescSinIva_serv \
+		post:BloqueSinIva_serv \
+		post:ImpSinIva_serv
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:remito_nro \
+		post:jnl_franq_seq \
+		post:tiene_csar \
+		post:valor_csar
+
+	/* EL Precio unitario debe quedar sin el IVA */
+	/*
+	IF (siaf:codigo_siaf == 11101 || siaf:codigo_siaf == 21101 || \
+		siaf:codigo_siaf == 11105 || \
+		siaf:codigo_siaf == 21301 || siaf:codigo_siaf == 11301 || \
+		siaf:codigo_siaf == 11203) THEN
+	*/
+	/* Si no tiene T&T */
+        
+	//SC 50170
+	IF (post:cod_dif_aplicada == "SERV") THEN
+		siniva_rep = post:ImpSinIva_serv - post:dif_calculada
+	ELSE
+		siniva_rep = post:ImpSinIva_serv
+	END IF	
+    
+	IF ((post:adt_serv_tipo == "PO" || post:adt_serv_tipo == "EN") && \
+		post:adt_serv_piezacont	== "F") THEN
+		/* MLD Las simples journalizan con cantidad por eso desgloso el IVA*/
+		IF (post:estado_presu == 1) THEN
+			/* Estoy en TR no tengo cargada post:adt_tarif_pr2 en la PresuDet */
+			post:adt_tarif_pr2 = post:adt_tarif_precio
+		END IF
+		CALL MISCdesglosa_puni(post:adt_tarif_pr2, post:AliServUP,1)
+		CALL post:MISCcampos_reporte(post:ImpSinIvaAux,post:cantidad,siniva_rep,post:adt_tarif_modo)
+	ELSE
+		/* MLD El resto desglosa por unidad*/
+		CALL post:MISCcampos_reporte(post:ImpSinIva_serv,post:cantidad,siniva_rep,post:adt_tarif_modo)
+	END IF
+    
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreporte,0)
+	
+	/*ORDEN DE COMPRA*/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:adt_oc_nro
+	
+	/**/
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:item_bien_cambio \
+		post:peso_tarifado
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:headOrBodyTele
+    
+	//Estos campos se resguardan para reimpresion de labels en CLientes Medios con Facturacion Diferida
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreimpreLabelCM,0)
+    
+	;SC50170 - Propuesta superadora
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:dif_calculada \
+		post:cod_dif_aplicada \
+		post:jnl_dif_serv \
+		post:jnl_dif_blq
+    
+	//Agrego German - Lo voy a utilizar para grabar cuando se fuerce una transferencia de piezas
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:adt_est_pieza
+                
+	//50387 - IPS - PAIS /CONTENIDO
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:jnl_ips_pais_cod \
+		post:jnl_ips_cont_cod \
+		post:jnl_ips_pais \
+		post:jnl_ips_cont
+		
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:NIS_Imposicion		
+	
+	//gpb:NI50479	
+	//Journalizo post:es_PED y post:DocFisPed
+	CALL post:JNLes_PED
+	
+//NI 50552 - se graba el campo que indica si la pieza es entregada en la misma sucursal
+		CDS APPEND  DSC:tlr:CONjnl_write  post:ent_misma_suc
+		
+END SUB
+
+/*******/

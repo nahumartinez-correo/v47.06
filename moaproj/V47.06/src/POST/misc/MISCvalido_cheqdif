@@ -1,0 +1,105 @@
+/****o* Tratamiento de Cheques/OFB:post:MISCvalido_cheqdif
+* NOMBRE
+*   OFB:post:MISCvalido_cheqdif
+* DESCRIPCION
+*   Esta rutina se encarga de validar el importe del Medio de Pago Cheque Diferido.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:FVALmed_pago_imp
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCvalido_cheqdif
+LOCAL ind LIKE siaf:i
+LOCAL imp_dif LIKE siaf:importe
+LOCAL monto_aux LIKE siaf:importe
+Local Minimo like post:importe_sesion
+Local Maximo like post:importe_sesion
+
+//Antes, recupero de la Presu todos los valores resguardados.
+	call post:MISCRecup_DatosDif
+
+	If (pago_diferido == "S") Then
+		If (cli_tipo == CLIUP) Then
+			If (consulta_excepcion != "S") Then
+				;SC50200
+				if ((!TESTFLAG (cheque_dif, chq_dif_al_dia))) then
+				    If (limite_up > monto_chk_dif) Then
+				    	If (monto_chk_dif <= monto_vta_neta ) Then
+				    		imp_dif = monto_chk_dif + monto_impuestos
+				    	else
+				    		imp_dif = monto_chk_dif + (monto_impuestos - (monto_chk_dif - monto_vta_neta))
+				    	end if
+				    End if
+				    			
+				    If (limite_up == monto_chk_dif) Then
+				    	imp_dif = monto_chk_dif + monto_impuestos
+				    end if
+			        
+				    If (limite_up < monto_chk_dif) Then
+				    	monto_aux = monto_chk_dif - limite_up
+				    	imp_dif = monto_chk_dif + (monto_impuestos - monto_aux)
+				    end if
+			    else
+			        If (monto_chk_dif <= monto_vta_neta ) Then
+				    	imp_dif = monto_chk_dif + monto_impuestos
+				    else
+				    	imp_dif = monto_chk_dif + (monto_impuestos - (monto_chk_dif - monto_vta_neta))
+				    end if
+			    end if
+			Else
+				//BUG 15690 Recupero el campo post:excep_venta, porque en una caida este
+				//dato queda vacio y no me deja continuar la venta con cheque.
+				CALL post:CDSCheck_excepcion
+				imp_dif = post:excep_venta - monto_bonif + monto_impuestos
+			End If
+		Else ;Es cliente Medio
+			if (consulta_excepcionCM == "S") then
+				imp_dif = monto_chk_dif - monto_int + monto_impuestos
+			else
+				imp_dif = monto_chk_dif + monto_impuestos
+			endif
+		End if
+		
+		ind = 1
+    	While (ind <= 5)
+      		//para cada medio de pago tendria que chequear si es diferido por si se les ocurre agregar otro medio de pago que tenga las carateristicas.
+      		If (MonedaMedioPago[ind] == "02") THEN
+      			if (post:cli_tipo == CLIUP || post:cli_tipo == CLIMED) then
+					If ((ImporteMedioPago[ind] > imp_dif) || (ImporteMedioPago[ind] < monto_chk_dif)) Then
+						MSGBOX "El importe a pagar con cheque diferido no es correcto",0x00,"ERROR"
+						RETURN -2
+					End If
+				else // para cliente Eventual o Corporativo
+					If (ImporteMedioPago[ind] > imp_dif) Then
+						MSGBOX "El importe a pagar con cheque diferido no es correcto",0x00,"ERROR"
+						RETURN -2
+					End If
+				endif
+				Call post:CDSadt_MedPago_load
+				If (retval == 0) Then
+					If (adt_mp_min > ImporteMedioPago[ind] || ImporteMedioPago[ind] > adt_mp_max)
+						Minimo = adt_mp_min
+						Maximo = adt_mp_max
+						fprint common:csr_string "El importe no esta entre el minimo y el maximo permitido para %s (%e - %e)" adt_mp_desc_corta,Minimo,Maximo
+						MSGBOX common:csr_string OFB_OK "ERROR"
+						RETURN -2
+					End If
+				end if
+				RETURN 0
+      		End If
+      		ind = ind + 1
+    	EndWhile
+	
+    End If
+End Sub
+
+/*******/

@@ -1,0 +1,339 @@
+/****o* Sesión Correo/OFB:plataf:estado_presu_accion
+* NOMBRE
+*   OFB:plataf:estado_presu_accion
+* DESCRIPCION
+* << Reingenieria >>                                                     
+* Este OFB ejecuta las acciones de acuerdo al estado en que se encuentra 
+* el presupuesto en ese momento, realizando las acciones pertinentes para pasar al siguiente estado.                                         
+* Su funcionalidad es similar al anterior F12, pero, a partir de ahora,  
+* las acciones se ejecutan en distintas instancias... a saber:           
+*   estado = 1 -> Inicio Sesion                                          
+*   estado = 2 -> Estoy cerrando el presupuesto, por ende:              
+*                  - Controles para el cierre del presupuesto          
+*                   - Consulta de Intereses y/o Descuentos (UP y CM)  
+*                   - Captura de Medios de Pago (sin journalizar)     
+*                   - Se dispone el ambiente para llamar a la efectivi_ 
+*                     zacion.                                           
+*   estado = 3 -> Este estado ahora se ejecuta fuera de una secuencia   
+*                  fija, por lo tanto, el tratamiento del mismo queda   
+*                  (por ahora) fuera de esta rutina.                    
+*   estado = 4 -> Si las acciones realizadas cuando el estado es 2 son  
+*                  satisfactorias, entonces se pasara directamente al   
+*                  estado 4, pero el tratamiento de este quedará fuera  
+*                  de esta rutina.                                      
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:drv:driver_save,OFB:plataf:captura_medpagos,OFB:post:LINK99490,OFB:post:LINK99460,OFB:post:MISCbifurca_flujo
+*   SCR:post:SCRNestado_sesion,SCR:post:SCRNestado_presu,OFB:tlr:tlr_fb11
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+SUB plataf:estado_presu_accion
+	LOCAL Loc_EstadoInicial LIKE post:estado_presu
+	LOCAL Loc_RetvalInterno LIKE lib:err_retval 
+	LOCAL l_fecha LIKE post:fecha
+
+	CALL siaf:CDSverifOpenJNLctx
+	IF (CDSRETVAL == -932) THEN
+		MSGBOX "El contexto de journal se encuentra cerrado. Vuelva al inicio de la aplicación\n saliendo de todos los menues e intentelo de nuevo.", 0x00000030, "ERROR"
+		RETURN 0
+	END IF
+
+	#if CORREO_DEBUG == CORREO_ON
+	CALL post:MISClogMenues("Ejecutando... OFB:plataf:estado_presu_accion")
+	#endif
+
+	IF (TESTFLAG(tlr:state_flags,end_tran)) THEN
+		BEEP
+		RETURN
+	END IF
+
+	IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos)) THEN
+		CALL post:CDSBusca_TxPresuDet
+		IF (RETVAL == 0) THEN
+			// Caida de giros masivos. Debera completar el presupuesto.
+			MSGBOX "DEBE CONTINUAR CON LA TRANSACCION DE GIROS MASIVOS",OFB_OK,"Atencion"
+			RETURN (0)
+		END IF
+	END IF
+
+	IF (TESTFLAG(post:pagos_masivos,proc_pagos_masivos)) THEN
+		CALL post:CDSBusca_TxPresuDet
+		IF (RETVAL == 0) THEN
+			// Caida de pagos masivos. Debera completar el presupuesto.
+			MSGBOX "DEBE CONTINUAR CON LA TRANSACCION DE PAGO O RENDICION MASIVA DE OPERATIVOS",OFB_OK,"Atencion"
+			RETURN (0)
+		END IF
+	END IF
+
+	//cgw:NI50295 - Este tratamiento se da cuando de produce una caida de RT no habiendo grabado el registro
+	//de la trx de Importacion de Lista de Giros  en la PresuDet. Debera completar el presupuesto.
+	IF (TESTFLAG(giros:giros_importacion,proc_imp_lg) && post:estado_presu > 1) THEN
+		CALL post:CDSBusca_TxPresuDet
+		IF (RETVAL == 0 && siaf:codigo_siaf != 70640) THEN
+			// Caida de pagos masivos. Debera completar el presupuesto.
+			MSGBOX "QUEDO INCOMPLETA LA CONFIRMACION DE LA IMPORTACION DE LISTA DE GIROS.\nVUELVA A ENTRAR A LA TRANSACCION PARA CONFIRMAR",OFB_OK,"AVISO"
+			RETURN (0)
+		END IF
+	END IF
+
+	//gpb:NI50479 - Este tratamiento se da cuando de produce una caida de RT no habiendo grabado el registro
+	//de la trx de Importacion de Lista de Envios PED  en la PresuDet. Debera completar el presupuesto.
+	IF (TESTFLAG(post:sesion_ped_flags,proc_importacion_ped) && post:estado_presu > 1) then
+		CALL post:CDSBusca_TxPresuDet
+		IF (RETVAL == 0 && siaf:codigo_siaf != 30010) THEN
+			// Caida de pagos masivos. Debera completar el presupuesto.
+			MSGBOX "QUEDO INCOMPLETA LA CONFIRMACION DE LA IMPORTACION DE LISTA DE ENVIOS PED.\nVUELVA A ENTRAR A LA TRANSACCION PARA CONFIRMAR",OFB_OK,"AVISO"
+			RETURN (0)
+		END IF
+	END IF	
+	
+	//50295 - Emision de Lista de Giros
+	IF (TESTFLAG(giros:giros_importacion,proc_em_lg)) THEN
+		CALL giros:MISCprocesoCaidasChq
+		//Si no encontró registros en la CaidasChq para la sesion actual puede CANCELAR SINO NO.
+		IF (RETVAL == 0) THEN
+			MSGBOX "NO SE PUEDE CONFIRMAR UNA SESION DE EMISION DE LISTA DE GIROS CON PROCESO DE IMPRESION NO FINALIZADO.\nVUELVA A INGRESAR A LA TRANSACCION PARA FINALIZAR EL TRATAMIENTO DE IMPRESION",OFB_OK,"AVISO"
+			RETURN (0)
+		END IF	
+		//verificar si hay giros emitidos 
+		CALL giros:CDSverif_giro_env_lg
+		IF (RETVAL == 0) THEN
+			//Verifico si se cayó RT antes de grabar presudet 70650 para no dejar confirmar sesión.
+			CALL giros:CDSVerif70650
+			IF (RETVAL < 0) THEN
+				MSGBOX "NO SE PUEDE CONFIRMAR UNA SESION DE EMISION DE LISTA DE GIROS CON GIROS EMITIDOS SIN PRESUPUESTAR.\nVUELVA A INGRESAR A LA TRANSACCION PARA CONFIRMAR LOS ENVIOS.",OFB_OK,"ERROR"
+				RETURN (0)
+			END IF
+		END IF	
+	END IF
+	
+	//Si esta seteado el campo AuxPresupuesta en la Presu (es porque se cayo en medio de
+	//una presupuestacion de Cobranza CM, cancelo la sesion
+	IF (post:estado_presu > 1 && post:cli_tipo == CLIMED) THEN
+		CALL post:CDSleo_marcaCob
+		IF (RETVAL == 0 && post:AuxPresupuestacion == 1) THEN
+			CALL post:OFBcancela_sesionCob
+			RETURN
+		END IF
+	END IF
+
+	CALL post:CDSadt_presuact_load
+	l_fecha = post:fecha
+
+	// SBA 28.01.2004 - Si por error se grabó post:cli_tipo en 0
+	// No se puede confirmar la sesion
+	IF (post:estado_presu == 2 && post:cli_tipo == 0) THEN
+		ERRMSG common:errmsg_list, "ERROR EN LA GRABACION DEL TIPO DE CLIENTE - DEBE CANCELAR LA SESION Y REALIZARLA NUEVAMENTE"
+		RETURN
+	END IF
+
+	/*MFM - En el caso de una caida del sistema verifico si estaba haciendo una
+	venta por excepcion*/
+	CALL post:CDSCheck_excepcion
+
+	//cgw:devuelve la cantidad de registros que hay para confirmar.
+	IF (post:estado_presu > 1 && current_state != BUDGET_CANCEL) THEN
+		//no viene desde una cancelacion de presupuesto desde la captura
+		CALL plataf:CDSpending_trx_count(common:system_date,op:op_operator_id,post:PresNro)
+		IF (RETVAL <= 0) THEN
+			IF (post:es_WEB != "X") THEN
+				current_state = BUDGET_CLOSED
+			END IF
+		END IF
+	END IF    
+
+	// una pequeña trampita...
+	IF (current_state == BUDGET_CLOSED) THEN
+		LET post:estado_presu = 4
+		CALL post:CDSadt_presuact_save
+	END IF
+
+	// FGB 16.11.2004: se inhabilitan todas las teclas para que los cajeros no empiecen a jugar 
+	// con las teclas cuando se demoran los controles previos a la captura y confirmacion.
+	CALL  CSR:tag TAG_REDRAW_ALL 1 BUT_GHOST -1 -1 -1 -1 -1 -1 "0 1"
+	pdm enableitem pdm:drv:menubar ALL MOA_DISABLED
+	KEYDEF PUSH
+	KEYDEF CLEAR
+
+	// FGB: De acuerdo al estado actual del presupuesto, ejecuto distintas acciones...
+	//      Tengase en cuenta cual es el estado actual, y a que estado se desea pasar. 
+	Loc_EstadoInicial = post:estado_presu
+	Loc_RetvalInterno = PRUEBA_SUPERADA // hay que ser proactivos!
+	SELECT (post:estado_presu)
+		CASE 1   /* sin sesion */
+			// FGB inicializacion de variables...
+			;CALL CDSset_curr_state(op:op_operator_id,BUDGET_STARTED)
+			;CALL CDSset_pasadaMP(op:op_operator_id,PRIMER_PASADA)
+			CLEARFIELD verify_session
+			CLEARFIELD verify_status
+			CLEARFIELD verify_status2
+			// FGB 26.12.2001: si estoy llamando al inicio de sesion a traves del F12, me aseguro que el estado sea el
+			// el correcto...
+			LET post:Modo = "NR"
+			// FGB fin
+      LET drv:INDrun_funct = LST:post:TRANidentifica_cli
+      CALL drv:do_mode
+    BREAK
+    CASE 2   /* carga de presupuesto */
+			//SC 50364
+			IF (post:es_WEB == "X" && post:PreDNroTrn == 0) THEN
+				MSGBOX "INGRESE A LA TX DE OPERACIONES WEB PARA FINALIZAR LA OPERACION.",OFB_OK,"ERROR"
+				Loc_RetvalInterno = VOLVER_PTO_PARTIDA
+				BREAK
+			END IF
+			
+			post:enAnulacion = "N"
+			CALL post:MISCtrn_a_confirmar
+			IF (RETVAL == 0)
+			
+				// Realizo los controles necesarios...
+				CALL control_pre_cierre
+				IF (RETVAL < 0) THEN
+					Loc_RetvalInterno = VOLVER_PTO_PARTIDA
+					BREAK
+				END IF
+
+				// Realizo las operaciones adicionales para el presupuesto
+				//      (intereses, descuentos, bonificaciones)
+				// Tener en cuenta que los impuestos ya deben estar calculados.
+				CALL presu_adicionales
+				IF (RETVAL < 0) THEN
+					Loc_RetvalInterno = VOLVER_PTO_PARTIDA
+					BREAK
+				END IF
+
+				//gpb:NI50479
+				IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_nc_ped) || (TESTFLAG(post:sesion_ped_flags,genera_fac_ped) && TESTFLAG(post:sesion_ped_flags,cm_sin_mod_ped))) THEN
+					post:fecha = l_fecha
+					CALL post:MISCagregTrnSACPED
+				END IF
+				
+				// Llamar a captura de Medios de pago
+				CALL captura_medpagos
+				IF (RETVAL < 0) THEN
+					Loc_RetvalInterno = VOLVER_PTO_PARTIDA
+					BREAK
+				END IF     
+				                              
+       
+        INIT 33,0  //limpia
+        SETVALDONE plataf:descrip_search
+        SETVALDONE plataf:barcode_search         
+				//Si viene de Cobranza CliMed o Cobranza de Facturas Vencidas que NO haga el UNGETKEY ya que despues de la transaccion
+				//pasa directo a la captura sin pasar por el DESKTOP.
+				IF (post:TrxOpeCob || post:TrxOpeCan) THEN
+					//NO ejecuta UNGETKEY
+				ELSE
+					UNGETKEY RT_SEND
+				END IF
+				CLEARFIELD post:TrxOpeCob //Ahora lo limpio porque ya no me interesa.
+				CLEARFIELD post:TrxOpeCan //Ahora lo limpio porque ya no me interesa.                                   
+			ELSE
+				IF (current_state == BUDGET_CANCEL) THEN
+					//cgw:viene desde una cancelacion de presupuesto desde la captura
+					LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+					CALL drv:do_mode
+				ELSE    
+					//cgw:no viene desde una cancelacion de presupuesto desde la captura
+					MSGBOX "SESION SIN TRANSACCIONES, FINALIZA LA SESION ?",OFB_YESNO2,"Aviso"
+					IF (RETVAL == 6) THEN  /*si*/
+						;post:estado_presu = 3
+						;CALL post:CDSadt_presuact_save
+						LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+						CALL drv:do_mode
+					END IF
+				END IF
+			END IF                   
+    BREAK
+    CASE 3   /* modificacion de transacciones */
+    BREAK
+    CASE 4   /* fin presupuesto */
+			CALL post:MISCtrn_a_confirmar
+			IF (RETVAL == 0) THEN
+				// rutina para generar el fin de sesión (99023) - Pablo Wolfus //
+				CALL post:MISCAgregaTrnImpre(post:PresNro)
+				IF (current_state == BUDGET_CANCEL) THEN
+					//cgw:viene desde una cancelacion de presupuesto desde la captura
+					LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+				ELSE
+					// preparo las cosas para la efectivizacion...
+					CALL pre_efectivizacion
+					IF (RETVAL < 0) THEN
+						Loc_RetvalInterno = VOLVER_PTO_PARTIDA
+						BREAK
+					END IF
+					// fijo el proximo proceso...
+					LET drv:INDrun_funct = OFB:plataf:confirma_driver
+				END IF
+      ELSE
+				MSGBOX "SESION SIN TRANSACCIONES, FINALIZA LA SESION ?",OFB_YESNO2,"Aviso"
+				IF (RETVAL == 6) THEN  /*si*/
+					;post:estado_presu = 3
+					;CALL post:CDSadt_presuact_save
+					//SC 50364 - CAJA UNIFICADA
+					CLEARFIELD post:es_WEB
+					CALL post:CDSPresu_es_WEB 
+					CALL post:CDSabmAdelCM("B","","","")
+					LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+				ELSE
+					LET post:estado_presu = 2
+					LET plataf:current_state = BUDGET_STARTED
+					CALL CDSset_curr_state(op:op_operator_id,current_state)
+					CALL post:CDSadt_presuact_save
+				END IF
+			END IF
+			CALL drv:do_mode
+		BREAK
+	END SELECT
+ 
+	// OJO! la salida siempre es por este punto!
+	IF (Loc_RetvalInterno == VOLVER_PTO_PARTIDA) THEN
+		IF (post:estado_presu > 2) THEN
+			LET post:estado_presu = 2
+			LET plataf:current_state = BUDGET_STARTED
+			CALL plataf:CDSset_curr_state(post:op_operator_id,current_state)
+		ELSE
+			LET post:estado_presu = Loc_EstadoInicial
+		END IF
+		/*CALL post:CDSadt_presuact_save*/
+		// si tengo que hacer alguna accion en especial, ademas de volver el 
+		// estado del presupuesto a donde estaba, lo puedo hacer aca.
+		LET post:op_operator_id = op:op_operator_id
+		CALL post:CDSadt_presuact_upd
+		IF (drv:stack_cnt > 0) THEN
+			CALL drv:prev_funct
+		END IF
+	ELSE
+		// Yupi! Yupi! Salio todo bien!
+	END IF
+
+	// FGB 16.11.2004: se habilitan todas las teclas para que los cajeros empiecen a jugar nuevamente.
+	CALL post:MISCactivar_buts
+	;CALL  CSR:tag TAG_REDRAW_ALL 0 BUT_NORMAL -1 -1 -1 -1 -1 -1 "1 0"
+	CALL  CSR:tag TAG_REDRAW_ALL 0 -1 -1 -1 -1 -1 -1 -1 "   "
+	KEYDEF POP
+	IF (SUBSTR(drv:data_collect,drv:screen_active,1) == "M") THEN
+		CALL  OFB:drv:driver_menu_load
+	ELSE
+		IF (drv:INDbut_list[drv:screen_active] != 0) THEN
+			CALL  CSR:listexec drv:INDbut_list[drv:screen_active]
+		END IF
+	END IF
+	CALL post:MISCgrilla_sesion
+	
+	#if CORREO_DEBUG == CORREO_ON
+	CALL post:MISClogMenues("Fin... OFB:plataf:estado_presu_accion")
+	#endif
+
+END SUB 
+
+/*******/

@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:post:CDSarmo_impre_EP
+* NOMBRE
+*   OFB:post:CDSarmo_impre_EP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSarmo_impre_EP
+    LOCAL IMPORTE_FINAL LIKE importeIva_impre
+    LOCAL importe_tmp LIKE siaf:importe
+	local l_PreDNroTrn like post:PreDNroTrn
+
+    CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+        WHERE fecha_EP == common:system_date && \
+            operador_EP == op:op_operator_id && \
+            PresNro_EP == PresNro_EP && \
+            cod_agrupacion == cod_agrupacion && \
+            adt_serv_formfiscal != ""
+    CDS FINDFIRST DSC:EntrPieza_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval != -801)
+       // SC 50170
+        clearfield post:dif_calculada
+        CDS EXTRACT DSC:EntrPieza_ctx ALL
+        IMPORTE_FINAL = siaf:importe
+				//RPP
+				if (cod_EP == 18100) 
+						//desc_impre = adt_serv_desc
+							FPRINT desc_impre,"RPP: %s",post:adt_serv_desc
+						tipo_produc = adt_serv_serv
+			
+						//SC 50170
+						IF (cod_dif_aplicada == "SERV") THEN
+						//	CALL MISCgenero_ImpreTmp (adt_serv_serv, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,post:dif_calculada)
+								CALL MISCgenero_ImpreTmp (cod_EP, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,post:dif_calculada)
+						ELSE
+							CALL MISCgenero_ImpreTmp (cod_EP, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,0)
+						END IF
+						CALL MISCtotalizo_MedPag
+				else	
+/*		select (cod_EP)
+			case 18301	// LISTA
+		        IMPORTE_FINAL = siaf:importe + promo_imp_lista
+				break
+			case 18401	// ALMACENAJE NACIONAL
+		        IMPORTE_FINAL = siaf:importe + promo_imp_almc
+				break
+			case 18601	// PRESENTACION A ADUANA PIEZAS ENTRANTES
+			case 18602	// PRESENTACION A ADUANA ENCOMIENDAS ENTRANTES
+		        IMPORTE_FINAL = siaf:importe + promo_imp_presAdu
+				break
+			case 28402	// ALMACENAJE INTERNACIONAL
+		        IMPORTE_FINAL = siaf:importe + promo_imp_almc
+				break
+		end select*/
+
+        IF (cli_tipo == 1 || \
+            post:enCombo == "S") THEN
+           	//cgw:si es producto de un combo, importes en cero.
+            IMPORTE_FINAL = 0
+            siaf:importe = 0
+        END IF
+        desc_impre = adt_serv_desc
+
+			l_PreDNroTrn = post:PreDNroTrn
+			post:PreDNroTrn = post:maxPreDNroTrn
+			post:maxPreDNroTrn = post:maxPreDNroTrn + 1
+			// SC 50170
+    	  CALL MISCgenero_ImpreTmp(cod_EP,ACTVARIAS,adt_serv_aliciva,IMPORTE_FINAL,1,post:dif_calculada)
+        CALL MISCtotalizo_MedPag
+
+			call post:MISCtotBonifEntPzas
+			if (post:promo_tot < 0)
+        	// SC 50170
+        	Call MISCgenero_ImpreTmp(99007, BONIF_PROD, adt_serv_aliciva, post:promo_tot, 1,0)
+        endif
+
+			post:PreDNroTrn = l_PreDNroTrn
+		endif
+        CDS FINDNEXT DSC:EntrPieza_ctx LOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    CDS ENDSELECT DSC:EntrPieza_ctx
+    CLEARFIELD cod_EP //borro el cod_EP porque queda sucio
+END SUB
+
+/*******/

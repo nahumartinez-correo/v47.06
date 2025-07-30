@@ -1,0 +1,236 @@
+/****o* Pendientes de agrupación/OFB:post:SVALcnt_franq
+* NOMBRE
+*   OFB:post:SVALcnt_franq
+* DESCRIPCION
+*   Genera una registro en la control_franq con los contadores inicial y final de una 
+*	franqueadora, ingresados por el operador. Valida tb que estos contadores sean correlativos.
+*	En caso contrario informa al usuario para que la accion sea supervisada.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCfranqueo_rapido
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcnt_franq
+	//Se valida los valores Iniciales y Finales ingresados contra la tabla de control_franq
+	LOCAL imp_unitario LIKE siaf:importe
+	LOCAL cant_franq_aux like valor_cre
+	//LOCAL lajuste like post:adt_serv_pesob
+	LOCAL ajuste_por_hueco LIKE post:adt_serv_pesob
+	LOCAL ajuste_por_dif LIKE post:adt_serv_pesob
+
+
+	IF (cnt_franq_dif == 0)
+		MSGBOX "Los valores ingresados indican que no se ha franqueado ningún producto. Ingréselos nuevamente",0x00,"Error"
+		RETURN (-2)
+	END IF
+
+
+	//importe individual de los productos en MOSAIC
+	imp_unitario = (post:tarifa + post:costo_opc - post:descuento + post:imp_bloques ) / cantidad
+
+	/******************** Determino si se tripeo mal un importe d *************************/
+	//calculo la cantidad en un campo fixed para poder determinar si el operador
+	//tipeò mal algún valor ya que si la misma me da con decimales (resto > 0) suponemos eso
+	cant_franq_aux = cnt_franq_dif / imp_unitario
+	CALL MISCrestoMayorCero(cant_franq_aux)
+	IF (RETVAL < 0)
+		//cantidad con decimales, ==> se tipeó mal un importe
+		MSGBOX "Al menos uno de los Importes es incorrecto. Ingréselos nuevamente",0x00,"Error"
+		RETURN (-2)
+	END IF
+	/*****************************************************************************************/
+
+	//cantidad de productos franqueados (importes ingresados correctamente)
+	cant_prod_franq = cant_franq_aux
+
+	//Obtengo los contadores de la tabla control_franq
+	CALL CDSobt_cont_franq
+	//Controlo que se correspondan con los ingresados en el popup
+
+	//El contador inicial ingresado no puede ser menor que el contador final tiene la tabla
+	IF (cnt_franq_ImpInic < franq_cont_fin)
+		MSGBOX "No puede ingresar un valor menor al último importe de venta registrado",0x0,"Error"
+		RETURN (-2)
+	ELSE
+
+		//Si el contador Inicial ingresado es Mayor que el que tiene la tabla hay un hueco...
+		IF (cnt_franq_ImpInic > franq_cont_fin)
+			//Se pregunta si desea hacer un ajuste local
+			MSGBOX "El contador inicial ingresado es incorrecto. Desea continuar?",OFB_YESNO2,"Advertencia"
+			IF (RETVAL == OFB_IDYES) THEN
+				//verifico en la DGralSuc si el importe de la diferencia es mayor al parametro
+				CALL CDSimp_max_ajuste(cnt_franq_ImpInic,franq_cont_fin)
+				IF (retval < 0 )
+					MSGBOX "Falta cargar parametria de Datos Generales de la Sucursal",0x00,"Error"
+					return -2
+				ELSE
+					IF (retval == 0 )
+						//Es mayor? (0x00000134 es un msgbox YESNO2 pero con signo de exclamacion)
+						FPRINT common:csr_string,"%s%e%s","Está a punto de generar una falla de caja que supera los $",giros:adt_dgralsuc_maxFrq,". Desea continuar de todos modos?"
+						MSGBOX common:csr_string,0x00000134,"ATENCION"
+					ELSE
+						//Es menor
+						MSGBOX "Está a punto de generar una falla de caja. Desea continuar de todos modos? ?",OFB_YESNO,"ATENCION"
+					END IF
+					IF (RETVAL == OFB_IDYES) THEN
+						MSGBOX "¿Desea que se realice el Ajuste en forma local?",OFB_YESNO,"Atención"
+   						IF (RETVAL == OFB_IDYES) THEN					
+							ajuste_por_hueco = "S"
+						ELSE
+							//En caso de no querer hacer el ajuste en forma local sigue alertando de la misma
+							//forma que lo hacia antes, sin permitir que se continue correctamente hasta que el
+							//el supervisor no realice dicho ajuste desde otra terminal
+							MSGBOX "Debe llamar a un Supervisor para que realice la Transaccion de Ajuste",0x00,"Requerimiento de Supervision"
+							RETURN (-2)
+						END IF
+					ELSE
+						return -2
+					END IF
+				END IF
+			ELSE
+				return -2
+			END IF
+		END IF
+	END IF
+
+
+	/********* Difernecias de contadores: Por franqueo de más o de menos *************/
+	//si el importe total franqueado es distinto al registrado en MOSAIC
+	// o si el contador Final no coincide con lo calculado, se deben actualizar
+	//los campos cantidad e importe en MOSAIC y levantar nuevamente la captura.
+	IF (cnt_franq_dif != siaf:importe || cnt_franq_ImpFin != cnt_franq_ImpInic + siaf:importe)
+
+
+		IF ((cnt_franq_dif < siaf:importe) && post:pago_diferido == "S")
+			MSGBOX "No se puede franquear una cantidad menor a la ingresada, en una sesión que involucra cheque diferido",0x00,"Error"
+			RETURN (-2)
+		END IF
+
+		IF (cli_tipo == CLIMED)
+
+
+			IF (ModalidadCC)
+				IF (cnt_franq_dif < siaf:importe || cnt_franq_dif > siaf:importe)
+					MSGBOX "Imposible franquear una cantidad distinta a la ingresada, en una sesión Cliente Medio con Modalidad de Facturacion Diferida",0x00,"Error"
+					RETURN (-2)
+				END IF
+			END IF
+
+
+
+			IF ((post:ConvenioProducto) || (post:ConvenioSesion && !post:ConvenioSesionV)) THEN
+				//Me fijo si el descuento correspode a la transaccion en cuestion.
+				//Si corresponde no dejo franquear distinto, sino si.
+				CALL post:CDSVerif_DctoCM
+				let lib:err_retval = retval
+			ELSE
+				IF (post:ConvenioSesionV && post:bonificaCM != "S") THEN
+					//Cuando es descuento es por Sesion, si lo que estoy franqueando
+					//NO bonifica, dejo franquear porque no afecta al descuento.
+					let lib:err_retval = 0
+				ELSE
+					//Verifico si se aplico descuento para el cliente
+					CALL post:CDSVerif_DctoPCM
+					let lib:err_retval = retval
+				END IF
+			END IF
+			IF (lib:err_retval < 0)
+				//Se aplico descuento
+				IF (cnt_franq_dif < siaf:importe)
+					MSGBOX "No se puede franquear una cantidad menor a la ingresada, en una sesión que involucra descuento a Cliente Medio",0x00,"Error"
+					RETURN (-2)
+				ELSE
+					IF (cnt_franq_dif > siaf:importe)
+						MSGBOX "No se puede franquear una cantidad mayor a la ingresada, en una sesión que involucra descuento a Cliente Medio",0x00,"Error"
+						RETURN (-2)
+					END IF
+				END IF
+
+			END IF
+
+		END IF
+
+
+		ajuste_por_dif = "S"
+
+	END IF
+	/***********************************************************************************/
+
+	IF (ajuste_por_hueco == "S" && ajuste_por_dif == "S")
+		//ajuste por hueco y diferencia en la cantidad franqueada...
+
+
+		//armo el mensaje para el operador
+		CALL MISCmsg_dif_franq
+
+
+		//Llamo supervision
+		CALL MISCsuprvision
+		IF (RETVAL <0)
+			RETURN (-2)
+		END IF
+
+		//En esta rutina voy a pasar todos los valores que cambian debido a una diferencia
+		//con la franqueadora (tarifa, opcionales, descuento, bloques, etc...)
+		//y seteo la variable que levanta nuevamente la captura
+		CALL MISCactValorDifFranq
+
+		//Ajusto la control_franq y journalizo la tx de ajuste
+		Call MISCajuste_franq
+		IF (RETVAL < 0)
+			RETURN (-2)
+		END IF
+	END IF
+
+	IF (ajuste_por_hueco == "S" && ajuste_por_dif == "")
+		//ajuste por hueco
+
+		//Llamo supervision
+		CALL MISCsuprvision
+		IF (RETVAL <0)
+			RETURN (-2)
+		END IF
+
+		//Ajusto la control_franq y journalizo la tx de ajuste
+		Call MISCajuste_franq
+		IF (RETVAL < 0)
+			RETURN (-2)
+		END IF
+	END IF
+
+	IF (ajuste_por_hueco == "" && ajuste_por_dif == "S")
+		//ajuste por diferencia
+
+		//armo el mensaje para el operador
+		CALL MISCmsg_dif_franq
+
+		//Llamo supervision
+		CALL MISCsuprvision
+		IF (RETVAL <0)
+			RETURN (-2)
+		END IF
+
+		//En esta rutina voy a pasar todos los valores que cambian debido a una diferencia
+		//con la franqueadora (tarifa, opcionales, descuento, bloques, etc...)
+		//y seteo la variable que levanta nuevamente la captura
+		CALL MISCactValorDifFranq
+	END IF
+
+	//Si llego a esta instancia es porque se pudo franquear y los contadores coinciden
+	CALL CDSupd_control_franq
+
+	//limpio los keys porque queda con RT_SEND y no se frena en la captura en caso de volver a levantarla
+	INIT 33,0
+
+END SUB
+
+/*******/

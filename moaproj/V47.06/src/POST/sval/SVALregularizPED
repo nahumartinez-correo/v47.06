@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:post:SVALregularizPED
+* NOMBRE
+*   OFB:post:SVALregularizPED
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALregularizPED
+	//LOCAL loc_cod_agrup LIKE cod_agrupacion
+	LOCAL pieza_tmp LIKE pieza_ped
+	LOCAL medPago_tx LIKE siaf:adt_tran_med_pago
+	LOCAL loc_retval like lib:err_retval
+	LOCAL l_indice_total LIKE post:indice_total
+	
+	//gpb:resguardo el valor del campo
+	LET l_indice_total = post:indice_total	
+	
+	loc_retval = 0
+	siaf:importe = ImporteFACTU
+	medPago_tx = siaf:adt_tran_med_pago
+    
+	select (post:estado_presu)
+		case 2
+			IF (TESTFLAG(admin:mode_flags,grb)) then
+				RESETFLAG admin:mode_flags,grb
+				//grabo la pieza en ReguPza_tmp
+				call post:MISCpzaRegul_agreg	//MISCentPieza_agreg
+				return (-2)
+			END IF
+			IF (TESTFLAG(admin:mode_flags,bor)) then
+				RESETFLAG admin:mode_flags,bor
+				call MISCpzaRegul_borrar	//MISCentPieza_borrar
+				return (-2)
+			END IF
+			IF (TESTFLAG(admin:mode_flags,todos)) then
+				RESETFLAG admin:mode_flags,todos
+				;utilizado para ejecutar todas las fval en la selección de piezas
+				return (-2)
+			END IF
+			CDS SELECT FROM "ReguPza_tmp" BECOMES "ReguPza_tmp_ctx" WHERE \
+			post:operator_ped == op:op_operator_id && \
+			post:PresNro_vap == post:PresNro
+			CDS FINDFIRST "ReguPza_tmp_ctx" LOCK
+			loc_retval = cdsretval
+			if (loc_retval == -801) then
+				CDS ENDSELECT "ReguPza_tmp_ctx"
+				MSGBOX "¡NO SE CARGARON PIEZAS PARA REGULARIZAR!",0x00,"Error"
+				return -2
+			END IF
+			CALL drv:MISCdis_enablePB_ABM(0,0,0)
+		case 3    
+			WHILE (loc_retval == 0)
+				if (post:estado_presu == 2) then
+					CLEARFIELD ImporteFACTU
+					REFRESH ImporteFACTU
+					CDS EXTRACT "ReguPza_tmp_ctx" ALL
+				end if
+				siaf:adt_tran_med_pago = medPago_tx
+				IF (siaf:adt_tran_med_pago == "S")
+					IF (ImporteFACTU != 0)
+						;Levanta un popup para seleccionar el medio de pago
+						POPUP SCRNmedPago_EP,-,PRECmedPago_EP,SVALmedPago_EP
+						IF (LASTKEY == RT_ESC)
+							PROTFIELD siaf:moneda
+							IF (estado_presu == 2)
+								CLEARFIELD siaf:moneda
+								CLEARFIELD medio_pago_desc
+								REFRESH siaf:moneda
+								REFRESH medio_pago_desc
+							END IF
+							RETURN (-2)
+						END IF
+					END IF
+				ELSE
+					post:captura_mp = siaf:adt_tran_med_pago
+					protfield siaf:moneda
+					siaf:moneda = 99
+					clearfield post:medio_pago_desc
+					DISABLECONTROL drv:PBcb0
+				END IF
+	              
+				adt_serv_formfiscal = ""
+	              
+				CALL MISCAcumTotalesSes
+				call MISCRestFlia
+				CALL post:MISCGrabaDetalleTrn
+				if (post:estado_presu == 2) then
+					CDS FINDAGAIN "ReguPza_tmp_ctx" LOCK
+					CDS DELETE "ReguPza_tmp_ctx"
+					CDS FINDNEXT "ReguPza_tmp_ctx" LOCK
+					loc_retval = cdsretval
+				else
+					break
+				end if
+			END WHILE   
+		break
+		
+		case 4
+			;Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago
+			CALL MISCAcumTotalesSes
+			call MISCRestFlia
+			CALL post:MISCGrabaDetalleTrn
+			
+			;Se journalizará solamente la tx de cobranza ya que la 30080 no aporta nada
+			CALL post:MISCBusco_seq_tot(30101,post:indice_total)
+			LET siaf:adt_tran_codigo = 30101
+			siaf:codigo_siaf = 30101
+			tlr:tran_mnemonic = "COBPED"
+			siaf:nombre_transac = "COBRANZA PED"
+			drv:INDcur_tran = LST:TRANcobranza_ped
+			drv:INDspc_rtn[0] = LST:TOTScobranza_ped
+			drv:INDscr = SCR:SCRNcobranza_ped
+			drv:INDjnl_rtn = OFB:JNLcobranza_ped			
+			pieza_tmp = pieza_ped
+			tes:es_tesoro = "S"
+			pzaPed_regul = "S"
+			stockp_NISorig_ped = post:NisOrigen_ped
+			drv:INDjnl_rtn = OFB:post:JNLcobranza_ped
+	end select
+END SUB
+
+/*******/

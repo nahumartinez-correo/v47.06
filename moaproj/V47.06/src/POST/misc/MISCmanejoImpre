@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:post:MISCmanejoImpre
+* NOMBRE
+*   OFB:post:MISCmanejoImpre
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCmanejoImpre
+
+	if (estAnul == "R1_" || estAnul == "N1c" || estAnul == "N1i")
+	    /*Se realiza el chequeo para saber si el mensaje de Cancelación de Giros fue
+	    enviado al Host - Gabriel Falciola*/
+	    if (enSesion != "S")
+	        call giros:MISCrecup_envio
+	        if (retval < 0) /*Algo salió mal y tengo que irme de la anulación*/
+				call CDSborro_NcTable
+				return (-2)	       
+			end if 	
+	    end if 
+	    ;Cuando el sistema se cae después de que ya se generó la tabla de sellados
+	    ;(en anulaciones parciales o totales) al volver a levantar el sistema se duplican los 
+	    ;importes. Para solucionar esto borramos la tabla de sellados y la regeneramos con 
+	    ;los importes de las transacciones de anulación journalizadas a fin de que siempre
+	    ;se genere correctamente. *** MDG
+        call post:MISCregeneraImpp(PresNro)
+        
+		call MISCbloqueRev(estAnul, sistCaido, revTicket, PresNro)
+		call post:CDSgrbEstado("D1_")
+		;Luego de generada la NC se generarÁ la factura en anulaciones parciales,
+		;para este caso el nro de seq de factura se volverá a calcular y para
+		;que esto sea posible se borra la seq de la NC para que no se arrastre este.
+		clearfield adt_secuen_nro 
+        	clearfield adt_secuen_nro_final
+		call post:CDSsaveSecEnPresuAct()
+		;SC50170 Se restablecen valores.
+        	call post:MISCRestauro_dif_nc
+        	;SC50170 Se generan los nuevos valores.
+        	call post:MISCgen_dif_dir_par
+	endif
+	if (revTotal != "S")
+		call MISCleeEstado(DIRECTAS)
+		if (retval == VERDAD)
+			call MISCleeEstado("1")
+		endif
+		if (retval == VERDAD || estAnul == "F1c" || estAnul == "F1i")
+			call MISCbloqueDir(estAnul, sistCaido, revTicket, PresNro)
+			if (retval == 0)
+				return retval
+			endif
+			call post:CDSgrbEstado("R2_")
+		endif
+		if (estAnul == "R2_" || estAnul == "N2c" || estAnul == "N2i")
+			call MISCbloqueRev(estAnul, sistCaido, revTicket, PresNro)
+			call post:CDSgrbEstado("D2_")
+		endif
+		call MISCleeEstado(DIRECTAS)
+		if (retval == VERDAD)
+			call MISCleeEstado("2")
+		endif
+		if (retval == VERDAD || estAnul == "F2c" || estAnul == "F2i")
+			call MISCbloqueDir(estAnul, sistCaido, revTicket, PresNro)
+		endif
+	else
+
+	    //gpb:AUT-1391
+	    CALL post:CDSanulFacturas
+    
+		/*Si es una reversa total solo hago la journalizacion de la 7100 - Gabriel Falciola*/
+		call MISCgen7100
+	endif
+END SUB
+
+/*******/

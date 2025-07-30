@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:post:CDSreGenerarIva
+* NOMBRE
+*   OFB:post:CDSreGenerarIva
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSreGenerarIva(nro)
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 15/01/99]      Esta rutina se encarga de regenerar la tabla AuxIva para utilizarla en la      */
+   /*                       generación de las tablas de impresión.                                         */
+   /*                                                                                                      */
+   /* Parámetros:                                                                                          */
+   /* - nro       :         Hace referencia al número de presupuesto que se solicita regenerar.            */
+   /*                                                                                                      */
+   /* Salidas:                                                                                             */
+   /* - [Tabla]   :        AuxIva.                                                                         */
+   /* - Retval    :        [Salida anormal] Devuelve (-2) en caso de no haber encontrado el presupuesto.   */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+	    Call post:CDSdelete_AuxIva
+        Cds SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta                \
+            	   WHERE (Fld:post:op_operator_id == fld:post:op_operator_id )&& \
+                 	     (fld:post:PresNro == nro)  && (post:fecha  == common:system_date)
+        //Cds FINDFIRST DSC:CONPresuDeta LOCK
+        Cds FINDFIRST DSC:CONPresuDeta NOLOCK
+        if (cdsretval != 0)
+        	return (-2)
+        endif
+		dupfield estado_presu			//  [PAW] ---> Necesito estado > 1 para que desglozar el IVA.
+		estado_presu = 4
+		// PJM agregado para que maria laura no tenga que cambiar el select de la
+		// GenerarIva
+		RegeneraIva = "S"
+        while (cdsretval == 0)
+
+        	// Limpio los campos de promocion porque no están en todos los registros de la PresuDet
+			clearfield post:promo_imp_srv_tot
+			clearfield post:promo_imp_blq_tot
+
+			/*ACP limpio vectores*/
+		  call csr:cleararray(post:promo_imp_opc_tot)
+		  call csr:cleararray(post:promo_imp_tot_opc)
+			clearfield post:fld_promo_imp
+			clearfield promo_imp_presAdu
+			clearfield promo_imp_almc
+			clearfield promo_imp_lista
+
+   	    	 CDS EXTRACT DSC:CONPresuDeta ALL
+   	    	 post:IvaBasCalc = 0
+
+   	    	 /*Seteo siaf:afecta_efectivo con el valor que corresponde - Gabriel Falciola*/
+   	    	 siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+
+			 /* MLD Cargo los campos del convenio */
+			 if (OperacionCob || OperacionAut) then
+			 	clearfield post:ConvenioSesionV
+			 	clearfield post:ConvenioSesion
+			 	clearfield post:ConvenioProducto
+			 	if (post:adt_oc_nro.numchars == 0) then
+			 		if (post:PorSesion) then
+			 			ConvenioSesionV = TRUE
+				 		ConvenioSesion = TRUE
+				 		ConvenioProducto = FALSE
+					else
+				 		ConvenioSesionV = FALSE
+			 			ConvenioSesion = FALSE
+			 			ConvenioProducto = TRUE
+					end if
+				endif
+			 end if
+
+			 //Tratamiento IVA Cliente Medio con Dcto Sesion o con Consumo de Anticipo
+			 call MISCgenerarIvaCM
+   	    	 if (retval == 0) then
+   	    	 	call MISCgenerarIva()
+   	    	 endif
+
+             //CDS FINDNEXT DSC:CONPresuDeta LOCK
+             CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+	    end while
+	    ClearField RegeneraIva
+		swapdup estado_presu	       //  [PAW] ---> Necesito estado > 1 para que desglozar el IVA.
+   	    CDS ENDSELECT DSC:CONPresuDeta
+		aux_cli_tipo = cli_tipo
+   	    call post:MISCvectorIva        //  [PAW] ---> Regenero el vector del IVA.
+END SUB
+
+/*******/

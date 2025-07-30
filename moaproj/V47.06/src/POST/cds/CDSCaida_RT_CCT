@@ -1,0 +1,185 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:CDSCaida_RT_CCT
+* NOMBRE
+*   OFB:post:CDSCaida_RT_CCT
+* DESCRIPCION
+*   Graba en la tabla cupon los cupones CCT cobrados/cancelados luego de una caida de RT (para CCT y para CREM)
+* ENTRADAS
+*	Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCPreDEst_presudet,OFB:tlr:JNLinitialize
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+*   https://jirats.atos.net.ar/jira/browse/AUT-2311
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDSCaida_RT_CCT(codigo)
+	local l_branch like tlr:jnl_branch
+	local l_operator like tlr:jnl_operator
+	local l_date like tlr:jnl_date 
+	local l_time like tlr:jnl_time 
+	local l_bus_date like tlr:jnl_bus_date 
+	local l_sequence like tlr:jnl_sequence
+	local l_status like tlr:jnl_status
+	local l_seq_ori like post:jnl_sequence_ori1
+	local l_dia_viaje like giros:dia_viaje  
+	local l_hora_viaje like giros:hora_viaje
+	local l_stan like post:adt_codseq_nro
+	
+	local l_seq_corr like tlr:jnl_sequence_corr		 
+	
+	//resguardo campos claves del journal
+	l_branch = tlr:jnl_branch
+	l_operator = tlr:jnl_operator
+	l_date = tlr:jnl_date 
+	l_time = tlr:jnl_time 
+	l_bus_date = tlr:jnl_bus_date 
+	l_sequence = tlr:jnl_sequence
+	l_status = tlr:jnl_status
+	clearfield FLD:giros:CodRespuesta_comm 
+	
+	//resguardo sequence_corr
+	l_seq_corr = tlr:jnl_sequence_corr		
+	
+	if (codigo == 6675 || codigo == 99092)
+	 	l_dia_viaje = giros:dia_viaje  
+		l_hora_viaje = giros:hora_viaje
+		l_stan = post:adt_codseq_nro
+		l_seq_ori = post:jnl_sequence_ori1
+		clearfield FLD:post:adt_codseq_nro
+        clearfield giros:hora_viaje 
+        clearfield giros:dia_viaje  
+        clearfield post:jnl_sequence_ori1 
+		CDS EXTRACT DSC:tlr:CONjnl_write  \
+		FLD:post:adt_codseq_nro \
+        FLD:giros:hora_viaje  \
+        FLD:giros:dia_viaje   \
+        FLD:post:jnl_sequence_ori1
+    end if
+    
+	//borro los campos a extraer del journal
+	call csr:proc_list(F_CLEAR,LST:post:LISTJournalCCT_flds) 
+	
+	//borrar campos a extraer del journal para CREM
+	call csr:proc_list(F_CLEAR,LST:post:LISTjnlCREM_flds)
+	
+	
+	CDS EXTRACT DSC:tlr:CONjnl_write  \
+ 		FLD:tlr:jnl_branch \
+		FLD:tlr:jnl_operator \
+		FLD:tlr:jnl_date \
+		FLD:tlr:jnl_time \
+		FLD:tlr:jnl_bus_date \
+		FLD:tlr:jnl_sequence \
+		FLD:tlr:jnl_status \
+		FLD:post:cupon_cta_cupon \
+		FLD:post:servicio_CCT   \
+		FLD:post:cupon_def_cupon   
+	
+		CDS EXTRACT DSC:tlr:CONjnl_write  \
+		FLD:post:cupon_cod_serv \
+		FLD:post:cupon_nis_liq  \
+		FLD:post:id_cupon_CCT  \
+		FLD:post:id_comitente_CCT \
+		FLD:post:comitente_CCT  \
+		FLD:post:fecha_vto_CCT  \
+		FLD:post:importe_CCT  \
+		FLD:post:cupon_cta_om \
+		FLD:post:cupon_cta_sap \
+		FLD:post:cupon_letra_serv \
+		FLD:post:cupon_rend_fis
+		
+		CDS EXTRACT DSC:tlr:CONjnl_write  \
+		FLD:tlr:jnl_sequence_corr \
+		FLD:post:cod_barra_CCT
+		
+		
+		
+		SELECT (codigo)
+			CASE 6670
+				//grabar en la tabla cupon el cupon CCT ingresado para que viaje al Host por RT BATCH
+			    CLEARFIELD post:adt_cupon_pieza //se asegura que grabe vacio (ya que solo se utiliza en la mensajeria de CREM)
+				CALL post:CDScupon_save("1","D","CCT")
+				//Esta tabla se graba para ser recorrida en el Reporte de Cobro por Cuenta de Terceros.			
+				CALL post:CDScupon_rep_save("CCT")
+				BREAK
+			CASE 99092
+				//Si es CREM y gran cliente se deba grabar la cupon y la cupon_rep
+				IF (adt_CDD_es_grancl == "T") THEN
+					CDS EXTRACT DSC:tlr:CONjnl_write  \
+						FLD:post:CDD_crem_imp INTO FLD:post:importe_CCT \
+						FLD:post:CDD_ctaOM INTO FLD:post:cupon_cta_om
+					//cgw:Se instancian campos que se necesitan grabar en la tabla cupon
+			        //para que puedan impactar en el Host durante el proceso de RTBatch.
+					CDS EXTRACT DSC:tlr:CONjnl_write  \
+						FLD:post:adt_cct_def_cupon INTO post:cupon_def_cupon \
+						FLD:post:adt_cct_cod_serv INTO post:cupon_cod_serv \
+						FLD:post:adt_cct_nis_liq INTO post:cupon_nis_liq \
+						FLD:post:Pieza INTO post:adt_cupon_pieza
+					//cgw:AUT-1926
+					CDS EXTRACT DSC:tlr:CONjnl_write  \
+			    		FLD:post:adt_cct_rend_fis INTO post:cupon_rend_fis
+	
+					//grabar en la tabla cupon el cupon CREM ingresado para que viaje al Host por RT BATCH	
+					CALL post:CDScupon_save("1","D","CREM")
+					
+					MOVE post:cupon_cta_om TO post:rep_cupon_cta_om
+					post:es_CDD = "S"
+						
+					//grabar en la tabla cupon el cupon_rep CREM ingresado.
+					//Esta tabla se graba para ser recorrida en el Reporte de .	
+					CALL post:CDScupon_rep_save("CREM")
+				END IF
+			BREAK
+			CASE 6675
+				//grabar en la tabla cupon el cupon CCT cancelado para que viaje al Host por RT BATCH
+			    CLEARFIELD post:adt_cupon_pieza //se asegura que grabe vacio (ya que solo se utiliza en la mensajeria de CREM)
+				CALL post:CDScupon_save("1","C","CCT")
+				//Actualizar el cupón original como cancelado
+				call post:CDScupon_cancel(post:jnl_sequence_ori1)
+				//Borrar la tabla cupon_rep del Reporte de Cobro por Cuenta de Terceros.
+				CALL post:CDScupon_rep_del(post:jnl_sequence_ori1)
+				BREAK
+			CASE 18701
+				CDS EXTRACT DSC:tlr:CONjnl_write post:adt_stockp_es_grancl
+				IF (post:adt_stockp_es_grancl == "T")
+					//graba cupon y cupon_rep si es gran cliente
+					CALL post:MISCcaidaRT_CctCrem				
+					BREAK
+				END IF
+				BREAK
+		END SELECT
+	
+		//restauro campos claves del journal
+		tlr:jnl_branch = l_branch
+		tlr:jnl_operator = l_operator
+		tlr:jnl_date = l_date 
+	 	tlr:jnl_time = l_time
+	  	tlr:jnl_bus_date = l_bus_date
+	  	tlr:jnl_sequence = l_sequence
+	 	tlr:jnl_status = l_status
+
+	 	if (codigo == 6675 || codigo == 99092)
+	 	 	giros:dia_viaje = l_dia_viaje  
+		 	giros:hora_viaje = l_hora_viaje
+		 	post:adt_codseq_nro = l_stan
+		    post:jnl_sequence_ori1 = l_seq_ori
+		end if
+		
+		//restauro sequence_corr
+		tlr:jnl_sequence_corr = l_seq_corr
+				
+	 	//borro los campos extraidos del journal
+	 	call csr:proc_list(F_CLEAR,LST:post:LISTJournalCCT_flds)
+	 	
+		//borro campos extraídos del journal para CREM
+		call csr:proc_list(F_CLEAR,LST:post:LISTjnlCREM_flds)	 	
+	
+END SUB
+
+/*******/

@@ -1,0 +1,110 @@
+/****o* ABM´s/OFB:giros:CDSDatGen
+* NOMBRE
+*   OFB:giros:CDSDatGen
+* DESCRIPCION
+*   Validacion del codigo de sucursal en el ABM de Datos Generales de la Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   LST:giros:LISTSucGen_fld_new - La finalidad de este LIST, es que a medida que se vayan agregando campos nuevos
+*   a este abm, esten limpios, debido a que cuando se hace el select de DGralSuc y a continuación su EXTRACT, al
+*   principio no van a existir, al menos que se cargen originalmente por script.
+* REFERENCIADO POR
+*   giros:SCRNdatgrales
+*   giros:fvalcodatgen
+*   giros:PBDatGen
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSDatGen
+    drv:button = drv:last_button
+    CALL drv:but_down_disable
+    CALL drv:all_but_disable
+
+    call admin:CDS_adt_br_sel
+    if (retval > 0) then
+    	msgbox "La sucursal no esta dada de alta",OFB_OK,"Error"
+    	drv:button = 5
+        CALL drv:but_up_enable
+    	return (-2)
+    end if
+    adt_dgralsuc_cod = admin:adt_br_branch
+    adt_dgralsuc_desc = admin:adt_br_bank_name
+    refresh adt_dgralsuc_cod
+    refresh adt_dgralsuc_desc
+    clearfield post:adt_dgralsuc_impmin
+    clearfield post:adt_dgralsuc_impesp  //cgw:importe min.esp.v.que imprime factura.
+    
+    /* cgw: Llama a una Rutina list de nuevos campos que se vayan agregando en el abm de datos generales
+            de sucursales. La finalidad de este LIST, es que al agregar campos nuevos a este abm, esten
+            limpios, debido a que cuando se hace el select de DGralSuc y a continuación su EXTRACT, al
+            principio no van a existir (al menos que se cargen originalmente por script). */
+    CALL csr:proc_list(F_CLEAR,lst:giros:LISTSucGen_fld_new)
+
+    CDS SELECT FROM DSC:Tabla_datgrsuc_dsc BECOMES DSC:contexto_dsc where \
+        adt_dgralsuc_cod == adt_dgralsuc_cod
+    cds findfirst DSC:contexto_dsc nolock
+    IF (CDSRETVAL == 0) THEN
+    	CDS EXTRACT DSC:contexto_dsc ALL
+        ;SMC uso la rutina c para refrescar los campos.
+        CALL csr:proc_list(F_REFRESH,lst:giros:LISTSucGen_fld)
+        //CORRECCION BUG - AUT-868 - NAM
+        if (adt_dgralsuc_PFact == 99 || adt_dgralsuc_PFact.numchars == 0)
+            tipo_opc = "ULTI"                    
+            clearfield adt_dgralsuc_PFact
+            refresh adt_dgralsuc_PFact
+            protfield adt_dgralsuc_PFact
+            adt_dgralsuc_PFact = 99
+            refresh adt_dgralsuc_PFact
+        else
+            refresh adt_dgralsuc_PFact
+            unprotfield adt_dgralsuc_PFact                    
+            tipo_opc = "DIA"
+        end if
+        ALTERCONTROLSET tag:op:chk0
+        ALTERCONTROLSET tag:op:chk1
+        //FIN CORRECCION - AUT-868 - NAM
+    	NEXTFIELD adt_dgralsuc_desc
+    	CALL SetCam(1,1,0,0)
+        ;SMC uso la rutina c para copiar los campos.
+  	    CALL csr:proc_list(F_COPY,lst:giros:LISTSucGen_fld,lst:giros:LISTbck_SucGen)
+    ELSE
+    	adt_dgralsuc_tout = 30
+    	adt_dgralsuc_pase = "N"
+    	adt_dgralsuc_agrupa = 0
+	    adt_dgralsuc_bajch = 0
+	    adt_dgralsuc_tbatch = 0
+       	clearfield adt_dgralsuc_leyVirt
+       	clearfield adt_dgralsuc_conv
+	    clearfield adt_dgralsuc_frec
+	    clearfield adt_dgralsuc_dia
+	    adt_dgralsuc_espera = 0
+	    adt_dgralsuc_caidas = 0
+    	adt_dgralsuc_ctaCero = "S" //por default se debe completar con ceros a izquierda.
+        adt_dgralsuc_chCeros = "S" //por default se debe completar con ceros a izquierda.
+    	CALL csr:proc_list(F_REFRESH,lst:giros:LISTSucGen_fld)
+    	NEXTFIELD adt_dgralsuc_desc
+    	CALL SetCam(0,0,1,0)
+    END IF
+    CDS ENDSELECT DSC:contexto_dsc
+    CALL drv:back_but_status
+    drv:button = drv:last_button
+    CALL drv:but_up_enable
+
+    if (giros:adt_dgralsuc_pase == "N") then
+        protfield adt_dgralsuc_Tpase
+   	    DISABLECONTROL drv:PBcb2
+    else
+        unprotfield adt_dgralsuc_Tpase
+   	    ENABLECONTROL drv:PBcb2
+    endif
+
+    setvaldone adt_dgralsuc_cod
+END SUB
+
+/*******/

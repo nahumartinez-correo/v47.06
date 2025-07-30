@@ -1,0 +1,103 @@
+/****o* Pendientes de agrupación/OFB:tes:FVALsubesp_mov_rend
+* NOMBRE
+*   OFB:tes:FVALsubesp_mov_rend
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesFVAL.h"
+
+SUB tes:FVALsubesp_mov_rend
+    local den_no_valida like siaf:i
+    
+    den_no_valida = 0
+    
+    if (!testflag(tlr:tran_flags,correction)) then
+        fld:adt_espv_cod = fld:espv_cod
+        fld:adt_espv_subcod = fld:adt_evaux_subcod
+        CALL CDSadt_subesp_load
+        if (retval < 0 && adt_evaux_subcod.numchars != 0) then
+            move "DENOMINACION NO VALIDA" TO drv:error_msg
+            den_no_valida = 1
+	    call drv:error_msg
+        end if
+        fld:adt_evaux_subcod = fld:adt_espv_subcod
+        refresh adt_evaux_subcod
+        refresh adt_espv_valor
+        /*
+        PS9680
+        cds select from dsc:TesEspV becomes dsc:TesEspV_ctx \
+            where adt_espv_suc == fld:op:op_branch_id && \
+                  adt_espv_id  == fld:op:op_operator_id && \
+                  adt_espv_cod == espv_cod && \
+                  adt_espv_subcod == adt_evaux_subcod && \
+                  adt_espv_es_tesoro == "N" && \
+                ((adt_espv_importe != 0) || \
+                 (adt_espv_fecha == common:system_date && \
+                 (adt_espv_imp_ent != 0 || adt_espv_imp_sal != 0)))
+        */         
+                 
+        cds select from dsc:TesEspV becomes dsc:TesEspV_ctx \
+            where adt_espv_suc == fld:op:op_branch_id && \
+                  adt_espv_id  == fld:op:op_operator_id && \
+                  adt_espv_cod == espv_cod && \
+                  adt_espv_subcod == adt_evaux_subcod && \
+                  adt_espv_es_tesoro == "N" && \
+                  adt_espv_importe != 0
+                 
+        cds findfirst dsc:TesEspV_ctx lock
+        lib:err_retval = cdsretval
+        if (lib:err_retval == -801) then
+            if (adt_evaux_subcod.numchars != 0 && den_no_valida == 0) then
+                fprint common:csr_string, \
+	              "LA SUBESPECIE %-s NO TIENE REGISTRO DE RENDICION",adt_evaux_subcod
+                errmsg lst:common:errmsg_list,fld:common:csr_string
+            end if
+            call PBsubespecie_rend            
+        else 
+            refresh adt_evaux_subcod
+            drv:button = 1
+            call drv:but_enable
+        end if
+        let adt_evaux_subcod = adt_espv_subcod
+        refresh adt_evaux_subcod        
+        let adt_evaux_tesoro = "N"
+        let adt_evaux_op = op:op_operator_id
+        let adt_evaux_suc = op:op_branch_id
+        let adt_evaux_codigo = espv_cod
+        call CDSauxesp_load
+        if (retval < 0) then
+            clearfield adt_evaux_importe
+            clearfield adt_evaux_cantidad
+            refresh adt_evaux_importe
+            refresh adt_evaux_cantidad
+            drv:button = 3
+            call drv:but_enable
+            drv:button = 4
+            call drv:but_disable
+            drv:button = 5
+            call drv:but_disable
+        else
+            call ABMauxesp_refresh
+            drv:button = 3
+            call drv:but_disable
+            drv:button = 4
+            call drv:but_enable
+            drv:button = 5
+            call drv:but_enable
+        end if
+        setvaldone adt_evaux_subcod
+    end if
+END SUB
+
+/*******/

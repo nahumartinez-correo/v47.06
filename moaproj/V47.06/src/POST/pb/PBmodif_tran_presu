@@ -1,0 +1,117 @@
+/****o* Sesión Correo/OFB:post:PBmodif_tran_presu
+* NOMBRE
+*   OFB:post:PBmodif_tran_presu
+* DESCRIPCION
+*   Valida si una TX permite ser modificada en el Presupuesto (Tabla PresuDet)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:BUTconfirma_presu
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBmodif_tran_presu
+
+   //esta variable me indica si estoy borrando o modificando una transacción
+	clearfield post:tran_presu_est
+   
+   If ( PreDEst == ACEPTADO )
+      msgbox ERROR_MODIFICADO,OFB_OK,"Aviso"
+   Else
+      If ( PrePEst != 1 )
+         msgbox "Medio de Pago Confirmado, No puede Modificarse Transaccion",OFB_OK,"Aviso"
+      Else
+			/*MLD No dejo modificar transacciones asociadas a una original */
+			if (siaf:codigo_siaf == 8500 || (siaf:codigo_siaf == 40002 && post:tran_original == "N")) then			                 	
+             	if (post:cod_agrupacion != 0) then
+	        	    msgbox "No se Puede Modificar. Transacción asociada a Otra",OFB_OK,"Aviso"
+	        	    LET drv:button = drv:last_button
+	                CALL drv:but_up_enable
+	                CALL drv:but_redraw
+	                return 
+	            END IF
+        	end if
+            if (siaf:codigo_siaf == 8500)
+                tes:adt_evaux_prestran = post:PreDNroTrn
+                call post:CDSevaux_aceptada
+                if (retval < 0)
+            	    ;msgbox "La Transaccion no puede ser modificada",OFB_OK,"Aviso"
+            	    msgbox ERROR_MODIFICADO,OFB_OK,"Aviso"
+            	    LET drv:button = drv:last_button
+                    CALL drv:but_up_enable
+                    CALL drv:but_redraw
+                    return 
+                end if
+            end if
+            
+            if (siaf:codigo_siaf == 99120)
+                post:adt_pmaux_presu = post:PresNro
+                call post:CDSpmaux_aceptada
+                if (retval < 0)
+            	    ;msgbox "La Transaccion no puede ser modificada",OFB_OK,"Aviso"
+            	    msgbox ERROR_MODIFICADO,OFB_OK,"Aviso"
+            	    LET drv:button = drv:last_button
+                    CALL drv:but_up_enable
+                    CALL drv:but_redraw
+                    return 
+                end if
+            end if
+
+         if (siaf:codigo_siaf == 99023 || \
+             siaf:codigo_siaf == 99024 || \
+             siaf:codigo_siaf == 99025 || \
+  	     siaf:codigo_siaf == 99099 || \
+	     siaf:codigo_siaf == 70610 || siaf:codigo_siaf == 70620 || siaf:codigo_siaf == 70630 || \
+	     siaf:codigo_siaf == 99410 || siaf:codigo_siaf == 70640 || siaf:codigo_siaf == 70650 || siaf:codigo_siaf == 99458)
+	    // 70610  Trx.Giros Masivos.
+ 	    // 70620  Faltante  de Cheq.Acreditado para giros masivos.
+	    // 70630  Excedente de Cheq.Acreditado para giros masivos.
+	    // 99410  Marca de Uso de Excepción
+		// 70640  TX de Importación de Lista de Giros (NI 50295)
+	    // 70650  TX de Emision de Lista de Giros (NI 50295)
+	    // 99458 TX de Consumo de Anticipo monetario (NI 50295)
+            msgbox "La Transaccion no puede Modificarse",OFB_OK,"Aviso"
+         else
+
+			// FGB 13.6.2001: Como las transacciones de giros no siguen la misma logica que las postales, antes 
+			// de modificar una emision, no solo verifico el estado, sino hasta donde llego a ejecutarse 
+			if (siaf:adt_tran_fliatran == "CSM") then
+				if (giros:es_envio_WU == "S" || giros:es_emision_postal == "S" || giros:es_emision_tele == "S" || giros:es_emision_correohoy == "S" ) then
+					call giros:MISCverif_checkpoint(giros:checkpoint_emision)
+					if (retval < 0) then
+						msgbox "No se puede modificar una operacion que ya realizó el viaje!!!",OFB_OK,"Aviso"
+    	       	    	LET drv:button = drv:last_button
+	                   	CALL drv:but_up_enable
+	                   	CALL drv:but_redraw
+	                   	return 
+					end if
+				end if // si es emision 
+			end if // si es de giros
+
+            if (det_presu_line1.NUMCHARS == 0)
+               msgbox "No hay Transaccion Seleccionada",OFB_OK,"Aviso"
+            else
+               msgbox "Modifica la Transaccion?",OFB_YESNO,"Aviso"
+               if (retval == 6) then  /*si*/
+                  post:tran_presu_est = "M"
+                  CALL post:CDSadt_presuact_save
+                  let drv:INDrun_funct = tlr:INDtran_name
+                  call drv:do_mode
+               end if
+            endif
+         endif
+      endif
+   endif
+   LET drv:button = drv:last_button
+   CALL drv:but_up_enable
+   CALL drv:but_redraw
+END SUB
+
+/*******/

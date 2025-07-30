@@ -1,0 +1,90 @@
+/****o* Pendientes de agrupación/OFB:post:CDSupdate_lote_temp
+* NOMBRE
+*   OFB:post:CDSupdate_lote_temp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSupdate_lote_temp(estado)
+
+    	local Lretval like lib:err_retval
+	local Lestado like op:adt_temp_estado
+
+	Lestado = estado
+	op:Flag_temp = 1
+	op:pendientes = "F"
+	
+	if (op:op_autoimpre_auth != "X")
+		call op:CDSModifTemp_Select
+	else
+		call op:CDSModifTemp_AImpre
+	end if
+
+	CDS FINDFIRST DSC:op:adt_temporal_ctx LOCK
+	Lretval = CDSRETVAL
+
+	if  (Lretval == -CDS_RECORD_NOT_FOUND ) 
+		MSGBOX \
+		"NO HAY MODIFICACIONES DE TABLAS PENDIENTES.",OFB_OK,"Atencion"
+		CDS ENDSELECT DSC:op:adt_temporal_ctx
+		return (-1)
+	else
+		if (Lretval != 0 )
+			MSGBOX "ERROR AL LEER LA TABLA DE MODIFICACIONES PENDIENTES."\
+			,OFB_OK,"Atencion"
+			CDS ENDSELECT DSC:op:adt_temporal_ctx
+			return (-2)
+		end if
+	end if
+
+	WHILE (Lretval == 0)
+
+   		CDS EXTRACT DSC:op:adt_temporal_ctx ALL
+
+		call post:MISCAutorModifLotes(op:adt_temp_tabla)	
+		if (retval == 0)
+		
+			call post:MISCModifLotes_upd
+			if (retval == 0)
+  				CDS CLEARBUFFER DSC:op:adt_temporal_ctx
+    				CDS APPEND DSC:op:adt_temporal_ctx \
+				op:adt_temp_tabla \
+				op:adt_temp_op    \
+      				op:adt_temp_fecha \
+      				op:adt_temp_hora  \
+      				op:adt_temp_seq   \
+				op:IND_temp_tran  \
+				Lestado AS op:adt_temp_estado
+	
+				CDS UPDATE DSC:op:adt_temporal_ctx LOCK
+			end if
+		end if
+
+		CDS FINDNEXT DSC:op:adt_temporal_ctx LOCK
+		Lretval = CDSRETVAL 
+
+	END WHILE
+
+	CDS UNLOCK    DSC:op:adt_temporal_ctx
+	CDS ENDSELECT DSC:op:adt_temporal_ctx
+
+	if (op:pendientes == "T")
+		msgbox "La actualizacion total del lote no se pudo realizar, debido a que no tiene permisos sobre la tabla o el operador se encuentra identificado. Por favor, verifique el estado de la las modificaciones pendientes.",OFB_OK,"Atencion"
+	end if
+	clearfield op:pendientes
+
+END SUB
+
+/*******/

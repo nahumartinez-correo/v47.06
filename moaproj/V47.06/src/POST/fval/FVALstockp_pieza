@@ -1,0 +1,282 @@
+/****o* Recepción de Piezas/OFB:post:FVALstockp_pieza
+* NOMBRE
+*   OFB:post:FVALstockp_pieza
+* DESCRIPCION
+*   Esta rutina realiza validaciones sobre la pieza recibida en la TX DE Recepcion de Piezas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNpiezas_asignadas,SCR:post:SCRNpiezas_CM,SCR:post:SCRNpiezas_GC
+* DOCUMENTACION
+*NI 50569-RPP
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALstockp_pieza
+	local oper_aux like post:AsignaDestino
+	
+	If (!testflag(tlr:tran_flags,correction)) Then/*Si no estoy reversando*/
+
+		IF (stockp_pieza.numchars != 0)
+			call MISCes_TT(stockp_pieza)
+			IF (retval != 0)
+				MSGBOX "NUMERO DE PIEZA INVÁLIDO",0x00,"ERROR"
+				return -2
+			END IF
+		END IF
+		//NI50552 - Se deberá validar que la pieza exista en la tabla de track_trace y si tiene la marca de entrega en misma sucursal el TIPO DE OPERACION deberá 
+		//corresponder a ENTREGA MISMA SUC, sino no se permitirá recibirla. 
+		CALL CDSpza_misma_suc
+		if (RETVAL < 0 && AsignaDestino == "M")
+				MSGBOX "LA PIEZA NO FUE IMPUESTA PREVIAMENTE, NO PUEDE RECIBIRSE POR TIPO DE OPERACION: ENTREGA MISMA SUC.",0x00,"ERROR"
+				return -2
+		endif
+		if (RETVAL == 0 && AsignaDestino != "M")
+				MSGBOX "LA PIEZA FUE IMPUESTA CON ENTREGA EN MISMA SUCURSAL. SOLO PUEDE RECIBIRSE POR TIPO DE OPERACION: ENTREGA MISMA SUC.",0x00,"ERROR"
+				return -2
+		endif
+		if (RETVAL == 1 && AsignaDestino == "M")
+				MSGBOX "LA PIEZA NO PUEDE RECIBIRSE POR TIPO DE OPERACION: ENTREGA MISMA SUC. PORQUE FUE IMPUESTA SIN LA MARCA CORRESPONDIENTE.",0x00,"ERROR"
+				return -2
+		endif
+		oper_aux = AsignaDestino
+		
+		if (AsignaDestino == "X") then
+			RETURN 0
+		endif
+
+		CALL csr:trimfield stockp_pieza
+		If (stockp_pieza.numchars == 0) Then
+			CALL PBstockp_pieza
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		Else
+			DISABLECONTROL drv:PBcb3   
+			DISABLECONTROL drv:PBcb4   
+			DISABLECONTROL drv:PBcb6   
+			//Se cambia la pregunta para que me sirva para operativos especiales
+			If (AsignaDestino != "N") then
+				If (substr(stockp_pieza,0,2) == "TL")
+					If (AsignaDestino == "E") then
+						MSGBOX "DEBE INGRESAR LA PIEZA TL CON LA OPCION ASIGNA DESTINO.",0x00,"AVISO"
+						RETURN -2
+					else
+						stockp_destino = "REENCAMINAMIENTO"
+						CALL FVALDestino
+						if (retval < 0) then
+							return -2
+						end if
+						refresh stockp_destino
+					endif
+				End if
+
+				If (stockp_destino == "REENCAMINAMIENTO") Then
+					stockp_en_devol = "N" 
+				End If
+
+				If (stockp_destino == "PIEZA PACTADA EN SUC" || stockp_dest_ant == "PIEZA PACTADA EN SUC") Then
+					stockp_en_devol = "N"
+					stockp_franq_inc = "N"
+				End If
+
+				CALL CSR:proc_list(F_REFRESH,LST:LISTstockp_CM_flds)
+				
+				if ((stockp_destino == "PIEZA PACTADA EN SUC" || stockp_destino == "DEPOSITO INTER") && \
+					substr(stockp_pieza,0,2) == "DE")
+					MSGBOX "IMPOSIBLE RECIBIR LA PIEZA CON ESTE DESTINO",0X00,"ERROR"
+					RETURN -2        
+				end if
+
+				if (substr(stockp_pieza,0,2) == "CO" || substr(stockp_pieza,0,2) == "EO") then /* || \
+					substr(stockp_pieza,0,2) == "GO") then*/
+					IF (AsignaDestino != "E") THEN
+						If (stockp_crem_imp == 0) Then
+							//MSGBOX "DEBERA INGRESAR EL IMPORTE DEL CONTRAREEMBOLSO.",0x00,"AVISO"
+							//RETURN -2
+						Endif
+					ELSE
+						MSGBOX "DEBE INGRESAR LAS PIEZA CO/EO CON LA OPCION ASIGNA DESTINO.",0x00,"AVISO"
+						RETURN -2
+					ENDIF
+				end if
+			Else
+				//verifico que la pieza no haya sido recibida con anterioridad
+				CALL post:CDSstockp_recep_Load
+				If (RETVAL < 0) Then
+					AsignaDestino = oper_aux
+					call MISCtipo_operacionRP
+					RETURN -2
+				End If
+				//call MISCes_TT(stockp_pieza)
+			End If
+		Endif
+		//verifico que la pieza no haya sido asignada a destino con anterioridad
+		CALL post:CDSstockp_Load
+		If (RETVAL < 0) Then
+			AsignaDestino = oper_aux
+			call MISCtipo_operacionRP
+			RETURN -2
+		End If
+
+		//REFRESCA EL VALOR DEL CAMPO tipo_operacionRP
+		call MISCtipo_operacionRP
+
+		hidefield stockp_abonado
+		hidefield stockp_Oficio
+		hidefield stockp_destin_nom
+		
+		IF (stockp_destino != DSC:post:PED_desc) THEN		
+			CALL post:CDS_PEDpend_load
+			IF (RETVAL == 0)
+				//Si esta en la PEDpend solo se podra ingresar con el destino PAGO EN DESTINO
+				MSGBOX "LA PIEZA INGRESADA SOLO PODRA SER RECIBIDA COMO 'PAGO EN DESTINO'",0x00,"ERROR"
+				RETURN -2
+			END IF			
+		END IF
+		
+		if (post:stockp_destino == "CASILLA DE CORREO" || post:stockp_destino == "RTA POSTAL PAGA") THEN
+			showfield stockp_abonado
+			refresh stockp_abonado
+			unprotfield stockp_abonado
+			post:Leyenda_aux = dsc:post:nro_abonado
+		End If
+		
+		if (post:stockp_destino == "INTERDICTA") THEN
+			showfield stockp_Oficio
+			refresh stockp_Oficio
+			unprotfield stockp_Oficio
+			post:Leyenda_aux = dsc:post:nro_oficio
+		End If
+
+		If (stockp_destino == "LISTAS" || stockp_destino == "DOM.INACCESIBLE") Then
+			showfield stockp_destin_nom
+			refresh stockp_destin_nom
+			unprotfield stockp_destin_nom
+			post:Leyenda_aux = dsc:post:destin_CP
+		End If
+		
+		//50569-RPP
+		If (stockp_destino == "RTA POSTAL PAGA") Then
+		   	showfield post:stockp_rpp_corp
+		    REFRESH stockp_rpp_corp
+			  UNPROTFIELD stockp_rpp_corp
+			  //leyenda
+			  post:leyenda_rpp  = dsc:dsc_leyenda_rpp
+			  showfield post:leyenda_rpp
+			  protfield leyenda_rpp
+			  refresh post:leyenda_rpp
+			  //  nextfield post:stockp_rpp_corp
+				//devol rtte
+				// REFRESH stockp_en_devol
+				//PROTFIELD stockp_en_devol
+		End If
+	    
+		refresh Leyenda_aux
+		refresh SCR:post:SCRNpiezas_CM
+
+		//SC 50185 - CD LABORAL
+		If (post:AsignaDestino == "S" || post:AsignaDestino == "E" || post:AsignaDestino == "M") 
+			if (substr(stockp_pieza,0,2) == "CD" || substr(stockp_pieza,0,2) == "MD") then
+				if (post:AsignaDestino == "E") then
+					msgbox "La Carta Documento es Laboral?", OFB_YESNO, "ATENCION"
+					If (RETVAL == 0x07) Then /*NO*/
+						stockp_laboral = "N"
+					else
+						stockp_laboral = "S"
+					endif
+					//por si queda desprotegido de una modificacion
+					protfield stockp_laboral
+				else
+					unprotfield stockp_laboral
+					NEXTFIELD stockp_laboral
+				endif
+			else
+				stockp_laboral = "N"
+				refresh stockp_laboral
+				protfield stockp_laboral
+				NEXTFIELD stockp_pieza
+			endif
+		endif
+
+		If (post:AsignaDestino == "S" || post:AsignaDestino == "E" || post:AsignaDestino == "M") 
+			protfield stockp_plazoguarda
+
+			CALL FVALplazo_guarda_CM
+			If (RETVAL < 0) Then
+				protfield post:stockp_laboral
+				post:stockp_laboral = "N"
+				refresh post:stockp_laboral
+				RETURN -2
+			End If
+		End If
+
+		//OPERATIVOS ESPECIALES
+		IF (AsignaDestino == "E") THEN
+			IF (post:stockp_vtofecha_oe.numchars != 0) THEN
+				post:stockp_vtofecha = post:stockp_vtofecha_oe
+			ENDIF
+			IF (stockp_destino != "CASILLA DE CORREO" && stockp_destino != "CERRADAS CON AVISO") THEN
+				stockp_destino = "CERRADAS CON AVISO"
+				REFRESH stockp_destino
+			ENDIF
+		ELSE
+			hidefield  Leyenda_vto
+			clearfield stockp_vtofecha_oe
+			refresh    stockp_vtofecha_oe
+			protfield  stockp_vtofecha_oe
+			hidefield  stockp_vtofecha_oe
+		END IF
+
+		//OPERATIVOS ESPECIALES tambien debe agregar el T&T automaticamente.
+		if (AsignaDestino == "N" || AsignaDestino == "E") then
+			//Agrego automaticamente la pieza 
+			CALL PBAgregar
+			If (RETVAL < 0) Then
+				clearfield stockp_pieza
+				refresh stockp_pieza
+				SETVALDONE stockp_pieza
+				RETURN -2
+			End If
+		Endif
+		
+		//gpb:NI50437 REQ003
+		//antes era "MINORISTA RPP"
+		//cambio por "VUELTA A PAGAR (VAP)"
+		//si lo vuelven a cambiar, entonces hay que actualizar el descriptor
+		IF (stockp_destino == DSC:post:minoristaRPP_desc) THEN
+			 CALL post:MISCprotFields_RPP
+		ELSE
+			//NI50479
+			//PAGO EN DESTINO (PED)
+			IF (stockp_destino == DSC:post:PED_desc) THEN
+				 CALL post:CDS_PEDpend_load
+				 IF (RETVAL < 0)
+				 	MSGBOX "LA PIEZA INGRESADA NO ES UNA PIEZA PED",0x00,"ATENCION"
+				 	RETURN -2
+				 ELSE 
+				 	IF (estado_pieza_ped == "RHD"|| estado_pieza_ped == "RHO" || post:estado_pieza_ped == "PER")
+				 		MSGBOX "LA PIEZA INGRESADA ESTA MARCADA COMO ROBADA O PERDIDA. NO PUEDE RECIBIRSE",0x00,"ATENCION"
+				 		RETURN -2
+				 	END IF
+				 END IF
+				 stockp_crem_imp = valor_cre_ped
+				 CALL post:MISCprotFields_PED
+			ELSE
+				UNPROTFIELD cod_barra_CREM
+			END IF		
+		END IF
+
+
+
+	End If
+	SETVALDONE stockp_pieza
+	
+End Sub
+
+/*******/

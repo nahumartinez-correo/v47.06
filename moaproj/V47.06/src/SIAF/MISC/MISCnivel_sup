@@ -1,0 +1,108 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCnivel_sup
+* NOMBRE
+*   OFB:siaf:MISCnivel_sup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCnivel_sup
+    LOCAL loc_i LIKE siaf:i
+    local importe_tran like siaf:importe
+
+    /* En la tabla monto_fl estan los montos permitidos por transaccion:
+    en la posicion 0 se indica el limite del Cajero/Merchandising
+    en la posicion 1 se indica el limite del Cajero/Tesorero
+    en la posicion 2 se indica el limite del Contador
+    en la posicion 3 se indica el limite del Oficial de Negocios
+    en la posicion 4 se indica el limite del Jefe de Oficina
+        */
+
+    let adt_monfl_transac = codigo_siaf
+    let adt_monfl_sucursal = common:sucursal_activa
+    let adt_monfl_lugar = 0 /* es propia casa */
+    
+    // si la transacción no captura medio de pago,
+    // el limite es en moneda base y busco por 99
+    if (post:captura_mp == "S") || (post:Modo == "R")
+        adt_monfl_moneda = siaf:moneda
+        importe_tran = post:importe_origen
+        // En moneda origen
+    else
+        /* Busca en moneda base */
+        adt_monfl_moneda = 99
+        importe_tran = siaf:importe
+    end if
+    
+
+    if (post:jnl_flia_tran == "BG") /* si es de Banco Galicia */
+        /* si la cuenta tipeada es de la propia casa  o no */
+        if (common:suc_gali == gali:sucursal)
+            let adt_monfl_lugar = 0 /* es propia casa */
+        else
+            let adt_monfl_lugar = 1 /* NO es propia casa */
+        end if
+    end if
+
+    call siaf:CDSadt_monfl_load
+    if (retval < 0 ) then
+        let adt_monfl_sucursal = 99999
+        call siaf:CDSadt_monfl_load
+    END IF
+    if (retval < 0 ) then
+        /* no figura supervisiones para esta transaccion */
+        /* OJO habria que ver si es reversa !!!! */
+        return -1
+    else
+        /* tiene supervision, verifico que nivel corresponde segun el
+           monto de la transaccion */
+        call ofb:hcomm:COMM_stat_init
+        if (testflag(hcomm:state_flags,on_line))
+            let nrow = 0
+        else
+            let nrow = 1
+        END IF
+
+
+        if (importe_tran <= adt_monfl_pesos[nrow][0])
+            /* no necesita supervision */
+            return -1
+        END IF
+        if (importe_tran <= adt_monfl_pesos[nrow][1])
+            let siaf:cartel = " POR MONTOS"
+            setflag siaf:siaf_flags,req_tes
+        END IF
+//      if (siaf:importe <= adt_monfl_pesos[nrow][2])
+//          let siaf:cartel = " POR MONTOS"
+//          setflag siaf:siaf_flags,req_con
+//      END IF
+//      if (siaf:importe <= adt_monfl_pesos[nrow][3])
+//          let siaf:cartel = " POR MONTOS"
+//          setflag siaf:siaf_flags,req_sup2
+//      END IF
+        if (importe_tran <= adt_monfl_pesos[nrow][4])
+            let siaf:cartel = " POR MONTOS"
+            setflag siaf:siaf_flags,req_sup1
+        END IF
+    END IF
+    if (!testflag(siaf:siaf_flags,req_sup1) && \
+        !testflag(siaf:siaf_flags,req_tes)) then
+        return -2   /* no esta autorizado para realizar
+                   la transaccion */
+    else
+        return 0
+    END IF
+END SUB
+
+/*******/

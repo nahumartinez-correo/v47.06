@@ -1,0 +1,179 @@
+/****o* Pendientes de agrupación/OFB:post:RCVEiplanRecarga
+* NOMBRE
+*   OFB:post:RCVEiplanRecarga
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postrcve.h"
+
+sub post:RCVEiplanRecarga
+    local loc_saldo like post:totales_sf1
+	local cant like siaf:i
+	local sclave like common:csr_string
+	local key like common:csr_string
+	local loc_codbarras like post:sf1_codbarras_nuevo
+	local loc_codbarras_id like post:sf1_codbarras_nuevo   
+	local loc_numero	like post:cuenta
+    
+    call hcomm:RCVEheaderV105
+    
+    clearfield common:csr_string
+    clearfield fieldRespuestaBULK
+
+    if (hcomm:ResultCode != 0)
+        if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+            msg = msg + 45
+        else
+            msg = msg + 69
+        endif
+        return 0
+    endif
+
+	; PAW 28.05.2003 - agrego una capa para la desencriptacion.
+	cant = MSGEND - MSG
+    COMM  GET fieldRespuestaBULK  FROM MSG TYPE BULK LENGTH cant
+
+	comm deallocate
+	
+	; PAW 28.05.2003 - desencripto la respuesta.
+	fprint sclave "%04s%06s%04s%02s%02s%02s%02s%02s",\
+		tlr:jnl_sequence,\
+		op:op_operator_id, \
+		substr(tlr:jnl_date,0,4), \
+		substr(tlr:jnl_time,0,2), \
+		substr(tlr:jnl_date,4,2), \
+		substr(tlr:jnl_time,2,2), \
+		substr(tlr:jnl_date,6,2), \
+		substr(tlr:jnl_time,4,2)
+
+    clearfield fieldRespuestaSTR
+    DLL _BfJ_creaClave ( sclave key )
+    DLL _BfJ_inicia ( key )
+    DLL _BfJ_desencripta (fieldRespuestaBULK fieldRespuestaSTR  cant )
+    DLL _BfJ_fin ( )
+    siaf:i = 0
+
+    if ((hcomm:MessageId == "D") || (hcomm:MessageId == "V")) then
+        /* Terminal */
+		call MISCcommGet(fieldRespuestaSTR, 6)
+		terminal = common:csr_string
+        	// comm get terminal from msg type ASCII length 6
+        /* Operador */
+        call MISCcommGet(fieldRespuestaSTR, 1)
+        call MISCcommGet(fieldRespuestaSTR, 5)
+        operador_tmpl = common:csr_string 
+         	// msg = msg + 1 //porque nuestro operador es de 5 y en la mensajeria de 6
+        	// comm get operador_tmpl from msg type ASCII length 5
+        /* Ticket */
+        call MISCcommGet(fieldRespuestaSTR, 4)
+        ticket = common:csr_string
+        	// comm get ticket from msg type ASCII length 4
+        /* saldo */
+        call MISCcommGet(fieldRespuestaSTR, 13)
+        loc_saldo = common:csr_string
+        	// comm get loc_saldo from msg type ASCII length 13
+        /* ID Pin */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id_pin = common:csr_string
+        /* ID Tran */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id = common:csr_string
+
+    else /* es una anulacion de pin*/
+    
+        /* Terminal */
+        call MISCcommGet(fieldRespuestaSTR, 6)
+        terminal = common:csr_string
+        /* Operador */
+        call MISCcommGet(fieldRespuestaSTR, 1)
+        call MISCcommGet(fieldRespuestaSTR, 5)
+        operador_tmpl = common:csr_string
+        /* Ticket */
+        call MISCcommGet(fieldRespuestaSTR, 4)
+        ticket = common:csr_string
+        /* saldo */
+        // comm get post:saldo from msg type ASCII length 13
+        // let msg = msg + 13
+        call MISCcommGet(fieldRespuestaSTR, 13)
+        /* id Tran */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id = common:csr_string
+        /* idorig */
+        call MISCcommGet(fieldRespuestaSTR, 20)
+        result_id_orig = common:csr_string
+   		
+		// si estoy reversando o recuperando una caida, aca termina la historia...
+		return 
+    endif
+    
+    
+	   dprint "\nRCVEiplanRecarga: -------------------------\n"
+	   dprint "result_id: %s \n" result_id
+	   dprint "result_id_pin: %s \n" result_id_pin
+	   dprint "result_pin: %s \n" result_pin
+	   dprint "-------------------------------------\n"
+	   
+       /* Ahora llamo al bob para que me devuelva el ticket */
+    if (!testflag(tlr:tran_flags,correction))
+        sf1_cta_nro = result_id
+        loc_codbarras = sf1_codbarras_nuevo
+        
+        call csr:trimfield result_pin
+        call csr:trimfield result_id_pin
+ 
+        ;SMC Segun Version de IPLAN...
+        select (hcomm:TranVersion)
+            case 1
+                fprint sf1_codbarras_nuevo, "%s%s", sf1_codbarras_nuevo, result_pin
+                break
+            case 2
+                ;SMC Agrego importe y Pin ID al final de la barra
+                fprint sf1_codbarras_nuevo, "%s%20.20s", sf1_codbarras_nuevo, result_id_pin
+        
+                loc_codbarras_id = sf1_codbarras_nuevo
+                ;Si es Solicitud... mando el tambien el pin para el Ticket (9 CARACTERES)
+                if (adt_tran_sf1_codigo == 6680) then
+                    fprint sf1_codbarras_nuevo, "%s%0s", sf1_codbarras_nuevo, result_pin
+                endif
+                break        
+            case 3
+            case else
+                ;SMC Agrego importe y Pin ID al final de la barra
+                ;loc_return_pin = result_id_pin
+                loc_numero = result_id_pin
+                fprint sf1_codbarras_nuevo, "%s%020.20s", sf1_codbarras_nuevo, loc_numero
+        
+                loc_codbarras_id = sf1_codbarras_nuevo
+                ;Si es Solicitud... mando el tambien el pin para el Ticket (20 CARACTERES)
+                if (adt_tran_sf1_codigo == 6680) then
+                	loc_numero = result_pin
+                    fprint sf1_codbarras_nuevo, "%s%020.20s", sf1_codbarras_nuevo, loc_numero
+                endif
+                break        
+            case else
+                break
+        end select
+
+        call MISCobtiene_impreSf1("N")
+        if (retval < 0)
+            let hcomm:tran_status = 106
+            let siaf:mensaje = "Canc. Automática por problema en los BOB"
+            return (-2)
+    	endif
+ 
+    endif
+  
+end sub
+
+/*******/

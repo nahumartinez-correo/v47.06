@@ -1,0 +1,76 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCmanejo_cancel
+* NOMBRE
+*   OFB:giros:MISCmanejo_cancel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCmanejo_cancel
+local x like siaf:i
+local l_codigo_siaf like siaf:codigo_siaf
+local l_PresNro like post:PresNro
+/*Si se anula una transacción de Giros, primero debo enviar la anulación
+al Host - Gabriel Falciola*/
+    
+    call post:CDSverRecepFalloCrem(giros:PresNro_canc)
+    if (retval == -2) then
+        MSGBOX "No se puede reversar la liquidación de contrareembolso porque alguna de sus piezas presenta un fallo de caja\n que ha sido asignado y aceptado. Deberá reversar primero las aceptaciones de fallo.",0x00,"ERROR"
+        ungetkey RT_ESC
+        return (-2)
+    end if
+    
+    l_codigo_siaf = siaf:codigo_siaf
+    if (testflag(post:journal_flags,enviar_mensaje_host))
+    	if (!post:AnulOperNC) then 
+	        call giros:MISCenv_cancel_gir
+		else
+			/*Para cancelación de notas de crédito a CM uso otra rutina - Gabriel Falciola*/
+			call post:MISCenv_canc_NC_CM
+		end if
+        if (retval != 0 && retval != -3)
+            ungetkey RT_ESC
+            return (-2)
+        else
+            IF (retval == -3)
+                resetflag post:journal_flags,enviar_mensaje_host
+                return (0)
+            ELSE
+        
+                IF (hcomm:tran_status == 100)
+                    MSGBOX "LA TRANSACCION HA SIDO RECHAZADA. NO ES POSIBLE ANULAR LA SESION",0x00,"Error"  
+                    UNGETKEY RT_ESC
+                    RETURN (-2)
+                ELSEIF (hcomm:tran_status >= 100 && giros:flia_giro_fld != "I" )
+                    ;Para las transacciones internacionales igualmente se continua
+                    ;con la reversa, ya que es un caso en particular porque no tiene
+                    ;MSG-0200-REV y se envia MSG-0400 segun se establecio con correo
+    
+                    MSGBOX "SE HA PERDIDO LA COMUNICACION. VUELVA A INTENTARLO EN UNOS INSTANTES",0x00,"Error"  
+                    UNGETKEY RT_ESC
+                    RETURN (-2)     
+                end if
+                
+            end if      
+        end if
+    else
+        l_PresNro = post:PresNro
+        post:PresNro = giros:PresNro_canc
+        call post:CDSrev_tab_crem(post:PresNro)
+        post:PresNro = l_PresNro
+    end if  
+    clearfield post:Cheques
+END SUB
+
+/*******/

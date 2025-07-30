@@ -1,0 +1,183 @@
+/****o* Pago en Destino/OFB:post:MISCcarga_fac_ped
+* NOMBRE
+*   OFB:post:MISCcarga_fac_ped
+* DESCRIPCION
+*   Realiza la carga de datos en la pantalla del servicio a imponer
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PCOLtranGral
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcarga_fac_ped
+	LOCAL l_err_retval LIKE lib:err_retval
+	LOCAL l_cod_opc[5] LIKE post:cod_opc1_web
+;	LOCAL l_vec_opc2[5] LIKE post:valor_dec 
+	LOCAL l_cantidad LIKE post:cantidad
+	LOCAL l_destino LIKE post:item_destino
+	LOCAL l_cant_caja_prev LIKE post:cant_caja_prev
+
+	//SCRNgral
+	PROTFIELD post:jnl_servicio_en_bh2
+	PROTFIELD post:tipo_descto
+	DISABLECONTROL drv:PBcb7
+	PROTFIELD post:imp_bloques
+	PROTFIELD post:tarifa
+	PROTFIELD post:descuento
+	PROTFIELD post:costo_opc
+	PROTFIELD siaf:importe_tot_serv			
+	PROTFIELD post:fld_promo_imp
+	DISABLECONTROL drv:PBcb9	
+	//DRAWcod_post
+	PROTFIELD post:cp	
+	//DRAWdestino
+	PROTFIELD post:destino
+	DISABLECONTROL drv:PBcb3
+	//DRAWcaja
+	PROTFIELD post:tipo_caja
+	DISABLECONTROL drv:PBcb2	
+	//draw_dctoCM
+	PROTFIELD post:Dcto_CliMed
+	PROTFIELD post:DctoCM_bc
+	//DRAWcli_int
+	PROTFIELD post:cli_int_obs
+	DISABLECONTROL op:chk4
+	//DRAWcantidad
+	PROTFIELD post:cantidad
+  //DRAWopcional
+  PROTFIELD post:sel_opc
+  DISABLECONTROL drv:PBcb6
+  //DRAWpeso
+	PROTFIELD post:peso_en_grs
+	DISABLECONTROL drv:PBcb4
+	PROTFIELD post:peso_en_kgs 
+	//DRAWaforo
+	PROTFIELD post:aforo1
+	PROTFIELD post:aforo2
+	PROTFIELD post:aforo3
+	PROTFIELD post:aforo
+
+	CALL CSR:cleararray (post:cod_opc)
+	CALL CSR:cleararray (post:vec_opc2)
+
+	CDS SELECT FROM DSC:post:DetNCpedEnOrigen_tbl BECOMES DSC:post:DetNCpedEnOrigen_ctx \
+		WHERE post:id_pieza_ped == post:id_pieza_ped \
+		&& post:item_codigo_trx != 8500 \
+		&& post:item_codigo_trx != 40002
+	
+	CDS FINDFIRST DSC:post:DetNCpedEnOrigen_ctx LOCK
+	LET l_err_retval = CDSRETVAL
+	WHILE (l_err_retval == 0) 	
+		//Datos del servicio
+		CDS EXTRACT DSC:post:DetNCpedEnOrigen_ctx \
+			post:pieza_ped INTO post:track_trace \
+			post:item_destino INTO l_destino \
+			post:item_aforo1 INTO post:aforo1 \
+			post:item_aforo2 INTO post:aforo2 \
+			post:item_aforo3 INTO post:aforo3 \
+			post:item_peso_grs INTO post:peso_en_grs \
+			post:item_peso_kgs INTO post:peso_en_kgs \
+			post:item_tipo_caja INTO post:tipo_caja \
+			post:item_prodvarios INTO post:prod_serv \
+			post:item_valor_dec INTO post:valor_dec \
+			post:item_valor_cre INTO post:valor_cre \
+			post:item_cant_caja_prev INTO post:cant_caja_prev
+
+		//cargo el codigo del opcional
+		CDS EXTRACT DSC:post:DetNCpedEnOrigen_ctx \
+			post:item_opc_opci[0] INTO post:cod_opc[0] \
+			post:item_opc_opci[1] INTO post:cod_opc[1] \
+			post:item_opc_opci[2] INTO post:cod_opc[2] \
+			post:item_opc_opci[3] INTO post:cod_opc[3] \
+			post:item_opc_opci[4] INTO post:cod_opc[4]
+						
+		//asigno a variables locales	
+		LET l_cod_opc[0] = FLD:post:cod_opc[0]
+		LET l_cod_opc[1] = FLD:post:cod_opc[1]
+		LET l_cod_opc[2] = FLD:post:cod_opc[2] 
+		LET l_cod_opc[3] = FLD:post:cod_opc[3] 
+		LET l_cod_opc[4] = FLD:post:cod_opc[4] 
+		
+		post:destino = l_destino
+
+		CDS FINDNEXT DSC:post:DetNCpedEnOrigen_ctx LOCK
+		LET l_err_retval = CDSRETVAL
+	END WHILE	
+	CDS UNLOCK DSC:post:DetNCpedEnOrigen_ctx
+	CDS ENDSELECT DSC:post:DetNCpedEnOrigen_ctx
+
+	CALL CSR:cleararray (post:cod_opc)
+	CALL CSR:cleararray (post:vec_opc2)
+	
+	REFRESH SCR:post:SCRNgral		
+
+	//lo asigno para que funcione post:PBopcionales_ped
+	post:tipo_produc2 = post:adt_serv_serv	
+	post:tipo_produc = post:tipo_produc2
+	
+	//cargo y calculo la tarifa de los opcionales
+	l_cantidad = 0
+	cant_opc = 0
+	WHILE (l_cantidad < 5)
+		IF (l_cod_opc[l_cantidad].NUMCHARS > 0) THEN
+			LET post:sel_opc = l_cod_opc[l_cantidad]
+			CALL post:FVALsel_opc
+		END IF
+		l_cantidad = l_cantidad + 1
+	END WHILE
+	
+	LET post:adt_tarif_dest = post:destino
+	
+	//resguardo el valor porque me lo borral la fval
+	LET l_cant_caja_prev = post:cant_caja_prev
+
+	//si tiene tipo de caja
+	IF (post:tipo_caja.NUMCHARS > 0) THEN
+		IF (!(estado_presu == 3 && caja_propia == TRUE))
+			//este if se hace para que no muestre el mensaje de que no se puede modificar la caja propia
+			CALL post:FVALtipo_caja
+		END IF
+		PROTFIELD post:tipo_caja
+	END IF
+
+	//si tiene aforo
+	IF (post:aforo1.numchars > 0 && post:aforo2.numchars > 0 && post:aforo3.numchars > 0)
+		CALL csr:set_currentfield post:aforo1
+		CALL FVALpi_aforo
+		CALL csr:set_currentfield post:aforo2
+		CALL FVALpi_aforo
+		CALL csr:set_currentfield post:aforo3
+		CALL FVALpi_aforo
+	END IF
+
+	//vuelvo a recuperar el valor original
+	LET post:cant_caja_prev = l_cant_caja_prev 
+	REFRESH post:cant_caja_prev
+	
+	//Calculo tarifa servicio
+	CALL post:FVALpn_cantidad
+	
+	//Calculo tarifa productos
+	CALL post:FVALcant_prodmerch
+	
+	//draw_CantPrevia
+	PROTFIELD post:cant_caja_desc
+	PROTFIELD post:cant_caja_prev
+	PROTFIELD post:cant_cinta_prev	
+	
+  //DRAWtrack_trace
+  PROTFIELD post:track_trace
+  PROTFIELD post:cod_ctrol
+  PROTFIELD post:apertura
+  DISABLECONTROL drv:PBcb5 
+END SUB
+
+/*******/

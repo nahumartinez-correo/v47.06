@@ -1,0 +1,312 @@
+/****o* Pendientes de agrupación/OFB:post:MISCacumCM
+* NOMBRE
+*   OFB:post:MISCacumCM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCacumCM
+//MFM - Esta rutina actualiza la AuxIngBr con el importe del descuento*/
+local codigo like siaf:codigo_siaf
+local afecta like siaf:afecta_efectivo
+LOCAL imp_aux LIKE siaf:importe
+local flia_aux like siaf:adt_tran_fliatran
+local flia_aux2 like siaf:adt_tran_fliatran
+local nro_asoc like post:PreDNroTrnAsoc
+local tarifa_aux like siaf:importe
+local dcto like post:Dcto_CliMed
+local tarifa_opc_aux[6] like post:tarifa
+local cant_aux like post:cantidad
+local lsigno like siaf:afecta_efectivo
+
+	CDS SELECT FROM DSC:NC_TAB BECOMES DSC:nc_ctx WHERE \
+    (tlr:jnl_branch == common:sucursal_activa && \
+    tlr:jnl_operator == FLD:op:op_operator_id && \
+    tlr:jnl_bus_date ==  FLD:common:system_date && \
+    tlr:jnl_sequence_corr == 0 && \
+    PresNro == FLD:PresNro && \
+    tlr:jnl_status < 100 && siaf:cancelacion == "" && \
+    siaf:codigo_siaf != 99300 && post:Dcto_CliMed > 0 \
+    && jnl_sequence_dire == "D")
+    
+    CDS FINDFIRST DSC:nc_ctx NOLOCK
+    
+    if (CDSRETVAL < 0) then
+    	CDS ENDSELECT DSC:nc_ctx
+    	RETURN 0
+    end if
+    
+    imp_aux = siaf:importe
+    codigo = siaf:codigo_siaf
+    afecta = siaf:afecta_efectivo
+    flia_aux = siaf:adt_tran_fliatran
+    nro_asoc = 0
+    call csr:cleararray (tarifa_opc_aux)
+    
+    DO
+    	if (CDSRETVAL == 0) then
+    		
+    	    clearfield PreDNroTrnAsoc
+    	    clearfield post:jnl_flia_tran
+    	    clearfield post:Dcto_CliMed
+    	    	
+			CDS EXTRACT DSC:nc_ctx PreDNroTrnAsoc post:jnl_flia_tran post:Dcto_CliMed
+			
+			if (nro_asoc != 0 && PreDNroTrnAsoc != nro_asoc)
+				
+				INIT 22,1
+				Imp_DctoCliMed = (tarifa_aux * dcto) / 100
+				INIT 22,0
+				
+				siaf:importe = Imp_DctoCliMed
+				siaf:adt_tran_fliatran = flia_aux2
+				siaf:codigo_siaf = 99300
+				siaf:afecta_efectivo = "-"
+			//SC 50170
+				CALL MISCdesglosaIva(Imp_DctoCliMed,post:AliServUP, 1,0)
+			
+				post:ImporteConIva = Imp_DctoCliMed
+			
+				post:PreDForFis = "FACTU"
+				EstadoFormu = CON_FORM
+			
+				//actualizar IngBr
+				call CDSAcumImpSes(0,0,post:ImporteConIva,post:ImporteSinIva,flia_aux2,siaf:afecta_efectivo,PresNro,siaf:moneda,siaf:moneda)
+			
+				siaf:adt_tran_fliatran = "PCL"
+				CALL MISCgenerarIva
+				;Actualizo en la PresuPag.
+				monedaNC = 0
+				post:imp_d = 0
+				siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+				call post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+				
+				//Actualizo la TotalTransac
+				if (post:Imp_DctoCliMed != 0)
+					lsigno = siaf:adt_tran_afec_efvo
+					siaf:adt_tran_afec_efvo = "-"
+					call post:MISCacumTotalTransac(99300, siaf:adt_tran_afec_efvo, post:Imp_DctoCliMed)
+					siaf:adt_tran_afec_efvo = lsigno
+				endif
+				
+				//PS Opcionales
+				cant_aux = 0
+				while (cant_opc > cant_aux)
+		
+					if (post:bonifCM_opc[cant_aux] == "S") then
+				
+						INIT 22,1
+						Imp_DctoCliMed = (tarifa_opc_aux [cant_aux] * dcto) / 100
+						INIT 22,0
+						
+						siaf:importe = Imp_DctoCliMed
+						siaf:adt_tran_fliatran = post:flia_opc[cant_aux]
+						siaf:codigo_siaf = 99300
+						siaf:afecta_efectivo = "-"
+				//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed,post:ali_opc[cant_aux], 1,0)
+				
+						post:ImporteConIva = Imp_DctoCliMed
+				
+						post:PreDForFis = "FACTU"
+						EstadoFormu = CON_FORM
+				
+						//actualizar IngBr
+						call CDSAcumImpSes(0,0,post:ImporteConIva,post:ImporteSinIva,post:flia_opc[cant_aux],siaf:afecta_efectivo,PresNro,siaf:moneda,siaf:moneda)
+			
+						siaf:adt_tran_fliatran = "PCL"
+						CALL MISCgenerarIva
+						;Actualizo en la PresuPag.
+						monedaNC = 0
+						post:imp_d = 0
+						siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+						call post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+						
+						//Actualizo la TotalTransac
+						if (post:Imp_DctoCliMed != 0)
+							lsigno = siaf:adt_tran_afec_efvo
+							siaf:adt_tran_afec_efvo = "-"
+							call post:MISCacumTotalTransac(99300, siaf:adt_tran_afec_efvo, post:Imp_DctoCliMed)
+							siaf:adt_tran_afec_efvo = lsigno
+						endif
+						
+					endif
+					cant_aux = cant_aux + 1
+				end while
+				//restauro con los nuevos valores para seguir calculando el proximo importe de descuento
+				nro_asoc = post:PreDNroTrnAsoc
+				flia_aux2 = post:jnl_flia_tran
+				dcto = post:Dcto_CliMed
+				clearfield tarifa_aux
+				call csr:cleararray(tarifa_opc_aux)
+				
+				CDS FINDAGAIN DSC:nc_ctx NOLOCK
+				select (post:jnl_flia_tran)
+					case "CSP"
+					case "CSE"
+					case "CST"
+						 clearfield post:tarifa
+						 clearfield post:cant_opc
+						 CDS EXTRACT DSC:nc_ctx tarifa  cant_opc
+						 tarifa_aux = tarifa_aux + tarifa
+						 //PS OPCIONALES
+						 //extraigo los campos de alicuota, familia y bonifica CM y 
+						 //acumulo el costo de cada opcional que bonifica
+						 cant_aux = 0
+						 while (cant_opc > cant_aux)
+							CDS EXTRACT DSC:nc_ctx post:cos_opc[cant_aux] post:ali_opc[cant_aux] flia_opc[cant_aux] \
+							post:bonifCM_opc[cant_aux]
+							if (post:bonifCM_opc[cant_aux] == "S") then 
+								tarifa_opc_aux[cant_aux] = tarifa_opc_aux[cant_aux] + post:cos_opc[cant_aux]
+							endif
+							cant_aux = cant_aux + 1
+						 end while
+						 break
+					case else
+						 clearfield siaf:importe
+						 CDS EXTRACT DSC:nc_ctx siaf:importe
+						 tarifa_aux = tarifa_aux + siaf:importe
+						 break
+				end select
+				
+			else
+				nro_asoc = post:PreDNroTrnAsoc
+				flia_aux2 = post:jnl_flia_tran
+				dcto = post:Dcto_CliMed
+				
+				select (post:jnl_flia_tran)
+					case "CSP"
+					case "CSE"
+					case "CST"
+						 clearfield post:tarifa
+						 clearfield post:cant_opc
+						 CDS EXTRACT DSC:nc_ctx tarifa cant_opc
+						 tarifa_aux = tarifa_aux + tarifa
+						 //PS OPCIONALES
+						 //extraigo los campos de alicuota, familia y bonifica CM y 
+						 //acumulo el costo de cada opcional que bonifica
+						 cant_aux = 0
+						 while (cant_opc > cant_aux)
+							CDS EXTRACT DSC:nc_ctx post:cos_opc[cant_aux] post:ali_opc[cant_aux] flia_opc[cant_aux] \
+							post:bonifCM_opc[cant_aux]
+							if (post:bonifCM_opc[cant_aux] == "S") then 
+								tarifa_opc_aux[cant_aux] = tarifa_opc_aux[cant_aux] + post:cos_opc[cant_aux]
+							endif
+							cant_aux = cant_aux + 1
+						 end while
+					 	 
+						 break
+					case else
+						 clearfield siaf:importe
+						 CDS EXTRACT DSC:nc_ctx siaf:importe
+						 tarifa_aux = tarifa_aux + siaf:importe
+						 break
+				end select
+				
+			end if
+		else
+			INIT 22,1
+			Imp_DctoCliMed = (tarifa_aux * dcto) / 100
+			INIT 22,0
+			siaf:importe = Imp_DctoCliMed
+			siaf:adt_tran_fliatran = flia_aux2
+			siaf:codigo_siaf = 99300
+			siaf:afecta_efectivo = "-"
+			//SC 50170
+			CALL MISCdesglosaIva(Imp_DctoCliMed,post:AliServUP, 1,0)
+			
+			post:ImporteConIva = Imp_DctoCliMed
+			
+			post:PreDForFis = "FACTU"
+			EstadoFormu = CON_FORM
+			
+			//actualizar IngBr
+			call CDSAcumImpSes(0,0,post:ImporteConIva,post:ImporteSinIva,flia_aux2,siaf:afecta_efectivo,PresNro,siaf:moneda,siaf:moneda)
+			
+			siaf:adt_tran_fliatran = "PCL"
+			CALL MISCgenerarIva
+			;Actualizo en la PresuPag.
+			monedaNC = 0
+			post:imp_d = 0
+			siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+			call post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+			
+			//Actualizo la TotalTransac
+			if (post:Imp_DctoCliMed != 0)
+				lsigno = siaf:adt_tran_afec_efvo
+				siaf:adt_tran_afec_efvo = "-"
+				call post:MISCacumTotalTransac(99300, siaf:adt_tran_afec_efvo, post:Imp_DctoCliMed)
+				siaf:adt_tran_afec_efvo = lsigno
+			endif
+			
+			//PS Opcionales
+			cant_aux = 0
+			while (cant_opc > cant_aux)
+		
+				if (post:bonifCM_opc[cant_aux] == "S") then
+					INIT 22,1
+					Imp_DctoCliMed = (tarifa_opc_aux [cant_aux] * dcto) / 100
+					INIT 22,0
+					
+					siaf:importe = Imp_DctoCliMed
+					siaf:adt_tran_fliatran = post:flia_opc[cant_aux]
+					siaf:codigo_siaf = 99300
+					siaf:afecta_efectivo = "-"
+			//SC 50170
+					CALL MISCdesglosaIva(Imp_DctoCliMed,post:ali_opc[cant_aux], 1,0)
+			
+					post:ImporteConIva = Imp_DctoCliMed
+			
+					post:PreDForFis = "FACTU"
+					EstadoFormu = CON_FORM
+				
+					//actualizar IngBr
+					call CDSAcumImpSes(0,0,post:ImporteConIva,post:ImporteSinIva,post:flia_opc[cant_aux],siaf:afecta_efectivo,PresNro,siaf:moneda,siaf:moneda)
+					siaf:adt_tran_fliatran = "PCL"
+					CALL MISCgenerarIva
+					;Actualizo en la PresuPag.
+					monedaNC = 0
+					post:imp_d = 0
+					siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+					call post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+					//Actualizo la TotalTransac
+					if (post:Imp_DctoCliMed != 0)
+						lsigno = siaf:adt_tran_afec_efvo
+						siaf:adt_tran_afec_efvo = "-"
+						call post:MISCacumTotalTransac(99300, siaf:adt_tran_afec_efvo, post:Imp_DctoCliMed)
+						siaf:adt_tran_afec_efvo = lsigno
+					endif
+				endif
+				cant_aux = cant_aux + 1
+			end while
+				
+			
+			nro_asoc = post:PreDNroTrnAsoc
+			CDS ENDSELECT DSC:nc_ctx
+			BREAK
+		End If
+		
+		CDS FINDNEXT DSC:nc_ctx NOLOCK
+		 
+	LOOP
+	
+	siaf:importe = imp_aux
+	siaf:codigo_siaf = codigo
+	siaf:afecta_efectivo = afecta
+	siaf:adt_tran_fliatran = flia_aux
+	
+END SUB
+
+/*******/

@@ -1,0 +1,105 @@
+/****o* Pago en Destino/OFB:post:CDSsave_CompPED
+* NOMBRE
+*   OFB:post:CDSsave_CompPED
+* DESCRIPCION
+*   Graba en la tabla CompPED datos necesarios para actualizar el nro de Nota de Credito
+*	o la nueva factura de una pieza ped para que sean enviados al HOST por el RT_BATCH
+* ENTRADAS
+*   tipo = "NTCR" (Nota de Credito)
+ 		 = "FACT" (Nueva Factura) 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCupdEstPzaPed
+* DOCUMENTACION
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDSsave_CompPED(tipo_comp)
+	CDS SELECT FROM "CompPED" BECOMES "CompPED_ctx" \
+	WHERE tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence == tlr:jnl_sequence 
+		
+	CDS FINDFIRST "CompPED_ctx" LOCK
+	
+	IF (CDSRETVAL == -801) THEN
+		post:fecha_impos_ped = common:system_date
+		post:CompPED_operator = op:op_login_id
+		post:CompPED_node = op:op_node_id  	
+		post:DocAux = NroFact_Inic
+		post:ImpSes_comp_ped = post:importe_sesion
+ 		CLEARFIELD letra_comp_ped
+ 		IF (tipo_comp == "FACT")
+ 			tipo_comp_ped = "FACTU"
+ 			IF (post:Tipo_Formulario == 1)
+ 				letra_comp_ped = "A"
+ 			ELSEIF (post:Tipo_Formulario == 2)
+ 				letra_comp_ped = "B"
+ 			END IF
+ 			CompPED_PresNro = post:PresNro	
+ 			
+ 			//Estados
+ 			IF (ConsumoAnticipo) //Consume Adelanto
+ 				estado_pieza_ped = "ADE" 
+ 			ELSE
+ 				SELECT (modalidad_CM)
+ 					CASE "S" //Sin Modalidad
+ 						estado_pieza_ped = "FCO"
+ 						BREAK
+ 					CASE "C" //Facturación Diferida
+ 						letra_comp_ped = "X"
+ 						post:DocAux = NroCompImpos
+ 						estado_pieza_ped = "REM"
+ 						BREAK
+ 					CASE "D" //Cobro Diferido
+ 						estado_pieza_ped = "COB" 
+ 						BREAK
+				END SELECT
+			END IF
+
+ 		ELSE
+ 			tipo_comp_ped = "NCRED"
+ 			//CLEARFIELD tipo_comp_ped
+ 			CLEARFIELD letra_comp_ped
+ 			CLEARFIELD CompPED_PresNro
+ 			CLEARFIELD estado_pieza_ped
+ 			//CLEARFIELD DocAux
+ 			CLEARFIELD ImpSes_comp_ped
+ 		END IF       
+        
+        fprint tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,UNPOSTED
+ 		
+		CDS CLEARBUFFER "CompPED_ctx"
+		CDS APPEND "CompPED_ctx" \
+			FLD:tlr:jnl_branch \
+			FLD:tlr:jnl_operator \
+			FLD:tlr:jnl_date \
+			FLD:tlr:jnl_time \
+			FLD:tlr:jnl_bus_date \
+			FLD:tlr:jnl_sequence \
+			FLD:tlr:jnl_status \
+			FLD:post:CompPED_node \
+			FLD:post:CompPED_operator
+			
+		CDS APPEND "CompPED_ctx" \
+			FLD:post:id_pieza_ped \
+			FLD:post:DocAux \
+			FLD:post:fecha_impos_ped \
+			FLD:post:tipo_comp_ped\
+			FLD:post:letra_comp_ped \
+			FLD:post:CompPED_PresNro \
+			FLD:post:estado_pieza_ped \
+			FLD:ImpSes_comp_ped
+		CDS INSERT "CompPED_ctx" LOCK
+	ENDIF
+	CDS UNLOCK "CompPED_ctx"
+	CDS ENDSELECT "CompPED_ctx"
+
+END SUB
+
+/*******/

@@ -1,0 +1,255 @@
+/****o* Sesión Correo/OFB:post:MISCreverso_sesion
+* NOMBRE
+*   OFB:post:MISCreverso_sesion
+* DESCRIPCION
+*   Rutina que reversa una sesion completa cuando la misma no emitio comprobante fiscal (es decir
+*	que se reversa a traves del journal)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   op:TRANlogin; post:SVALimpre_fiscal
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+
+#include "postmisc.h"
+
+SUB post:MISCreverso_sesion
+	LOCAL retval_jnl LIKE lib:err_retval
+	local l_sequence like tlr:jnl_sequence
+	LOCAL varl_imp2_aux	 like siaf:importe2
+	
+	CLEARFIELD sequence_aux	
+	/* MLD 26/03/2001 Verifico que el cajero todavia
+	   conserve el cheque que se está reversando */
+	call post:MISCcontrolo_cheque
+	if (retval < 0) then
+		return (-1)
+	end if
+	
+	// PJM 31-08-1998
+	// Busco todas las transacciones en Journal
+	
+	if (testflag(tlr:controla_marca,reverso_jnl))
+		;Para cancelacion de trx. donde no se cobra servicio, ya se
+		;pido supervision en la transaccion de cancelacion 70540
+		;Se restauran campos de pantalla
+
+		dupfield post:CliRaz
+		dupfield post:DocInic
+		dupfield post:DocFin
+		dupfield post:importe_sesion
+		dupfield post:cant
+		dupfield post:DocFiscal
+		dupfield siaf:nombre_transac
+		
+		// sba 20010107 - Restauro el supervisor
+		dupfield ovr:ovr_sup_id
+		
+	else
+		//PS 10535 - recuperar marca de fin de sesion
+		call post:MISCSupervisar_CM
+		if (post:Supervisar == "S") then
+			Call siaf:SVALnivel_sup
+   			If (RETVAL < 0) THEN
+    	    	//UngetKey RT_ESC
+    	    	Return (Retval) //-2
+   			End If
+   		endif
+	end if
+
+	post:ovr_sup_id_aux  = ovr:ovr_sup_id
+	post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+	// PJM 5-10-1998
+	// Me fijo si hay transacciones de Galicia
+	Call post:CDShay_tran_galicia
+	If (Retval >= 0 &&  post:ovr_sup_id_aux == op:op_operator_id)
+	    MsgBox "Para Autorizar las transacciones de Galicia se requiere un Supervisor distinto al Utilizado",OFB_OK,"ERROR"
+	    Swapdup post:jnl_flia_tran
+	    post:jnl_flia_tran = "BG"
+	    Call siaf:SVALnivel_sup
+	    Swapdup post:jnl_flia_tran
+	    If (RETVAL < 0) THEN
+	        //UngetKey RT_ESC
+	        Return (Retval) //-2
+	    End If
+	    post:ovr_sup_id_gali  = ovr:ovr_sup_id
+	    post:ovr_siaf_id_gali = siaf:ovr_sup_siaf_id
+	Endif
+	ovr:ovr_sup_id = post:ovr_sup_id_aux
+	siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+	post:siaf_flags_aux = siaf:siaf_flags
+	Call post:CDSinic_tabla_jou("journal",dsc:post:Jounarl_anul_Ctx )
+	// Comentando porque Nina quiere que quede encerrado entre un fin y un inicio
+	;Call siaf:MISClleno_modalidad
+	;UngetKey RT_SEND
+	;CALL tlr:JNLtran
+	Call post:CDSbusca_tabla(dsc:post:Jounarl_anul_Ctx )
+	LET retval_jnl = RETVAL
+
+	IF (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242) THEN
+		//cgw: Instanciando esta variable, en la reversa del Reemplazo de Cheque Rechazado/Obs y 
+		//     Reemplazo de Cheque Robado, entra a tes:MISCjnltran, y actualiza estado en TesoCheq.
+		tes:es_tesoro = "S"
+		;FGB: para el reemplazo se utiliza siaf:importe2 como importe sin iva (PS 9635 - Bug Item 9598)
+		varl_imp2_aux = siaf:importe2 // lo resguardo por las dudas
+		// fgb: si el reemplazo tiene comisión por rechazo, entonces el importe sin impuestos es:
+		// importe_sin_impuesto (siaf:importe2) = importe_total (siaf:importe) - importe_iva (post:ImporteIva)
+		siaf:importe2 = siaf:importe - post:ImporteIva
+	else
+		clearfield varl_imp2_aux
+	END IF
+
+	IF (retval_jnl == 0)
+		/*MFM - Verifica que la sesion a reversar no tenga imposiciones marcadas como excepcion*/
+		CALL MISCPiezaExcep
+		IF (RETVAL == 0)
+			ERRMSG common:errmsg_list,"La sesion no se puede reversar - Existen piezas que ya han sido marcadas como excepción"
+			Call post:CDSfin_tabla(dsc:post:Jounarl_anul_Ctx )
+			RETURN (-2)
+		END IF
+		/*MFM - Verifica que la sesion a reversar no tenga imposiciones contenerizadas*/
+		CALL MISCpieza_en_cont
+		IF (RETVAL == 0)
+			ERRMSG common:errmsg_list,"La sesion no se puede reversar - Existen piezas que ya han sido expedidas o transferidas"
+			Call post:CDSfin_tabla(dsc:post:Jounarl_anul_Ctx )
+			RETURN (-2)
+		END IF
+	END IF
+
+
+	While (retval_jnl >= 0)
+		CALL csr:trimfield post:jnl_flia_tran
+		siaf:adt_tran_codigo = siaf:codigo_siaf
+		If (post:jnl_flia_tran == "BG")
+			If (testflag(hcomm:state_flags,on_line) || siaf:posible_off == "S" )
+				// Supervisor de Gali
+				SwapDup  tlr:jnl_sequence
+				DupField tlr:jnl_sequence
+				ovr:ovr_sup_id = post:ovr_sup_id_gali
+				siaf:ovr_sup_siaf_id = post:ovr_siaf_id_gali
+				Call post:CDScodigo_gali_load
+				Call post:MISCreversa_transac
+			Else
+				// Salteo la Transaccion
+			Endif
+		Else // Otra Flia que no sea Galicia
+			if (jnl_flia_tran == "CSM")
+				;No se pide nro. de control, ya
+				;que se envia el mensaje de cancelacion
+				;call post:MISCingreso_ctrol
+			end if
+			Call post:MISCActInterfaz("REV_JNL","N")
+
+			// sba 20040106 - Se perdia el flag de supervision y lo journalizaba vacio
+			SetFlag tlr:tran_flags,supovr_granted
+
+			ovr:ovr_sup_id = post:ovr_sup_id_aux
+			siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+			sequence_aux = tlr:jnl_sequence
+			l_sequence = tlr:jnl_sequence
+			
+			//50244 - Aplicacion de Transferencias Bancarias (99451)
+			//Se debe journalizar con el codigo 99452
+			if (siaf:codigo_siaf == 99451)				
+				siaf:codigo_siaf = 99452
+				siaf:afecta_efectivo = "+" //por las dudas que la interfaz la tome!
+				siaf:nombre_transac = "CANCELACION APLICACION TRANSF.BANC."
+   			endif
+			
+			//CCT 
+   			IF (siaf:codigo_siaf == 18701 && post:adt_stockp_es_grancl == "T")
+   				//borro el registro correspondiente en la tabla "cupon_rep" 
+   				//accediendo con el tlr:jnl_sequence de la tx original
+   				CALL CDScupon_rep_del(tlr:jnl_sequence)
+   			END IF
+   			
+   			
+			Call  post:MISCreversa_transac
+			
+			
+			//CCT 
+   			IF (siaf:codigo_siaf == 18701 && post:adt_stockp_es_grancl == "T")
+   				//genero un registro de cancelacion en la tabla "cupon"
+   				//accediendo con el nuevo tlr:jnl_sequence generado para la reversa
+   				CALL MISCgenCupCanc_CREM(l_sequence)
+   			END IF
+			
+			; si fue PF iplan tengo que cambiarle el status a la directa.
+			call post:MISCcambiaStatusPF(l_sequence)
+			CLEARFIELD nro_autorizac
+
+			IF (track_trace != "")//Si no es vacio es pieza de control
+				/*MFM - Borro scaneo "O" de imposiciones*/
+				CALL CDSBorro_Scaneos("I")
+				/*MFM - Borro registros de la Tabla de Transferencias*/
+				CALL MISCact_TranCont("S")
+				//Vuelvo el tt_giro a NO USADO
+				CALL giros:CDSupd_TTgiros(track_trace,"N")
+
+				//Elimino el T&T de la tabla rack_trace
+				CALL CDSreverso_tt
+			END IF
+
+			IF (Pieza != "")
+				/*CSZ - Borro scaneo "P" correspondiente a Entrega de Piezas*/
+				CALL CDSBorro_Scaneos("E")
+			END IF
+
+			//Si estoy reversando un giro que tiene tt asociado, elimino el tt de la TTgiros
+			if (jnl_flia_tran == "CSM" && giros:TrackTrace_giros.numchars != 0)
+				CALL giros:CDSdel_TTgiros(giros:TrackTrace_giros,giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld,giros:flia_giro_fld)
+			end if
+
+			//Si estoy reversando una tx que usó franqueadora marco la control_franq
+			//con una "R" siempre que sea sesion ModalidadCC
+			IF ((post:jnl_flia_tran == "CSP" || post:jnl_flia_tran == "CSE") && \
+				usa_franqueadora == "S" && post:ModalidadCC && post:ImpCC_Min == "S")
+				CALL CDSfranq_estado_CM("R")
+			END IF
+	
+		Endif
+		Call post:CDSbusca_tabla(dsc:post:Jounarl_anul_Ctx )
+		LET retval_jnl = RETVAL
+
+		IF (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242) THEN
+			//cgw: Instanciando esta variable, en la reversa del Reemplazo de Cheque Rechazado/Obs y 
+			//     Reemplazo de Cheque Robado, entra a tes:MISCjnltran, y actualiza estado en TesoCheq.
+			tes:es_tesoro = "S"
+			;FGB: para el reemplazo se utiliza siaf:importe2 como importe sin iva (PS 9635 - Bug Item 9598)
+			varl_imp2_aux = siaf:importe2 // lo resguardo por las dudas
+			// fgb: si el reemplazo tiene comisión por rechazo, entonces el importe sin impuestos es:
+			// sin_impuesto (siaf:importe2) = importe_total (siaf:importe) - importe_iva (post:ImporteIva)
+			siaf:importe2 = siaf:importe - post:ImporteIva
+		else
+			if (varl_imp2_aux.NUMCHARS > 0) then
+				siaf:importe2 = varl_imp2_aux
+				clearfield varl_imp2_aux
+			endif
+		END IF
+
+	End While
+
+
+    Call post:CDSfin_tabla(dsc:post:Jounarl_anul_Ctx )
+    /* Agregado por JPM para eliminar las Piezas de la  */
+    /* Tabla de Piezas sin T&T de CuentaCorrentistas	*/
+    IF (cli_tipo == 1 || (cli_tipo == CLIMED && (ModalidadCC || ModalidadCD))) THEN
+        CALL post:CDSrev_TT
+    END IF
+    Call post:MISCclear_campos_jou
+    Resetflag lib:state_flags,scan_mode
+
+    ;Eliminar marca de reverso desde el journal para giros
+    if (testflag(tlr:controla_marca,reverso_jnl))
+	call op:CDSop_marca_reverso(RESET_MARCA_REV)
+    end if
+
+END SUB
+
+/*******/

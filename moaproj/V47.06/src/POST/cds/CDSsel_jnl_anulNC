@@ -1,0 +1,124 @@
+/****o* Notas de Credito CM/OFB:post:CDSsel_jnl_anulNC
+* NOMBRE
+*   OFB:post:CDSsel_jnl_anulNC
+* DESCRIPCION
+*   Selecciona las Notas de Crédito disponibles para anular para el operador identificado
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:PRESanulacionNC
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsel_jnl_anulNC
+
+local codigo_siaf_aux like siaf:jnl_codigo_siaf
+local sequence_corr_aux like tlr:jnl_sequence_corr
+local DocInic_aux like post:DocInic
+local Tipo_Formulario_aux like post:Tipo_Formulario
+local importe_sesion_aux like post:importe_sesion
+local PresNro_aux like post:PresNro
+local OperacionNC_aux like post:OperacionNC
+
+/* Selecciona del journal todos los registros de FIN SESION de la fecha, con respecto al
+   operador, siempre y cuando tengan un formulario asociado, no esté reversado y tenga la
+   marca de que es una Nota de Crédito por incumplimiento a CM
+   Gabriel Falciola*/
+
+
+	/*Uso algunos campos para la lista de filtro, por lo tanto resguardo su valor original*/
+	codigo_siaf_aux = siaf:jnl_codigo_siaf
+	siaf:jnl_codigo_siaf = 99023
+	sequence_corr_aux = tlr:jnl_sequence_corr
+	tlr:jnl_sequence_corr = 0
+	DocInic_aux = post:DocInic
+	post:DocInic = 0
+	Tipo_Formulario_aux = post:Tipo_Formulario
+	post:Tipo_Formulario = 3
+	importe_sesion_aux = post:importe_sesion
+	PresNro_aux = post:PresNro
+	post:PresNro = 1
+	OperacionNC_aux = post:OperacionNC
+	post:OperacionNC = 1
+	
+	
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE LST:LISTsel_jnl_anul
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+  	IF (CDSRETVAL != 0) THEN
+    	CDS ENDSELECT DSC:tlr:jnl_context
+    	MSGBOX "No existen Notas de Crédito para anular",0x00,"AVISO"
+    	RETURN (-2)
+  	END IF
+
+	/*Restauro los valores*/
+	siaf:jnl_codigo_siaf = codigo_siaf_aux
+	tlr:jnl_sequence_corr = sequence_corr_aux
+	post:DocInic = DocInic_aux
+	post:Tipo_Formulario = Tipo_Formulario_aux
+	post:importe_sesion = importe_sesion_aux
+	post:PresNro = PresNro_aux
+	post:OperacionNC = OperacionNC_aux
+		
+  	do
+		post:DocFiscal = ""
+		// Si hay registros, los paso a una tabla auxiliar (TmpDocFis)
+		//venta up
+		CLEARFIELD VentaUP_Diferida
+		CLEARFIELD VentaUP_Excepcion
+		//cliente medio
+		CLEARFIELD ConvenioSesion
+		CLEARFIELD ExcepSesion
+		CLEARFIELD VentaCdcto_CM
+		CLEARFIELD ModalidadAT
+		CLEARFIELD ModalidadCC
+		CLEARFIELD ModalidadCD
+		CLEARFIELD ConsumoAnticipo
+		CLEARFIELD OperacionCob
+		CLEARFIELD Imp_CobroDif
+		CLEARFIELD OperacionInt
+		CLEARFIELD OperacionAut
+		CLEARFIELD ExcepProducto
+		CLEARFIELD post:MPcheque
+
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+		tlr:jnl_operator tlr:jnl_bus_date  \
+		DocFiscal DocInic DocFin CliRaz PresNro importe_sesion tlr:jnl_sequence \
+		adt_Modo VentaUP_Diferida VentaUP_Excepcion ConvenioSesion VentaCdcto_CM \
+		ExcepSesion ModalidadAT ModalidadCC ModalidadCD ConsumoAnticipo \
+		OperacionCob Imp_CobroDif OperacionInt OperacionAut ExcepProducto MPcheque
+		
+   		if (post:DocFiscal.numchars != 0)
+	    	//Abro el contexto de la tabla auxiliar
+   			cds select from DSC:TmpDocFis_table becomes DSC:TmpDocFis_context
+			cds append DSC:TmpDocFis_context \
+			tlr:jnl_operator tlr:jnl_bus_date \
+			DocFiscal DocInic DocFin CliRaz PresNro importe_sesion tlr:jnl_sequence \
+			adt_Modo
+			/*MFM - VENTA UP DIFERIDA - PAGO POR EXCEPCION*/
+			cds append DSC:TmpDocFis_context VentaUP_Diferida \
+			VentaUP_Excepcion
+			//Tratamiento Cliente Medio
+			cds append DSC:TmpDocFis_context ConvenioSesion VentaCdcto_CM ExcepSesion \
+			ModalidadAT ModalidadCC ModalidadCD ConsumoAnticipo \
+			OperacionCob Imp_CobroDif OperacionInt OperacionAut ExcepProducto MPcheque
+			
+			cds insert DSC:TmpDocFis_context nolock
+			CDS ENDSELECT DSC:TmpDocFis_context
+		endif
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+  		IF (CDSRETVAL != 0) THEN
+    		CDS ENDSELECT DSC:tlr:jnl_context
+    		break
+  		END IF
+	loop
+END SUB
+
+/*******/

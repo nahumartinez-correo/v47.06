@@ -1,0 +1,91 @@
+/****o* Pendientes de agrupación/OFB:plataf:curstate_action_drv
+* NOMBRE
+*   OFB:plataf:curstate_action_drv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+////////////////////////////////////////////////////////////////////
+// Esta rutina es llamada en el drv:driver, al finalizar una trx. //
+// De acuerdo al estado actual del presupuesto, segun la nueva    //
+// (i)logica, realiza alguna accion.                              //
+//////////////////////////////////////////////////// 27.11.2002 ////
+SUB plataf:curstate_action_drv
+local l_SALE_POR_ESC	like siaf:i
+
+
+#if CORREO_DEBUG == CORREO_ON
+		call post:MISClogMenues("Ejecutando... OFB:plataf:curstate_action_drv")
+#endif
+
+// fgb: cuando estoy en la reversa, no debe hacer nada.
+if (testflag(tlr:tran_flags,correction) || testflag(lib:state_flags,scan_mode)) then
+	return
+endif
+
+// para no hacer siempre la misma pregunta...
+l_SALE_POR_ESC = (!testflag(tlr:state_flags,tran_active) && LASTKEY == RT_ESC) 
+
+// FGB (reingenieria): cambia la etapa en que se encuentra el presupuesto 
+select (plataf:current_state) 
+	case READYTOSTART
+		if (siaf:codigo_siaf == 99021 && !l_SALE_POR_ESC) then
+			let plataf:current_state = BUDGET_STARTED
+			call CDSset_pasadaMP(op:op_operator_id,PRIMER_PASADA)
+		endif
+		break
+	case BUDGET_STARTED
+	case BUDGET_CLOSED
+	case BUDGET_CANCEL
+		// si le di esc al inicio de sesion, entonces vuelvo al estado anterior
+		if (siaf:codigo_siaf == 99021) then
+			if (l_SALE_POR_ESC) then
+				let plataf:current_state = READYTOSTART
+			endif
+		elseif (siaf:codigo_siaf == 99023 && !l_SALE_POR_ESC) then // saliendo del fin de sesion
+			let plataf:current_state = READYTOSTART
+		endif
+		break
+	case CLOSING_BUDGET
+		// si sali de la trx. por ESC, vuelvo al estado anterior...
+		if (l_SALE_POR_ESC) then
+			let plataf:current_state = BUDGET_STARTED
+		else
+			// Si estaba en la trx. que finaliza el presupuesto y todo salio
+			// bien, cambio el estado a presupuesto cerrado
+			if (drv:INDrun_funct != 0) then
+				let plataf:current_state = BUDGET_CLOSED
+			endif
+		endif
+		break
+	case CONFIRMATION
+	;	call plataf:proc_conf_progress // marca el progreso de la confirmacion
+		break
+	case FORM_PRINTING
+		let plataf:current_state = READYTOSTART
+		clearfield plataf:INDlast_tran 
+		break
+	case else
+end select
+call CDSset_curr_state(op:op_operator_id,current_state)
+
+
+#if CORREO_DEBUG == CORREO_ON
+		call post:MISClogMenues("Fin... OFB:plataf:curstate_action_drv")
+#endif
+
+END SUB
+
+/*******/

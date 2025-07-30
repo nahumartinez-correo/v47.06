@@ -1,0 +1,214 @@
+/****o* Clientes Medios/OFB:post:CDSagregTrnDcto30300
+* NOMBRE
+*   OFB:post:CDSagregTrnDcto30300
+* DESCRIPCION
+*   Agrega, modifica o borra el descuento de cliente medio sobre el servicio, bien de cambio.
+* ENTRADAS
+*   codigo =  codigo de la transaccion sobre la que se le aplica el descuento.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:CDSagregTrnDctoOpcCM
+* REFERENCIADO POR
+*   OFB:post:MISCAct_DctoSesionCM,OFB:post:MISCagregTrnDctoCM,OFB:post:MISCRemito_Item,OFB:post:SVALDcto_Sesion
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSagregTrnDcto30300(codigo)
+	LOCAL l_ImporteConIva LIKE siaf:ImporteConIva
+	LOCAL l_ImporteSinIva LIKE siaf:ImporteSinIva
+	LOCAL l_adt_tran_fliatran LIKE siaf:adt_tran_fliatran
+	LOCAL l_adt_tran_afec_efvo LIKE siaf:adt_tran_afec_efvo
+	LOCAL l_PresNro LIKE post:PresNro
+	LOCAL l_moneda LIKE siaf:moneda
+	LOCAL l_importe LIKE siaf:importe
+
+	//gpb:Falta analizar que codigo esta demas!!!
+	
+	//resguardo campos para actualizar AuxIngBr y PresuPag
+	IF (post:estado_presu == 2) THEN
+		IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN	
+			 l_ImporteConIva = post:ImporteConIva
+			 l_ImporteSinIva = post:ImporteSinIva
+			 l_adt_tran_fliatran = siaf:adt_tran_fliatran
+			 l_adt_tran_afec_efvo = siaf:adt_tran_afec_efvo 
+			 l_PresNro = post:PresNro
+			 l_moneda = siaf:moneda
+			 l_importe = post:Imp_DctoCliMed 
+		END IF
+	END IF
+	
+	/*MFM - Esta rutina graba, modifica y borra la transacción
+	de descuento a cliente medio ped (30300) en la PresuDet.  */
+	IF (!post:OperacionCob && !post:OperacionAut) THEN
+		IF (codigo != 8500) THEN
+			CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+				WHERE post:fecha    == FLD:common:system_date && \
+				post:op_operator_id == FLD:op:op_operator_id && \
+				post:PresNro        == post:PresNro && \
+				PreDNroTrnAsoc      == PreDNroTrnAsoc && \
+				siaf:codigo_siaf    == 30300
+		ELSE
+			CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+				WHERE post:fecha    == FLD:common:system_date && \
+				post:op_operator_id == FLD:op:op_operator_id && \
+				post:PresNro        == post:PresNro && \
+				PreDNroTrn          == PreDNroTrnCM && \
+				PreDNroTrnAsoc      == PreDNroTrnAsoc && \
+				siaf:codigo_siaf    == 30300 
+		END IF
+	ELSE
+		IF (codigo != 8500) THEN
+			CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+				WHERE post:fecha    == FLD:common:system_date && \
+				post:op_operator_id == FLD:op:op_operator_id && \
+				post:PresNro        == post:PresNro && \
+				PreDNroTrnAsoc      == PreDNroTrnAsoc && \
+				siaf:codigo_siaf    == 30300 && \
+				post:remito_nro == post:remito_nro
+		ELSE
+			CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+				WHERE post:fecha    == FLD:common:system_date && \
+				post:op_operator_id == FLD:op:op_operator_id && \
+				post:PresNro        == post:PresNro && \
+				PreDNroTrn          == PreDNroTrnCM && \
+				PreDNroTrnAsoc      == PreDNroTrnAsoc && \
+				siaf:codigo_siaf    == 30300 && \
+				post:remito_nro == post:remito_nro			
+		END IF
+	END IF
+		              
+	CDS FINDFIRST DSC:CONPresuDeta2 LOCK
+	lib:err_retval = CDSRETVAL
+
+	IF (lib:err_retval != 0) THEN	
+		IF ((Dcto_CliMed > 0) || (codigo == 40002 && post:DctoCM_bc > 0)) THEN
+			CALL CDSIncSecSesion(PresNro,"TRN",1, enAnulacion)
+			PreDNroTrn = RETVAL
+			siaf:codigo_siaf        = 30300
+			siaf:adt_tran_fliatran  = "PCL"
+			siaf:adt_tran_afec_efvo = "-"
+			LET tlr:INDtran_name    = LST:post:TRANDescuentoCMped
+			PreDEst                 = 1
+			PrePEst                 = 1
+			siaf:adt_tran_jer_pres  = 7
+			siaf:moneda = 99
+			//post:AdmiteMP = "S"
+			CALL post:MISCRestFlia
+
+			CDS CLEARBUFFER DSC:CONPresuDeta2
+			CDS APPEND DSC:CONPresuDeta2 post:fecha post:op_operator_id \
+				post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn \
+				tlr:INDtran_name post:PreDEst \
+				siaf:codigo_siaf \
+				post:PreDForFis Imp_DctoCliMed AS siaf:importe siaf:adt_tran_afec_efvo \
+				siaf:adt_tran_fliatran post:PrePEst \
+				post:PresIngTas post:PresIngGra post:PresIngExe
+				
+			CDS APPEND DSC:CONPresuDeta2 siaf:moneda post:ImporteSinIva AS siaf:ImporteSinIva \
+				post:ImporteConIva AS siaf:ImporteConIva
+				
+			/*Agrego el campo tarifa (tarifa basica del por producto), el descuento aplicado (por prod o sesion) y
+			el campo TotalSesionCM (total bruto de la sesion CM)*/
+			CDS APPEND DSC:CONPresuDeta2 post:tarifa post:TotalSesionCM \
+				prod_DescuentoCM  PreDNroTrnAsoc post:bonificaCM post:AliTrnCM 	post:AdmiteMP
+				
+			//NI 50324
+			IF (codigo == 40002 && post:DctoCM_bc > 0) THEN
+				post:Dcto_CliMed = post:DctoCM_bc
+			 	CDS APPEND DSC:CONPresuDeta2 post:DctoCM_bc
+			END IF
+
+			CDS APPEND DSC:CONPresuDeta2 post:Dcto_CliMed
+			
+			/*Agrego vectores*/
+			CDS APPEND DSC:CONPresuDeta2 \
+				array docfis_tasa_por \
+				array docfis_importe \
+				array docfis_imp_siva \
+				array docfis_imp_siva4
+			
+			/* MLD Por Cobranza CM agrego el remito que lo generó */
+			CDS APPEND DSC:CONPresuDeta2 \
+				remito_nro
+			/* MLD Por Cobranza CM agrego si el descto es por sesion en un auxiliar*/
+			CDS APPEND DSC:CONPresuDeta2 \
+				post:PorSesion
+			//A pedido de Horacio Araujo, se journaliza el dcto local anterior.
+			CDS APPEND DSC:CONPresuDeta2 \
+				post:Dcto_CliMed_Ant
+			
+			CDS INSERT DSC:CONPresuDeta2 LOCK   
+			//PS Cliente Medio + Bienes de Cambio
+			IF (codigo == 8500 && post:cod_agrupacion.NUMCHARS != 0) THEN
+				post:PreDNroTrnCM = post:PreDNroTrn 
+			ENDIF
+		ELSE
+			//servirá para estado presu = 3
+			CDS UNLOCK DSC:post:CONPresuDeta2
+			CDS ENDSELECT DSC:post:CONPresuDeta2
+			RETURN -2
+		END IF
+	ELSE
+		//CDS extract DSC:CONPresuDeta2 post:AliTrnCM siaf:ImporteSinIva siaf:ImporteConIva
+		//SC 50170
+		//solo borro el iva si no estoy modificando pues ya lo hice al ingresar a modificar
+		//la TX correspondiente.
+		IF (estado_presu != 3) THEN
+			CDS EXTRACT DSC:CONPresuDeta2 post:AliTrnCM siaf:ImporteConIva
+			CALL MISCdesglosaIva(siaf:ImporteConIva, post:AliTrnCM, 1,0)
+			CALL MISCborrarIva
+		END IF
+		//IF ((Dcto_CliMed > 0) || (codigo == 40002 && post:DctoCM_bc > 0)) THEN
+		IF (Dcto_CliMed > 0) THEN
+			CDS CLEARBUFFER DSC:CONPresuDeta2
+			CDS APPEND DSC:CONPresuDeta2 Imp_DctoCliMed AS siaf:importe post:tarifa post:TotalSesionCM \
+				post:ImporteSinIva as siaf:ImporteSinIva post:ImporteConIva AS siaf:ImporteConIva
+			
+			//NI 50324
+			IF (codigo == 40002 && post:DctoCM_bc > 0) THEN
+				post:Dcto_CliMed = post:DctoCM_bc
+			 	CDS APPEND DSC:CONPresuDeta2 post:DctoCM_bc
+			END IF
+			CDS APPEND DSC:CONPresuDeta2 post:Dcto_CliMed
+			
+			//PS Bienes de Cambio
+			IF (codigo == 8500 && post:cod_agrupacion.NUMCHARS != 0) THEN
+				CALL MISCdesglosaIva(post:Imp_DctoCliMed, tes:adt_espv_aliciva, 1,0)
+				CDS APPEND DSC:CONPresuDeta2 post:prod_DescuentoCM tes:adt_espv_aliciva AS post:AliTrnCM 
+			ELSE
+				CDS EXTRACT DSC:CONPresuDeta2 post:AliTrnCM
+				CALL MISCdesglosaIva(post:Imp_DctoCliMed, post:AliTrnCM, 1,0)
+			END IF
+			
+			/*Agrego vectores*/
+			CDS APPEND DSC:CONPresuDeta2 \
+				array docfis_tasa_por \
+				array docfis_importe \
+				array docfis_imp_siva \
+				array docfis_imp_siva4
+
+			CDS UPDATE DSC:CONPresuDeta2 LOCK
+		ELSE
+			CDS DELETE DSC:CONPresuDeta2 
+			CDS UNLOCK DSC:CONPresuDeta2
+			CDS ENDSELECT DSC:CONPresuDeta2
+			RETURN (-2)
+		END IF
+	END IF
+	CDS UNLOCK DSC:CONPresuDeta2
+	CDS ENDSELECT DSC:CONPresuDeta2
+	
+	//actualizo AuxIngBr y PresuPag
+	IF (post:estado_presu == 2) THEN
+		IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+			CALL post:MISCAuxIngBr_fld_ped(l_ImporteConIva,l_ImporteSinIva,l_adt_tran_fliatran,l_adt_tran_afec_efvo,l_PresNro,l_moneda,l_importe)
+		END IF
+	END IF
+	
+END SUB
+
+/*******/

@@ -1,0 +1,184 @@
+/****o* Sesión Correo/OFB:post:PBdel_txs_sel
+* NOMBRE
+*   OFB:post:PBdel_txs_sel
+* DESCRIPCION
+*   Borra una transacción de la Grilla del Presupuesto
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNestado_sesion
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBdel_txs_sel
+	//LOCAL IMPORTE_TRANSAC LIKE siaf:importe
+	//LOCAL Imp_aux LIKE siaf:importe
+	//LOCAL Mone_aux LIKE siaf:moneda
+	LOCAL idx LIKE siaf:i
+	LOCAL INDtran_del LIKE tlr:INDtran_name
+	LOCAL drv_header_aux LIKE drv:header
+	LOCAL operador_aux LIKE post:op_operator_id
+	LOCAL fecha_aux LIKE post:fecha
+	//LOCAL nro_trn LIKE PreDNroTrn
+
+#if CORREO_DEBUG == CORREO_ON
+	LOCAL loc_string_deb LIKE common:csr_string 
+	
+	;IF (plataf:current_state == CONFIRMATION) THEN
+	CALL post:MISClogMenues("post:PBdel_txs_sel")
+	;END IF
+#endif
+
+	//Controlo si existe alguna tx seleccionada para borrar
+	CALL CDScheck_tx_del
+	IF (RETVAL < 0) THEN
+		MSGBOX "No hay Transacciones Seleccionadas para Eliminar",OFB_OK,"Aviso"
+		RETURN (-2)
+	END IF
+	
+	//SC 50364 - Caja unificada
+	IF (post:es_WEB == "X") THEN
+		MSGBOX "NO SE PUEDE ELIMINAR UNA TX DE OPERACIONES WEB.",OFB_OK,"ERROR"
+		RETURN (-2)
+	END IF
+	
+	//gpb:NI50479
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+		MSGBOX "NO SE PUEDE ELIMINAR UNA TX DE IMPOSICION PED.\nDEBERA CANCELAR TODO EL PRESUPUESTO.",OFB_OK,"ERROR"
+		RETURN (-2)	
+	END IF
+	
+	//gpb:NI50479 Refacturacion PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		MSGBOX "NO SE PUEDE ELIMINAR UNA TX DE REFACTURACION PED.\nDEBERA CANCELAR TODO EL PRESUPUESTO.",OFB_OK,"ERROR"
+		RETURN (-2)	
+	END if
+	
+	//ENTREGA PAS
+	CALL post:CDSConsulta_PresuPAS("DELPZA")
+	IF (RETVAL == 0) THEN
+	//	MSGBOX "NO SE PUEDE ELIMINAR UNA PIEZA DE ALTA SEGURIDAD ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+	MSGBOX "NO SE PUEDE ELIMINAR UNA PIEZA ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+		RETURN (-2)	
+	END IF
+	//ENTREGA CON PALABRA CLAVE
+	CALL post:CDSConsulta_PresuPC("DELPZA")
+	IF (RETVAL == 0) THEN
+		MSGBOX "NO SE PUEDE ELIMINAR UNA PIEZA CON PALABRA CLAVE ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+		RETURN (-2)	
+	END IF
+	
+	MSGBOX "Esta seguro que desea eliminar las Transacciones seleccionadas?",OFB_YESNO,"Aviso"
+	IF (RETVAL == 6) THEN  /*si*/
+		post:estado_presu = 3
+		CALL post:CDSadt_presuact_upd
+		
+		//gpb:AUT-2097 Recuperacion caidas Oficios Judiciales
+		CALL siaf:CDSoficio_DelReg
+
+		//resguardo los datos para acceder a la PresuDet porque se pierden en el end_tran
+		operador_aux = op_operator_id
+		fecha_aux = fecha
+		
+		//Obtengo el numero de transacciones del piclist de tx seleccionadas
+		idx = PL_GETITEM
+		DO
+			//Voy recorriendo el picklist y eliminando las tx de la PresuDet
+			CALL csr:myPickcontrol("Tx_ses_selected",common:csr_string,idx)
+			IF (RETVAL < 0) THEN
+				//RETURN (-2)
+				//No hay más tx seleccionadas para borrar?????
+				BREAK
+			END IF
+
+			/* borrar registro de tabla PresuDet */
+			PreDNroTrn = SUBSTR(common:csr_string,0,10)
+			
+#if CORREO_DEBUG == CORREO_ON
+			;IF (plataf:current_state == CONFIRMATION) THEN
+				FPRINT loc_string_deb "borrando item %s <%s> de la grilla" PreDNroTrn,common:csr_string
+				CALL post:MISClogMenues("borrando PreDNroTrn=")
+			;END IF
+#endif
+			
+			CLEARFIELD drv:header
+			
+			//extraigo los datos de la PresuDet segun la tx seleccionada
+			CALL CDStx_presu_sel
+			IF (RETVAL < 0) THEN
+				//tengo que borrar el picklist de tx seleccionadas y resetear los checks?
+				post:estado_presu = 2
+				
+				//si se realizo el start_tran y no se puede modif. la trx., debo hacer el end_tran 
+				IF (SUBSTR(drv:header,3,1) == "Y") THEN
+					LET lib:ind_type = (tlr:INDtran_name >> 24) & 0xff
+					IF (lib:ind_type == LST_OBJ) THEN
+						CALL post:MISCdumpCampos
+						CALL csr:dt_tran DT_TRAN_END tlr:INDtran_name
+						CALL post:MISClogCampos
+					END IF
+				END IF				
+				RETURN (-2)			
+			END IF
+			
+			CDS EXTRACT DSC:CONPresuDeta all
+		
+			INDtran_del = tlr:INDtran_name
+			drv_header_aux = drv:header
+			
+			CALL MISCdel_tx_sesion
+			IF (RETVAL < 0)
+				//tengo que borrar el picklist de tx seleccionadas y resetear los checks?
+				post:estado_presu = 2
+				RETURN (-2)
+			ELSE
+				idx = idx - PL_GETITEM
+				CALL CSR:myPickdelete("Tx_ses_selected",common:csr_string,idx)
+				idx = idx - 1 + PL_GETITEM
+				idx = idx + 1
+			END IF
+
+			//hago el end_tran para que me ejecute el autoclear de los campos...
+			IF (SUBSTR(drv_header_aux,3,1) == "Y") THEN
+				tlr:INDtran_name = INDtran_del
+				LET lib:ind_type = (tlr:INDtran_name >> 24) & 0xff
+				IF (lib:ind_type == LST_OBJ) THEN
+					CALL post:MISCdumpCampos
+					CALL csr:dt_tran DT_TRAN_END tlr:INDtran_name
+					CALL post:MISClogCampos
+				END IF
+			END IF			
+		LOOP
+	ELSE
+		post:estado_presu = 2
+		CALL post:CDSadt_presuact_upd		
+		RETURN -2
+	END IF
+
+	//restauro valores que se pierden en el end_tran
+	op_operator_id = operador_aux
+	fecha = fecha_aux
+
+	//MFM - OBS246 PUNTO 1 - Esta rutina muestra el importe restante de la excepcion
+	//y se restaura cada vez que se hace un update o delete en la PresuDet
+  CALL post:MISCexcepConsumida	
+   
+	CALL post:MISCgrilla_sesion
+	
+	//La rutina anterior vuelve el estado_presu al 2 en el caso de estar en 3.
+	/*post:estado_presu = 2
+	CALL post:CDSadt_presuact_upd*/
+	REFRESH post:Total_importe
+	
+	INIT 33,0
+
+END SUB
+
+/*******/

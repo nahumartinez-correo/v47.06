@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdump_jnl_nc
+* NOMBRE
+*   OFB:post:MISCdump_jnl_nc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+/* Esta rutina copia al journal las transacciones que no han sido anuladas, por lo
+tanto fueron generadas las Directas correspondientes, cambiando el
+contenido de algunos campos claves - Gabriel Falciola*/
+SUB post:MISCdump_jnl_nc()
+	local cont_aux_dire like post:contador_directas
+    local Ltime_of_day like common:time_of_day
+	local LpresNroNew  like post:presNroNew
+	local Lstring_aux  like common:csr_string
+
+    let Ltime_of_day = common:time_of_day
+	/*MFM - Resguardo la hora con la que se grabará la nueva transacción*/
+	post:hora_trancont = Ltime_of_day
+
+	if (enSesion == "S" || estAnul == "D2_")
+		Cds FINDAGAIN dsc:Jounarl_anul_Ctx  nolock
+		cds extract dsc:Jounarl_anul_Ctx contador_directas into cont_aux_dire
+		Call csr:copy_record(dsc:Jounarl_anul_Ctx,DSC:tlr:CONjnl_write)
+	else
+		Cds FINDAGAIN dsc:NC_CON nolock
+		cds extract dsc:NC_CON contador_directas into cont_aux_dire
+		Call csr:copy_record(dsc:NC_CON,DSC:tlr:CONjnl_write)
+	endif
+	
+	call MISCActInterfaz("DIRECTA","N")
+
+	clearfield tlr:jnl_sequence_corr
+	if (siaf:codigo_siaf != 99021)
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","contador_directas",post:contador_directas,1)
+	endif
+	Call csr:update_record(DSC:tlr:CONjnl_write,"tlr","jnl_sequence",tlr:jnl_sequence,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"tlr","jnl_time",Ltime_of_day,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"tlr","jnl_hora_ult_act",Ltime_of_day,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"tlr","jnl_sequence_corr",tlr:jnl_sequence_corr,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"post","PresNro",presNroNew,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"post","adt_PreDNroTrn",adt_PreDNroTrn,1)
+	Call csr:update_record(DSC:tlr:CONjnl_write,"siaf","jnl_window_node",common:window_node,1)
+	/*Este campo sólo se actualiza en los contextos que lo posean - Gabriel Falciola*/
+	if (cont_aux_dire.numchars == 1)
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","contador_directas",contador_directas,1)
+	end if
+	if (ProcesaInterfaz.numchars > 0)
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","ProcesaInterfaz",ProcesaInterfaz,1)
+	end if	
+	// GAF 22.01.2002: actualiza sf1_nro_lote en trx p' SEPSA para que la interfaz no genere registros duplicados
+	if (siaf:codigo_siaf == 6820 || siaf:codigo_siaf == 6840) then
+        fprint Lstring_aux "%08.8s" presNroNew
+		fprint LpresNroNew "%04.4d" substr(Lstring_aux,4,4)
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","sf1_nro_lote",LpresNroNew,1)
+	endif
+
+/*	if (siaf:codigo_siaf == 99023)
+		if (enSesion == "S" || estAnul == "D2_")
+			call MISCpasoDocJnl(DocInic,DocFin)
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","DocInic",post:DocInic,1)
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","DocFin",post:DocFin,1)
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","NroFact_Inic",post:NroFact_Inic,1)
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","NroFact_Fin",post:NroFact_Fin,1)
+		end if
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","Tipo_Formulario",post:Tipo_Formulario,1)
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","DocFiscal",post:DocFiscal,1)
+		if (post:bloqueoVentas.NUMCHARS == 0)
+			post:bloqueoVentas = "N"
+		endif
+		Call csr:update_record(DSC:tlr:CONjnl_write,"post","jnlBloqVentas",post:bloqueoVentas,1)
+		if (Tipo_Formulario != TICKET)
+			if (admin:adt_br_CEC_manu == substr(DocInic,1,4))
+				cantPagFact = substr(DocFin,1,12) - substr(DocInic,1,12) + 1
+				post:FacturaManual = "S"
+				Call csr:update_record(DSC:tlr:CONjnl_write,"post","adt_br_CEC_fact",admin:adt_br_CEC_manu,1)
+				Call csr:update_record(DSC:tlr:CONjnl_write,"post","FacturaManual",post:FacturaManual,1)
+			else
+				cantPagFact = cantidad2
+			end if
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","cantPagFact",post:cantPagFact,1)
+		else
+			clearfield cantPagFact
+			Call csr:update_record(DSC:tlr:CONjnl_write,"post","cantPagFact",post:cantPagFact,1)
+		end if
+	endif
+*/
+/* 
+ * FGB 11.03.2004 : A partir de la super-solucion de GAF (agregado de post:HoraSF1), no es 
+ *                  necesario actualizar este campo
+ *
+    if (siaf:codigo_siaf == 6840) then
+            move Ltime_of_day to substr(siaf:afip_interfaze,19,6)
+        	;Call csr:delete_field(DSC:tlr:CONjnl_write, "siaf","afip_interfaze", 1)
+    		Call csr:update_record(DSC:tlr:CONjnl_write,"siaf","afip_interfaze",siaf:afip_interfaze,1)
+  		    ;cds append DSC:tlr:CONjnl_write siaf:afip_interfaze
+	endif
+*/
+
+END SUB
+
+/*******/

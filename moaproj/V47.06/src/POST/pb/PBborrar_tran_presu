@@ -1,0 +1,254 @@
+/****o* Sesión Correo/OFB:post:PBborrar_tran_presu
+* NOMBRE
+*   OFB:post:PBborrar_tran_presu
+* DESCRIPCION
+*   Valida si una TX permite ser borrada del Presupuesto (Tabla PresuDet)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:BUTconfirma_presu
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBborrar_tran_presu
+
+    //Esta rutina no se esta utilizando desde Reingenieria.
+
+    Local IMPORTE_TRANSAC like siaf:importe
+    local Imp_aux like siaf:importe
+    local Mone_aux like siaf:moneda
+
+	//esta variable me indica si estoy borrando o modificando una transacción
+	clearfield post:tran_presu_est
+
+	// Toque que no permite Borrar los Aceptados PJM 20-4-1998
+	If ( PreDEst == ACEPTADO )
+		msgbox ERROR_BORRADO,OFB_OK,"Aviso"
+	Else
+		If ( PrePEst != 1 )
+			msgbox "Medio de Pago Confirmado, No puede Eliminarse Transaccion",OFB_OK,"Aviso"
+		Else
+			if (siaf:codigo_siaf == 99023 || siaf:codigo_siaf == 99024 || siaf:codigo_siaf == 99025 || \
+				siaf:codigo_siaf == 99027 || siaf:codigo_siaf == 99028 || siaf:codigo_siaf == 99029 || \
+				siaf:codigo_siaf == 99019 || siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99006 || \
+				siaf:codigo_siaf == 70610 || siaf:codigo_siaf == 70620 || siaf:codigo_siaf == 70630 || \
+				siaf:codigo_siaf == 99160 || siaf:codigo_siaf == 99300 || siaf:codigo_siaf == 99410 || \
+				siaf:codigo_siaf == 70640 || siaf:codigo_siaf == 70650 || siaf:codigo_siaf == 99458)
+				// 70610  Trx.Giros Masivos.
+				// 70620  Faltante  de Cheq.Acreditado para giros masivos.
+				// 70630  Excedente de Cheq.Acreditado para giros masivos
+				// 99160 Intereses por Financiacion.
+				// 99410 Marca de Uso de Excepción
+				// 70640  TX de Importación de Lista de Giros (NI 50295)
+	    		// 70650  TX de Emision de Lista de Giros (NI 50295)
+	    		// 99458 TX de Consumo de Anticipo monetario (NI 50295)
+				msgbox "La Transaccion no puede Eliminarse",OFB_OK,"Aviso"
+			else
+				/*MLD No dejo Borrar transacciones asociadas a una original */
+				if (siaf:codigo_siaf == 8500 || (siaf:codigo_siaf == 40002 && post:tran_original == "N")) then
+	             	if (post:cod_agrupacion != 0) then
+		        	    msgbox "No se Puede Modificar. Transacción asociada a Otra",OFB_OK,"Aviso"
+		        	    LET drv:button = drv:last_button
+		                CALL drv:but_up_enable
+		                CALL drv:but_redraw
+		                return
+		            END IF
+	        	end if
+			    if (siaf:codigo_siaf == 8500)
+    	            tes:adt_evaux_prestran = post:PreDNroTrn
+    	            call post:CDSevaux_aceptada
+    	            if (retval < 0)
+    	        	    ;msgbox "La Transaccion no puede Eliminarse",OFB_OK,"Aviso"
+    	        	    msgbox ERROR_BORRADO,OFB_OK,"Aviso"
+    	        	    LET drv:button = drv:last_button
+	                    CALL drv:but_up_enable
+	                    CALL drv:but_redraw
+	                    return
+                    end if
+        	    end if
+
+        	    if (siaf:codigo_siaf == 99120)
+    	            post:adt_pmaux_presu = post:PresNro
+    	            call post:CDSpmaux_aceptada
+    	            if (retval < 0)
+    	        	    ;msgbox "La Transaccion no puede Eliminarse",OFB_OK,"Aviso"
+    	        	    msgbox ERROR_BORRADO,OFB_OK,"Aviso"
+    	        	    LET drv:button = drv:last_button
+	                    CALL drv:but_up_enable
+	                    CALL drv:but_redraw
+	                    return
+                    end if
+        	    end if
+
+
+
+				// FGB 13.6.2001: Como las transacciones de giros no siguen la misma logica que las postales, antes
+				// de borrar una emision, no solo verifico el estado, sino hasta donde llego a ejecutarse
+				if (siaf:adt_tran_fliatran == "CSM") then
+					if (giros:es_envio_WU == "S" || giros:es_emision_postal == "S" || giros:es_emision_tele == "S" || giros:es_emision_correohoy == "S" ) then
+						call giros:MISCverif_checkpoint(giros:checkpoint_emision)
+						if (retval < 0) then
+							msgbox "No se puede cancelar una operacion que ya realizó el viaje!!!",OFB_OK,"Aviso"
+    	        	    	LET drv:button = drv:last_button
+	                    	CALL drv:but_up_enable
+	                    	CALL drv:but_redraw
+	                    	return
+						end if
+					end if // si es emision
+				end if // si es de giros
+
+				if (det_presu_line1.NUMCHARS == 0)
+					msgbox "No hay Transaccion Seleccionada",OFB_OK,"Aviso"
+				else
+					msgbox "Elimina la Transaccion?",OFB_YESNO,"Aviso"
+					if (retval == 6) then  /*si*/
+
+						//Indica que estoy borrando (me sirve para el tratamiento de los descuentos de Clientes Medios
+						post:tran_presu_est = "B"
+						/* borrar registro de tabla PresuDet */
+
+						/*Lo resguardo porque se pierde*/
+						Imp_aux = siaf:importe
+						Mone_aux = siaf:moneda
+
+						/* Borro Las transacciones Adicionales */
+
+						if (siaf:adt_tran_fliatran == "CSP" || \
+    	 				siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CME" \
+    	 				|| siaf:adt_tran_fliatran == "CST") then
+							call post:MISCBorrar_Adic
+						end if
+
+						if (siaf:codigo_siaf == 6900)
+							siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+						end if
+
+						/*Para borrar Impuesto de Sellados - Gabriel Falciola*/
+						call MISCborrarImpSellos
+						siaf:importe = Imp_aux
+						siaf:moneda = Mone_aux
+						if (siaf:codigo_siaf == 6900)
+							siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+							; tengo que setear el campo post:afecEfvoAnt.
+							post:afecEfvoAnt = siaf:adt_tran_afec_efvo
+						end if
+						/*Actualizo la Tabla PresuPag - Gabriel Falciola*/
+						CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,0,siaf:importe)
+						/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+						call post:MISCborrarAuxIngBr
+
+					    if (siaf:codigo_siaf == 99120) // Borro de la tabla auxiliar
+				            call post:CDSborra_pmaux_presu
+					    end if
+
+
+						Call MISClimpia_presudet
+						Call CDSpresudet_load
+						//restauro el campo siaf:afecta_efectivo.
+						siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+						call MISCborrarIva
+						CALL post:CDSdel_trn_presu
+						CALL MISCrut_especiales
+
+						//Tratamiento Cliente Medio
+						If (cli_tipo == CLIMED && Dcto_CliMed > 0 && siaf:codigo_siaf != 8500) Then
+							Dcto_CliMed = 0
+							//resguardo el siaf:importe de la transaccion original
+							Imp_aux = siaf:importe
+							siaf:importe = 0
+							post:PreDNroTrnAsoc = post:PreDNroTrn
+    						CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,post:adt_serv_aliciva,siaf:importe)
+
+							//PS Opcionales
+    						call MISCProd_Y_Adic ("A")
+    						//recupero el siaf:importe de la transaccion original
+							siaf:importe = Imp_aux
+						End if
+
+						/*Se agrega calculo de Bonificaciones Postales - Gabriel Falciola*/
+						/*Debe filtrarse por el Tipo de Cliente !!!!!*/
+						if (post:cli_tipo == CLIUP)
+							call CDSVenUP_Presu
+						endif
+
+						call MISCagregTrnPrec
+						CALL MISCobt_med_pag_pres /* Regenerar tabla de Medios de Pago*/
+						CALL MISCAgregaTrnImpre(PresNro)
+
+
+						/* Borro Las transacciones Adicionales
+						if (siaf:adt_tran_fliatran == "CSP" || \
+    	 				siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CME") then
+							call post:MISCBorrar_Adic
+						end if
+						*/
+
+						// PJM 21-07-1998 pedido por marcelo agregado para que pida el importe a pagar
+						// efectivo pesos y dolares
+						// pesos
+						Call post:MISCcalc_dol_pesos
+						// Esto fue Agreagado para la pantalla que lleva el Estado de la Sesio
+						// PJM 27-05-1998
+						// Resto 1 en el Contador de Transacciones
+						Cuenta_Postal = Cuenta_Postal - 1
+
+						/*Se Actualiza el Total del Importe*/
+						call post:CDSTotSesionPag
+
+						INIT 22,1
+		                //cgw:SC 50170 (Redondea a dos decimales)
+						Total_importe = post:importe
+						/*Dependiendo del signo del importe, seteo un título u otro - Gabriel Falciola*/
+						if (post:importe >= 0)
+							post:Paga_o_Cobra = "TOTAL A COBRAR:"
+							post:importe_display = post:importe
+						else
+							post:Paga_o_Cobra = " TOTAL A PAGAR:"
+							post:importe_display = post:importe * -1
+						end if
+						INIT 22,0
+
+						refresh post:importe_display
+						refresh post:Paga_o_Cobra
+
+						// Rutina de Captura de Medio de Pago Pjm
+						Call MISCagregoCapturaMed
+
+						Call post:CDSadt_presuact_save
+
+
+						CLEARFIELD det_presu_line1
+						CLEARFIELD det_presu_line2
+						REFRESH det_presu_line1
+						REFRESH det_presu_line2
+						REFRESH importe
+
+
+						// SMC Se resta 1 al contador de extracciones Galicia - 18 Jun 1998
+						select (siaf:codigo_siaf)
+						case 700
+						case 710
+							let gali:indicador_pin_sesion = gali:indicador_pin_sesion - 1
+							break
+    					end select
+
+					endif
+				endif
+			endif
+		endif
+	endif
+	LET drv:button = drv:last_button
+	CALL drv:but_up_enable
+	CALL drv:but_redraw
+	//MFM - OBS246 PUNTO 1
+    Call post:MISCexcepConsumida
+END SUB
+
+/*******/

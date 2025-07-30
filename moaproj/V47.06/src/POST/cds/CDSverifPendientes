@@ -1,0 +1,491 @@
+/****o* Pendientes de agrupación/OFB:post:CDSverifPendientes
+* NOMBRE
+*   OFB:post:CDSverifPendientes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSverifPendientes
+
+	/* Carga PteTmp con las piezas, las piezas y las sacas, */
+	/* que no estan en contenedores, en sacas o en ctes. delineas */
+	/* Jul. 1998 - B. Petrella -                    */
+      /* Req. 96: Dic. 1998 - Agrupación de Cortes de Linea - B. Petrella */
+	/* Agos. 1999 - B. Petrella - Expedición Interior */
+Local corte like post:jnl_corteop_cod
+Local flia_aux like post:jnl_flia_tran
+	
+	let j_idx = 0 /* Indica si encuentra Piezas, Cont. o Sacas */
+	//MFM - resguardo la familia de la tx
+	let flia_aux = post:jnl_flia_tran
+	/* Resguardo Campos */
+	swapdup siaf:jnl_codigo_siaf
+	LET exp_operator_id = op:op_operator_id
+	LET exp_login_id = op:op_login_id
+
+	/* Limpia PteTmp segun el operador */
+	Let FldInformation = "Iniciando proceso de búsqueda de Pendientes.."
+	JOINSCREEN post:SCRNinformation,NOCURSOR
+
+	call CDSdelPteTmp
+
+	/************************************************/
+	/* Procesa Piezas Pendientes                    */
+	/************************************************/
+	/* NO TRANSFERIDAS                              */
+	/************************************************/
+
+	clearfield post:adt_codseq_nro
+	clearfield tlr:jnl_sequence_corr
+	let post:jnl_flia_tran = "CSP"
+
+	Let FldInformation = "Procesando Piezas Pendientes..."
+	Refresh FldInformation
+
+	clearfield tlr:jnl_sequence_corr
+	clearfield adt_codseq_nro
+	Let Pendiente = "P" /* Pieza */
+	Let idx = 1 /* Forma parte de la clave de PteTmp */
+
+	/* Selecciona los jnl. que pertenezcan a la        */
+	/* que la guia este        */
+	/* vacia y que la transaccion no este reversada.-  */
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(post:jnl_corteop_guiacont == "S" && \
+		 post:jnl_guia_cont == post:adt_codseq_nro && \
+		 tlr:jnl_branch == op:op_branch_id && \
+		 tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+		 tlr:jnl_status != "100"  && \
+		 (post:jnl_marca_excep == "N" || (post:jnl_marca_excep == "S" && \
+		 post:jnl_excep_existe != "N"))) SORT "Cierre"
+		
+
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+
+	DO
+		/* Limpio campos de identificaciòn de Piezas */
+		CLEARFIELD track_trace
+		CLEARFIELD Pieza
+		CLEARFIELD cod_ctrol
+		CLEARFIELD Pieza_id
+
+		IF (CDSRETVAL < 0)
+			CDS UNLOCK DSC:tlr:jnl_context
+			CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+		END IF
+		CDS EXTRACT DSC:tlr:jnl_context post:jnl_grucorte_cod \
+							  post:jnl_apertura_cod \
+							  post:track_trace \
+							  post:cod_ctrol \
+							  post:Pieza \
+							  tlr:jnl_operator \
+							  post:jnl_corteop_cod
+							  
+
+		IF (track_trace.numchars != 0 || Pieza.numchars != 0 || \
+			cod_ctrol.numchars != 0) THEN
+
+			IF (track_trace.numchars != 0) THEN
+				Pieza_id = track_trace
+			end if
+			IF (Pieza.numchars != 0) THEN
+				Pieza_id = Pieza
+			end if
+			IF (cod_ctrol.numchars != 0) THEN
+				Pieza_id = cod_ctrol
+			end if
+			LET adt_grucorte_cod = jnl_grucorte_cod
+			LET adt_apertura_cod = jnl_apertura_cod
+
+			Let j_idx = 1
+
+			/* Graba en PteTmp */
+			call CDSappendPteTmp
+			Let idx = idx + 1
+		END IF
+
+		CDS FINDNEXT DSC:tlr:jnl_context LOCK
+	LOOP
+
+	/************************************************/
+	/* Procesa Piezas Pendientes                            */
+	/************************************************/
+	/* TRANSFERIDAS                                                 */
+	/************************************************/
+	Let FldInformation = "Procesando Piezas Transferidas Pendientes..."
+	Refresh FldInformation
+
+	CDS SELECT FROM DSC:post:TranCont BECOMES DSC:post:TranCont_ctx WHERE \
+		(post:Sucursal_id == op:op_branch_id && \
+		 post:CodOperador == op:op_operator_id && \
+		post:MarcaBorrado == " " )
+		/*&& \
+		 (post:jnl_marca_excep == "N" || (post:jnl_marca_excep == "S" && \
+		 post:jnl_excep_existe != "N")))*/
+
+	CDS FINDFIRST DSC:post:TranCont_ctx LOCK
+
+	IF (CDSRETVAL != 0) THEN
+		CDS UNLOCK DSC:post:TranCont_ctx
+		CDS ENDSELECT DSC:post:TranCont_ctx
+	ELSE
+		Let j_idx = 1
+		Let Pendiente = "P" /* Pieza */
+		DO
+			/* Limpio campos de identificaciòn de Piezas */
+			CLEARFIELD track_trace
+			CLEARFIELD Pieza
+			CLEARFIELD cod_ctrol
+			CLEARFIELD Pieza_id
+
+			Let idx = idx + 1
+			CDS EXTRACT DSC:post:TranCont_ctx \
+				post:track_trace  \
+				post:cod_ctrol \
+				post:Pieza \
+				post:CodOperador
+			Let tlr:jnl_operator = post:CodOperador
+
+			CDS EXTRACT DSC:post:TranCont_ctx \
+							  post:jnl_grucorte_cod \
+							  post:jnl_corteop_cod \
+							  post:jnl_apertura_cod
+
+			LET adt_grucorte_cod = jnl_grucorte_cod
+			LET adt_apertura_cod = jnl_apertura_cod
+
+			IF (track_trace.numchars != 0) THEN
+				Pieza_id = track_trace
+			end if
+			IF (Pieza.numchars != 0) THEN
+				Pieza_id = Pieza
+			end if
+			IF (cod_ctrol.numchars != 0) THEN
+				Pieza_id = cod_ctrol
+			end if
+
+			/* Graba en PteTmp */
+			call CDSappendPteTmp
+
+			CDS FINDNEXT DSC:post:TranCont_ctx LOCK
+			IF (CDSRETVAL != 0) THEN
+				CDS UNLOCK DSC:post:TranCont_ctx
+				CDS ENDSELECT DSC:post:TranCont_ctx
+				BREAK
+			END IF
+		LOOP
+	END IF
+
+	/************************************************************/
+	/* Procesa Cierre de Sacas / Piezas Pendientes                  */
+	/************************************************************/
+	clearfield post:adt_codseq_nro
+	clearfield tlr:jnl_sequence_corr
+	LET post:adt_corteop_guiacont = "N"
+
+	clearfield post:track_trace
+	let siaf:jnl_codigo_siaf = 99030
+	let Pendiente = "C"
+	/* Selecciona los jnl., de las piezas que tengan                  */
+	/* la saca vacia y que la transaccion no este reversada. Si es*/
+	/* contenedor, nunca va a estar reversada, porque la 99030 no */
+	/* se reversa  */
+	Let FldInformation = "Procesando Cierre de Sacas Pendientes..."
+	Refresh FldInformation
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		 (post:jnl_corteop_guiacont == "N" && \
+		 post:jnl_corteop_saca == "S" && \
+		 post:jnl_guia_saca == post:adt_codseq_nro && \
+		 siaf:jnl_codigo_siaf != "99036" && \
+		 tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+		 tlr:jnl_status != "100"  && \
+		 tlr:jnl_branch == op:op_branch_id) SORT "Cierre"
+		/* 99036 es el detalle del Cierre de Cont. */
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+
+	DO
+		/* Limpio campos de identificaciòn de Piezas */
+		CLEARFIELD track_trace
+		CLEARFIELD Pieza
+		CLEARFIELD cod_ctrol
+		CLEARFIELD Pieza_id
+		CLEARFIELD jnl_marca_excep
+		CLEARFIELD jnl_excep_existe
+
+		IF (CDSRETVAL != 0) THEN
+			CDS UNLOCK DSC:tlr:jnl_context
+			CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+		END IF
+		 /* Graba las piezas / contenedores pendientes en PteTmp 
+		IF (j_idx < 2)
+			Let j_idx = j_idx + 2
+		END IF*/
+		CDS EXTRACT DSC:tlr:jnl_context tlr:jnl_operator
+		CDS EXTRACT DSC:tlr:jnl_context \
+					siaf:jnl_codigo_siaf \
+					post:jnl_grucorte_cod
+
+		IF (siaf:jnl_codigo_siaf == 99030)
+			CDS EXTRACT DSC:tlr:jnl_context \
+			post:adt_codseq_nro
+			LET Pieza_id = adt_codseq_nro
+		ELSE
+			CDS EXTRACT DSC:tlr:jnl_context \
+			post:track_trace \
+			post:cod_ctrol \
+			post:Pieza \
+			post:jnl_marca_excep \
+			post:jnl_excep_existe
+			/*MFM - Si la pieza fue robada no debo grabarla*/
+			IF (post:jnl_marca_excep == "N" || (post:jnl_marca_excep == "S" && \
+			post:jnl_excep_existe != "N")) THEN
+				IF (track_trace.numchars != 0) THEN
+					Pieza_id = track_trace
+				END IF
+				
+				IF (Pieza.numchars != 0) THEN
+					Pieza_id = Pieza
+				END IF
+				IF (cod_ctrol.numchars != 0) THEN
+					Pieza_id = cod_ctrol
+				END IF
+			END IF
+			
+			//PS Carta Plus - No las tengo que mostrar como pendientes
+			//PS Carta Rapida - No las tengo que mostrar como pendientes
+			clearfield corte
+			CDS EXTRACT DSC:tlr:jnl_context post:jnl_corteop_cod INTO corte
+			if (corte == "SIMPN" || corte == "CRAPI" || substr(Pieza_id,0,2) == "GR") then
+				clearfield Pieza_id
+			end if
+			
+			
+		END IF
+		CDS EXTRACT DSC:tlr:jnl_context post:jnl_grucorte_cod \
+		post:jnl_apertura_cod
+
+		LET adt_grucorte_cod = jnl_grucorte_cod
+		LET adt_apertura_cod = jnl_apertura_cod
+		
+		IF (Pieza_id.numchars != 0 && post:adt_grucorte_cod != "CR") THEN
+			/* Graba las piezas / contenedores pendientes en PteTmp */
+			IF (j_idx < 2)
+				Let j_idx = j_idx + 2
+			END IF
+			/* Graba en PteTmp */
+			call CDSappendPteTmp
+			Let idx = idx + 1
+		END IF
+
+		CDS FINDNEXT DSC:tlr:jnl_context LOCK
+
+	LOOP
+
+	/************************************************/
+	/* Procesa Sacas Pendientes                     */
+	/************************************************/
+	clearfield post:adt_codseq_nro
+
+	Let FldInformation = "Procesando Cortes de Linea Pendientes.."
+	Refresh FldInformation
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(post:jnl_corteop_guiacont == "N" && \
+		post:jnl_corteop_saca == "N" && \
+		post:jnl_corteop_despacho == "S" && \
+		post:jnl_guia_despacho == post:adt_codseq_nro && \
+		tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+		tlr:jnl_branch == op:op_branch_id && \
+		tlr:jnl_status != "100"  && \
+		 (post:jnl_marca_excep == "N" || (post:jnl_marca_excep == "S" && \
+		 post:jnl_excep_existe != "N"))) SORT "Cierre"
+
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+
+	IF (CDSRETVAL != 0) THEN
+		CDS UNLOCK DSC:tlr:jnl_context
+		CDS ENDSELECT DSC:tlr:jnl_context
+	ELSE /* Graba las Sacas pendientes en PteTmp */
+		Let Pendiente = "S" /* Saca */
+		DO
+			/* Limpio campos de identificaciòn de Piezas */
+			CLEARFIELD track_trace
+			CLEARFIELD Pieza
+			CLEARFIELD cod_ctrol
+			CLEARFIELD Pieza_id
+
+
+			Let idx = idx + 1
+			CDS EXTRACT DSC:tlr:jnl_context \
+					siaf:jnl_codigo_siaf \
+					tlr:jnl_operator \
+					post:jnl_grucorte_cod
+				
+
+			IF (siaf:jnl_codigo_siaf == "99040") /* Cierre de Saca */
+				
+				/*CDS EXTRACT DSC:tlr:jnl_context \
+				post:jnl_guia_saca
+				fprint post:Pieza_id, "     %-8.8s", post:jnl_guia_saca*/
+				
+					//MEJORA 50580-  mostrar caratula de saca en vez de guia
+				CLEARFIELD post:CaratulaSaca
+					CDS EXTRACT DSC:tlr:jnl_context post:CaratulaSaca
+					fprint post:Pieza_id, "     %-20.20s", post:CaratulaSaca
+					CLEARFIELD post:CaratulaSaca
+			ELSE
+				IF (siaf:jnl_codigo_siaf == "99030") /* Cierre de Cont */
+					CDS EXTRACT DSC:tlr:jnl_context \
+						post:jnl_guia_cont
+					fprint post:Pieza_id, "     %-8.8s", post:jnl_guia_cont
+				ELSE
+					/* Imposiciones */
+					CDS EXTRACT DSC:tlr:jnl_context \
+						post:track_trace \
+						post:cod_ctrol \
+						post:Pieza
+					IF (track_trace.numchars != 0) THEN
+						Pieza_id = track_trace
+					end if
+					IF (Pieza.numchars != 0) THEN
+						Pieza_id = Pieza
+					end if
+					IF (cod_ctrol.numchars != 0) THEN
+						Pieza_id = cod_ctrol
+					end if
+					
+				END IF
+			END IF
+			/* Verifica que no sean las procesadas en la */
+			/* presente transaccion. No tiene que existir*/
+			/* en DetTmp */
+//			call CDSverifDetTmp
+//			if (retval != 0) /* No existe en DetTmp, o está con marca de borrado */
+
+			//PS Carta Plus - No las tengo que mostrar como pendientes
+			//PS Carta Rapida - No las tengo que mostrar como pendientes
+			clearfield corte
+			CDS EXTRACT DSC:tlr:jnl_context post:jnl_corteop_cod INTO corte
+			if ((corte == "SIMPN" && substr(Pieza_id,0,2) == "PU") || (corte == "CRAPI") || \
+				(substr(Pieza_id,0,2) == "GR")) then
+				//no tengo que incrementar el j_idx
+				//no tengo que grabar la PteTmp			
+			else
+				if (j_idx < 4)
+					Let j_idx = j_idx + 4
+				end if
+				/* Graba en PteTmp */
+				call CDSappendPteTmp
+			end if
+//			end if
+			CDS FINDNEXT DSC:tlr:jnl_context LOCK
+			If (CDSRETVAL != 0)
+				CDS UNLOCK DSC:tlr:jnl_context
+				CDS ENDSELECT DSC:tlr:jnl_context
+				BREAK
+			End If
+		LOOP
+	END IF
+
+	/************************************************/
+	/* Procesa Sacas En Trànsito O en devolucion    */
+	/************************************************/
+	clearfield post:adt_codseq_nro
+
+	Let FldInformation = "Procesando Sacas En Tránsito Pendientes.."
+	Refresh FldInformation
+
+	CLEARFIELD jnl_grucorte_cod
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	((siaf:codigo_siaf == "99140" || siaf:codigo_siaf == "99065") && \
+	post:jnl_guia_despacho == post:adt_codseq_nro && \
+    tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_sequence_corr == "" && \
+	(post:jnl_marca_excep == "N" || (post:jnl_marca_excep == "S" && \
+	post:jnl_excep_existe != "N")))
+
+
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+
+	DO
+
+		IF (CDSRETVAL == 0) THEN
+		   /* Graba las Sacas En Transito pendientes en PteTmp */
+			Let Pendiente = "S" /* Saca */
+			CLEARFIELD Pieza_id
+
+			Let idx = idx + 1
+			CDS EXTRACT DSC:tlr:jnl_context \
+				siaf:jnl_codigo_siaf \
+				tlr:jnl_operator
+
+			CDS EXTRACT DSC:tlr:jnl_context post:jnl_guia_saca
+
+			fprint post:Pieza_id, "     %-8.8s", post:jnl_guia_saca
+
+			/* Verifica que no sean las procesadas en la */
+			/* presente transaccion. No tiene que existir*/
+			/* en DetTmp */
+
+//			call CDSverifDetTmp
+//			if (retval != 0) /* No existe en DetTmp, o está con marca de borrado */
+				if (j_idx < 4)
+					Let j_idx = j_idx + 4
+				end if
+
+				/* Graba en PteTmp */
+				call CDSappendPteTmp
+//			end if
+			CDS FINDNEXT DSC:tlr:jnl_context LOCK
+		ELSE
+			CDS UNLOCK DSC:tlr:jnl_context
+			CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+		END IF
+	LOOP
+	CDS UNLOCK DSC:post:PteTmp_ctx
+	CDS ENDSELECT DSC:post:PteTmp_ctx
+
+	/* Recupero campos */
+	swapdup siaf:jnl_codigo_siaf
+	//MFM - Este campo quedaba sucio
+	post:jnl_flia_tran = flia_aux
+	
+	CUTSCREEN post:SCRNinformation,NOCURSOR
+
+	LET op:op_operator_id = exp_operator_id
+	LET op:op_login_id = exp_login_id
+
+	IF (j_idx != 0)
+		popup post:SCRNinfPendientes
+
+		/*let drv:button = 6
+		call drv:but_up_enable*/
+	ELSE
+           let common:csr_string = "No Existen Cierres de Cont., de Sacas y Ctes. de Líneas Pendientes."
+           errmsg common:errmsg_list,FLD:common:csr_string
+	END IF
+	/* MFM - Vuelvo a habilitar el botón de Pendientes*/
+	let drv:button = 6
+	call drv:but_up_enable
+	init 33,0
+	
+END SUB
+
+/*******/

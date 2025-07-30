@@ -1,0 +1,82 @@
+/****o* Expedición/OFB:post:FVALttRecepPzas
+* NOMBRE
+*   OFB:post:FVALttRecepPzas
+* DESCRIPCION
+*   Esta rutina marca / desmarca las piezas a contenerizar del campo post:DetalleContenidoGC y tabla DetTmp
+*  de la TX de recepcion de piezas de otro operador.
+*  Tambien marca (*)/desmarca las piezas/contenedores a cerrar en saca del campo post:DetalleContenidoGC y tabla DetTmp
+*  de la TX CIerre de Saca.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): LA PIEZA INGRESADA NO EXISTE.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SCRNRecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALttRecepPzas
+    LOCAL cod_pieza_cont LIKE common:csr_string
+    LOCAL op_operator_id LIKE op:op_operator_id
+    LOCAL operador_id    LIKE post:Operador_id
+    
+    op_operator_id  = op:op_operator_id
+    operador_id     = post:Operador_id
+    
+    CALL CSR:trimfield (post:Pieza2)
+    
+    IF (post:Pieza2.numchars > 0) THEN
+        //PARA EL AGREGADO DE AR EN t&t VALIDOS
+        call MISCesTT(post:Pieza2)
+        LET cod_pieza_cont = post:Pieza2
+    
+        CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+            WHERE  op:op_operator_id == op:op_operator_id        && \
+                   post:Pieza_id     == cod_pieza_cont
+       
+        CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+        IF (CDSRETVAL == -801) THEN
+            CDS ENDSELECT DSC:post:DetTmp_ctx
+            MSGBOX "LA PIEZA INGRESADA NO EXISTE.",0x00,"ERROR"
+            CLEARFIELD post:Pieza2 
+            REFRESH post:Pieza2
+            RETURN -2
+        END IF
+                
+        CDS EXTRACT DSC:post:DetTmp_ctx ALL 
+        CDS CLEARBUFFER DSC:post:DetTmp_ctx
+        
+        CLEARFIELD DetalleContenidoGC2
+       
+        fprint  post:DetalleContenidoGC2, "%-14.14s %-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+                post:Operador_id, \
+                post:jnl_date_ori,\
+                post:jnl_grucorte_cod \
+                post:jnl_apertura_cod \
+                post:Pieza_id \
+                post:MarcaBorrado
+        
+        REFRESH post:DetalleContenidoGC2
+
+        CDS UNLOCK DSC:post:DetTmp_ctx
+        CDS ENDSELECT DSC:post:DetTmp_ctx
+        
+        post:Operador_id  = operador_id
+        op:op_operator_id = op_operator_id
+        
+        CALL post:PBmarcaRecepPzas
+       
+        CLEARFIELD post:Pieza2
+        REFRESH post:Pieza2
+    
+    END IF
+    
+    setvaldone Pieza2
+End Sub
+
+/*******/

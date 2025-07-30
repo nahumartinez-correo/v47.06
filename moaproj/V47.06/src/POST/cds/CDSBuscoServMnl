@@ -1,0 +1,92 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:CDSBuscoServMnl
+* NOMBRE
+*   OFB:post:CDSBuscoServMnl
+* DESCRIPCION
+*   Busca en la tabla ParamCCT el código no standard y según los registros coincidentes
+*   va mostrando los resultados para ir filtrando la selección
+* ENTRADAS
+*   p_origen = PB si es llamado desde el PB de comitente
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PBservicio_CCT,post:PBcomitente_CCT
+* DOCUMENTACION
+*   50361 - https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSBuscoServMnl(p_origen)
+	LOCAL cant_reg LIKE post:adt_cct_long_cb 
+	LOCAL l_origen LIKE common:csr_string
+	
+	LET l_origen = p_origen
+
+	CDS SELECT SEMIDISTINCT post:adt_cct_desc_serv,post:adt_cct_cod_serv\
+		FROM DSC:ParamCCT_table BECOMES DSC:ParamCCT_ctx WHERE \
+			post:adt_cct_cod_barra == "N" && \
+			post:adt_cct_vig_inic <= fld:common:system_date && \
+			(adt_cct_vig_fin >=  fld:common:system_date || adt_cct_vig_fin == "        ") && \
+			post:adt_cct_comitente == post:adt_cct_comitente SORT "Servicio"
+
+	CDS FINDFIRST DSC:ParamCCT_ctx NOLOCK
+	
+	IF (CDSRETVAL != -801) THEN
+		CALL lib:MISCcds_find_err
+	END IF
+	
+	IF (CDSRETVAL == 0) THEN
+		/* Si encontró al menos uno, me fijo cuántos son*/
+		cant_reg = 0
+		CDS AGGREGATE DSC:ParamCCT_ctx COUNT post:adt_cct_long_cb AS cant_reg 
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT DSC:ParamCCT_ctx cant_reg
+			//LET cant_reg = post:adt_cct_cta_cupon
+			IF (cant_reg > 1) THEN
+				IF (l_origen != "PB") THEN
+					/*Es más de uno, salvo para la seleccion todos, 
+					muestro los registros*/
+					CDS MULTIDISPLAY DSC:ParamCCT_ctx LISTParamCCTServ
+	
+					IF (CDSRETVAL > 0) THEN
+						CDS EXTRACT DSC:ParamCCT_ctx ALL
+						LET post:servicio_CCT = post:adt_cct_desc_serv
+						REFRESH post:servicio_CCT
+						NEXTFIELD post:id_cupon_CCT
+						CDS ENDSELECT DSC:ParamCCT_ctx
+						RETURN (0)
+					ELSE
+						CDS ENDSELECT DSC:ParamCCT_ctx
+						RETURN (-2)
+					END IF	
+				END IF								
+			ELSE
+				CDS FINDFIRST DSC:ParamCCT_ctx NOLOCK
+				call lib:MISCcds_find_err
+				IF (RETVAL == 0) THEN
+					CDS EXTRACT DSC:ParamCCT_ctx ALL
+					LET post:servicio_CCT = post:adt_cct_desc_serv
+					REFRESH post:servicio_CCT
+					NEXTFIELD post:id_cupon_CCT
+					CDS ENDSELECT DSC:ParamCCT_ctx
+					RETURN (0)
+				ELSE
+					CDS ENDSELECT DSC:ParamCCT_ctx
+					RETURN (-2)
+				END IF
+			END IF		
+		ELSE
+			MSGBOX "Fallo en la búsqueda de la tabla ParamCCT", OFB_OK, "Error"
+			CDS ENDSELECT DSC:ParamCCT_ctx
+			RETURN (-2)
+		END IF
+	ELSE
+		CDS ENDSELECT DSC:ParamCCT_ctx
+		RETURN (-2)
+	END IF	
+	
+END SUB
+
+/*******/

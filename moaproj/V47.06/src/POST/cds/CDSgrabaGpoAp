@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:post:CDSgrabaGpoAp
+* NOMBRE
+*   OFB:post:CDSgrabaGpoAp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSgrabaGpoAp
+    /* Graba en GpoApTmp     		*/
+    /* Jul. 1999 - B. Petrella -    */
+
+    /* Extrae descripcion de Corte Grupo */
+    CDS SELECT FROM DSC:post:CorteGrupo_table BECOMES DSC:post:CorteGrupo_ctx WHERE \
+     	(post:adt_grucorte_cod == post:adt_relMod_grucorte)
+
+    CDS FINDFIRST DSC:post:CorteGrupo_ctx LOCK
+
+    IF (CDSRETVAL < 0)
+		let common:csr_string = "Inconsistencia con la tabla de Grupos de Corte."
+            errmsg common:errmsg_list,FLD:common:csr_string
+            return (-2)
+    ELSE
+	CDS EXTRACT DSC:post:CorteGrupo_ctx post:adt_grucorte_desc \
+							post:adt_grucorte_cod
+    END IF
+
+    /* Extrae descripcion de Apertura */
+
+    IF (adt_relMod_apertura.numchars > 0)
+	    CDS SELECT FROM DSC:post:adt_apertura_table BECOMES DSC:post:adt_apertura_ctx WHERE \
+     		(post:adt_apertura_cod == post:adt_relMod_apertura)
+
+	    CDS FINDFIRST DSC:post:adt_apertura_ctx LOCK
+
+	    IF (CDSRETVAL < 0)
+			let common:csr_string = "Inconsistencia con la tabla de Aperturas."
+            	errmsg common:errmsg_list,FLD:common:csr_string
+
+			CDS UNLOCK DSC:post:adt_apertura_ctx
+			CDS ENDSELECT DSC:post:adt_apertura_ctx
+
+	            return (-2)
+	    ELSE
+		CDS EXTRACT DSC:post:adt_apertura_ctx post:adt_apertura_desc \
+							  post:adt_apertura_cod
+
+		CDS UNLOCK DSC:post:adt_apertura_ctx
+    		CDS ENDSELECT DSC:post:adt_apertura_ctx
+	    END IF
+    ELSE
+		CLEARFIELD adt_apertura_desc
+		CLEARFIELD adt_apertura_cod
+    END IF
+
+   /* Extrae si es de control o no */
+    LET jnl_corteop_cod = adt_relMod_corteop
+    CALL CDScorteCtrl
+    IF (RETVAL < 0)
+		RETURN (-2)
+    END IF
+
+    /* Para transferencia debe ser de control */
+    IF (post:adt_corteop_ctrl == "S"  || \
+	(siaf:codigo_siaf != "99110" && siaf:codigo_siaf != "99080"))
+
+	/* En Cierre de Contenedor (99030) si no es de control */
+	/* debe verificar que requiera contenedor - May. 2000 */
+	IF ((siaf:codigo_siaf == "99030" && \
+	     post:adt_corteop_ctrl == "N" && \
+	     post:adt_corteop_guiacont == "S") || \
+	    (siaf:codigo_siaf == "99030" && \
+	     post:adt_corteop_ctrl == "S") || \
+	     siaf:codigo_siaf != "99030")
+
+	   /* Graba en GpoApTmp */
+	    CDS CLEARBUFFER DSC:post:GpoApTmp_ctx
+
+	    CDS APPEND DSC:post:GpoApTmp_ctx \
+		op:op_branch_id op:op_operator_id \
+	     	post:adt_apertura_cod post:adt_grucorte_cod \
+		post:adt_apertura_desc post:adt_grucorte_desc \
+		post:adt_corteop_ctrl post:idx \
+		op:op_operator_id AS post:CodOperador
+	    SELECT (siaf:codigo_siaf)
+	  	CASE "99069"
+		CASE "99070"
+		CASE "99071"
+		CASE "99072"
+			CDS APPEND DSC:post:GpoApTmp_ctx \
+				post:adt_corteop_guiacont \
+				post:adt_corteop_saca \
+				post:adt_corteop_despacho \
+				post:adt_relMod_corteop
+			BREAK
+	    END SELECT
+
+	    CDS INSERT DSC:post:GpoApTmp_ctx LOCK
+	    CDS UNLOCK DSC:post:GpoApTmp_ctx
+	END IF
+   END IF
+END SUB
+
+/*******/

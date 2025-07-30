@@ -1,0 +1,82 @@
+/****o* Pendientes de agrupación/OFB:hcomm:COMM_send
+* NOMBRE
+*   OFB:hcomm:COMM_send
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "ONACOMMSND.OFB.h"
+
+/* NAME: hcomm:COMM_send						*/
+/*									*/
+/*  This is the main hostcomm send routine which gets called from	*/
+/*  COMM_host_tran.							*/
+/*  If there is specific processing required for the building of the	*/
+/*  host comm message for the transaction, the PCL routine defined in	*/
+/*	the hcomm:INDhost_sndrt field is executed.  If no specific	*/
+/*  processing is required, then no routine is defined in the field.	*/
+/*  It is assumed if the field hcomm:INDhost_sndrt is left empty, the	*/
+/*  transaction is considered to be a nohost tran or a "memo".		*/
+/*									*/
+
+SUB hcomm:COMM_send
+#ifdef GIROS
+    IF ((INDhost_sndrt == 0) || (TESTFLAG(giros:flags_back,no_enviar) && \
+      (!TESTFLAG(tlr:tran_flags,correction) && (drv:dt_app == APP_BACK)))) THEN
+      RESETFLAG giros:flags_back,no_enviar
+      RETURN OK
+    END IF 
+#else
+    if ( hcomm:INDhost_sndrt == 0 )
+		return OK
+	end if
+#endif
+    let hcomm:tran_status = SEND_ERROR /* 101 */
+    /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+    IF (fld:hcomm:host1.NUMCHARS == 0) THEN
+      if (testflag(common:rt_flags,batch_mode) && \
+      	  batch:batch_options == "REC_CAIDAS_VUELO") then
+      	  	call batch:MISCgeneraLog("\nRecurso de HOST no configurado\n",\
+      	  							 "AMBOS","N")
+      else
+      		ERRMSG LST:common:errmsg_list,"RECURSO DE HOST NO CONFIGURADO"
+      endif
+      RETURN (0)
+    END IF 
+    /**/
+    
+    COMM  SETRESOURCE hcomm:host1 INIT_SEND 
+	//	CALL  OFB:hcomm:COMM_snd_bldhdr
+	/* asigno indice en 0 para mensajes multiples */    
+    let siaf:ind = 0
+    COMM  SET_EVENT hcomm:host1  OFB:hcomm:COMM_unso 
+    IF (INDhost_sndrt == 0) THEN
+      RETURN (1)
+    END IF 
+    CALL FLD:hcomm:INDhost_sndrt // this is the transaction specific msg build
+    COMM  SET_EVENT hcomm:host1 OFB:hcomm:COMM_rcv_event 
+    MOVE DSC:hcomm:host_xmit TO lib:stat_message
+    REFRESH lib:stat_message 
+    COMM  SENDDATA 
+    IF (COMMRETVAL == 0) THEN
+      RETURN NOTOK /* Error in send,flag error in tran status */
+    END IF 
+    /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+    comm setresource fld:hcomm:host1 init_receive	
+    			/* select tlr hostcomm resource */
+	/**/
+    let hcomm:tran_status = SEND_RESET /*102*/ /* flag tran status as sent,ok so far */
+    RETURN OK
+END SUB 
+
+/*******/

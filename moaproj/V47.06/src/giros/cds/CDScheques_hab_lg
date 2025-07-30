@@ -1,0 +1,169 @@
+/****o*  Lista de Giros/OFB:giros:CDScheques_hab_lg
+* NOMBRE
+*   OFB:giros:CDScheques_hab_lg
+* DESCRIPCION
+*   Rutina que valida que existan chequeras de lista de giros habilitadas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:FVALdigito_LG,giros:CDScheques_hab_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1204
+* SOURCE
+*/
+#include "giroscds.h"
+
+
+SUB giros:CDScheques_hab_lg(l_cant_post_lg)
+
+	local item       like siaf:i
+	local l_cant    like post:cantidad
+	local l_nrogiro like giros:F_NroGiro_fld
+	local l_digito like giros:F_digito_fld
+	local coincide like siaf:i
+	local l_cheq like common:csr_string
+	local l_mensaje like common:csr_string
+	local l_inconsistencia like siaf:i
+	//local l_cant_post_lg like siaf:i
+	local l_anulados like siaf:i
+	local l_flag_disponibles like siaf:i
+
+	/*clearfield giros:F_Serie_fld
+	clearfield giros:F_NroGiro_fld
+	clearfield giros:F_digito_fld*/
+	
+    l_inconsistencia = 0
+   //AUT-1204
+   // l_cant_post_lg = giros:cant_post_lg
+    l_anulados = 0
+    l_flag_disponibles = 0
+
+    CDS SELECT FROM RecepChk_tab BECOMES RecepChk_ctx WHERE \
+	adt_chk_suc == FLD:common:sucursal_activa && \
+	adt_chk_op  == FLD:op:op_operator_id && \
+	adt_chk_estado == 2 && giros:adt_chk_chequera == "N" \
+	SORT "primary"
+	
+
+   	CDS FINDFIRST RecepChk_ctx NOLOCK
+	if ( CDSRETVAL != 0 )
+	    	Cds EndSelect RecepChk_ctx
+	    	MSGBOX "NO EXISTEN CHEQUERAS DE LISTA DE GIROS HABILITADAS.",OFB_OK,"ERROR"
+			return -2
+	end if
+
+	coincide = 0
+	
+	//Agrego los cheques que no tienen un giro asociado para completar la plancha
+	IF (l_cant_post_lg > 4) THEN
+         l_anulados = l_cant_post_lg % 4
+         
+         IF (l_anulados > 0) THEN
+            l_anulados = 4 - l_anulados
+         END IF
+	ELSE
+	    l_anulados = 4 - l_cant_post_lg
+    END IF
+
+	l_cant_post_lg = l_cant_post_lg + l_anulados
+
+	DO
+		CDS EXTRACT RecepChk_ctx ALL
+		item = 0
+		l_cant = 0
+		do
+			//if ((item > giros:adt_chk_cantid) || (l_cant == giros:cant_post_lg))
+			if ((item >= giros:adt_chk_cantid) || (l_cant == l_cant_post_lg))
+				break
+			end if
+			
+			if (giros:adt_chk_cheque[item] == "HA")
+			    l_flag_disponibles = 1
+				//verificar si es el mismo ingresado por el operador
+				if (coincide == 0) then
+					l_nrogiro = giros:adt_chk_nrogiro + item
+					call giros:digito_verificador (giros:adt_chk_serie,l_nrogiro,l_digito)
+					if (giros:adt_chk_serie == giros:F_Serie_fld && l_nrogiro == giros:F_NroGiro_fld && \
+						l_digito == giros:F_digito_fld)
+						coincide = 1
+						giros:L_NroGiro_fld = giros:adt_chk_nrogiro + item
+						call giros:digito_verificador (F_Serie_fld,L_NroGiro_fld,L_digito_fld)
+					else
+						coincide = 2
+					endif
+				else
+					if (coincide == 1) //calculo el ultimo cheque
+						giros:L_NroGiro_fld = giros:adt_chk_nrogiro + item
+						call giros:digito_verificador (F_Serie_fld,L_NroGiro_fld,L_digito_fld)
+					endif
+				endif
+				l_cant = l_cant + 1
+				
+			else
+			    //Valido que el rango de cheques este en estado HA
+			    if (l_inconsistencia == 0) then
+    			    if (coincide == 1) then
+    			        if (giros:adt_chk_cheque[item] != "HA") then
+                             l_nrogiro = giros:adt_chk_nrogiro + item
+                            call giros:digito_verificador (giros:adt_chk_serie,l_nrogiro,l_digito)
+    			            fprint l_cheq "Cheque nro %s-%s-%s ,\ncon estado %s",giros:adt_chk_serie,l_nrogiro,l_digito,giros:adt_chk_cheque[item]
+    			            l_inconsistencia = 1
+    			        end if
+    			    end if
+			    end if
+				
+			end if
+			item = item + 1
+		loop
+		
+		if (coincide != 1) then
+	    	CDS FINDNEXT RecepChk_ctx NOLOCK
+	    	if ( CDSRETVAL != 0 )
+				break
+			end if
+			coincide = 0
+		else
+			break
+		endif
+	LOOP
+    
+    CDS ENDSELECT RecepChk_ctx
+
+	if (l_cant == 0 && l_flag_disponibles == 0) then
+		msgbox "No hay cheques disponibles",OFB_OK,"Atencion"
+		return -2
+	end if
+
+	if (coincide != 1) then
+		msgbox "El nro de cheque ingresado no corresponde. No podrá realizar el envío.",OFB_OK,"Atencion"
+		return -2
+	endif
+	
+	if (l_inconsistencia == 1) then
+        fprint l_mensaje "Rango de cheques inconsistente.%s" , l_cheq
+        msgbox l_mensaje,OFB_OK,"Atencion"
+		return -2
+    end if
+
+	
+	/*Esta validacion siempre tienen que estar al final de la rutina!!!*/
+	//AUT-1204
+	giros:cant_g_emitir = l_cant
+	if (l_cant < l_cant_post_lg ) then
+		CALL CDScheques_hab_lg(giros:cant_g_emitir)
+		/*//emite un mensaje indicando cuántos cheques se pueden emitir
+		FPRINT common:csr_string,"No hay cantidad suficiente de cheques habilitados en la Chequera para la emision de los giros seleccionados.\nCheques disponibles : %s.",l_cant
+		MSGBOX common:csr_string,0x00,"AVISO"
+		return -2*/
+	endif
+	//FIN AUT-1204	
+	
+
+END SUB
+
+/*******/

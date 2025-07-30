@@ -1,0 +1,147 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALciefor_suc
+* NOMBRE
+*   OFB:tes:SVALciefor_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALciefor_suc
+	LOCAL fecha_cierre LIKE tlr:set_bus_date
+	LOCAL Testing LIKE common:csr_string
+
+	//gpb:NI50479 - Verifico si hay un proceso de EnvPED corriendo
+	CALL post:MISCverif_bloqNovPED(tlr:set_bus_date)
+	IF (RETVAL == 0) THEN
+		/*Se ejecuta el script que envia los datos de la tabla journal*/
+		CALL post:MISCenv_NovPED(tlr:set_bus_date)
+	END IF
+    
+	//actualizo el picklist con los listados seleccionados por el operador
+	CALL MISCupd_pic_listado
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+
+	CALL post:OFBclimed_deudor_cie
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+	
+	//50249
+	CALL post:OFBclimed_nc_cie
+	IF (RETVAL < 0) THEN
+		/*Si estoy en desarrollo continuo con el cierre - Gabriel Falciola*/
+		CALL CSR:variable_environment("DESARROLLO",Testing)
+		IF (Testing != "JNL") THEN
+			RETURN -2
+		END IF
+	END IF
+
+	giros:codigo_procesamiento = 998002    
+	tes:estado_aper_cier = "CIERRE"
+
+	LET fecha_cierre = tlr:set_bus_date
+	CLEARFIELD tes:suc_marca_cierre
+	
+	CDS SELECT FROM DSC:DiaSuc_table BECOMES DSC:DiaSuc_context \
+		WHERE tes:suc_br_id == common:sucursal_activa 
+		
+	CDS FINDFIRST DSC:DiaSuc_context LOCK
+	LET lib:err_retval = CDSRETVAL
+    
+	SELECT (lib:err_retval)
+		CASE 0
+			CDS EXTRACT DSC:DiaSuc_context ALL
+			IF (tes:suc_marca_cierre == "X") THEN
+				ERRMSG LST:common:errmsg_list, "Sucursal Cerrada"
+				CDS UNLOCK DSC:DiaSuc_context
+				CDS ENDSELECT DSC:DiaSuc_context
+				RETURN (-2)
+			END IF  
+		BREAK
+		CASE -803
+			ERRMSG LST:common:errmsg_list, "Otro Operador se encuentra cerrando la sucursal"
+			CDS UNLOCK DSC:DiaSuc_context
+			CDS ENDSELECT DSC:DiaSuc_context
+			RETURN (-2)              
+		CASE -801
+			ERRMSG LST:common:errmsg_list, "Apertura de Sucursal No Realizada."
+			CDS UNLOCK DSC:DiaSuc_context
+			CDS ENDSELECT DSC:DiaSuc_context
+			RETURN (-2)              
+		BREAK
+	END SELECT
+    
+	IF (suc_fecha < common:system_date) THEN // Debo Cerrar Todas Las Cajas y Tesoro
+		CALL MISCchk_ciefor_total
+		IF (RETVAL < 0) THEN
+			CDS UNLOCK DSC:tes:DiaSuc_context
+			CDS ENDSELECT DSC:tes:DiaSuc_context
+			RETURN (-2)
+		END IF
+		LET siaf:codigo_siaf = 9550
+		CALL siaf:PRESfecha_hora
+	END IF
+    
+	LET tlr:set_bus_date = fecha_cierre 
+	UNPROTFIELD op:op_login_aux
+	UNPROTFIELD op:op_branch_id
+	UNPROTFIELD tlr:set_bus_date
+	UNPROTFIELD tes:tes_tes_id
+	UNPROTFIELD tes:importes_aux1[0]
+	UNPROTFIELD tes:importes_aux2[0]
+	
+	/* Req. 127 muestra piezas, contenedores y sacas pendientes */
+	/* enero 1999 */
+	CALL CDSren_caj_fecha
+	;IF (RETVAL < 0) THEN
+		;RETURN (-2)
+	;END IF
+	
+	/*MFM 2002.05.27 NUEVA RUTINA QUE VERIFICA SI HAY PIEZAS INTERDICTAS/A REBUT PARA DEVOLVER*/
+	CALL post:CDSDevolverPiezas
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	/*
+	CDS ENDSELECT DSC:tes:DiaSuc_context
+	*/
+	
+	/*CALL tes:CDSsave_mov_pend*/
+
+	CALL siaf:MISCop_sin_operar(tlr:set_bus_date) //calcula monto de operadores sin operar
+	
+	/* Calculo el total en el fondo de habilitación para journalizarlo */
+	CALL tes:CDStotales_subteso
+  
+	/* Setea campos indirectos para hacer SEND y RCVE */
+	drv:INDhcomm_rtn = OFB:SENDcierre_suc
+	drv:INDspc_rtn[1] = OFB:RCVEciefor_suc
+    
+	/* verifico si hace cierre forzado manual */
+	CALL tes:MISCciefor_manual
+	IF (RETVAL < 0) THEN
+		CDS UNLOCK DSC:DiaSuc_context
+		CDS ENDSELECT DSC:DiaSuc_context
+		UNGETKEY RT_ESC
+		RETURN (-2)    	
+	END IF        	    
+    
+	/* limpio tlr:jnl_status, ya que este no queda inicializado */
+	CLEARFIELD tlr:jnl_status    
+END SUB
+
+/*******/

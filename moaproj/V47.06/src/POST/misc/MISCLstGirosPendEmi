@@ -1,0 +1,158 @@
+/****o* Pendientes de agrupación/OFB:post:MISCLstGirosPendEmi
+* NOMBRE
+*   OFB:post:MISCLstGirosPendEmi
+* DESCRIPCION
+*   Graba en un archivo el reporte ESTADO DE ADELANTOS
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISClst_estCM_Cli
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCLstGirosPendEmi(link_num)
+
+	LOCAL idx_item          LIKE siaf:i
+	LOCAL cont 		        LIKE post:cantidad
+	LOCAL sub_header        LIKE common:csr_string
+	LOCAL columns           LIKE common:csr_string 
+	LOCAL split             LIKE common:csr_string_aux
+	LOCAL line_csr0   	    LIKE common:csr_string_4096
+	LOCAL line_csr   	    LIKE common:csr_string_4096 
+	LOCAL line_csr2   	    LIKE common:csr_string_4096 
+	LOCAL l_subtotal   	    LIKE common:csr_string_4096 
+	LOCAL l_total   	    LIKE common:csr_string_4096 
+	LOCAL l_imp_total       LIKE giros:SumImpGir_lg
+	LOCAL l_imp_gral        LIKE giros:SumImpGir_lg
+	LOCAL l_imp             LIKE giros:SumImpGir_lg
+	LOCAL l_nro_lista       LIKE common:csr_string
+	LOCAL l_fecha           LIKE common:csr_string
+	LOCAL l_nro_lista_ant   LIKE common:csr_string
+	LOCAL l_fecha_ant       LIKE common:csr_string
+	LOCAL l_climed_num      LIKE post:climed_numero
+	LOCAL l_climed_num_ant  LIKE post:climed_numero
+
+	//seteo las variables del subencabezado
+	sub_header = "<st>1</st>LISTAS DE GIROS PENDIENTES DE EMISION"
+	columns = "NRO CLI      SUBCUENTA    RAZON SOCIAL                              CANT GIROS PEND    IMP GIRO PEND      IMP TOT PEND    NRO LISTA       FECHA IMPORT"
+	split = "------------------------------------------------------------------------------------------------------------------------------------------------------"
+	
+    l_subtotal  = "<st>1</st>                                                                     TOTAL SUBCUENTA NRO.: "
+    l_total = "                                                                        TOTAL GENERAL           "
+    
+    l_imp_total = 0
+    l_imp_gral = 0
+    l_imp = 0
+    
+    CLEARFIELD l_nro_lista
+    CLEARFIELD l_fecha
+    CLEARFIELD l_nro_lista_ant
+    CLEARFIELD l_fecha_ant
+    CLEARFIELD l_climed_num
+    CLEARFIELD l_climed_num_ant
+	
+	idx_item = PL_GETITEM
+	cont = 0
+	line_csr = ""
+    
+    //Ordeno el picklist de lista de giros pendientes de emision por subcuenta,nro cliente ,fecha orden,nrolista  
+    //CALL csr:PickOp 4 DSC:post:lgirospendemi "0,11" "12,11" "149,8" "138,10"
+    CALL csr:magic_PickOp 4 DSC:post:lgirospendemi "149,39"
+	
+    DO
+    
+        CLEARFIELD line_csr0
+        CLEARFIELD line_csr
+        
+        //Leer picklist de lista de giros pendientes de emision
+        CALL csr:magic_myPickcontrol(DSC:post:lgirospendemi,line_csr0,idx_item)
+        
+        IF (RETVAL < 0)
+            BREAK
+        END IF
+
+        line_csr = SUBSTR(line_csr0,0,148)
+
+        //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+        CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+
+        l_nro_lista = SUBSTR(line_csr,122,9)
+        l_fecha = SUBSTR(line_csr,138,10)
+        l_climed_num = SUBSTR(line_csr,13,11)
+
+        IF (cont == 0) THEN
+            l_nro_lista_ant = l_nro_lista   
+            l_fecha_ant = l_fecha
+            l_climed_num_ant = l_climed_num      
+        END IF
+        
+        IF (l_climed_num_ant != l_climed_num) THEN
+            
+            CLEARFIELD line_csr2 
+            FPRINT line_csr2,"%s%11.11s%16.16e",l_subtotal,l_climed_num_ant,l_imp_total
+            CALL tes:MISCwrite_file_Land2(link_num,line_csr2)
+            
+            l_nro_lista_ant = l_nro_lista   
+            l_fecha_ant = l_fecha
+            l_climed_num_ant = l_climed_num
+            
+            l_imp_total = 0
+        END IF
+        
+        l_imp = SUBSTR(line_csr,102,16)
+        l_imp_total = l_imp_total + l_imp
+        l_imp_gral = l_imp_gral + l_imp
+        
+        idx_item = idx_item + 1
+        cont = cont + 1
+        
+        //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+        CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        
+        CALL tes:MISCwrite_file_Land2(link_num,line_csr) 
+    LOOP  
+    	
+	IF (cont == 0) THEN
+    	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "No hay listas de giros pendientes de emisión.",0x00,"Aviso"   
+		END IF
+		RETURN -2
+	END IF
+	
+
+    //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+    CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+    
+    CLEARFIELD line_csr2 
+    FPRINT line_csr2,"%s%11.11s%16.16e",l_subtotal,l_climed_num,l_imp_total
+    CALL tes:MISCwrite_file_Land2(link_num,line_csr2)
+    
+    cont = cont + 1
+
+    //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+    CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+     
+    CLEARFIELD line_csr2 
+    FPRINT line_csr2,"%s%16.16e",l_total,l_imp_gral
+    CALL tes:MISCwrite_file_Land2(link_num,line_csr2)     
+            
+	 cont = cont + 1
+
+	//Valido que tenga lugar para marcar el fin del reporte en la hoja
+	IF (siaf:lineas_cl < 42)
+    	CALL post:MISClst_fin_repo(link_num,split)
+    END IF
+	
+	CALL CSR:magic_sadroppl DSC:post:lgirospendemi
+
+END SUB
+
+/*******/

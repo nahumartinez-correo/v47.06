@@ -1,0 +1,122 @@
+/****o* Pendientes de agrupación/OFB:post:SVALrecepTT_UP
+* NOMBRE
+*   OFB:post:SVALrecepTT_UP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALrecepTT_UP
+
+	IF (!testflag(tlr:tran_flags,correction)) THEN
+
+		LET drv:button = CB10 //finaliza tx
+		CALL drv:but_status
+		If (drv:disabled == 0) /*El boton de Finalizar tx esta deshabilitado*/
+
+			CALL MISCverif_fin_UP("recep")
+			IF (retval < 0)
+				return -2
+			END IF
+
+	    end if
+
+    	//guardo los tt en la tabla stockpUP y las simples en la StockpUP_simp
+    	CALL CDSsave_tablasUP
+    	IF (retval < 0)
+    		msgbox "No se pudieron guardar las piezas ingresadas",0x00,"Error"
+    		return -2
+    	end if
+    	
+    	/* Se obtiene un numero de secuencia para journalizar la cabecera y
+    	los detalles. Esto es util para la reversa*/
+    	CLEARFIELD post:codseq_reenc
+	    CALL CDSobtiene_secuen("CABEC")
+    	post:codseq_recep = post:adt_codseq_nro
+    
+	    
+		CLEARFIELD totalPiezasActivas
+		clearfield piezaUP
+		REFRESH totalPiezasActivas
+		clearfield corte_op
+		clearfield apertura	
+		//Obtengo la cantidad de piezas ingresadas de acuerdo al tipo
+		CALL CDScant_piezasUP
+		
+	    //seteo el vector pedido por Nina
+	    CALL MISCvec_dest_cant
+	
+		/* Journaliza el encabezado con otra pantalla */
+    	drv:INDscr = SCR:post:SCRNrecepTT_UPHdr
+	    drv:INDjnl_rtn = OFB:post:JNLrecepTT_UPHdr
+    
+    	UNGETKEY RT_SEND
+		CALL tlr:JNLtran
+    	UNGETKEY RT_SEND
+    	
+		/*Journalizo las piezas de control recepcionadas*/ 
+		post:cantidad = 1
+    	CALL MISCRecepTT_UPDet
+	
+	 	CLEARFIELD drv:INDsend_rtn
+    	CLEARFIELD drv:INDscr
+	    CLEARFIELD drv:INDjnl_rtn
+    	CLEARFIELD drv:INDspc_rtn[0]
+    	CLEARFIELD drv:INDspc_rtn[2]
+    	
+    	CALL DOCSremitoPR_UP
+    	
+    ELSE
+    
+    	// MFM - Verifico si tengo que reversar el encabezado
+		CALL CDSreverso_cabecera("5")
+  		post:err_retval = 0
+  		IF (RETVAL == 0) THEN
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRNrecepTT_UPHdr
+  			tlr:INDjnl_append = OFB:post:JNLrecepTT_UPHdr
+  			CALL MISCreversa_transac
+  			post:err_retval = -5
+  		ELSE
+  			IF (RETVAL < 0) THEN
+  				//MSGBOX Todas las piezas asociadas a esta transacción ya han sido reversadas.",0x00,"AVISO"
+  				RESETFLAG  tlr:tran_flags, supovr_request
+            	RESETFLAG  siaf:siaf_flags, req_tes
+            	RESETFLAG  siaf:siaf_flags, req_sup1
+            	;Para que no journalice de más....
+  				CALL post:MISCclear_campos_jou
+  				;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  				Resetflag tlr:tran_flags,correction
+				RETURN
+  			END IF
+  		END IF
+  		// MFM - Reverso los detalles
+  		
+  		//seteo una vble para saber (en la tx en cuestion) que estoy reversando
+  		//la misma por cabecera y no por detalle
+  		rev_porCabecera = TRUE
+  		
+  		CALL CDSSelect_Piezas("6")
+  		IF (post:err_retval != -5) THEN
+		  	MSGBOX "Ninguna pieza está en condiciones de reversarse.",0x00,"AVISO"
+  		END IF
+  		;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+  		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		
+  		Resetflag tlr:tran_flags,correction
+  		
+    END IF
+END SUB
+
+/*******/

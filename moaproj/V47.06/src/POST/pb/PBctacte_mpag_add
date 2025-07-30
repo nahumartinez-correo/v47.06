@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:post:PBctacte_mpag_add
+* NOMBRE
+*   OFB:post:PBctacte_mpag_add
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBctacte_mpag_add
+
+    //////////////////////////////////////////
+    // Agrego el medio de pago al picklist  //
+    //////////////////////////////////////////
+
+    local imp2        like siaf:importe
+    local varl_idx	  like siaf:idx
+    local varl_picstr like common:csr_string
+
+    LET drv:button = drv:last_button
+    CALL drv:but_up_enable
+    CALL drv:but_redraw
+
+    let adt_mp_cod = tipo_mpago
+    call post:CDSadt_MedPago_load
+
+    // me aseguro que esten todos los datos
+    call MISCcc_mpag_inflds
+    if (retval < 0) then
+        return (-2)
+    end if
+
+    // tengo que ver que no haya sido agregado ya al picklist
+    let varl_idx = PL_GETITEM
+    call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+    while (retval == 0) 
+        if (substr(varl_picstr,0,2) == tipo_mpago) then
+            if (substr(varl_picstr,3,3) == banco_mpago) then
+                if (substr(varl_picstr,7,20) == cuenta_mpago) then
+                    if (substr(varl_picstr,28,12) == cheque_mpago) then
+                        errmsg common:errmsg_list,"Medio de Pago ya ingresado"
+                        nextfield tipo_mpago
+                        return (-2)
+                    end if
+                end if
+            end if
+        end if
+        let varl_idx = varl_idx + 1
+        // veo que no se agreguen mas comprobantes que los que entran en los arrays
+        if ((varl_idx - PL_GETITEM) == SAP_CANT_MAX_MPAG) then
+            errmsg common:errmsg_list,"Cantidad maxima de medios de pago alcanzada"
+            return (-2)
+        end if
+        call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+    EndWhile
+
+    // verifico, si es cheque, que no haya sido utilizado antes en la sucursal
+    //let adt_mp_cod = tipo_mpago
+    //call post:CDSadt_MedPago_load
+    if (adt_mp_adm == "I" ) then
+        call tes:CDSverif_cheque_tes2(tipo_mpago,banco_mpago,cuenta_mpago,cheque_mpago,cuenta_mpago,cheque_mpago)
+        if (retval < 0) then
+            errmsg common:errmsg_list,"El comprobante ya fue capturado en la sucursal"
+            return (-2)
+        end if
+        // si es un cheque el nro no debe superar los 8 digitos
+        if (post:adt_mp_admban == "S")
+            if (cheque_mpago > 99999999.0)
+                errmsg lst:common:errmsg_list,"Nro Cheque Invalido"
+                return (-2)
+            end if
+            // FGB 03.04.2006 - Trat.Cheque - Cuando no es diferido, pongo fecha emi como fecha de vto.
+            if (post:adt_mp_diferido == "N" && post:fec_d.NUMCHARS == 0) then
+            	post:fec_d = post:fec_e
+            endif
+        end if
+    end if
+    
+    call post:FVALadmite_decimales(importe_mpago)
+    if (retval < 0)
+    	return (-2)
+    end if
+
+    // una vez verificados todos los posibles problemas (por lo menos hasta ahora)
+    // agrego el medio de pago a la lista...
+    clearfield varl_picstr
+    
+    fprint varl_picstr "%2.2s %3.3s %20.20s %12.12e %16.16e  %10.10e %10.10e        %3.3s" \
+    tipo_mpago,banco_mpago,cuenta_mpago,cheque_mpago,importe_mpago,fec_e,fec_d,tes:clearing
+
+    
+    call csr:f_saaddpl "mediospagos" varl_picstr
+    if (retval == 0) then
+        // sumo al total de comprobantes
+        // tengo que ir controlando el total en moneda base
+        call post:MISCconvierto_coti2(post:importe_mpago,imp2)
+        let siaf:importe = siaf:importe + imp2
+
+        refresh FLD:siaf:importe
+        // limpio los campos de entrada para un nuevo comprobante
+        call csr:proc_list F_CLEAR LST:post:LISTccte_cobza_flds3
+        call csr:proc_list F_REFRESH LST:post:LISTccte_cobza_flds3
+        // si todo salio bien, ordeno el picklist
+        call csr:PickOp 4 "mediospagos" "0,40,ascii,asc" 
+        // si existe al menos un elemento en el picklist, dejo que cambie de 
+        // pantalla al presionar [ENTER]
+        ;setvaldone tipo_mpago
+        ;setvaldone banco_mpago
+        ;setvaldone cuenta_mpago
+        ;setvaldone cheque_mpago
+        ;setvaldone importe_mpago
+    else
+        // todo mal! Aviso pa' que sepa
+        msgbox "Imposible Agregar Medio de Pago", OFB_OK, "Error de Aplicacion"
+    end if
+
+END SUB
+
+/*******/

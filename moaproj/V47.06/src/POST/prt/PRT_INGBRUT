@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:post:PRT_INGBRUT
+* NOMBRE
+*   OFB:post:PRT_INGBRUT
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:PRT_Factura
+*   post:PRT_Ticket_Jou
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_INGBRUT(Columna, INDICE, SUBTOTAL,Tipo_Impresion)
+	//[PAW] 22/04/99 --> Modificación para Nota de Crédito.
+	LOCAL COLUMNA_AUX LIKE cantidad
+	LOCAL TOTAL_IMPORTE LIKE siaf:importe2
+	LOCAL largo_prov LIKE siaf:i
+	LOCAL auxString LIKE common:csr_string
+
+	TOTAL_IMPORTE = 0
+	/*Rutina modificada para el Requerimiento de Regionalización, se cambia el cálculo de
+	Ingresos Brutos - Gabriel Falciola*/
+	siaf:importe = 0
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES "PresuIngBrCtx" \
+		WHERE post:fecha == FLD:post:fecha && \
+		post:op_operator_id == FLD:post:op_operator_id && \
+		post:PresNro == post:PresNro && siaf:codigo_siaf == 99027
+	CDS FINDFIRST "PresuIngBrCtx" NOLOCK
+	WHILE (CDSRETVAL == 0)
+		CDS EXTRACT "PresuIngBrCtx" siaf:importe into siaf:importe2 PresIngTas PresIngGra \
+		adt_pcia_desc
+		CALL csr:trimfield(adt_pcia_desc)
+		largo_prov = 8 + (adt_pcia_desc.NUMCHARS)
+		COLUMNA_AUX = Columna - largo_prov
+;		FPRINT auxString "%*.*s %s %s%4.4s  %9.9e\n",\
+;		COLUMNA_AUX,COLUMNA_AUX,"NETO GRAVADO IB",adt_pcia_desc,"%",PresIngTas,PresIngGra
+
+		CALL PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA, Tipo_Impresion)
+		INDICE = RETVAL
+
+;		CALL post:MISCprt2laser(auxString)
+;		INDICE = INDICE + 1
+		siaf:importe2 = siaf:importe2 / factor_conversion
+		
+		//gpb:Original
+		;FPRINT common:csr_string "%*.*s %s %s%4.4s  %9.9e\n",\
+		;	COLUMNA_AUX,COLUMNA_AUX,"PERCEPCION DE INGRESOS BRUTOS",adt_pcia_desc,"%",PresIngTas,siaf:importe2
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THEN		
+			FPRINT common:csr_string "%*.*s %s %s%4.4s  %9.9e\n",\
+				COLUMNA_AUX,COLUMNA_AUX,"PERCEPCION DE INGRESOS BRUTOS",adt_pcia_desc,"%",PresIngTas,siaf:importe2			
+		ELSE
+			//justifico a la derecha
+			FPRINT common:csr_string "\x1Ba\x32%s %s %s%4.4s  %9.9e\n","PERCEPCION DE INGRESOS BRUTOS",adt_pcia_desc,"%",PresIngTas,siaf:importe2
+		END IF
+		
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 1
+		TOTAL_IMPORTE = TOTAL_IMPORTE + siaf:importe2
+		CDS FINDNEXT "PresuIngBrCtx" NOLOCK
+	END WHILE
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")	
+	END IF
+	
+	siaf:importe = TOTAL_IMPORTE
+	CDS ENDSELECT "PresuIngBrCtx"
+	RETURN (INDICE)
+END SUB
+
+/*******/

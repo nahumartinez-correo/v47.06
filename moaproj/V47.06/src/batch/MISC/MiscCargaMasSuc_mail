@@ -1,0 +1,108 @@
+/****o* Pendientes de agrupación/OFB:batch:MiscCargaMasSuc_mail
+* NOMBRE
+*   OFB:batch:MiscCargaMasSuc_mail
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "batchmisc.h"
+
+SUB batch:MiscCargaMasSuc_mail
+	local varl_path like common:csr_string
+    local varl_file like common:csr_string
+    local varl_file_mail like common:csr_string
+    local varl_mailTo like common:csr_string
+    local varl_command_line like common:csr_string
+    local varl_app like common:csr_string
+    local varl_reporte like common:csr_string
+    local l_str like common:csr_string
+	local l_substr like common:csr_string
+    local INDICE_INF LIKE post:cantidad
+    local INDICE     LIKE post:cantidad
+    local l_str_error like common:csr_string_aux
+
+    call csr:get_profile_string "CARGA_MASIVA" "DIRECTORIO" varl_path    
+
+    ; GENERO ARCHIVO DE DIRECCIONES DE MAIL...ANTES BORRO EL ANTERIOR...
+    call csr:get_profile_string "CARGA_MASIVA" "MAIL" varl_file_mail
+    FPRINT common:path_1024,"%2.2s/%s/%s", post:mdata_unidad, varl_path, varl_file_mail
+	CALL CSR:file_open 1 common:path_1024 "r"
+	post:mdata_abm = "SUCURSALES"
+	if (RETVAL < 0)
+		CLEARFIELD siaf:lineas_cl
+		fprint l_str_error "El archivo seleccionado para el envio de mails no se puede abrir, verifique su existencia. (el archivo %s debe residir en el %2.2s\\%s\\)", varl_file_mail, post:mdata_unidad, varl_path
+    	call post:MISClogCargaMas(varl_path, post:mdata_abm, l_str_error)
+    end if
+ 	CALL CSR:file_close 1
+	; COMPRIMO EL ARCHIVO A ENVIAR (GENERO UN .BAT)
+	varl_file = "gzip.bat"
+	fprint varl_file,"%2.2s//%s//%s",post:mdata_unidad, varl_path, varl_file
+	call csr:file_open FILE_BAT varl_file "w+"
+	varl_file = "gzip.exe"
+	
+	call csr:get_profile_string "CARGA_MASIVA" "ARCHIVO" post:mdata_archivo
+	if (post:mdata_archivo == "") then
+		;nombre por defecto
+		post:mdata_archivo = "BR_adt_br"
+	end if
+	call post:MISCasigFechaAlArch("log")
+	
+	FPRINT varl_reporte "%-s", post:mdata_archivo
+	
+	FPRINT varl_command_line "cmd /c copy %2.2s\\%s\\Sucursales.log %2.2s\\%s\\%-s", post:mdata_unidad, varl_path, post:mdata_unidad, varl_path, varl_reporte
+	CALL csr:create_process varl_command_line,SW_HIDE ,CSR_WAIT
+	
+	;fprint varl_command_line,"%2.2s//%s//%s -fq %2.2s//%s//%s",post:mdata_unidad,varl_path,varl_file,\
+	;post:mdata_unidad,varl_path,varl_reporte
+	fprint varl_command_line,"c://tools//%s -fq %2.2s//%s//%s",varl_file,\
+	post:mdata_unidad,varl_path,varl_reporte
+	
+	call csr:file_write  FILE_BAT  varl_command_line
+	call csr:file_close FILE_BAT
+	; ESPERO UN TIEMPITO PARA ASEGURAR QUE SE CERRO EL ARCHIVO A EJECUTAR
+    
+    NAP 400
+	
+	; EJECUTO gzip.bat */
+	fprint varl_command_line "%2.2s\\%s\\gzip.bat" post:mdata_unidad, varl_path  
+	call csr:create_process varl_command_line SW_HIDE CSR_WAIT
+  	
+    ; ARMO BAT DE ENVIO....ANTES BORRO BAT DE ENVIO ANTERIOR...
+    varl_file = "envio.bat"
+    fprint varl_file, "%2.2s//%s//%s",post:mdata_unidad, varl_path, varl_file
+    call csr:file_unlink(varl_file)
+    call csr:file_open FILE_BAT varl_file "w"
+    varl_file = "wmailto.exe"
+    fprint varl_reporte "%-s.gz", varl_reporte
+    ;fprint varl_command_line, "%2.2s//%s//%s",post:mdata_unidad, varl_path,varl_file
+	fprint varl_command_line, "c://tools//%s",varl_file
+	fprint odbc:ascii,"%s \"-sPROCESO BATCH CARGA MASIVA DE SUCURSALES \" @%2.2s\\%s\\%s -i%2.2s\\%s\\%s", varl_command_line,post:mdata_unidad, varl_path,varl_file_mail,post:mdata_unidad, varl_path,varl_reporte
+    call csr:file_write  FILE_BAT  odbc:ascii
+    call csr:file_close FILE_BAT
+   	; ESPERO UN TIEMPITO PARA ASEGURAR QUE SE CERRO EL ARCHIVO A EJECUTAR
+    
+    NAP 400
+
+    ; EJECUTO BAT DE ENVIO...    
+    fprint varl_app "%2.2s\\%s\\envio.bat" post:mdata_unidad, varl_path    
+    call csr:create_process varl_app SW_HIDE CSR_WAIT
+    
+    FPRINT common:csr_string "cmd /c del %2.2s\\%s\\%s",post:mdata_unidad, varl_path, "envio.bat"
+    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT
+    FPRINT common:csr_string "cmd /c del %2.2s\\%s\\%s",post:mdata_unidad, varl_path, "gzip.bat"
+    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT
+    FPRINT common:csr_string "cmd /c del %2.2s\\%s\\%s",post:mdata_unidad, varl_path, "SUCURSALES.LOG"
+    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT
+END SUB
+
+/*******/

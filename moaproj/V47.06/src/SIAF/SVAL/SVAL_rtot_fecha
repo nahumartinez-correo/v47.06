@@ -1,0 +1,170 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVAL_rtot_fecha
+* NOMBRE
+*   OFB:siaf:SVAL_rtot_fecha
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVAL_rtot_fecha
+    IF (LASTKEY == 0x0190) THEN
+       RETURN (-2)
+    END IF
+    pantalla_impreso = "P"
+    POPUP SCRNcomo_lista
+    IF (LASTKEY == 0x0190) THEN
+       RETURN (-2)
+    END IF
+
+    //Borrar totals_aux
+    CDS SELECT FROM DSC:tlr:TABtots_aux BECOMES DSC:tlr:CONtots_write_aux
+    CDS DELETE DSC:tlr:CONtots_write_aux ALL
+    CDS ENDSELECT DSC:tlr:CONtots_write_aux
+
+    LET tlr:tots_branch   = op:op_branch_id
+    LET tlr:tots_operator = op:op_operator_id
+    LET tlr:tots_bus_date = tlr:bus_date
+    LET tlr:tots_sequence = tlr:sequence
+    /*CALL CDSguardo_total*/    
+    CALL siaf:CDSall_guardo_total(op:op_operator_id) //copia registro de totals a totals_aux
+    LET tlr:INDtots_append = ofb:siaf:TOTScustom_clear_aux
+    LET tlr:jnl_bus_date   = tlr:bus_date
+    LET tlr:jnl_sequence   = tlr:sequence
+
+    cds select from DSC:tlr:TABtots_aux becomes DSC:tlr:CONtots_write_aux where \
+    tlr:tots_branch   == FLD:op:op_branch_id && \
+    tlr:tots_operator == op:op_operator_id        
+    cds findfirst DSC:tlr:CONtots_write_aux lock /* find record */    
+    clearfield hcomm:tran_status
+    
+    /*
+    CALL tlr:TOTScommit1
+    IF (RETVAL != 0) THEN
+       RESET TRAN
+    END IF
+    */    
+    
+    LET tlr:INDtots_append = ofb:TOTScustom_clear_aux
+    LET tlr:jnl_bus_date   = tlr:bus_date
+    LET tlr:jnl_sequence   = tlr:sequence
+    clearfield hcomm:tran_status
+    UNDISPLAY SCR:SCRNtots_fecha
+    FYIMSG LST:common:fyimsg_list,"(L) REGENERANDO TOTALES DE OTRO DIA"
+    
+    
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjnl_write WHERE  \
+	tlr:jnl_branch     == FLD:op:op_branch_id   && \
+	tlr:jnl_operator   == FLD:op:op_operator_id && \
+	tlr:jnl_bus_date   == FLD:fecha_proceso     && \
+	tlr:INDtots_append != 0                     && \
+	tlr:jnl_status      < 100
+    IF (CDSRETVAL != 0) THEN
+       ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+       RESET TRAN
+    END IF
+    CDS FINDFIRST DSC:tlr:CONjnl_write NOLOCK
+    CALL lib:MISCcds_find_err
+    IF (CDSRETVAL == 0) THEN
+       DO
+          CDS CLEARBUFFER DSC:tlr:CONtots_write_aux
+          /*
+          CDS EXTRACT DSC:tlr:CONjnl_write \
+		  FLD:tlr:INDtots_append FLD:importe  \
+		  FLD:importe2 FLD:moneda fld:post:cantidad FLD:moneda_cr \
+		  FLD:tlr:jnl_sequence_corr FLD:tlr:jnl_bus_date \
+		  fld:tlr:jnl_tran_flags
+		  */
+	      call siaf:CDSdatos_rjournal	
+          IF (tlr:jnl_sequence_corr.NUMCHARS == 0) THEN
+             LET INDscratch = ofb:tlr:TOTSopen_day
+             IF (tlr:INDtots_append != INDscratch) THEN
+                LET INDscratch = ofb:tlr:TOTSclose_day
+                IF (tlr:INDtots_append != INDscratch) THEN
+                   LET INDscratch = ofb:TOTScustom_clear_aux
+                   IF (tlr:INDtots_append != INDscratch) THEN
+                      CALL CSR:total_list tlr:INDtots_append \
+                      DSC:tlr:CONtots_write_aux tlr:jnl_tran_flags 0
+                   END IF
+                END IF
+             END IF
+          END IF
+          CDS FINDNEXT DSC:tlr:CONjnl_write NOLOCK
+          IF (CDSRETVAL != 0) THEN
+             BREAK
+          END IF
+       LOOP
+	   tlr:INDtots_append = OFB:TOTSappend_aux
+	   //CDS BEGINWORK 
+	   CALL tlr:TOTScommit1
+	   CALL tlr:TOTSwait_aux
+	
+		/*
+	   tlr:INDtots_append = OFB:TOTSappend_dos_aux
+	   //CDS BEGINWORK 
+	   CALL tlr:TOTScommit1
+	   CALL tlr:TOTSwait_aux
+
+	   tlr:INDtots_append = OFB:TOTSappend_gir_aux
+	   //CDS BEGINWORK 
+	   CALL tlr:TOTScommit1
+	   CALL tlr:TOTSwait_aux
+	   */
+	   
+    END IF
+    IF (CDSRETVAL != -801) THEN
+       LET fecha = tlr:bus_date
+       LET tlr:bus_date = tlr:jnl_bus_date
+       CALL TRANteller_tots_aux  /* muestra los totales en pantalla */
+       LET tlr:bus_date = fecha
+       FYIMSG LST:common:fyimsg_list,"(L) RESTAURANDO TOTALES"
+       LET tlr:INDtots_append = ofb:TOTScustom_clear_aux
+       LET tlr:jnl_bus_date = tlr:bus_date
+       LET tlr:jnl_sequence = tlr:sequence
+       
+       /*
+       CDS BEGINWORK
+       CALL tlr:TOTSwait_aux
+       CALL tlr:TOTScommit1
+       CALL tlr:TOTSwait_aux // Por problemas al reconstruir
+       IF (RETVAL != 0) THEN
+          RESET TRAN
+       END IF
+       */
+    END IF
+    FYIMSG CLEAR
+    FYIMSG LST:common:fyimsg_list,"(L) RESTAURANDO TOTALES"
+    /*CALL CDSrecupero_total*/
+    LET tlr:INDtots_append = ofb:TOTSappend_aux
+    cds unlock DSC:tlr:CONtots_write_aux
+    CDS endselect DSC:tlr:CONtots_write_aux
+    /* Restauro los campos  de totales del operador de la totals_aux */
+    CDS SELECT from DSC:tlr:TABtots becomes "totaux" where \
+    ((tlr:tots_branch == op:op_branch_id) && (tlr:tots_operator == op:op_operator_id))
+    CDS FINDFIRST "totaux" NOLOCK
+    if (cdsretval == 0) then
+        CDS EXTRACT "totaux" ALL
+    end if
+    CDS ENDSELECT "totaux"
+    /*
+    CDS BEGINWORK
+    CALL tlr:TOTSwait_aux
+    CALL tlr:TOTScommit1
+    CALL tlr:TOTSwait_aux
+    IF (RETVAL != 0) THEN
+       RESET TRAN
+    END IF       
+    */
+END SUB
+
+/*******/

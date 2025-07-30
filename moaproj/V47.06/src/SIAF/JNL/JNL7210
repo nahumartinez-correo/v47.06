@@ -1,0 +1,131 @@
+/****o* Oficios Judiciales/OFB:siaf:JNL7210
+* NOMBRE
+*   OFB:siaf:JNL7210
+* DESCRIPCION
+*   Journaliza la tx de Oficios Judiciales
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:TRAN7210
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1692
+*		SC50368
+* SOURCE
+*/
+#include "siafJNL.h"
+
+SUB siaf:JNL7210     
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:nro_impre \
+		fld:post:ImporteIva \
+		fld:post:ImporteSinIva \
+		fld:post:ImporteConIva \
+		FLD:post:TasaIva \
+		FLD:observaciones \
+		FLD:importe \
+		fld:siaf:importe2 \
+		fld:post:NroCompPago \
+		fld:post:NroCompPago2
+		//FLD:motivo 
+        
+	/*Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	post:INDticket_laser = ofb:siaf:PRT_ingr_egr
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:INDticket_laser \
+		fld:ProvImpuesto \
+		fld:Nis_Destino \
+		fld:ImporteSello \
+		fld:ImporteSinSello \
+		post:ver_anulacion \
+		post:cod_agrupacion \
+		post:PreDForFis
+;		FLD:giros:Impp_impdesc_emi \
+;		FLD:giros:Impp_pdesc_emi \
+;		FLD:giros:Impp_impdesc_pag \
+;		FLD:giros:Impp_pdesc_pag 
+
+;	CDS APPEND DSC:tlr:CONjnl_write \
+;		giros:Impuesto giros:Impuesto_abonado
+  
+	// PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+	Call post:JNLcamp_nota_credito
+
+	let post:adt_intext = "I" 
+
+  CDS APPEND DSC:tlr:CONjnl_write FLD:post:adt_intext
+    
+	/*CSZ - pedido para le Calculo de Ventas UP*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:ImpServUP \
+		post:AliServUP    
+
+	/*MLD limpio estos campos que despues de confirmar, estan quedando sucios */
+	clearfield siaf:adt_mot_modulo
+	clearfield post:motagr_modulo
+    
+	/*MFM - Cliente Medio*/
+	//PS 6218 - Grabar el descuento por sesion en cada transaccion involucrada en el mismo
+	if (post:ConvenioSesionV && post:bonificaCM == "S") then
+		//recupero el descuento para grabarselo a NINA
+		CALL post:CDSLoadDctoSesion
+	end if
+	
+	if ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.numchars != 0 && post:bonificaCM == "S") then
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:Dcto_CMPres as post:Dcto_CliMed
+	else
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:Dcto_CliMed 
+	end if	
+
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		post:bonificaCM
+    
+	if (post:ConvenioSesionV) then
+		//lo borro para que no se me grabe luego el campo PreDNroTrn!
+		clearfield post:Dcto_CliMed
+	endif
+	
+;	if (post:Dcto_CliMed > 0) then
+;		CDS APPEND DSC:tlr:CONjnl_write \
+;			post:PreDNroTrn AS post:PreDNroTrnAsoc	 //para que nina pueda asociarla al descuento
+;	else
+;		clearfield post:PreDNroTrnAsoc
+;		
+;		CDS APPEND DSC:tlr:CONjnl_write \
+;			post:PreDNroTrnAsoc
+;	end if
+	
+	/* Dejo grabado el nro de comprobante que lo generó */
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:remito_nro
+
+	//CALL post:MISCcampos_reporte(0,1,post:ImporteSinIva,NO_TARIFA)
+	CALL post:MISCcampos_reporte(siaf:adt_oju_imp_unitario,siaf:adt_oju_cant,post:ImporteSinIva,post:Modo)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:post:LISTreporte,0)	    
+	
+	; SC50170 - Propuesta superadora
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:dif_calculada \
+		post:cod_dif_aplicada	
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		siaf:adt_oju_cant \
+		siaf:adt_oju_arancel_flag \
+		siaf:adt_oju_reversa \
+		siaf:adt_oju_imp_unitario \
+		siaf:adt_oju_desc_tmp \
+		siaf:adt_oju_autos \
+		siaf:importe2 AS adt_oju_importe \
+		siaf:nro_impre AS adt_oju_nro_ctrol 
+	
+END SUB
+
+/*******/

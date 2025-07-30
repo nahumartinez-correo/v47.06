@@ -1,0 +1,75 @@
+/****o* Tratamiento de Cheques/OFB:post:SVALcancRecepChk
+* NOMBRE
+* OFB:post:SVALcancRecepChk
+* DESCRIPCION
+* Rutina SVAL de Cancelacion Recepcion de Cheques Rechazados/Observados.
+* ENTRADAS
+* SALIDAS
+* RETURN (-2): No se selecciono el cheque a cancelar.
+* RETURN (-2): Cheque no se encuentra en la caja.
+* RETURN (-2): Rechazo del Host de la consulta de la cuenta del cliente corporativo, o ESC del popup que muestra esta cuenta.
+* REFERENCIADO POR
+* LST:post:TRAN99195
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcancRecepChk
+    LOCAL Lclimed_tipo LIKE post:climed_tipo
+    LOCAL Lclimed_numero LIKE post:climed_numero
+	
+    IF (post:Recep_CliTipo == 4 && NisUP.numchars == 0) THEN
+	MSGBOX "Seleccione el cheque a cancelar",0x00,"Error"
+	RETURN (-2)
+    END IF
+	
+    IF (cuenta.numchars == 0 || nro_cheque.numchars == 0 || cod_banco.numchars == 0) THEN
+	MSGBOX "Seleccione el cheque a cancelar",0x00,"Error"
+	RETURN (-2)
+    END IF
+
+    /* MLD Verfico que el cheque se encuentre en mi caja */
+    CALL post:CDSobt_estado_chk(cheqrech_moneda,cod_banco,cuenta,nro_cheque)
+    if (tes:teso_cheq_estado != "O" && tes:teso_cheq_id != op:op_operator_id)
+	MSGBOX "El cheque no se encuentra en la Caja",0x00,"Error"
+	RETURN (-2)
+    end if
+
+    //cgw:realiza consulta al Host del numero de cuenta para cliente corporativo.
+    clearfield post:CliCod_aux
+    if (post:Recep_CliTipo == 1) then
+        //cgw: reserva variables para luego recuperar despues de ser instanciadas para la consulta al Host
+        //     de la cuenta del cliente corporativo.
+        Lclimed_tipo = post:climed_tipo
+        Lclimed_numero = post:climed_numero
+    	//cgw: se instancia para la consulta al Host de la cuenta del cliente corporativo.
+    	//     post:climed_numero ya fue instanciada anteriormente.
+    	post:climed_tipo = 3
+        call MISCctacte_nro_cta
+        if (retval < 0) then
+    	    post:climed_tipo = Lclimed_tipo
+            post:climed_numero = Lclimed_numero
+	    return (-2)
+        end if
+        post:climed_tipo = Lclimed_tipo
+        post:climed_numero = Lclimed_numero
+    else
+	// para el resto de los clientes...
+	clearfield post:CliCod_aux
+    end if
+
+    SETFLAG giros:tran_send_mode,cancelacion
+    IF (!testflag(tlr:controla_firma,cancelacion))
+	Call post:CDSobtiene_secuen("STAN")
+	giros:hora_viaje = siaf:hora
+	giros:dia_viaje = siaf:fecha
+    END IF	
+    giros:codigo_procesamiento = 997010
+
+    if (!testflag(tlr:tran_flags,correction))
+	post:importe_origen = post:monto_chk_dif
+	siaf:moneda = cheqrech_moneda
+        call post:MISCconvierto_coti(post:importe_origen)
+    end if
+END SUB
+/*******/

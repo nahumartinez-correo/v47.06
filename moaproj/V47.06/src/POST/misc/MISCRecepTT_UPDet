@@ -1,0 +1,152 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRecepTT_UPDet
+* NOMBRE
+*   OFB:post:MISCRecepTT_UPDet
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRecepTT_UPDet
+
+	CDS SELECT FROM dsc:stockpUP_tmp_tbl becomes dsc:stockpUP_tmp_ctx where \
+		tmpUP_op == op:op_operator_id
+	CDS FINDFIRST dsc:stockpUP_tmp_ctx NOLOCK
+	let lib:err_retval = CDSRETVAL
+	WHILE (lib:err_retval != -801)
+		
+		call MISCclear_recepUP
+		
+		CDS EXTRACT	dsc:stockpUP_tmp_ctx ALL
+		
+		 /* Journalizo el detalle*/
+		siaf:adt_tran_codigo = 99215
+        siaf:codigo_siaf = 99215
+		tlr:tran_mnemonic = "PZAUP"
+    	siaf:nombre_transac = "DETALLE DE PIEZAS IMPUESTAS EN UP"
+    	
+	 	if (tmpUP_tipo_piezaUP == "CONTROL CON AR")
+			tiene_ar = "S"
+			adt_serv_piezacont = "T"
+			adt_novtt_opcional = "Y"
+		else
+			if (tmpUP_tipo_piezaUP == "CONTROL SIN AR" || tmpUP_tipo_piezaUP == "PIEZAS PREPAQ")
+				tiene_ar = "N"
+				adt_serv_piezacont = "T"
+				adt_novtt_opcional = " "
+			else
+				tiene_ar = ""
+				adt_serv_piezacont = "F"
+			end if
+		end if		   	
+    	
+    	
+    	IF (tmpUP_tipo_piezaUP == "SIMPLES NAC")
+    		cantidad = cont_simpNac
+    		drv:INDscr = SCR:post:SCRNsimpN_UPDet
+    	ELSE
+    		if (tmpUP_tipo_piezaUP == "SIMPLES INTER")
+    			cantidad = cont_simpInt
+    			drv:INDscr = SCR:post:SCRNsimpI_UPDet
+    		else
+    			cantidad = 1
+    			drv:INDscr = SCR:post:SCRNtt_UPDet
+    		end if
+    	END IF
+    	
+		drv:INDcur_tran = LST:TRANRecepTT_UPDet
+        drv:INDjnl_rtn = OFB:post:JNLrecepTT_UPDet
+        
+    	piezaUP = tmpUP_piezaUP
+    	apertura = tmpUP_apertura
+    	corte_op = tmpUP_corte_op
+    	tipo_piezaUP = tmpUP_tipo_piezaUP
+    	prod_PrePaq_cod = tmpUP_PrePaq_cod
+
+
+		//Busco en la tabla de corte operativo como es la expedicion de la pieza
+		CDS SELECT FROM DSC:CORTE_TAB BECOMES DSC:CORTE_CTX \
+		WHERE post:adt_corteop_cod == corte_op
+		CDS FINDFIRST DSC:CORTE_CTX NOLOCK
+		CLEARFIELD adt_corteop_guiacont
+		CLEARFIELD adt_corteop_saca
+		CLEARFIELD adt_corteop_despacho
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT DSC:CORTE_CTX \
+				adt_corteop_guiacont \
+				adt_corteop_saca \
+				adt_corteop_despacho \
+				adt_corteop_ctrl
+		END IF
+		CDS ENDSELECT DSC:CORTE_CTX		
+	
+		//Busco en la RelMod el grupo de corte de la pieza con apertura expedición
+		CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+		WHERE (post:adt_relMod_modelos == common:br_modelo && \
+		post:adt_relMod_corteop == corte_op && \
+		post:adt_relMod_apertura == apertura)
+		CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			CLEARFIELD adt_relMod_grucorte
+			CLEARFIELD adt_relMod_sacatipo
+			CDS EXTRACT DSC:adt_relMod_ctx \
+			adt_relMod_grucorte \
+			adt_relMod_sacatipo
+			IF (adt_relMod_sacatipo != "")
+	       		LET adt_corteop_saca = "S"
+	    	ELSE
+	       		LET adt_corteop_saca = "N"
+	    	END IF
+	    END IF
+		CDS ENDSELECT DSC:adt_relMod_ctx
+
+
+		jnl_corteop_despacho = adt_corteop_despacho
+		jnl_corteop_saca = adt_corteop_saca
+		jnl_corteop_guiacont = adt_corteop_guiacont
+		jnl_grucorte_cod = adt_relMod_grucorte
+		jnl_marca_excep = "N"
+		jnl_stockp_reenc = "N"
+		jnl_simp_esp = "N"
+
+
+		  
+		
+        CALL tlr:JNLtran
+		
+		IF (tmpUP_tipo_piezaUP != "SIMPLES NAC" && tmpUP_tipo_piezaUP != "SIMPLES INTER")        
+			IF (clasifica_tt_UP == "S")      
+				CALL CDSGrabo_ScaneoUP
+			END IF 
+			//sumo 2 segundos a la hora del scaneo L
+	        hora_scaneoL = tlr:jnl_time + 1
+	        CALL MISCsumo_uno(hora_scaneoL)
+	        hora_scaneoL = post:hora_scaneo + 1
+	        CALL MISCsumo_uno(hora_scaneoL)
+        	hora_scaneoL = hora_scaneo
+        	//PS Carta Rapida - No generar scaneo L
+        	if (substr(piezaUP,0,2) != "SU" && substr(piezaUP,0,2) != "SR" && \
+    			substr(piezaUP,0,2) != "GS" && substr(piezaUP,0,2) != "GR") then
+        		CALL CDSGraboScaneoL_UP
+        	endif
+    	END IF
+        
+        UNGETKEY RT_SEND   
+        
+		CDS FINDNEXT dsc:stockpUP_tmp_ctx NOLOCK
+		let lib:err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT dsc:stockpUP_tmp_ctx
+END SUB
+
+/*******/

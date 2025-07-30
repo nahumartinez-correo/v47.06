@@ -1,0 +1,442 @@
+/****o* Pendientes de agrupación/OFB:post:CDSSelect_Piezas
+* NOMBRE
+*   OFB:post:CDSSelect_Piezas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:JNLclte_minorista
+*	post:SCRNpiezas_asignadas
+*	post:SENDasignada_destino
+*	post:SENDRecep_Piezas
+*	post:SVAL_DP1_PVenNoGC
+*	post:SVAL_DP2_DSLote
+*	post:SVAL_DP3_DCLote
+*	post:SVAL_DP4_RCen
+*	post:SVAL_DP5_Inter
+*	post:SVALclasifTT_UP
+*	post:SVALcorteLinea
+*	post:SVALllenCont
+*	post:SVALllenSaca
+*	post:SVALPiezas_Observ
+*	post:SVALPiezas_Reenc
+*	post:SVALrecepTT_UP
+*	post:SVALtransfOtroCont
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSSelect_Piezas(tipo)
+
+	LOCAL fecha LIKE adt_stockp_recepfech
+	LOCAL dia LIKE adt_estand_std1
+	LOCAL mes LIKE adt_estand_std1
+	LOCAL anio LIKE jnl_sequence_ori 
+	LOCAL pieza_saca LIKE post:adt_exp_pieza	
+	LOCAL seq_saca LIKE post:adt_exp_seq
+	LOCAL seq_saca_pieza LIKE post:adt_exp_seq
+	LOCAL fecha_saca LIKE post:adt_exp_fecha
+
+/* CREADA POR MFM - Septiembre 2000 */
+
+	SELECT (tipo)
+		CASE 1;Recepción de Piezas
+	 		CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+     		WHERE (tlr:jnl_operator == op:op_operator_id && \
+     		tlr:jnl_date == common:system_date && \
+     		tlr:jnl_sequence_corr == "" && \
+     		post:cod_agrupacion == post:cod_agrupacion && \
+     		siaf:codigo_siaf != 99000)
+		
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     		lib:err_retval = CDSRETVAL
+     		
+     		DO
+	     		IF (lib:err_retval != 0) THEN
+    	 			CDS ENDSELECT DSC:post:jnl_ctx1
+     				BREAK
+	     		ELSE
+    	 			CDS EXTRACT DSC:jnl_ctx1 ALL
+    	 			;Si asigna destino entonces borro las piezas de la stockp
+	     			if (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") then
+					    CALL post:MISCverif_entregada
+						IF (RETVAL == 0) THEN
+							//Controlo en la tabla NovTT si escaneo P02 o P80 de Recepcion fue transmitido 
+							CALL MISCverif_scanOL("R") //Recepcion de Piezas
+							IF (RETVAL < 0) //escaneo NO transmitido por lo que se procede a la reversa
+								CALL MISCverif_pedDev
+								IF (RETVAL < 0)
+									/*Borro los scaneos generados de la tabla NovTT*/
+									CALL CDSBorro_Scaneos("R")	
+									/*Borro la pieza de la tabla stockp*/
+									CALL CDSstockp_update
+									tlr:INDdcol_scrn[0] = SCR:SCRNpiezas_asignadas
+  								    tlr:INDtran_name = "DETALLE DE PIEZAS ASIGNADAS A DESTINO"
+  									tlr:INDjnl_append = OFB:JNLclte_minorista
+		    						CALL MISCreversa_transac
+		    						post:err_retval = -5
+		    					END IF
+		    				END IF
+			   			END IF
+						CALL CDSstockp_recep_rev
+					endif
+					
+					;Si no asigna destino entonces borro las piezas de la stockp_recep
+					if (AsignaDestino == "N") then
+				    	CALL post:MISCverif_entregada
+					    IF (RETVAL == -5) THEN
+							/*Borro los scaneos generados de la tabla NovTT*/
+							CALL CDSBorro_Scaneos("R")	
+							/*Borro la pieza de la tabla stockp_recep*/
+							CALL CDSstockp_recep_del
+						 	tlr:INDdcol_scrn[0] = SCR:SCRNpiezas_recep_det
+ 						   	tlr:INDtran_name =  "DETALLE DE PIEZAS RECIBIDAS"
+ 							tlr:INDjnl_append = OFB:JNLrecep_piezas_det
+ 	    			    	CALL MISCreversa_transac
+		    				post:err_retval = -5
+			   			END IF
+					endif
+					
+					CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+			    	lib:err_retval = CDSRETVAL
+				END IF
+	 		LOOP
+	 		BREAK
+	 	CASE 2;Devoluciones de Piezas
+	 		CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+     		WHERE (tlr:jnl_operator == op:op_operator_id && \
+     		tlr:jnl_date == common:system_date && \
+     		tlr:jnl_sequence_corr == "" && \
+     		post:codseq_dev == adt_stockp_nro_sec && \
+     		siaf:codigo_siaf != 99061 && \
+     		siaf:codigo_siaf != 99063 && \
+     		siaf:codigo_siaf != 99065 && \
+     		siaf:codigo_siaf != 99067 && \
+     		siaf:codigo_siaf != 99069 && \
+     		siaf:codigo_siaf != 99071)
+     		
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+		    lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+    	 			CDS ENDSELECT DSC:post:jnl_ctx1
+     				BREAK
+	     		ELSE
+    	 			CLEARFIELD post:Pieza
+    	 			CLEARFIELD post:jnl_guia_cont
+    	 			CLEARFIELD post:jnl_guia_saca
+    	 			CLEARFIELD post:jnl_guia_despacho
+    	 			CLEARFIELD siaf:codigo_siaf
+    	 			CLEARFIELD post:retirado_transp
+    	 			CLEARFIELD post:jnl_op_transf
+    	 			
+    	 			CDS EXTRACT DSC:jnl_ctx1 ALL
+	 				
+	 				/*MFM - Verifico que la pieza no haya sido expedida, o sea, puesta
+			 		en un contenedor, saca y o corte de linea*/
+		    		
+		    		IF (((post:jnl_guia_cont > 0 && post:jnl_guia_cont != 99999999) || (post:jnl_guia_cont == 99999999 && post:jnl_op_transf != op:op_operator_id)) \
+  						|| (post:jnl_guia_saca > 0) || (post:jnl_guia_despacho > 0)) THEN				
+        				/*LA PIEZA NO PUEDE REVERSARSE!!!*/
+        			ELSE
+           			    IF (siaf:codigo_siaf == 99068) THEN
+	 						//CALL CDSverif99068
+	 						//IF (RETVAL == 0) THEN
+	 							tlr:INDdcol_scrn[0] = SCR:post:SCRNgcRenCenDet
+    				       	 	tlr:INDjnl_append = OFB:post:JNL_DP4_det
+    				       	 	CALL MISCreversa_transac
+			    				post:err_retval = -5
+			    			//END IF
+	 					ELSE
+        					
+							SELECT (siaf:codigo_siaf)
+	    			       	 
+    				         CASE "99062";Det.Devol Piezas Minoristas
+	    			        	 /*Busco el registro en la TranCont y lo borro*/
+  								 CALL CDSBorroRegTranCont(post:Pieza)
+	    			        	 tlr:INDdcol_scrn[0] = SCR:post:SCRN_DP1_Det
+    				       	 	 tlr:INDjnl_append = OFB:post:JNL_DP1_det
+	    			        	 BREAK
+    				         CASE "99064";Det.Devol Piezas Desc. sin lote
+	    			        	 /*Busco el registro en la TranCont y lo borro*/
+  								 CALL CDSBorroRegTranCont(post:Pieza)
+	    			        	 tlr:INDdcol_scrn[0] = SCR:post:SCRN_DP2_Det
+    				       	 	 tlr:INDjnl_append = OFB:post:JNL_DP2_det
+	    			        	 BREAK
+    				         CASE "99066";Det.Devol Piezas Desc.con Lote
+	    			        	 tlr:INDdcol_scrn[0] = SCR:post:SCRN_DP3_det
+    				       	 	 tlr:INDjnl_append = OFB:post:JNL_DP3_det
+	    			        	 BREAK
+	    			         CASE "99070";Det.Devol Piezas Interdictas
+	    			         CASE "99072";Det.Devol Piezas a Rebut
+	    			        	 tlr:INDdcol_scrn[0] = SCR:post:SCRNpzasInter_det
+    				       	 	 tlr:INDjnl_append = OFB:post:JNL_DP5_det
+	    			        	 BREAK	 
+						    END SELECT
+			    			CALL MISCreversa_transac
+			    			post:err_retval = -5
+						END IF
+					END IF
+					CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+			    	lib:err_retval = CDSRETVAL	
+				END IF
+				
+			LOOP
+			BREAK
+			
+		CASE 3;Cierre de Contenedor, de Saca y de Línea
+			CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+     		WHERE (tlr:jnl_operator == op:op_operator_id && \
+     		tlr:jnl_date == common:system_date && \
+     		tlr:jnl_sequence_corr == "" && \
+     		post:codseq_dev == adt_stockp_nro_sec && \
+     		siaf:codigo_siaf != 99030 && \
+     		siaf:codigo_siaf != 99040 && \
+     		siaf:codigo_siaf != 99050)
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+		    lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+    	 			CDS ENDSELECT DSC:post:jnl_ctx1
+     				BREAK
+	     		ELSE
+    	 			
+    	 			CLEARFIELD siaf:codigo_siaf
+    	 			CLEARFIELD post:jnl_operator_ori
+    	 			CLEARFIELD post:jnl_sequence_ori
+    	 			CLEARFIELD post:jnl_guia_cont
+    	 			CLEARFIELD post:jnl_guia_saca
+    	 			CLEARFIELD post:jnl_guia_despacho
+    	 			CLEARFIELD post:jnl_simp_esp
+    	 			CLEARFIELD post:jnl_guia_especial
+    	 			CLEARFIELD post:DetalleContenidoGC
+    	 			
+    	 			CDS EXTRACT DSC:jnl_ctx1 ALL
+    	 			
+    	 			//Cargo los campos para efectuar la reversa de la tabla Rep_Exp
+					pieza_saca = SUBSTR(DetalleContenidoGC,11,32)
+					
+					seq_saca_pieza = post:adt_novtt_sequence 
+					seq_saca = post:jnl_sequence_ori         
+					
+					dia = SUBSTR (DetalleContenidoGC,0,2)
+					mes = SUBSTR (DetalleContenidoGC,3,2)
+					anio = SUBSTR (DetalleContenidoGC,6,4)
+					FPRINT fecha_saca , "%s%s%s", anio,mes,dia
+    	 			
+	 				SELECT (siaf:codigo_siaf)
+	    			    	 
+    				 CASE "99036";Det.de Cierre de Contenedor
+    				 	tlr:INDdcol_scrn[0] = SCR:post:SCRNllenContDet
+						tlr:INDjnl_append = OFB:post:JNLllenContHdr
+    				    /*Borrar scaneos "A" o "K0" y Actualizar Scaneos "O" o "P" según corresponda*/
+    				    CALL CDSBorro_Scaneos ("C")
+    				    //Actualizo la stockpUP indicando que la pieza ya no esta expedida
+    				    CALL CDSact_pieza_exp ("N")
+    				    
+    				    //Borro o Actualizo en la tabla Rep_Exp
+    				    CALL CDSRCierreSacaRepExp(pieza_saca,seq_saca,fecha_saca)
+    				    
+    				    BREAK
+    				 CASE "99046";Det.de Cierre de Saca
+    				 	tlr:INDdcol_scrn[0] = SCR:post:SCRNllenSacaDet
+    				    tlr:INDjnl_append = OFB:post:JNLllenSacaHdr
+    				    /*Borrar o Actualizar scaneos "A" y Actualizar los scaneos "O", "P" y 99 */
+    				    CALL CDSBorro_Scaneos ("A")
+    				    CALL CDSBorro_Scaneos ("S")
+    				    //Actualizo la stockpUP indicando que la pieza ya no esta expedida
+    				    CALL CDSact_pieza_exp ("N")
+    			
+    				    //Borro o Actualizo en la tabla Rep_Exp
+    				    CALL CDSRCierreSacaRepExp(pieza_saca,seq_saca,fecha_saca)
+    				    
+    				    BREAK
+    				 CASE "99056";Det.de Corte de Línea
+	    			 	tlr:INDdcol_scrn[0] = SCR:post:SCRNcteLineaDet
+    				    tlr:INDjnl_append = OFB:post:JNLcteLineaHdr
+    				   	/*Actualizar scaneos  "X"*/
+    				   	CALL CDSBorro_Scaneos ("X")
+    				   	/*Borrar o Actualizar "K0"*/
+    				   	CALL CDSBorro_Scaneos ("L")
+    				   	/*Actualizo el Scaneos 15, 16 y 99*/
+    				   	CALL CDSBorro_Scaneos ("O")
+    				   	
+    				   	//Borro o Actualizo en la tabla Rep_Exp
+    				    CALL CDSRCierreSacaRepExp(pieza_saca,seq_saca,fecha_saca)
+    				    
+        			    BREAK
+ 					END SELECT
+				END IF
+				CALL MISCreversa_transac
+			    post:err_retval = -5
+				CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+			    lib:err_retval = CDSRETVAL	
+			LOOP
+    	 	BREAK	
+    	 	
+    	  CASE 4;Det. Transferencia a Otro Contenedor
+    	  	CDS SELECT FROM DSC:tes:jnl2_table BECOMES DSC:post:jnl_ctx1 \
+		    WHERE (tlr:jnl_operator == op:op_operator_id && \
+    	 	tlr:jnl_date == common:system_date && \
+    	 	tlr:jnl_sequence_corr == "" && \
+     		post:codseq_dev == adt_stockp_nro_sec && \
+     		siaf:codigo_siaf != 99080)
+     		CDS FINDFIRST DSC:post:jnl_ctx1 NOLOCK
+     		lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+     				CDS ENDSELECT DSC:post:jnl_ctx1
+     				RETURN 0
+     			ELSE
+	     			
+	     			CLEARFIELD post:jnl_branch_ori
+	     			CLEARFIELD post:jnl_operator_ori
+	     			CLEARFIELD post:jnl_date_ori
+	     			CLEARFIELD post:jnl_time_ori
+	     			CLEARFIELD post:jnl_bus_date_ori
+	     			CLEARFIELD post:jnl_sequence_ori
+	     			CLEARFIELD post:NroTranf
+	     			CLEARFIELD siaf:codigo_siaf
+	     			CLEARFIELD post:adt_op_login_id
+	     			CLEARFIELD post:adt_grucorte_desc
+            		CLEARFIELD post:adt_grucorte_cod
+					CLEARFIELD post:Operador_id
+					CLEARFIELD post:DetalleContenidoGC
+	     			
+	     			CDS EXTRACT DSC:jnl_ctx1 post:jnl_branch_ori post:jnl_operator_ori \
+	     			post:jnl_date_ori post:jnl_time_ori post:jnl_bus_date_ori \
+	     			post:jnl_sequence_ori post:NroTranf siaf:codigo_siaf post:adt_op_login_id \
+	     			post:adt_grucorte_desc post:adt_grucorte_cod post:Operador_id \
+	     			post:DetalleContenidoGC
+	     			/*MFM - Se actualiza en CDSverif99086 el jnl_op_transf*/
+	     			CALL CDSverif99086
+	     			IF (RETVAL == 0 ) THEN	
+	     				/*Actualizar los scaneos correspondientes!!!!*/
+	     				CALL CDSBorro_Scaneos("T")
+	     				CDS FINDAGAIN DSC:post:jnl_ctx1 NOLOCK
+	     				CDS EXTRACT DSC:post:jnl_ctx1 tlr:jnl_sequence tlr:jnl_time
+	     				tlr:hora_corr = tlr:jnl_time
+	     				tlr:INDdcol_scrn[0] = SCR:post:SCRNtransfContDet
+	     				tlr:INDjnl_append = OFB:post:JNLtransfOtroCont
+	     				//BUG de versiones anteriores encontrado en TESTEO de 50242
+	     				siaf:adt_tran_codigo = siaf:codigo_siaf
+		    			call siaf:CDSadt_tran_load 
+		    			siaf:nombre_transac = siaf:adt_tran_desc
+						tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+						siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+						siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+    					siaf:posible_off = siaf:adt_tran_posoff
+    					//fin bug
+	     				CALL MISCreversa_transac
+			    		post:err_retval = -5
+			    	END IF
+			    END IF
+				CDS FINDNEXT DSC:post:jnl_ctx1 NOLOCK
+			    lib:err_retval = CDSRETVAL	
+			LOOP
+			BREAK			   
+			
+		  CASE 5;Piezas Reencaminadas y Piezas Observadas
+	 		IF (siaf:codigo_siaf == 99013) THEN
+		 		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+				WHERE tlr:jnl_date == common:system_date && \
+				tlr:jnl_operator == op:op_operator_id && \
+				tlr:jnl_sequence_corr == "" && \
+				post:codseq_reenc == codseq_reenc && \
+				siaf:codigo_siaf == "99014"
+			ELSE
+				CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+				WHERE tlr:jnl_date == common:system_date && \
+				tlr:jnl_operator == op:op_operator_id && \
+				tlr:jnl_sequence_corr == "" && \
+				post:codseq_pie_obs == codseq_pie_obs && \
+				siaf:codigo_siaf == "99012"
+			END IF
+			
+     		CDS FINDFIRST DSC:post:journal_ctx1 NOLOCK
+		    lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+    	 			CDS ENDSELECT DSC:post:journal_ctx1
+     				BREAK
+	     		ELSE
+    	 			CLEARFIELD post:Pieza
+    	 			CLEARFIELD post:fecha_vto_aux
+    	 			CLEARFIELD post:mot_piezas_observ
+					CLEARFIELD post:desc_piezas_observ
+					CDS EXTRACT DSC:journal_ctx1 ALL
+	 				/*MFM - Si la pieza no fue devuelta entonces la actualizo*/
+	 				CALL MISCReverso_ObsReenc
+		    		IF (RETVAL == 0) THEN
+		    			/*Reverso la pieza*/						
+		    			 CALL MISCreversa_transac
+				    	 post:err_retval = -5
+					END IF
+					
+					CDS FINDNEXT DSC:post:journal_ctx1 NOLOCK
+			    	lib:err_retval = CDSRETVAL	
+				END IF
+			LOOP
+			BREAK 
+			
+		CASE 6;Piezas UP Recepcionadas
+	 		
+	 		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+			WHERE tlr:jnl_date == common:system_date && \
+			tlr:jnl_operator == op:op_operator_id && \
+			tlr:jnl_sequence_corr == "" && \
+			post:codseq_recep == codseq_recep && \
+			(siaf:codigo_siaf == 99215 || siaf:codigo_siaf == 99235)
+			
+     		CDS FINDFIRST DSC:post:journal_ctx1 NOLOCK
+		    lib:err_retval = CDSRETVAL
+     		DO
+     			IF (lib:err_retval != 0) THEN
+    	 			CDS ENDSELECT DSC:post:journal_ctx1
+     				BREAK
+	     		ELSE
+    	 			CLEARFIELD post:piezaUP
+					CLEARFIELD post:jnl_guia_cont
+					CLEARFIELD post:jnl_guia_saca
+					CDS EXTRACT DSC:journal_ctx1 ALL
+					sequence_aux = tlr:jnl_sequence 
+					if ((jnl_guia_cont > 0 && jnl_guia_cont < 99999999) || \
+						jnl_guia_saca > 0 || jnl_marca_excep) then
+						//la pieza fue expedida, no se reversa!
+					else
+
+						CALL post:CDSBorro_Scaneos("U")
+						select (codigo_siaf)
+							case 99215
+								CALL post:CDSdel_stockpUPpieza							
+								break
+							case 99235
+								CALL post:CDSback_StockpUP							
+								break
+						end select
+	 					
+		    			/*Reverso la pieza*/						
+		    			tlr:INDdcol_scrn[0] = SCR:post:SCRNtt_UPDet
+						tlr:INDtran_name = "DETALLE DE PIEZAS IMPUESTAS EN UP"
+	    				tlr:INDjnl_append = OFB:post:JNLrecepTT_UPDet
+			    		CALL MISCreversa_transac
+   				        post:err_retval = -5
+					end if
+					
+					CDS FINDNEXT DSC:post:journal_ctx1 NOLOCK
+			    	lib:err_retval = CDSRETVAL	
+				END IF
+			LOOP
+			BREAK 
+				
+		END SELECT
+END SUB
+
+/*******/

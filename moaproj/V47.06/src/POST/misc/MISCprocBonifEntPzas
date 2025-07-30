@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:MISCprocBonifEntPzas
+* NOMBRE
+*   OFB:post:MISCprocBonifEntPzas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprocBonifEntPzas(l_PreDNroTrn, conJournal, soloFaltantes)
+	local l_alicuota_iva like post:adt_prodvs_aliciva
+	local l_importe_bon like post:promo_imp_tot
+	local l_cantidad like post:cantidad
+	local l_cod_agrupacion like post:cod_agrupacion
+	local l_promo_cod like post:promo_cod
+	local l_promo_desc like post:promo_desc
+	local l_cod_EP like cod_EP
+	local l_inhibeUp like promo_inhibeUpPdvs
+	local l_jourOk like post:BonifLocalOk
+
+	CDS EXTRACT DSC:CONPresuDeta 				\
+		cod_agrupacion into l_cod_agrupacion
+
+	if (!soloFaltantes)
+	    CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+	        WHERE fecha_EP == common:system_date && 				\
+	              operador_EP == op:op_operator_id && 				\
+	              PresNro_EP == post:PresNro && 					\
+	              cod_agrupacion == l_cod_agrupacion
+	else
+	    CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+	        WHERE fecha_EP == common:system_date && 				\
+	              operador_EP == op:op_operator_id && 				\
+	              PresNro_EP == post:PresNro && 					\
+	              cod_agrupacion == l_cod_agrupacion &&				\
+				  post:BonifLocalOk != "S"
+	endif
+
+	CDS FINDFIRST DSC:EntrPieza_ctx LOCK
+	LET lib:err_retval = CDSRETVAL
+	WHILE (lib:err_retval != -801)
+		call csr:cleararray(docfis_importe)
+		call csr:cleararray(docfis_tasa_por)
+		call csr:cleararray(docfis_imp_siva)
+		l_cantidad = 0
+		CDS EXTRACT DSC:EntrPieza_ctx 			  \
+			cod_EP 					into 	l_cod_EP
+
+		select (l_cod_EP)
+			case 18201
+				// este no va!
+				break
+			case 18301	// LISTA
+				CDS EXTRACT DSC:EntrPieza_ctx 		  			\
+					post:envios			into 	l_cantidad	  	\
+					promo_imp_lista		into 	l_importe_bon 	\
+					adt_serv_aliciva 	into 	l_alicuota_iva	\
+					promo_cod_lista		into	l_promo_cod		\
+					promo_desc_lista	into	l_promo_desc	\
+					promo_inhibeUpList 	into	l_inhibeUp
+				break
+			case 18401	// ALMACENAJE NACIONAL
+				CDS EXTRACT DSC:EntrPieza_ctx 		  			\
+					cant_dias_almac		into 	l_cantidad	  	\
+					promo_imp_almc		into 	l_importe_bon 	\
+					adt_serv_aliciva 	into 	l_alicuota_iva	\
+					promo_cod_almac		into	l_promo_cod		\
+					promo_desc_almc		into	l_promo_desc	\
+					promo_inhibeUpAlma 	into	l_inhibeUp
+				break
+			case 18601	// PRESENTACION A ADUANA PIEZAS ENTRANTES
+			case 18602	// PRESENTACION A ADUANA ENCOMIENDAS ENTRANTES
+				CDS EXTRACT DSC:EntrPieza_ctx 		  			\
+					post:cantidad		into 	l_cantidad	  	\
+					promo_imp_presAdu	into 	l_importe_bon 	\
+					adt_serv_aliciva 	into 	l_alicuota_iva	\
+					promo_cod_presAd	into	l_promo_cod		\
+					promo_desc_presAd	into	l_promo_desc	\
+					promo_inhibeUpPrAd 	into	l_inhibeUp
+				break
+			case 18701
+				// este no va!
+				break
+			case 28402	// ALMACENAJE INTERNACIONAL
+				CDS EXTRACT DSC:EntrPieza_ctx 		  			\
+					cant_dias_almac		into 	l_cantidad	  	\
+					promo_imp_almc		into 	l_importe_bon 	\
+					adt_serv_aliciva 	into 	l_alicuota_iva	\
+					promo_cod_almac		into	l_promo_cod		\
+					promo_desc_almc		into	l_promo_desc	\
+					promo_inhibeUpAlma 	into	l_inhibeUp
+				break
+		end select
+		if (l_cantidad > 0)
+			call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, l_cantidad)
+			call post:MISCtotal_vec_bon
+			call post:CDSgeneraTrnBonLocal(l_promo_cod, l_promo_desc, ImporteTotBon, l_PreDNroTrn, conJournal, "", "", l_cod_EP)
+		endif
+		l_jourOk = "S"
+		CDS APPEND DSC:EntrPieza_ctx \
+		l_jourOk as post:BonifLocalOk
+		CDS UPDATE DSC:EntrPieza_ctx LOCK
+		CDS UNLOCK DSC:EntrPieza_ctx
+
+		bInhibirUP = (bInhibirUP || l_inhibeUp == "S")
+
+	    CDS FINDNEXT DSC:EntrPieza_ctx LOCK
+	    LET lib:err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT DSC:EntrPieza_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,96 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSsend_reset_tran
+* NOMBRE
+*   OFB:giros:CDSsend_reset_tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+/* Inicio de rutina para Caidas en Vuelo */
+sub giros:CDSsend_reset_tran
+	local Ladt_codigo like post:adt_codigo
+ 	
+ 	/* Respaldo la clave de la transaccion en curso */
+    SWAPDUP tlr:jnl_branch
+    SWAPDUP tlr:jnl_operator
+    SWAPDUP tlr:jnl_date
+    SWAPDUP tlr:jnl_time
+    SWAPDUP tlr:jnl_bus_date
+    SWAPDUP tlr:jnl_sequence
+    SWAPDUP siaf:importe
+    SWAPDUP siaf:codigo_siaf
+
+	CDS SELECT FROM dsc:tlr:TABjnl BECOMES dsc:tlr:CONjscn WHERE \
+		tlr:jnl_branch == common:sucursal_activa  && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == fld:common:system_date && \
+		tlr:jnl_sequence == giros:jnl_sequence
+	CDS FINDFIRST DSC:tlr:CONjscn LOCK
+	IF (CDSRETVAL == 0)
+		CDS EXTRACT DSC:tlr:CONjscn \
+			tlr:jnl_branch \
+			tlr:jnl_operator \
+			tlr:jnl_date \
+			tlr:jnl_time \
+			tlr:jnl_bus_date \
+			tlr:jnl_sequence INTO tlr:aux_sequence \
+			tlr:INDtots_append \
+			siaf:codigo_siaf siaf:importe post:ImporteSinIva
+			hcomm:tran_status = SEND_RESET
+		siaf:mensaje = "SEND_RESET"
+		CDS CLEARBUFFER DSC:tlr:CONjscn
+		CDS APPEND DSC:tlr:CONjscn hcomm:tran_status AS tlr:jnl_status siaf:mensaje
+		CDS UPDATE DSC:tlr:CONjscn LOCK
+		CDS UNLOCK DSC:tlr:CONjscn
+	ELSE
+		CDS ENDSELECT DSC:tlr:CONjscn
+		RETURN (-2)		
+	END IF		
+	CDS ENDSELECT DSC:tlr:CONjscn
+
+	setflag tlr:controla_marca,mayor_cien
+
+    CALL op:CDSop_marca_cien
+    
+	/* Reverso los totales de la transaccion */
+	CDS BEGINWORK
+	setflag tlr:jnl_tran_flags,correction
+	CALL tlr:TOTScommit 
+	resetflag tlr:jnl_tran_flags,correction
+   
+	// FGB 29.5.2001
+	let Ladt_codigo = post:adt_codigo
+	let post:adt_codigo = siaf:codigo_siaf
+	
+    /* Reverso los totales de la TotalTransac. Hernán. 22/12/2000*/
+	CALL post:CDSTotalTransac_load
+	post:adt_importe = post:adt_importe - siaf:importe
+	CALL post:CDSTotalTransac_save
+	
+	// FGB 29.5.2001
+	let post:adt_codigo = Ladt_codigo
+
+	/* Recupero la clave de la transaccion en curso */
+    DUPFIELD tlr:jnl_branch
+    DUPFIELD tlr:jnl_operator
+    DUPFIELD tlr:jnl_date
+    DUPFIELD tlr:jnl_time
+    DUPFIELD tlr:jnl_bus_date
+    DUPFIELD tlr:jnl_sequence
+    DUPFIELD siaf:importe
+    DUPFIELD siaf:codigo_siaf
+
+end sub
+
+/*******/

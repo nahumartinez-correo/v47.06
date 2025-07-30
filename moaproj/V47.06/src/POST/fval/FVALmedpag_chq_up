@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:post:FVALmedpag_chq_up
+* NOMBRE
+*   OFB:post:FVALmedpag_chq_up
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALmedpag_chq_up
+    LOCAL loc_medpago  LIKE moneda_dsc
+    LOCAL imp2         LIKE siaf:importe
+    
+    CALL CSR:proc_list(F_PROTECT,LST:LISTreemp_cheque_up)
+    
+    IF (!TESTFLAG(tlr:tran_flags,correction))
+        
+        if (siaf:moneda.numchars == 0)
+            clearfield post:medio_pago_desc
+            clearfield siaf:importe_chq
+            refresh post:medio_pago_desc
+            refresh siaf:importe_chq
+            CALL CSR:proc_list(F_CLEAR,LST:LISTreemp_cheque_up)
+            CALL CSR:proc_list(F_REFRESH,LST:LISTreemp_cheque_up)
+            CALL CSR:proc_list(F_PROTECT,LST:LISTreemp_cheque_up)
+			protfield siaf:importe_chq
+	        //Deshabilito el boton del banco
+	        DISABLECONTROL  drv:PBcb3   
+			return (0)
+        end if
+        
+
+        fprint loc_medpago, "%02.2d",siaf:moneda
+        CALL csr:f_sadopv(dsc:aux2_pic_medios,loc_medpago,0) /*chequeo*/            
+        if (retval < 0) /*Medio de pago inexistente*/
+            call csr:f_sadopl(dsc:aux2_pic_medios,common:csr_string) /*display*/
+            if (retval < 0)
+                clearfield siaf:moneda
+                clearfield post:medio_pago_desc
+                clearfield siaf:importe_chq
+                refresh siaf:moneda
+                refresh post:medio_pago_desc
+                refresh siaf:importe_chq
+                return (0)
+            end if
+        end if
+        
+        /*Ahora chequeo que esta moneda tenga cotizacion para que totalizar bien*/
+        post:adt_mp_cod = siaf:moneda    
+        call post:CDSadt_MedPago_load
+        call MISCconvierto_coti2(siaf:importe_chq,imp2)
+        if (retval < 0)
+            return (-2)
+        end if
+        
+        siaf:moneda     = substr(common:csr_string,0,2)
+        medio_pago_desc = substr(common:csr_string,3,30)
+        //loc_diferido    = substr(common:csr_string,34,1)                                
+        
+        /*Verifico si el medio elegido es diferido o no*/
+        CDS SELECT FROM DSC:MEDIOS_TAB BECOMES DSC:MEDIOS_CTX WHERE \
+        post:adt_mp_cod == siaf:moneda
+        CDS FINDFIRST MEDIOS_CTX NOLOCK        
+        IF (RETVAL == 0)
+        	clearfield adt_mp_diferido
+            CDS EXTRACT MEDIOS_CTX adt_mp_diferido
+        END IF
+        CDS ENDSELECT MEDIOS_CTX        
+        
+        refresh siaf:moneda
+        refresh post:medio_pago_desc
+        CALL CSR:proc_list(F_UNPROTECT,LST:LISTreemp_cheque_up)
+        /*MFM*/
+        unprotfield siaf:importe_chq
+        enablecontrol drv:PBcb3        
+        IF (adt_mp_diferido != "S")
+            post:fec_d = common:system_date
+            refresh post:fec_d
+            protfield post:fec_d                                            
+        else
+            IF (LASTKEY != RT_SEND)
+                clearfield post:fec_d
+                refresh post:fec_d
+            end if
+        END IF
+    
+    END IF
+END SUB
+
+/*******/

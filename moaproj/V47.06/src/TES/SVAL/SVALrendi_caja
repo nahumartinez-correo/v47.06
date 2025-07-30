@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALrendi_caja
+* NOMBRE
+*   OFB:tes:SVALrendi_caja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALrendi_caja
+    local coincide_totales like tes:marca_rend
+    local dec_redondeo like tes:marca_rend
+    local diferencia_rend like siaf:importe
+    local loc_codigo_siaf like siaf:codigo_siaf
+    local loc_nombre_transac like siaf:nombre_transac
+    local loc_tran_mnemonic like tlr:tran_mnemonic
+    local loc_importe like siaf:importe       
+    
+    if (!testflag(tlr:tran_flags,correction)) then
+        clearfield diferencia_rend
+        clearfield diferencia
+        dec_redondeo = "N"	
+        //loc_importe = siaf:importe
+        loc_importe = post:importe_origen
+        coincide_totales = "S"
+        call CDStotales_importe(coincide_totales)
+        marca_rend = "X"
+        if (retval < 0) then
+            nextfield cantidad[0]
+            return (-2)
+        end if
+        //call post:CDSobtener_mon_tipo(siaf:moneda)
+        // Chequeo que no sea un medio de pago itemizado
+        if (post:adt_mp_adm != "I") then
+            //diferencia_rend = siaf:importe - suma_tefec_tot
+            diferencia_rend = post:importe_origen - suma_tefec_tot
+            if (diferencia_rend < 0) then
+                diferencia = diferencia_rend * -1
+            else
+                diferencia = diferencia_rend
+            end if
+            refresh diferencia
+            if (diferencia <= common:emp_limite && diferencia > 0) then
+                msgbox "DECLARACION CON REDONDEO. CONTINUA?",0x00000104,"ATENCION"
+                if (retval == 6) then
+                    dec_redondeo = "S"
+                    coincide_totales = "S"
+                else 
+                    return (-2)
+                end if           
+            end if
+            call siaf:SVALnivel_sup
+            if (retval < 0) then
+                return (-2)
+            end if
+        
+            if (dec_redondeo == "S") then
+                loc_codigo_siaf = siaf:codigo_siaf
+                loc_nombre_transac = siaf:nombre_transac
+                loc_tran_mnemonic = tlr:tran_mnemonic
+                //loc_importe = siaf:importe
+                loc_importe = post:importe_origen
+                //siaf:importe = diferencia
+                post:importe_origen = diferencia
+                call post:MISCconvierto_coti(post:importe_origen)
+
+                if (diferencia_rend > 0) then            	                 
+                    let siaf:codigo_siaf = 8516
+                    let siaf:nombre_transac = "DIFERENCIAS POR REDONDEO POS."                	    
+	                fld:drv:INDspc_rtn[0] = LST:siaf:TOTS8516
+	                move "DIFRPOS" to tlr:tran_mnemonic	
+                else                                 
+                    let siaf:codigo_siaf = 8517
+                    let siaf:nombre_transac = "DIFERENCIAS POR REDONDEO NEG."
+                    fld:drv:INDspc_rtn[0] = LST:siaf:TOTS8517
+                    move "DIFRNEG" to tlr:tran_mnemonic
+                end if
+            
+	            let drv:INDscr = scr:tes:SCRNredondeo_dif
+	            fld:drv:INDjnl_rtn = ofb:tes:JNLredondeo_dif
+                ungetkey 0x190
+	            call siaf:MISClleno_modalidad	    
+	            call tlr:JNLtran
+	            siaf:codigo_siaf = loc_codigo_siaf           
+                siaf:nombre_transac = loc_nombre_transac
+                tlr:tran_mnemonic = loc_tran_mnemonic
+                fld:drv:INDscr = scr:tes:SCRNrendi_caja
+    	        fld:drv:INDjnl_rtn = ofb:tes:JNLsalida
+    	        fld:drv:INDspc_rtn[0] = 0
+    	        //siaf:importe = loc_importe
+    	        post:importe_origen = loc_importe
+    	        // Convierto a la cotizacion vigente
+        	    //call post:MISCconvierto_coti(post:importe_origen)
+            end if
+        end if
+        //call CDSactuali_rendicion(siaf:moneda,siaf:importe,marca_rend,coincide_totales)
+        call post:MISCconvierto_coti(post:importe_origen)
+        call CDSactuali_rendicion(siaf:moneda,post:importe_origen,marca_rend,coincide_totales)
+        if (retval < 0) then
+            return (-2)
+        end if
+        call CDSact_rend_sup
+        
+    else
+        call siaf:SVALnivel_sup
+        if (retval < 0) then
+            return (-2)
+        end if
+        
+        if (siaf:codigo_siaf == 8510) then
+	    CALL MISCreverso_sesion
+            if (retval < 0) then
+	        return (-2)
+	    end if
+	end if
+ /* El último parámetro va con "S" para que pueda borrar la marca al reversar */
+    call CDSactuali_rendicion(siaf:moneda,0," ","S")
+    if (retval < 0) then
+        return (-2)
+    end if        
+        
+    END IF
+    unprotfield siaf:moneda
+    //unprotfield siaf:importe
+    unprotfield post:importe_origen
+ /* Por una modificacion en la rutina de impresion le cargo S para
+    que imprima un ticket */
+    let siaf:continua_transaccion = "S"
+
+ /* Begin Flor (19/07/00) */
+    //post:adt_mon_cod = siaf:moneda
+    //call post:CDSadt_moneda_load
+    // Si es un medio de pago global monetario
+    if (post:adt_mp_adm == "G" && post:adt_mp_monet == "S")    
+        tes:dencaja_suc    = common:sucursal_activa
+        tes:dencaja_op     = op:op_operator_id
+        tes:dencaja_moneda = siaf:moneda
+        indice = 0
+        while (indice < 14)
+               tes:dencaja_den[indice] = tes:cantidad[indice]
+               indice = indice + 1
+        end while             
+     /* Grabar la tabla DenCaja */
+        call tes:CDSadt_dencaja_save      
+    end if
+ /* End Flor (19/07/00)*/
+END SUB
+
+/*******/

@@ -1,0 +1,131 @@
+/****o* Pendientes de agrupación/OFB:tele:PCOLtele_gral
+* NOMBRE
+*   OFB:tele:PCOLtele_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telepcol.h"
+
+SUB tele:PCOLtele_gral
+    LOCAL idx LIKE siaf:i
+
+	//Por ahora se deshabilitan los campos de descuento
+    LET drv:button = 3
+    CALL drv:but_down_disable
+    CALL drv:but_redraw
+    protfield post:tipo_descto
+	protfield post:descuento
+
+	/****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.     17/10/2000                                 */
+    /****************************************************************/
+     if (post:estado_presu == 2 || post:estado_presu == 3) then
+        if (siaf:adt_tran_med_pago != "S") then
+            post:captura_mp = siaf:adt_tran_med_pago 	
+            protfield siaf:moneda
+     	    siaf:moneda = 99
+     	    clearfield post:medio_pago_desc
+     	    DISABLECONTROL drv:PBcb0
+   	    end if 
+     end if
+        
+     /* Agrego también que si estoy en teclas ráìdas y tiene curso legal protejo el 
+     campo y si no tiene le muestro un mensaje de error y no le permito
+     hacer la transacción - Hernán 14/11/2000*/
+       
+     if (post:estado_presu == 1) then         
+     	;Busco el medio de pago que tenga captura de CL	
+     	call post:CDSMPago_Clegal_load
+     	if (retval == 0) then
+     		siaf:moneda = post:adt_mp_cod
+     	    protfield siaf:moneda
+     	    DISABLECONTROL drv:PBcb0
+     	else
+            errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+            return (-2)
+     	end if       
+    end if   
+     
+    if (post:estado_presu == 4) then
+         protfield siaf:moneda
+         DISABLECONTROL drv:PBcb0 
+         protfield post:cant_caja_prev
+         protfield post:cant_cinta_prev
+	end if  	         
+	if (post:estado_presu == 2) then
+		clearfield post:fld_promo_imp
+		refresh post:fld_promo_imp
+	end if
+	protfield post:fld_promo_imp
+
+	IF (post:estado_presu != 4) THEN
+		IF (OpcInd_cant <= 8) THEN
+	    	DISABLECONTROL PBOpcInd_abajo 
+	      	DISABLECONTROL PBOpcInd_arriba 
+	      	CALL MISCflecha_opc_rest
+	    ELSE 
+	      	idx = (OpcInd_cant - 1) + 0x8000
+	      	CALL CSR:myPickcontrol("opcionales",common:csr_string,idx)
+	      	IF (SUBSTR(common:csr_string,0,4) == SUBSTR(OpcInd_vec[7][0],0,4)) THEN
+	        	DISABLECONTROL PBOpcInd_abajo 
+	        	KEYDEF F32,0x0182
+			ELSE
+				ENABLECONTROL PBOpcInd_abajo 
+		    	KEYDEF f32,PBOpcInd_abajo
+	      	END IF 
+	      	IF (OpcInd_idx == 0) THEN
+	        	DISABLECONTROL PBOpcInd_arriba
+	        	KEYDEF F29,0x0181
+	      	ELSE
+	        	ENABLECONTROL PBOpcInd_arriba
+	        	KEYDEF F29,PBOpcInd_arriba
+	      	END IF 
+	    END IF
+	END IF
+
+    IF ((post:estado_presu == 1) || (post:estado_presu == 2)) THEN
+		//Si el campo del buscador plataf:descrip_search viene completo (deberia ser porque se selecciono desde
+	    //la busqueda rapida de trx)
+		if (plataf:descrip_search.numchars != 0 || plataf:descrip_search != "") then
+			//Obtengo el codigo (plataf:adt_browser_code) segun la descripcion
+			CDS SELECT FROM DSC:plataf:TABbrowser BECOMES DSC:plataf:CONbrowser \
+			WHERE plataf:adt_browser_desc == plataf:descrip_search
+			CDS FINDFIRST DSC:plataf:CONbrowser NOLOCK
+			if (cdsretval == 0) then
+				CDS EXTRACT DSC:plataf:CONbrowser plataf:adt_browser_code into tele:adt_cattel_serv
+			end if
+			CDS ENDSELECT DSC:plataf:CONbrowser
+			//Con el codigo (que es = al codigo de servicio), busca la 
+			//descripcion de la categoria en la catteleg
+			CDS SELECT FROM DSC:adt_catteleg_table BECOMES DSC:adt_catteleg_context \
+			WHERE tele:adt_cattel_serv == FLD:tele:adt_cattel_serv
+			CDS FINDFIRST DSC:adt_catteleg_context NOLOCK   
+		    IF (cdsretval == 0) THEN
+				CDS EXTRACT DSC:adt_catteleg_context tele:adt_cattel_cod into tele:tele_tipo_serv
+			END IF
+			CDS ENDSELECT DSC:adt_catteleg_context
+			refresh tele:tele_tipo_serv
+			UNGETKEY RT_TAB
+		end if
+	END IF
+	
+    /*****************************************************************************
+    COMBOS: En caso de combo_nro>0  incializo y deahabilito variables.NBA
+    *****************************************************************************/
+    CALL tele:MISCpostalTele
+
+END SUB
+
+/*******/

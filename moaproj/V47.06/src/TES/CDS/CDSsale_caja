@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSsale_caja
+* NOMBRE
+*   OFB:tes:CDSsale_caja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSsale_caja
+	LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+    LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+    LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+    LOCAL loc_scr       LIKE drv:INDscr
+    LOCAL importe_t		LIKE siaf:importe
+
+    loc_jnl_rtn   = drv:INDjnl_rtn
+    loc_tran_name = tlr:jnl_tran_name
+    loc_mnemonic  = tlr:tran_mnemonic
+    loc_nom_tran  = siaf:nombre_transac
+    loc_scr       = drv:INDscr    
+
+    drv:INDjnl_rtn       = "SVCAR"
+    tlr:jnl_tran_name    = "SVCAR"
+    tlr:tran_mnemonic    = "SVCAR"
+    siaf:nombre_transac  = "SAL.CAJA A ADM.REGIONAL"
+    siaf:nombre_transac.HIGHLITE = 0
+    siaf:codigo_siaf = 8760
+    tes:es_tesoro = "S"
+	siaf:tiene_reverso = "N"
+    clearfield tlr:INDtots_append  
+    clearfield drv:INDspc_rtn[0]         
+    ;let tlr:INDtots_append = lst:siaf:TOTS8760_glob
+    ;let drv:INDspc_rtn[0]  = lst:siaf:TOTS8760_glob
+
+    let tlr:INDtots_append = lst:siaf:TOTS8760
+    let drv:INDspc_rtn[0]  = lst:siaf:TOTS8760
+
+	/*obtengo los valores de la totals*/
+	;CDS ENDSELECT DSC:tlr:CONtots_write
+   	CDS SELECT FROM "totals" BECOMES DSC:tlr:CONtots_temp WHERE  \
+   	tlr:tots_branch == FLD:op:op_branch_id && tlr:tots_operator ==  \
+   	FLD:op:op_operator_id
+   	;CDS CLEARBUFFER DSC:tlr:CONtots_write
+   	CDS FINDFIRST DSC:tlr:CONtots_temp NOLOCK
+   	CALL lib:MISCcds_find_err
+   	IF (RETVAL == -2) THEN
+    	RETURN (-2)
+   	END IF
+   	
+   	cds extract DSC:tlr:CONtots_temp array siaf:tefectivo_vec \
+   	array siaf:tefec_inic_vec
+   	
+   	cds endselect dsc:tlr:CONtots_temp
+
+    
+	/*selecciono los medios de pagos globales, no monetarios*/
+   	CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS2_CTX WHERE \
+   	post:adt_mp_adm == "G" && post:adt_mp_monet == "N"
+   	CDS FINDFIRST DSC:post:MEDIOS2_CTX NOLOCK
+   	LET lib:err_retval = CDSRETVAL
+   	DO
+   		IF (lib:err_retval != 0) THEN
+   			BREAK
+   		END IF
+		CDS EXTRACT DSC:post:MEDIOS2_CTX ALL
+		
+		let importe_t = siaf:tefectivo_vec[post:adt_mp_cod] + siaf:tefec_inic_vec[post:adt_mp_cod]
+
+		if (importe_t != 0) then
+		    post:importe_origen  = importe_t
+		    CALL post:MISCconvierto_coti(post:importe_origen)
+		    siaf:moneda = post:adt_mp_cod
+		    siaf:desc_moneda = post:adt_mp_desc
+		    post:medio_pago_desc = post:adt_mp_desc
+
+		    let drv:INDscr = SCR:tes:SCRNsal_AR_caj
+		    let siaf:tiene_reverso = "N"
+			drv:INDjnl_rtn = ofb:JNLsal_AR
+			UNGETKEY 0x190
+			call tlr:JNLtran
+		end if
+		CDS FINDNEXT DSC:post:MEDIOS2_CTX NOLOCK
+  	    LET lib:err_retval = CDSRETVAL
+    LOOP
+
+    CDS ENDSELECT DSC:post:MEDIOS_CTX
+    
+    clearfield tlr:INDtots_append  
+    clearfield drv:INDspc_rtn[0]         
+
+	drv:INDjnl_rtn      = loc_jnl_rtn
+    tlr:jnl_tran_name   = loc_tran_name
+    tlr:tran_mnemonic   = loc_mnemonic
+    siaf:nombre_transac = loc_nom_tran
+    drv:INDscr          = loc_scr
+    
+    ;cds findagain dsc:tlr:CONtots_write lock
+END SUB
+
+/*******/

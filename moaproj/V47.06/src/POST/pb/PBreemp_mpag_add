@@ -1,0 +1,200 @@
+/****o* Tratamiento de Cheques/OFB:post:PBreemp_mpag_add
+* NOMBRE
+*   OFB:post:PBreemp_mpag_add
+* DESCRIPCION
+*   Agrega el medio de pago al picklist cliqueando en el botón agregar
+*   en Remplazo de Cheque Observado/Rechazado
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PBreemp_mpag_mod, post:BUTreemp_chqrech_up
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1151
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBreemp_mpag_add
+	local cont like siaf:idx
+
+    //////////////////////////////////////////
+    // Agrego el medio de pago al picklist  //
+    //////////////////////////////////////////
+
+    local imp2        like siaf:importe
+    local varl_idx	  like siaf:idx
+    local varl_picstr like common:csr_string
+    local tipomedio   like post:tipo_mpago
+    local admban like post:adt_mp_admban
+
+	if (post:estado_presu == 4) then
+		drv:button = drv:last_button //drv:PBcb4
+    	call drv:but_up_enable
+		call drv:but_redraw    	
+		return (0)
+	end if
+	
+    LET drv:button = drv:last_button
+    CALL drv:but_up_enable
+    CALL drv:but_redraw
+
+    let adt_mp_cod = tipo_mpago
+    call post:CDSadt_MedPago_load
+
+    // me aseguro que esten todos los datos
+    call MISCcc_mpag_inflds
+    if (retval < 0) then
+        return (-2)
+    end if
+
+    /* Verifico que no supere el importe que me permiten las restricciones
+    para ese medio de pago */
+    if (importe_mpago > tes:saldo_inic[post:tipo_mpago]) then
+    	errmsg common:errmsg_list, "Supera el Límite para el Medio de Pago"
+    	return (-2)
+    end if
+
+	//MFM - la fecha de vto del cheque nuevo no debe ser mayor que la del cheque a reemplazar
+	if (post:fec_d > siaf:f_vencimiento) then
+		errmsg common:errmsg_list, "La fecha de vto no puede superar la fecha de vto del cheque a reemplazar."
+    		return (-2)
+	endif
+	// FGB 20.02.06: realizo la consulta del cheque al HOST
+	if (post:adt_mp_admban == "S" && (fec_d.NUMCHARS == 0 || fec_d == common:system_date)) then
+		call cons_chkdia_reemp(tipo_mpago,banco_mpago,cuenta_mpago,cheque_mpago)
+		if (retval < 0) then
+			return (-2)
+		endif
+	endif
+	// FGB fin
+			
+    // tengo que ver que no haya sido agregado ya al picklist
+    let varl_idx = PL_GETITEM
+    call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+    while (retval == 0) 
+        if (substr(varl_picstr,0,2) == tipo_mpago) then
+        	/* No puede ingresar dos código de MP iguales */
+            errmsg common:errmsg_list,"Medio de Pago ya ingresado"
+            nextfield tipo_mpago
+            return (-2)
+			/*        	
+            if (substr(varl_picstr,3,3) == banco_mpago) then
+                if (substr(varl_picstr,7,20) == cuenta_mpago) then
+                    if (substr(varl_picstr,28,12) == cheque_mpago) then
+                        errmsg common:errmsg_list,"Medio de Pago ya ingresado"
+                        nextfield tipo_mpago
+                        return (-2)
+                    end if
+                end if
+            end if
+            */
+        end if
+                
+        /* MLD 26-04-02 A pedido de las chicas de vta up */
+        /* me fijo que no haya mas de un medio de pago cheque */
+        /* No puede ser reemplazado por mas de un cheque */
+        if (post:adt_mp_admban == "S") then
+        	tipomedio = substr(varl_picstr,0,2) 
+
+		   	cds select from MEDIOS_TAB becomes MEDIOS_CTX where \
+      		(adt_mp_cod == tipomedio)
+   			cds findfirst MEDIOS_CTX nolock
+   			if (cdsretval == 0) then
+   				cds extract MEDIOS_CTX post:adt_mp_admban into admban
+   			end if
+   			cds endselect MEDIOS_CTX
+   			
+   			if (admban == "S") then
+   				errmsg common:errmsg_list,"No puede ingresar dos medios de pago del tipo Cheque"
+   				return (-2)
+   			end if
+
+
+		end if
+		/* FIN MLD */
+		
+        let varl_idx = varl_idx + 1
+        // veo que no se agreguen mas comprobantes que los que entran en los arrays
+        if ((varl_idx - PL_GETITEM) == REEMP_MAX_MPAG) then
+            errmsg common:errmsg_list,"Cantidad maxima de medios de pago alcanzada"
+            return (-2)
+        end if
+        call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+    EndWhile
+
+    // verifico, si es cheque, que no haya sido utilizado antes en la sucursal
+    //let adt_mp_cod = tipo_mpago
+    //call post:CDSadt_MedPago_load
+    if (adt_mp_adm == "I" ) then
+        call tes:CDSverif_cheque_tes2(tipo_mpago,banco_mpago,cuenta_mpago,cheque_mpago,cuenta_mpago,cheque_mpago)
+        if (retval < 0) then
+            if (adt_mp_admban == "S" ) then
+                errmsg common:errmsg_list,"El cheque ya fue ingresado"
+            else
+                errmsg common:errmsg_list,"El comprobante ya fue capturado en la sucursal"
+            end if
+            return (-2)
+        end if
+        // si es un cheque el nro no debe superar los 8 digitos
+        if (post:adt_mp_admban == "S")
+            if (cheque_mpago > 99999999.0)
+                errmsg lst:common:errmsg_list,"Nro Cheque Invalido"
+                return (-2)
+            end if
+        end if
+    end if
+    
+    call post:FVALadmite_decimales(importe_mpago)
+    if (retval < 0)
+    	return (-2)
+    end if
+
+    // una vez verificados todos los posibles problemas (por lo menos hasta ahora)
+    // agrego el medio de pago a la lista...
+    clearfield varl_picstr
+    
+    /*
+    cont = 0
+    if (txtotal1_vec[tipo_mpago] > 0)then
+    	cont = cont + 1
+    end if
+    if (txtotal1_vec[tipo_mpago] > 0)then
+		cont = cont + 1
+	end if    
+	*/
+	
+    fprint varl_picstr "%2.2s %3.3s %20.20s %12.12e %16.16e  %10.10e %10.10e %3.3s" \
+    tipo_mpago,banco_mpago,cuenta_mpago,cheque_mpago,importe_mpago,fec_e,fec_d,tes:clearing
+
+    
+    call csr:f_saaddpl "mediospagos" varl_picstr
+    if (retval == 0) then
+        // sumo al total de comprobantes
+        // tengo que ir controlando el total en moneda base
+        call post:MISCconvierto_coti2(post:importe_mpago,imp2)
+        let siaf:importe = siaf:importe + imp2
+
+        refresh FLD:siaf:importe
+        // limpio los campos de entrada para un nuevo comprobante
+        call csr:proc_list F_CLEAR LST:post:LISTccte_cobza_flds3
+        call csr:proc_list F_REFRESH LST:post:LISTccte_cobza_flds3
+        // si todo salio bien, ordeno el picklist
+        call csr:PickOp 4 "mediospagos" "0,40,ascii,asc" 
+ 
+    else
+        // todo mal! Aviso pa' que sepa
+        msgbox "Imposible Agregar Medio de Pago", OFB_OK, "Error de Aplicacion"
+    end if
+
+		/* MGI 10-08-11 AUT-1151 al agregar el medio de pago (botón
+		agregar)habilito el botón que despliega el picklist medio de pago*/
+		drv:button = 5
+		call drv:but_enable
+
+END SUB
+
+/*******/

@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcabe_ent_espv
+* NOMBRE
+*   OFB:tes:MISCcabe_ent_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcabe_ent_espv
+		
+    if (drv:dt_app == 4)
+        siaf:codigo_siaf = 8870  /*entrada cheque a tesoro*/
+   	    let siaf:nombre_transac = "INICIO ENTRADA ESP.VAL.A TESORO"
+        move "ITEENVT" to tlr:tran_mnemonic 
+    else
+        siaf:codigo_siaf = 8860  /*entrada cheque a caja*/
+       	let siaf:nombre_transac = "INICIO ENTRADA ESP.VAL.A CAJA"
+       	move "ITEENVC" to tlr:tran_mnemonic
+    end if	    	    
+	clearfield drv:INDspc_rtn[0]
+	tes:es_tesoro = "S"
+	let drv:INDscr = SCR:tes:SCRNentrada_ev
+		
+	//Selecciono la cebecera del movimiento
+    cds select from DSC:TesEspVMov BECOMES DSC:TesEspVMov where \
+    adt_espv_fecha    == common:system_date && \
+	adt_espv_suc      == op:op_branch_id    && \
+	adt_espv_orig 	  == adt_espv_orig      && \
+	adt_espv_dest     == op:op_login_id     && \
+	adt_espv_cod      == adt_espv_cod       && \
+	adt_espv_seq_pase == adt_espv_seq_pase  && \
+   	(adt_espv_subcod == TOTAL_TESO || adt_espv_subcod == "**FORZADO**")
+
+	//adt_espv_hora     == adt_espv_hora      && \
+
+    cds findfirst DSC:TesEspVMov lock
+    let lib:err_retval = cdsretval
+   	if (lib:err_retval < 0) then
+		return -2
+	end if
+    cds extract DSC:TesEspVMov all
+
+	if (adt_espv_marca_ing == "A") //Puede ocurrir que en interin se haya reversado la salida
+		PaseAnulado = "S"
+		cds unlock dsc:TesEspVMov
+		cds endselect dsc:TesEspVMov
+		return
+	else
+		PaseAnulado = "N"
+	end if
+	
+	if (siaf:continua_transaccion == "N")
+	    tes:hora_aux = common:time_of_day
+	    fprint siaf:nombre_transac, "RECH %-s",siaf:nombre_transac			                             	  
+	    Call MISCcalc_tots_rech
+	end if
+	
+    /*tmp_espv_hora   = adt_espv_hora*/
+    tmov_login_orig = adt_espv_orig
+    espv_cod        = adt_espv_cod
+    espv_subcod     = adt_espv_subcod
+
+    /* Se pidió que el header de los pases grabe el importe total
+    y la cantidad correspondiente en cero. 17/05/99 - Andrea */
+    siaf:importe = 0
+    siaf:cantidad = 0
+        
+    if (adt_espv_marca_ing == "E") then
+        call tes:MISCpongo_sec(tes:adt_espv_seq)
+    end if
+
+    if (siaf:continua_transaccion == "N" && (siaf:codigo_siaf == 8860 || siaf:codigo_siaf == 8870))
+        tes:adt_espv_marca_ing = "E"
+    end if
+
+    /* Guardo la secuencia y la hora del encabezado para actualizarlo al final */
+    aux_sequence_mov = adt_espv_seq
+	aux_hora_mov = adt_espv_hora
+
+    FLD:drv:INDjnl_rtn = OFB:tes:JNLentrada_espv
+    ungetkey RT_SEND
+    call siaf:MISClleno_modalidad
+
+	call tlr:JNLtran
+	
+    cds unlock dsc:TesEspVMov
+    cds endselect DSC:TesEspVMov
+END SUB
+
+/*******/

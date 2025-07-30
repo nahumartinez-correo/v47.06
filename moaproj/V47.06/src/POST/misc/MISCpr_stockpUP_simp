@@ -1,0 +1,80 @@
+/****o* Pendientes de agrupación/OFB:post:MISCpr_stockpUP_simp
+* NOMBRE
+*   OFB:post:MISCpr_stockpUP_simp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCpr_stockpUP_simp
+	
+	CDS SELECT FROM dsc:stockpUP_simp_tbl BECOMES dsc:stockpUP_simp_ctx WHERE \
+	post:fecha == siaf:fecha_proceso && \
+	post:NisUP != "BUZON"
+	
+	CDS FINDFIRST dsc:stockpUP_simp_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+	if (lib:err_retval != 0) then
+		return -2
+	end if	
+	DO
+		if (lib:err_retval != 0) then
+			break
+		end if
+		CDS EXTRACT dsc:stockpUP_simp_ctx \
+		post:NisUP post:tipo_piezaUP post:tmpUP_cant_simples
+		
+		//Busco en la tabla temporal para el listado, si existe la UP y la pieza
+		//De existir, le acumulo la cantidad, sino lo inserto
+		//Como tengo un codigo de 2 lo identifico a las nacionales con _N y a las internacionales con _I
+		call csr:trimfield post:tipo_piezaUP
+		if (post:tipo_piezaUP == "SIMPLES NAC") then
+			post:adt_stockpUP_prod = "_N" 
+		else
+			post:adt_stockpUP_prod = "_I"
+		end if
+		
+		CDS SELECT FROM dsc:stockpUP_lis_tbl BECOMES dsc:stockpUP_lis_ctx WHERE \
+		post:adt_stockpUP_NisUP == fld:post:NisUP && \
+		post:adt_stockpUP_prod == post:adt_stockpUP_prod
+		CDS FINDFIRST dsc:stockpUP_lis_ctx LOCK
+		lib:err_retval = CDSRETVAL
+		if (lib:err_retval != 0) then
+			//INSERTO
+			post:adt_stockpUP_cant = post:tmpUP_cant_simples
+			post:adt_stockpUP_NisUP = post:NisUP
+			CDS CLEARBUFFER DSC:stockpUP_lis_ctx
+    		Cds APPEND DSC:stockpUP_lis_ctx \
+    			post:adt_stockpUP_prod \
+    			post:adt_stockpUP_NisUP \
+    			post:adt_stockpUP_cant
+    		CDS INSERT DSC:stockpUP_lis_ctx LOCK
+		else
+			// ACUMULO
+			CDS EXTRACT dsc:stockpUP_lis_ctx post:adt_stockpUP_cant
+    		post:adt_stockpUP_cant = post:adt_stockpUP_cant + post:tmpUP_cant_simples
+    		Cds APPEND DSC:stockpUP_lis_ctx \
+    			post:adt_stockpUP_cant
+			CDS UPDATE DSC:stockpUP_lis_ctx LOCK
+		end if
+		CDS UNLOCK DSC:stockpUP_lis_ctx
+		CDS ENDSELECT dsc:stockpUP_lis_ctx
+		
+		CDS FINDNEXT dsc:stockpUP_simp_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+	LOOP
+	CDS ENDSELECT dsc:stockpUP_simp_ctx
+END SUB
+
+/*******/

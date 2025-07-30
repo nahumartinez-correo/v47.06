@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcontrol_sal_espv
+* NOMBRE
+*   OFB:tes:MISCcontrol_sal_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcontrol_sal_espv
+local idx like siaf:i
+local importe like siaf:importe
+local lsubcod like tes:adt_evaux_subcod
+local limporte like tes:adt_evaux_importe
+local lvalor like tes:adt_espv_valor
+local lcantidad like tes:adt_evaux_cantidad
+/*ACP-SC 50170 */
+local Limporte like post:importe_sesion
+
+	IF (login_dest.numchars == 0 || siaf:importe == 0 || tes:espv_cod.numchars == 0) then
+		errmsg lst:common:errmsg_list,"Falta ingresar algún campo"
+	    return (-1)
+    end if
+
+    /*Ver ! Antes hacia este control, pero supuestamanete entraba y salia sin hacer nada.
+    call MISCespv_ctrl_stock
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)     
+    end if*/
+   	        
+	idx = PL_GETITEM
+	do
+		call csr:myPickcontrol(dsc:PICPasesDisp,common:csr_string,idx)
+		if (retval < 0)
+			break
+		end if
+		lsubcod = substr(common:csr_string,0,20)
+		lvalor = substr(common:csr_string,21,13)
+		lcantidad = substr(common:csr_string,35,6)
+		limporte = substr(common:csr_string,42,13)
+		
+        //Controlo Importe
+        if (lvalor > 0)
+            /* permite ingresar hasta el importe maximo */
+            imp_max = (lvalor * 9999999)
+            if (imp_max < limporte)
+                move "(L) SUPERA AL MAXIMO IMPORTE PERMITIDO" to drv:error_msg
+	        	call  drv:error_msg
+	        	return -2
+	    	end if
+			/* el adt_evaux_importe debe ser multiplo del adt_espv_valor[ncol] */
+            entero1 = ((limporte*100)%(lvalor*100))
+            if (entero1 != 0)
+ 	        	move "(L) IMPORTE INCORRECTO" to drv:error_msg
+	        	call  drv:error_msg
+	        	return -2
+            end if
+        end if
+
+    	if (lcantidad.numchars != 0 && lcantidad != "" && lcantidad != 0)
+    		limporte = lcantidad * lvalor
+			
+			//Obtengo los importes grabados en la AuxEspV
+			Call MISCimportes_auxespv(lsubcod)
+			
+			//ACP:SC 50170 (Redondea a dos decimales)
+            		INIT 22,1
+           	          Limporte = post:importe
+            		INIT 22,0
+			limporte = Limporte + limporte
+        	
+        	if (drv:dt_app == 4) then
+            	call CDSget_imp_TesEspV(op:op_branch_id, "S", op:op_tesoro_id,espv_cod,lsubcod,importe)
+			else
+	    		call CDSget_imp_TesEspV(op:op_branch_id, "N", op:op_operator_id,espv_cod,lsubcod,importe)
+			end if
+			/*supera al tesoro del cajero */
+			if (retval < 0 || limporte > importe)
+		    	errmsg clear
+		    	errmsg lst:common:errmsg_list,ERRsupera_stock
+	    		return -2
+			end if
+		end if
+
+		idx = idx + 1
+	loop
+END SUB
+
+/*******/

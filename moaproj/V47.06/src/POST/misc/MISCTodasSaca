@@ -1,0 +1,150 @@
+/****o* Expedicion/OFB:post:MISCTodasSaca
+* NOMBRE
+*   OFB:post:MISCTodasSaca
+* DESCRIPCION
+*   Controla que, si el operador esta en modalidad TODOS (ColectarCant = TRUE), las cantidadess de piezas y contenedores colectadas por pantalla coincidan con las que tiene el sistema.
+*   En el caso que no sean iguales permite corrigirlas. Si el operador no desea corregir lo obligara a escanear/seleccionar los T&T.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALllenSaca
+* DOCUMENTACION
+*   INICIATIVA 50571 (2019)
+* SOURCE
+*/
+
+#include "postmisc.h"
+
+
+SUB post:MISCTodasSaca
+LOCAL cant_pzas LIKE post:adt_pzas_saca
+LOCAL cant_cont  LIKE post:adt_cont_saca
+LOCAL l_retval  LIKE lib:err_retval
+
+		//vuelvo a chequear en esta instancia si hay concurrencia para minimizar las probabilidades de que uno este trabajando con modalidad TODOS y otro con modalidad manual)
+    CALL CDSConcurrenciaSaca
+    IF (RETVAL == 0)
+     	 FPRINT common:csr_string_130 "%s %s %s", "OTRO OPERADOR SE ENCUENTRA REALIZANDO EL CIERRE DE SACA ",post:adt_novtt_saca_desc, ".\nNO PODRA UTILIZAR LA OPCION DE MARCAR TODOS."
+			 MSGBOX common:csr_string_130,OFB_ICONSTOP,"ATENCION"
+    	 CALL MISCCorrect_NO
+       RETURN  -2
+   	END IF
+
+	//resguardo las cantidades ingresadas por el operador
+			cant_pzas = post:adt_pzas_saca
+			cant_cont  = post:adt_cont_saca
+			//VERIFICAR SI LAS CANTIDADES COINCIDEN CON LAS PIEZAS/CONT QUE HAY PARA EXPEDIR
+			CALL CDSVerifCantPzaSaca("T")
+			CALL CDSVerifCantContSaca("T")
+			if (post:adt_pzas_saca == cant_pzas && post:adt_cont_saca == cant_cont)
+					;coinciden ambas cantidades entonces debe incluir TODAS en la saca.
+				post:ColectarCant = FALSE
+				LET MarcaBorrado = ""
+			  CALL CDSTratarPBTodas
+	      ;  deshabilita el botón TODOS 
+		    let drv:button = 6 /* Todos */
+       	CALL drv:but_up_enable
+       	call drv:but_disable
+		  	LET drv:button = 2 /* Combo asoc al cpo. Det. Cont. */
+			  CALL drv:but_up_enable
+				LET drv:button = 5 /* Marca - Desmarca */
+				CALL drv:but_up_enable
+				ENABLECONTROL TAG:post:CHK0
+				UNPROTFIELD post:Pieza2
+				//gpb:CRQ 23902 - Mejora Cierre de Saca
+				CLEARFIELD post:Pieza2
+				REFRESH post:Pieza2
+			//gpb:CRQ 23902 - Mejora Cierre de Saca
+			  UNPROTFIELD post:peso_en_kgs
+			  UNPROTFIELD post:PresNroSaca
+			 	NEXTFIELD post:peso_en_kgs
+				INIT 33,0
+		
+				IF (post:adt_pzas_saca == "") THEN
+			    	post:adt_pzas_saca = 0
+    				REFRESH post:adt_pzas_saca
+				END IF
+				IF (post:adt_cont_saca == "") THEN
+    			post:adt_cont_saca = 0
+    			REFRESH post:adt_cont_saca
+ 				END IF
+				PROTFIELD post:adt_pzas_saca
+				PROTFIELD post:adt_cont_saca
+			  RETURN 0
+			endif
+			if (post:adt_pzas_saca != cant_pzas && post:adt_cont_saca != cant_cont)
+			  l_retval = 1
+			else
+				if (post:adt_pzas_saca != cant_pzas) 
+			 		l_retval = 2
+				endif
+				if (post:adt_cont_saca != cant_cont)
+			 		l_retval = 3
+				endif
+			endif
+			SELECT (l_retval)
+				CASE "1"
+	  			MSGBOX "La cantidad de Piezas/Contenedores no es correcta.\nPara corregirlas haga clic en SI.\nSi elige NO deberá asignar las Piezas/Contenedores manualmente.",OFB_STOPYESNO1,"ATENCION"
+	  			if (RETVAL == OFB_IDYES) Then //SI
+		  				CLEARFIELD post:adt_cont_saca
+				    	REFRESH post:adt_cont_saca
+							UNPROTFIELD post:adt_cont_saca
+							CLEARFIELD post:adt_pzas_saca
+							REFRESH post:adt_pzas_saca
+							UNPROTFIELD post:adt_pzas_saca
+	  		  endif
+	  		  BREAK
+	  		CASE "2"
+	  			MSGBOX "La cantidad de Piezas no es correcta.\nPara corregirla haga clic en SI.\nSi elige NO deberá asignar las Piezas manualmente.",OFB_STOPYESNO1,"ATENCION"
+	  			if (RETVAL == OFB_IDYES) Then //SI
+							CLEARFIELD post:adt_pzas_saca
+							REFRESH post:adt_pzas_saca
+							UNPROTFIELD post:adt_pzas_saca
+						  IF (post:adt_cont_saca == "")
+    						post:adt_cont_saca = 0
+    						REFRESH post:adt_cont_saca
+    					ENDIF
+    					PROTFIELD post:adt_cont_saca
+    					NEXTFIELD post:adt_pzas_saca
+	  		  endif
+	  		  BREAK
+	  		CASE "3"
+	  			MSGBOX "La cantidad de Contenedores no es correcta.\nPara corregirla haga clic en SI.\nSi elige NO deberá asignar los Contenedores manualmente.",OFB_STOPYESNO1,"ATENCION"
+	  			if (RETVAL == OFB_IDYES) Then //SI
+		  				CLEARFIELD post:adt_cont_saca
+				    	REFRESH post:adt_cont_saca
+							UNPROTFIELD post:adt_cont_saca
+							IF (post:adt_pzas_saca == "")
+    						post:adt_pzas_saca = 0
+    						REFRESH post:adt_pzas_saca
+    					ENDIF
+    					PROTFIELD post:adt_pzas_saca
+    					NEXTFIELD post:adt_cont_saca
+	  		  endif
+	  		  BREAK
+	  	END SELECT 
+	  	if (RETVAL != OFB_IDYES) Then //NO
+			    CALL MISCCorrect_NO
+	      	RETURN  -2
+			else ;SI
+				  //DEJO DESAHABILITADOS TODOS LOS CAMPOS Y BOTONES DE PANTALLA
+      		CLEARFIELD post:Pieza2
+      		REFRESH post:Pieza2
+      		PROTFIELD post:Pieza2
+      		RESETFLAG flags_exped,desasignar_pzas_saca
+    			//ALTERCONTROLSET TAG:post:CHK0
+   			  DISABLECONTROL TAG:post:CHK0
+					CLEARFIELD post:pza_saca
+					REFRESH post:pza_saca
+					let drv:button = 6 /* Todos */
+		      CALL drv:but_up_enable
+    	    RETURN -2
+			endif
+   	
+END SUB
+
+/*******/

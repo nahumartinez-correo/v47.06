@@ -1,0 +1,126 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALaux_pforz_tes
+* NOMBRE
+*   OFB:tes:SVALaux_pforz_tes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALaux_pforz_tes
+    local idx_aux like siaf:i
+    local muestra_una_vez like post:SiNo
+    
+    IF (!TESTFLAG(tlr:tran_flags,correction)) then 
+     
+       siaf:codigo_siaf = 8687
+       let siaf:moneda  = 0
+       let siaf:importe = 0                   
+       CALL siaf:MISClleno_modalidad
+	  
+	
+       //obtener totales del tesoro
+       CDS SELECT FROM DSC:tlr:TABtots BECOMES DSC:tlr:CONtots_write_aux WHERE \
+       FLD:tlr:tots_branch   == FLD:op:adt_branch_id      && \
+       FLD:tlr:tots_operator == FLD:tes:tes_operator_id_orig
+
+       CDS FINDFIRST DSC:tlr:CONtots_write_aux NOLOCK
+       LET lib:err_retval = CDSRETVAL
+	
+       IF (lib:err_retval != 0) THEN
+	  CDS UNLOCK DSC:tlr:CONtots_write_aux
+	  CDS ENDSELECT DSC:tlr:CONtots_write_aux
+	  return (-1)
+       END IF
+	
+       CDS EXTRACT DSC:tlr:CONtots_write_aux              \
+       array siaf:tefectivo_vec  INTO array tefectivo_aux \
+       array siaf:tefec_inic_vec INTO array tefec_inic_aux
+       CDS UNLOCK DSC:tlr:CONtots_write_aux
+       CDS ENDSELECT DSC:tlr:CONtots_write_aux
+	  
+       //calculo el importe a pasar
+       call csr:cleararray(tes:pfmov_importes)
+       idx_aux = 0
+     
+       WHILE (idx_aux < IDX_MONEDA)
+	     tes:tes_imp_mon[idx_aux] = tefectivo_aux[idx_aux] + tefec_inic_aux[idx_aux]
+	     idx_aux = idx_aux + 1
+       END WHILE
+	  
+	   
+	   call csr:cleararray(pfmov_importes)
+	   
+       //grabar en la tabla intermedia PForzTes el movimiento
+       CALL CDSgraba_PForzTes
+
+       let siaf:nombre_transac = "PASE FORZADO DE DINERO"
+       move "PFORDIN" to tlr:tran_mnemonic
+       
+       muestra_una_vez = "N"
+       //journalizar cada moneda
+       siaf:i = 0       
+       WHILE (siaf:i < IDX_MONEDA)  //todas las monedas posibles
+	 
+	     if (tes_imp_mon[siaf:i] != 0)
+		
+
+    		FLD:drv:INDjnl_rtn = OFB:tes:JNLpase_forz_tes
+	    	let drv:INDscr = SCR:tes:SCRNimp_pf_tes
+		    let tlr:INDtots_append = LST:siaf:TOTS8620
+		    let drv:INDspc_rtn[0] = LST:siaf:TOTS8620
+
+		    siaf:moneda = siaf:i
+		    siaf:importe = tes_imp_mon[siaf:i]
+		    ;CALL tes:CDSadt_mon_desc_load(siaf:moneda)
+		    post:adt_mp_cod = siaf:moneda
+		    call post:CDSadt_MedPago_load
+		    post:medio_pago_desc = post:adt_mp_desc
+            call CDSact_PForzTes 
+            				
+		    if (muestra_una_vez == "N")
+		        DISPLAY tes:SCRNimp_pf_tes        
+		        muestra_una_vez = "S"
+		    end if
+		
+		    //refrescar campos de pantalla
+		    refresh siaf:moneda
+		    refresh siaf:desc_moneda
+		    refresh siaf:importe
+
+				
+		    UNGETKEY 0x190   
+		    tes:es_tesoro = "S"
+		    CALL tlr:JNLtran
+		    if (post:adt_mp_adm == "I")
+		        /* Si es del tipo cheque le cambio el estado al 
+		        y lo pongo forzado a los cheque del op*/
+		        call CDSupd_op_cheque("O",tes_operator_id_orig,0,"F",tes_operator_id_dest,0)
+		    end if
+	     end if
+	     siaf:i = siaf:i + 1
+       END WHILE
+       CLEARFIELD drv:INDjnl_rtn       
+       CLEARFIELD drv:INDspc_rtn[2]
+
+    end if             
+ 
+    if (muestra_una_vez == "S")
+       cutscreen tes:SCRNimp_pf_tes,nocursor
+       UNDISPLAY tes:SCRNimp_pf_tes
+    end if
+
+
+End Sub
+
+/*******/

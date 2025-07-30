@@ -1,0 +1,185 @@
+/****o* Buscador/OFB:plataf:MISCpick_barcode
+* NOMBRE
+*   OFB:plataf:MISCpick_barcode
+* DESCRIPCION
+*   Rutina de validación de datos ingresados en el campo Cod Barra del Buscador.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:plataf:SCRNtran_browser_cod
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684 
+* SOURCE
+*/
+#include "platafMisc.h"
+
+SUB plataf:MISCpick_barcode
+
+local Lbarcode_hdr	like plataf:adt_browser_code
+local Lpicklst_line like common:csr_string
+local Lfound_items	like siaf:cant
+local Lsucceded		like siaf:cant
+local Lbrowser_tran	like plataf:adt_browser_codtrn
+local Lbrowser_list	like plataf:adt_browser_lsttrn
+local Lbrowser_desc	like plataf:adt_browser_desc
+local Lretval	like lib:err_retval 
+
+//Se limpia la lista que contiene los campos que se cargan cuando se busca por codigo de barra
+//SIEMPRE QUE SE AGREGUE UN CAMPO QUE ALMACENE EL CODIGO DE BARRA, DEBE AGREGARSE EN ESTA LISTA !
+//Ver rutinas plataf:MISCpick_desc y drv:driver_menu
+CALL CSR:proc_list(170,LST:LISTbarcode_flds)
+CALL CSR:proc_list(190,LST:LISTbarcode_flds)
+
+// me aseguro que siempre este en mayuscula...
+call csr:fld_to_upper barcode_search 
+
+if (testflag(plataf:menu_mode_flags,barcode) && plataf:barcode_search.NUMCHARS > 0) then
+	
+	Lbarcode_hdr = barcode_search
+	//Si la busqueda contiene solo 2 caracteres, le concateno un codigo de T&T valido y lo compruebo
+	IF (barcode_search.numchars == 2) THEN
+		FPRINT Lbarcode_hdr,"%2s000000005AR",barcode_search
+	END IF
+	call post:MISCes_TT_serv(Lbarcode_hdr) //Devuelve (-2) si esta mal y (0) si esta bien
+	LET Lretval	= retval 
+	if (Lretval == 0) then
+		let Lbarcode_hdr = substr(plataf:barcode_search,0,2)	//Es T&T
+	else
+		let Lbarcode_hdr = plataf:barcode_search 				//Es CodBarra de Correo o PF o CCT
+	endif
+	let Lfound_items = 0
+	CDS SELECT FROM DSC:plataf:TABbrowser BECOMES DSC:plataf:CONbrowser \
+   		WHERE plataf:adt_browser_code == Lbarcode_hdr
+	if (cdsretval == 0) then // ---------------------------------------- (A) 
+		CDS FINDFIRST DSC:plataf:CONbrowser NOLOCK
+		if (cdsretval == 0) then // ------------------------------------ (B) 
+			call csr:f_sanewpl "matched_items" PIC:plataf:transac_list
+			while (cdsretval == 0) then // ----------------------------- (C) 
+				clearfield Lbrowser_desc
+				clearfield Lbrowser_tran
+				clearfield Lbrowser_list
+				let Lfound_items = Lfound_items + 1
+				CDS EXTRACT DSC:plataf:CONbrowser \
+							adt_browser_desc   INTO Lbrowser_desc \
+							adt_browser_codtrn INTO Lbrowser_tran \
+							adt_browser_lsttrn INTO Lbrowser_list
+				if (cdsretval == 0) then // ---------------------------- (D) 
+					fprint Lpicklst_line "%-40.40s (%05.5d)" Lbrowser_desc,Lbrowser_tran
+					call csr:f_saaddpl "matched_items" Lpicklst_line
+					if (retval != 0) then // --------------------------- (E) 
+						// Oh! maldita sea! algo esta andando mal!!  
+						errmsg common:errmsg_list,"Error mostrando coincidencias"
+						call csr:f_sadroppl "matched_items"
+						CDS ENDSELECT DSC:plataf:CONbrowser
+						return (-2)
+					endif // ------------------------------------------- (E) 
+				endif // ----------------------------------------------- (D) 
+				CDS FINDNEXT DSC:plataf:CONbrowser NOLOCK
+			end while // ----------------------------------------------- (C) 
+		endif // ------------------------------------------------------- (B) 
+		if (Lfound_items == 1) then // --------------------------------- (F) 
+			call set_chosen_flds(Lbrowser_tran,Lbrowser_list)
+			if (retval == 0) then // ----------------------------------- (G) 
+				Lsucceded = 1
+				//Necesito distinguir si es T&T, Correo o PF
+				if (Lretval != 0) then
+					Lretval = 1 //Correo. Ya que 0 es T&T y -2 es "supuestamente" PF.
+				end if
+			endif // --------------------------------------------------- (G) 
+		elseif (Lfound_items > 1) then // ------------------------------ (F)
+			clearfield common:csr_string
+			call csr:f_sadopl "matched_items" common:csr_string
+			if (retval >= 0) then // ----------------------------------- (H) 
+				clearfield Lbrowser_tran
+				fprint  Lbrowser_tran "%5d" substr(common:csr_string,42,5)
+				CDS SELECT adt_browser_lsttrn FROM DSC:plataf:TABbrowser \
+					BECOMES DSC:plataf:CONbrowser WHERE adt_browser_codtrn == Lbrowser_tran
+				if (cdsretval == 0) then // ---------------------------- (I) 
+					CDS FINDFIRST DSC:plataf:CONbrowser NOLOCK
+					if (cdsretval == 0) then // ------------------------ (J) 
+						
+						CDS EXTRACT DSC:plataf:CONbrowser adt_browser_lsttrn INTO Lbrowser_list \
+						adt_browser_desc INTO Lbrowser_desc
+						
+						call set_chosen_flds(Lbrowser_tran,Lbrowser_list)
+						if (retval == 0) then 
+							Lsucceded = 1
+							//Necesito distinguir si es T&T, Correo o PF
+							if (Lretval != 0) then
+								Lretval = 1 //Correo. Ya que 0 es T&T y -2 es "supuestamente" PF.
+							end if
+						endif 
+					endif // ------------------------------------------- (J) 
+				endif // ----------------------------------------------- (I) 
+				if (cdsretval != 0) then
+					fyimsg common:fyimsg_list,"(Buscador) Error!"
+				endif
+			endif // --------------------------------------------------- (H) 
+		else // Lfound_items <= 0 // ----------------------------------- (F)
+			if (Lretval == 0) then
+				//Solo si es un T&T
+				msgbox "No hay servicios relacionados",OFB_OK,BROWSER_CAPTION
+			else
+				//Por descarte puede ser CCT O PAGO FACIL!!!!
+				 //PARA CCT:
+				call post:MISCval_cb_CCT(plataf:barcode_search, "BUSCADOR") 
+				if (retval == 0) then
+					Lsucceded = 1
+				else
+					if (retval == -2)
+						Lsucceded = 0
+					else //retval == -3
+						//Por descarte es Pago Facil (No encontro nada que no sea CCT, T&T, como ser ProdVs)
+						call set_chosen_flds("6820","post:TRANsf1")
+						if (retval == 0) then
+							Lsucceded = 1
+						end if
+					end if
+				end if
+			end if
+		endif // ------------------------------------------------------- (F)
+		call csr:f_sadroppl "matched_items"
+	endif // ----------------------------------------------------------- (A) 
+
+	CALL csr:trimfield(barcode_search)
+	if (Lretval >= 0) then	
+		if (Lretval == 0) then
+			//Es T&T
+			if (barcode_search.numchars == 2) then
+				clearfield plataf:required_tt
+			else
+				plataf:required_tt = barcode_search
+			end if
+		else
+			//Es CodBarra de Correo.
+			//Si tiene una "-" es un Codigo de Barra, sino es un ProdVs
+			if (substr(barcode_search,4,1) == "-") then
+				//Es un Codigo de Barra
+				post:adt_prodvs_codbarra = barcode_search
+			else
+				//Es un Codigo de Producto
+				post:adt_prodvs_cod = barcode_search
+			end if
+		endif
+	else
+		//Es Pago Facil
+		post:sf1_codbarras1 = barcode_search
+	end if
+		
+	clearfield barcode_search
+	CDS ENDSELECT DSC:plataf:CONbrowser
+	if (Lsucceded) then
+		setvaldone plataf:barcode_search
+		ungetkey RT_SEND
+		return (0)
+	else
+		return (-2) // quiero que retorne al campo.
+	endif
+endif
+END SUB
+
+/*******/

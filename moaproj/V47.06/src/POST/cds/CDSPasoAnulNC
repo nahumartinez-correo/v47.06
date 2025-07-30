@@ -1,0 +1,660 @@
+/****o* Anulación de Documentos/OFB:post:CDSPasoAnulNC
+* NOMBRE
+*   OFB:post:CDSPasoAnulNC
+* DESCRIPCION
+*   Esta rutina realiza varias acciones durante la Anulacion de una Factura:
+*	Borra la tabla NcTable
+*	Borro los registros del operador por si quedó basura. (tabla AuxImpp,AuxEspV,AuxIngBr,AuxIvaUP,TotalTransac,PresuPag,TotMedPag)
+*	Si se está realizando una anulación de una Venta UP se setea el flag correspondiente para que se realice la cancelación en el switch. 
+*	Recupera datos del journal para realizar viajes,para el calculo anticipado de los impuestos:IB,IVA,Sellados.	
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALanulacion
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSPasoAnulNC
+	LOCAL sumaCaptNue LIKE siaf:i
+	LOCAL parametro LIKE common:csr_string
+	LOCAL secuencia LIKE tlr:jnl_sequence
+	LOCAL hora LIKE tlr:jnl_time
+	LOCAL sequence_dire_aux LIKE post:jnl_sequence_dire
+	LOCAL l_dire LIKE post:jnl_sequence_dire
+	LOCAL tmpImporte LIKE siaf:importe
+	LOCAL tmpImp2 LIKE siaf:importe
+	LOCAL ind LIKE siaf:i
+	LOCAL tmpFactConvAnt LIKE post:factor_conversion
+	LOCAL tmpDescConvAnt LIKE post:adt_mon_desc
+	LOCAL esGirosNoAceptada LIKE siaf:i
+	LOCAL importe_aux LIKE siaf:importe
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL esCaptura LIKE siaf:i
+	LOCAL esInicioFinSesion LIKE siaf:i
+	LOCAL esTemplate LIKE siaf:i
+	LOCAL esEntregaPzas LIKE siaf:i
+	LOCAL CODIGO LIKE common:csr_string
+	LOCAL loc_enAnul	LIKE post:enAnulacion
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_fliatran LIKE siaf:adt_tran_fliatran
+	LOCAL l_ImporteSinIva LIKE ImporteSinIva
+	//LOCAL l_importeNeto LIKE siaf:importe
+
+	;borro la NcTable por si esta con algun dato.
+	;habia un error que ocurria cuando se seleccionaba una
+	;transaccion para la cual no habia disponible en caha
+	;y despues se seleccionaba otra ya que quedaban las
+	;dos sesiones seguidas en la NcTable.
+	CALL CDSborro_NcTable
+
+	;Borro los registros del operador por si quedó basura.
+	CALL post:CDSdelete_AuxImpp
+	CALL tes:CDSauxesp_delNC
+
+	CALL post:CDSdelAll_AuxIngBr
+	CALL post:CDSdelete_AuxIva
+	CALL post:CDSdelAll_AuxIvaUP
+	CALL post:MISCclrArrayMP
+	CALL post:CDSTotalTransac_del
+	CALL post:CDSborro_PresuPag
+	CALL post:CDSdelete_TotMedPag
+
+	CLEARFIELD secuencia
+	CLEARFIELD NisUP
+	CLEARFIELD post:climed_tipo
+	CLEARFIELD post:climed_numero
+	CLEARFIELD post:id_cliente
+
+	jnl_nuevo_medpag = "N"
+	TranAnul_idx = 0
+	post:acumSellos = 0
+	post:acumSesion = 0
+	
+	bInhibirUP = false
+
+	/* Si se está realizando una anulación de una Venta UP seteo el flag correspondiente
+	para que se realice la cancelación en el switch*/
+
+
+
+	IF (post:VentaUP_Diferida == "S" || post:ConsumoAnticipo || post:ModalidadAT || \
+		post:OperacionCob || post:Imp_CobroDif > 0 || es_PED == "S") THEN
+		SETFLAG post:journal_flags,enviar_mensaje_host
+	END IF
+
+	IF (post:VentaUP_Diferida != "S" && ( post:ExcepSesion || post:ExcepProducto)) THEN
+		;SE SETEA MARCA DE VIAJE PARA EXCEPCION SIN CHEQUE DE CLIENTE MEDIO
+		SETFLAG post:journal_flags,enviar_mensaje_host
+	END IF
+
+	CDS SELECT FROM DSC:NC_TAB BECOMES DSC:NC_CON
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(tlr:jnl_branch == common:sucursal_activa && \
+		tlr:jnl_operator == FLD:op:op_operator_id && \
+		tlr:jnl_bus_date ==  FLD:common:system_date && \
+		tlr:jnl_sequence_corr == 0 && \
+		PresNro == FLD:PresNro && \
+		tlr:jnl_status < 100 && siaf:cancelacion == "" && \
+		((siaf:jnl_tran_modpresu != "I") || \
+		(siaf:jnl_tran_modpresu == "I" && siaf:codigo_siaf == 99021)))
+		
+	/* La 99021 es "I" pero debe entrar */
+	DO
+		CLEARFIELD PreDForFis
+		CLEARFIELD tlr:jnl_sequence
+		CLEARFIELD siaf:jnl_codigo_siaf
+		CLEARFIELD ver_anulacion
+		CLEARFIELD cod_agrupacion
+		/*Para saber si esta en el contexto o no - Gabriel Falciola*/
+		jnl_sequence_dire = "XX"
+		CLEARFIELD jnl_flia_tran
+		CLEARFIELD siaf:moneda
+		CLEARFIELD siaf:importe
+		CLEARFIELD ImporteConIva
+		CLEARFIELD ImporteSinIva
+		CLEARFIELD jnl_flia_tran
+		CLEARFIELD NroCompPago
+		CLEARFIELD siaf:adt_mot_fliatran
+		CLEARFIELD siaf:afecta_efectivo
+		CLEARFIELD giros:gir_imp_acre
+		CLEARFIELD giros:gir_totimp_fact
+		CLEARFIELD giros:gir_totimp_emi
+		CLEARFIELD giros:ImpFactChq
+		CLEARFIELD giros:ImpNetoChq
+		CLEARFIELD promo_inhibeUp
+		//cliente medio
+		CLEARFIELD post:Dcto_CliMed
+		CLEARFIELD post:tarifa
+		CLEARFIELD fld_promo_imp
+
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+		IF (CDSRETVAL != 0) THEN
+			CDS ENDSELECT DSC:NC_CON
+			CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+		END IF
+		
+		CALL CSR:copy_record(DSC:tlr:jnl_context,DSC:NC_CON)
+		
+		CDS EXTRACT DSC:tlr:jnl_context PreDForFis tlr:jnl_sequence siaf:jnl_codigo_siaf \
+			tlr:jnl_time ver_anulacion cod_agrupacion jnl_sequence_dire jnl_flia_tran \
+			siaf:moneda siaf:importe NroCompPago ImporteNeto giros:ImporteNeto \
+			giros:gir_imp_acre  giros:gir_totimp_fact giros:gir_totimp_emi giros:ImpFactChq \
+			giros:ImpNetoChq post:promo_inhibeUp post:fld_promo_imp
+
+    CDS EXTRACT DSC:tlr:jnl_context siaf:nombre_transac giros:clave_hdr_giros giros:imp_servicio_fld
+    		
+		//gpb:NI50479
+		CDS EXTRACT DSC:tlr:jnl_context post:es_PED
+
+		CALL csr:cleararray(fliatran_vec)
+		CALL csr:cleararray(impciva_vec)
+		CALL csr:cleararray(impsiva_vec)
+		
+		;campos necesarios para el calculo anticipado de los impuestos - IB.
+		CDS EXTRACT DSC:tlr:jnl_context ImporteConIva ImporteSinIva siaf:adt_mot_fliatran \
+			siaf:afecta_efectivo PresNro array fliatran_vec array impciva_vec \
+			array impsiva_vec ImporteConIvaNeto ImporteSinIvaNeto
+
+		;PAW: dejo los campos siaf:importe, post:ImporteConIva y post:ImporteSinIva
+		;     con su valor Neto, o sea, con la promocion incluida para que el calculo
+		;     de los impuestos sea coherente.
+		IF (fld_promo_imp > 0) THEN
+			siaf:importe = siaf:importe - fld_promo_imp
+			ImporteConIva = ImporteConIvaNeto
+			ImporteSinIva = ImporteSinIvaNeto
+		END IF
+
+		;campos necesarios para el calculo anticipado de los impuestos - Sellados.
+		CLEARFIELD giros:Impuesto
+		CLEARFIELD giros:Impuesto_abonado
+		CLEARFIELD post:captura_mp
+		
+    CDS EXTRACT DSC:tlr:jnl_context giros:Impuesto giros:Impuesto_abonado post:captura_mp
+
+		;campos necesarios para el calculo anticipado de los impuestos - IVA.
+		CLEARFIELD post:AliServUP
+		CLEARFIELD post:ImpServUP
+		CLEARFIELD post:adt_tarif_fijo
+		CLEARFIELD post:adt_tarif_fj_aliciva
+		CLEARFIELD post:adt_tarif_uneg
+		CLEARFIELD siaf:motivo
+		CLEARFIELD siaf:adt_mot_modulo
+		CLEARFIELD tlr:jnl_status
+    
+		CALL csr:cleararray(cos_opc)
+		CALL csr:cleararray(ali_opc)
+		CALL csr:cleararray(flia_opc)
+		CALL csr:cleararray(promo_imp_opc_tot)
+  
+		ind = 0
+		WHILE (ind < MAX_VEC_OPC)
+			CDS EXTRACT DSC:tlr:jnl_context cos_opc[ind] ali_opc[ind] flia_opc[ind] \
+				promo_imp_opc_tot[ind]
+
+			;PAW: dejo el vector cos_opc con su valor Neto, o sea, con la promocion
+			;     incluida para que el calculo de los impuestos sea coherente.
+			IF (promo_imp_opc_tot[ind] > 0) THEN
+				cos_opc[ind] = cos_opc[ind] - promo_imp_opc_tot[ind]
+			END IF
+			ind = ind + 1
+		END WHILE
+
+		CDS EXTRACT DSC:tlr:jnl_context post:AliServUP \
+			post:ImpServUP post:adt_tarif_fijo post:adt_tarif_fj_aliciva \
+			post:adt_tarif_uneg siaf:motivo siaf:adt_mot_modulo tlr:jnl_status
+
+		//cliente medio
+		CDS EXTRACT DSC:tlr:jnl_context Dcto_CliMed post:tarifa
+
+		/*Con esto chequeo si tengo que hacer un append de los campos de control de la anulacion
+		o tengo que modificar el contexto - Gabriel Falciola*/
+		IF (jnl_sequence_dire == "XX") THEN
+			CLEARFIELD jnl_sequence_dire
+			sequence_dire_aux = jnl_sequence_dire
+		ELSE
+			CLEARFIELD jnl_sequence_dire
+			sequence_dire_aux = "XX"
+		END IF
+
+		IF (secuencia.NUMCHARS == 0) THEN
+  		secuencia = tlr:jnl_sequence - 1
+  		hora = tlr:jnl_time - 1
+  	END IF
+    	
+    IF (ver_anulacion != "N") THEN
+			SELECT (siaf:jnl_codigo_siaf)
+				CASE 99021
+					;Necesito datos del cliente para calcular IB
+					CLEARFIELD cli_tipo
+					CLEARFIELD CloInscripto
+					CLEARFIELD post:CloTipDoc
+					CLEARFIELD post:CloCuit
+					CLEARFIELD post:CloCatCodIB
+					CLEARFIELD post:CloProvin
+					CLEARFIELD post:IvaCod
+					
+					CDS EXTRACT DSC:tlr:jnl_context cli_tipo CloInscripto post:CloTipDoc post:CloCuit \
+						post:CloCatCodIB post:CloProvin post:IvaCod NisUP \
+						post:climed_tipo post:climed_numero \
+						post:jnl_cli_tipo INTO post:id_cliente
+
+					;rescato el porcentaje de bonificacion.
+					IF (cli_tipo == CLIUP) THEN
+						CALL CDSbuscoPorcBonifUP(NisUP, CloTipDoc, CloCuit)
+					END IF
+				CASE 99023
+					post:jnl_sequence_dire = "D"
+				BREAK			
+				CASE 99095
+					CALL post:CDSverifDescSurPost(post:cod_agrupacion)
+					IF (RETVAL == 0) THEN
+						post:jnl_sequence_dire = "D"
+					ELSE
+						post:jnl_sequence_dire = "ND"
+					END IF
+				BREAK
+				CASE 99019
+					CLEARFIELD post:CliUP_Porcentaje
+					CDS EXTRACT DSC:tlr:jnl_context post:CliUP_Porcentaje
+				CASE 99006
+				CASE 99007
+				CASE 99024
+				CASE 99025
+				CASE 99027
+				CASE 99028
+				CASE 99029
+				CASE 99098
+				CASE 99099
+				CASE 99130
+				CASE 99160
+				CASE 99410
+				CASE 99440
+				CASE 99450
+				CASE 99451 //??
+				CASE 99456
+				CASE 99525
+				CASE 30440 //gpb:NI50479
+					post:jnl_sequence_dire = "ND"
+					IF (siaf:jnl_codigo_siaf == 99099 || siaf:jnl_codigo_siaf == 99098) THEN
+						CLEARFIELD Tipo_Adm
+						CLEARFIELD NroCompPago2
+						CLEARFIELD NroTransac
+						CLEARFIELD cod_banco
+						CLEARFIELD cuenta
+						CLEARFIELD nro_cheque
+						CLEARFIELD codigo_interno
+						NroCompPago = 0
+					
+						CDS EXTRACT DSC:tlr:jnl_context Tipo_Adm NroCompPago2 NroTransac \
+							cod_banco cuenta nro_cheque codigo_interno
+							
+						IF (Tipo_Adm == "I") THEN
+							CALL post:MISCcargo_valor(siaf:moneda,cod_banco,cuenta,nro_cheque,codigo_interno,NroCompPago2)
+							CALL tes:MISCbusco_cheque_rev
+							IF (RETVAL != 0) THEN
+								RETURN (-2)
+							END IF
+						END IF
+					END IF
+				BREAK
+				CASE 30300 ;gpb:NI50479 - Descuento Cliente Medio PED
+					//Falta analizar que condicion debe cumplir!!!
+
+					//La anulacion es total
+					IF (ConvenioSesion || ExcepSesion || ExcepProducto || ModalidadAT || \
+						ModalidadCC || ModalidadCD || ConsumoAnticipo || \
+						OperacionCob || OperacionAut) THEN
+						post:jnl_sequence_dire = "ND"
+					ELSE
+						CLEARFIELD post:PreDNroTrnAsoc
+						CDS EXTRACT DSC:tlr:jnl_context post:PreDNroTrnAsoc
+						CALL MISCTrnAsocDctoCM("NCTABLE")
+					END IF
+				BREAK								
+				CASE 99300 ;Descuento Cliente Medio
+					//La anulacion es total
+					IF (ConvenioSesion || ExcepSesion || ExcepProducto || ModalidadAT || \
+						ModalidadCC || ModalidadCD || ConsumoAnticipo || \
+						OperacionCob || OperacionAut) THEN
+						post:jnl_sequence_dire = "ND"
+					ELSE
+						CLEARFIELD post:PreDNroTrnAsoc
+						CDS EXTRACT DSC:tlr:jnl_context post:PreDNroTrnAsoc
+						CALL MISCTrnAsocDctoCM("NCTABLE")
+					END IF
+				BREAK		
+   			CASE 99350
+   				post:jnl_sequence_dire = "ND"
+				BREAK
+			CASE ELSE
+				CALL MISCchequeo_tran_sel
+			END SELECT
+		ELSE
+			CALL MISCcheq_tran_agrup
+		END IF
+   		
+		IF (sequence_dire_aux.NUMCHARS == 0) THEN
+			CDS APPEND DSC:NC_CON jnl_sequence_dire jnl_nuevo_medpag monedaNC medio_pago_descNC
+		ELSE
+			CALL csr:update_record(DSC:NC_CON,"post","jnl_sequence_dire",jnl_sequence_dire,1)
+			CALL csr:update_record(DSC:NC_CON,"post","jnl_nuevo_medpag",jnl_nuevo_medpag,1)
+			CALL csr:update_record(DSC:NC_CON,"post","monedaNC",monedaNC,1)
+			CALL csr:update_record(DSC:NC_CON,"post","medio_pago_descNC",medio_pago_descNC,1)
+		END IF
+    	
+		CDS INSERT DSC:NC_CON NOLOCK
+		CDS CLEARBUFFER DSC:NC_CON
+
+		;Acumulo en la Tabla AuxIngBr para poder calcular anticipadamente el total de Ingresos Brutos.
+		IF (post:jnl_sequence_dire == "D") THEN
+			bInhibirUP = (bInhibirUP || promo_inhibeUp == "S")
+			
+			IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+				esGirosNoAceptada = (jnl_flia_tran == "CSM" && tlr:jnl_status != UNPOSTED )
+			ELSE
+				esGirosNoAceptada = (jnl_flia_tran == "CSM" && tlr:jnl_status != HOST_ACCEPTED)
+			END IF
+
+			IF (!esGirosNoAceptada) THEN
+				CALL post:MISCacumSellos
+				CALL post:MISCacumVenUp
+				l_ImporteSinIva = ImporteSinIva
+				CALL post:MISCacumIVA
+				ImporteSinIva = l_ImporteSinIva
+				CALL post:MISCacumIB
+				/*cliente medio
+				CALL post:MISCacumCM*/
+				esCaptura = (siaf:jnl_codigo_siaf == 99099 || siaf:jnl_codigo_siaf == 99098)
+				esInicioFinSesion = (siaf:jnl_codigo_siaf == 99021 || siaf:jnl_codigo_siaf == 99023)
+				esTemplate = siaf:jnl_codigo_siaf == 6900
+				esEntregaPzas = siaf:jnl_codigo_siaf == 99020
+				IF (!esCaptura && !esInicioFinSesion && !esTemplate && !esEntregaPzas) THEN
+					SELECT (siaf:jnl_codigo_siaf)
+						CASE "6800"
+						CASE "6600"
+						CASE "6810"
+						CASE "6610"
+							;Se acumula por motivos.
+							FPRINT common:csr_string_171 "%s%s%s" siaf:motivo,siaf:adt_mot_modulo,siaf:jnl_codigo_siaf
+							CALL post:MISCacumTotalTransac(common:csr_string_171, siaf:afecta_efectivo, siaf:importe)
+						BREAK
+						CASE "6620" /* ACP-Pago por cta de terceros */
+							CALL MISCacumTotalTransac(siaf:codigo_siaf, siaf:afecta_efectivo, siaf:importe)
+						BREAK			
+						CASE "70030" ;Giro Postal.
+						CASE "70035" ;Cuenta Efectivo Correo Efvo.
+						CASE "70045" ;Cuenta Efectivo Correo Chq.A.
+						CASE "70040" ;Giro Postal Oficio.
+						CASE "70050" ;Giro Telegrafico.
+						CASE "70060" ;Giro Telegrafico Oficio.
+						CASE "70041" ;Giro Con Contrareembolso.
+						CASE "95000" ;Liquidación Contrareembolso contingencia
+						CASE "70322" ;Giro Postal con cheque.
+						CASE "70323" ;Giro Telegrafico con cheque.
+						CASE "70391" ;Emision Transferencia Nacional.
+						CASE "70383" ;Emision Transferencia Internacional
+							IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+								BREAK
+							END IF
+							;Tratamiento especial para giros (emisiones):
+							/*CSZ - Primero se llama a la rutina con el monto del servicio(comision,
+							tasa y opcionales) que se cobra por la emision y el formulario fiscal
+							asociado al servicio*/
+							FPRINT CODIGO "%sC" siaf:jnl_codigo_siaf
+							CALL post:MISCacumTotalTransac(CODIGO, siaf:afecta_efectivo, post:ImporteConIva)
+							/*CSZ - Luego se llama a la rutina con el monto del giro emitido y el
+							formulario fiscal vacio*/
+							FPRINT CODIGO "%sE" siaf:jnl_codigo_siaf
+							CLEARFIELD post:PreDForFis
+							CALL post:MISCacumTotalTransac(CODIGO, siaf:afecta_efectivo, giros:ImporteNeto)
+						BREAK
+						CASE "70160" ; Pago reembolso de Giro Postal.
+						CASE "70161" ; Pago reembolso de Giro Postal Oficio.
+						CASE "70152" ; Pago reembolso de Giro Telegrafico.
+						CASE "70153" ; Pago reembolso de Giro Telegrafico Oficio.
+						CASE "70393" ; Reembolso de Transferencia Nacional.
+							;Tratamiento especial para giros (contrareembolso):
+							FPRINT CODIGO "%sC" siaf:jnl_codigo_siaf
+							CALL post:MISCacumTotalTransac(CODIGO, "+", giros:imp_servicio_fld)
+							FPRINT CODIGO "%sE" siaf:jnl_codigo_siaf
+							CLEARFIELD post:PreDForFis
+							CALL post:MISCacumTotalTransac(CODIGO, "-", giros:ImporteNeto)
+							;en caso de reembolso, el campo siaf:importe no queda con el que
+							;deberia acumular (en la PresuPag), entonces, se setea en este momento:
+							siaf:importe = giros:imp_servicio_fld - giros:ImporteNeto
+						BREAK
+						CASE 99300
+							//no hago nada!!	
+						BREAK
+						CASE 30300 //gpb:NI50479
+							//no hago nada!!
+						BREAK						
+						CASE ELSE
+							//l_importeNeto = siaf:importe - fld_promo_imp
+							//call post:MISCacumTotalTransac(siaf:jnl_codigo_siaf, siaf:afecta_efectivo, l_importeNeto)
+							CALL post:MISCacumTotalTransac(siaf:jnl_codigo_siaf, siaf:afecta_efectivo, siaf:importe)
+					END SELECT
+
+					//descuento cliente medio
+					IF (siaf:jnl_codigo_siaf != 99300) THEN
+						;Actualizo en la PresuPag.
+						monedaNC = 0
+						post:imp_d = 0
+						siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+						//l_importeNeto = siaf:importe - fld_promo_imp
+						IF (siaf:moneda.NUMCHARS == 0) THEN
+							CALL post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+							//CALL post:CDSadt_PresuPag_save(99,monedaNC,l_importeNeto,post:imp_d)
+						ELSE
+							CALL post:CDSadt_PresuPag_save(siaf:moneda,monedaNC,siaf:importe,post:imp_d)
+							//CALL post:CDSadt_PresuPag_save(siaf:moneda,monedaNC,l_importeNeto,post:imp_d)
+						END IF
+					END IF
+				END IF
+			END IF
+			CALL giros:OFBgm_acumNC
+		END IF
+	LOOP
+
+	//cliente medio
+	CALL post:MISCacumCM
+
+	/*Seteo si es una reversa total o no*/
+	IF (TranAnul_cant == TranAnul_idx) THEN
+		revTotal = "S"
+	ELSE
+		CLEARFIELD revTotal
+	END IF
+	
+	/*Cuando termino de procesar las transacciones armo la cabecera con la informacion
+	necesaria - Gabriel Falciola*/
+	tmpImporte = siaf:importe
+
+	;A esta altura ya tengo los siguientes campos de impuestos en memoria:
+	;- siaf:importe 				(total de ingresos brutos)
+	;- post:acumSellos 			(total de sellados)
+	;- post:ImpTotAcrePerc 	(total de Acrecentamientos)
+	;- post:ImporteVenUP 		(total de Bonificacion UP)
+	IF (post:acumSellos != 0) THEN
+		IF (post:acumSellos > 0) THEN
+			siaf:adt_tran_afec_efvo = "+"
+		ELSE
+			siaf:adt_tran_afec_efvo = "-"
+		END IF
+		CALL post:MISCacumTotalTransac(99029, siaf:adt_tran_afec_efvo, post:acumSellos)
+		monedaNC = 0
+		post:imp_d = 0
+		CALL post:CDSadt_PresuPag_save(99,monedaNC,post:acumSellos,post:imp_d)
+	END IF
+
+	IF (!bInhibirUP) THEN
+		;calculo el total de Ventas UP
+		CALL post:CDSCalcTotVentasUP
+		siaf:codigo_siaf = 99019
+		LET siaf:adt_tran_codigo = siaf:codigo_siaf
+		CALL siaf:CDSadt_tran_load
+		post:cantidad = 1
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+		CALL post:MISCgenerarIva
+		IF (post:ImporteVenUP != 0) THEN
+			IF (post:ImporteVenUP > 0) THEN
+				siaf:adt_tran_afec_efvo = "-"
+			ELSE
+				siaf:adt_tran_afec_efvo = "+"
+			ENDIF
+			CALL post:MISCacumTotalTransac(99019, siaf:adt_tran_afec_efvo, post:ImporteVenUP)
+			monedaNC = 0
+			post:imp_d = 0
+			CALL post:CDSadt_PresuPag_save(99,monedaNC,post:ImporteVenUP,post:imp_d)
+		END IF
+	END IF
+
+	;calculo el total de Acrecentamientos.
+	CALL post:CDSprocTotIva
+	 
+	IF (post:ImpTotAcrePerc != 0) THEN
+		IF (post:ImpTotAcrePerc > 0) THEN
+			siaf:adt_tran_afec_efvo = "+"
+		ELSE
+			siaf:adt_tran_afec_efvo = "-"
+		END IF
+		CALL post:MISCacumTotalTransac(99028, siaf:adt_tran_afec_efvo, post:ImpTotAcrePerc)
+		monedaNC = 0
+		post:imp_d = 0
+		CALL post:CDSadt_PresuPag_save(99,monedaNC,post:ImpTotAcrePerc,post:imp_d)
+	END IF
+
+	;Percepción RG3337
+	CALL post:CDSprocTotRG3337
+	
+	IF (post:ImpTotRG3337 != 0) THEN
+		IF (post:ImpTotRG3337 > 0) THEN
+			siaf:adt_tran_afec_efvo = "+"
+		ELSE
+			siaf:adt_tran_afec_efvo = "-"
+		END IF
+		CALL post:MISCacumTotalTransac(99006, siaf:adt_tran_afec_efvo, post:ImpTotRG3337)
+		monedaNC = 0
+		post:imp_d = 0
+		CALL post:CDSadt_PresuPag_save(99,monedaNC,post:ImpTotRG3337,post:imp_d)
+	END IF
+
+	;calculo el total de Ingresos Brutos.
+	CALL post:CDSprocTotIngBr
+	IF (siaf:importe != 0) THEN
+		IF (siaf:importe > 0) THEN
+			siaf:adt_tran_afec_efvo = "+"
+		ELSE
+			siaf:adt_tran_afec_efvo = "-"
+		END IF
+		CALL post:MISCacumTotalTransac(99027, siaf:adt_tran_afec_efvo, siaf:importe)
+		monedaNC = 0
+		post:imp_d = 0
+		CALL post:CDSadt_PresuPag_save(99,monedaNC,siaf:importe,post:imp_d)
+	END IF
+	tmpImp2 = siaf:importe
+
+	;resguardo el factor conversion
+	CALL post:CDSgetFactorPresu
+	tmpFactConvAnt = post:factor_conversion
+	tmpDescConvAnt = post:adt_mon_desc
+
+	;Levanto pantalla de captura de medios de pago. (si el importe es mayor a cero)
+	CALL CDStotal_PresuPag
+	IF (RETVAL == 0 && post:adt_importe != 0) THEN // Importe distint a cero.
+		;antes resguardo el factor_conversion y la descripcion.
+		POPUP post:SCRNcaptura_med_pag post:PREScaptMedPagoAnul, post:PCOLcaptura_med_pago, SVALtotCapturaAnul
+		IF (LASTKEY == RT_ESC) THEN
+			UNGETKEY RT_ESC
+			RETURN -2
+		END IF
+		;nuevos valores.
+		auxFactConvAnt = tmpFactConvAnt
+		auxDescConvAnt = tmpDescConvAnt
+		auxFactConvNue = post:factor_conversion
+		auxDescConvNue = post:adt_mon_desc
+	ELSE
+		/*Validacion con respecto a lo disponible en caja*/
+		parametro = "ANULACION"
+		CALL post:CDStotArrayAnt
+		;borro la medioPagoHab ya que el importe es igual a cero!!
+		CALL post:CDSdel_MedioPagoHab
+		sumaCaptNue = false
+		CALL CDSverifCaja(sumaCaptNue)
+		IF (RETVAL != 0) THEN
+			RETURN (-2)
+		END IF
+		auxFactConvAnt = tmpFactConvAnt
+		auxDescConvAnt = tmpDescConvAnt
+		auxFactConvNue = tmpFactConvAnt
+		auxDescConvNue = tmpDescConvAnt
+	END IF
+
+	siaf:importe = tmpImporte
+	CLEARFIELD post:PresNro
+	
+	IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+		ovr:ovr_sup_id = giros:op_sup_id
+	END IF
+
+	CALL CDSArmoCabeceraNC(secuencia,hora)
+
+	/*Si se anula una transacción de Giros, primero debo enviar la anulación
+	al Host - Gabriel Falciola*/
+	LET loc_enAnul = enAnulacion
+	LET enAnulacion = "S" //FGB: necesito saber cuando estoy cancelando desde
+	                      //     anulacion de comprobantes.
+
+	IF (post:tipoViaje == "PF ") THEN
+		l_fliatran = siaf:adt_tran_fliatran
+		siaf:adt_tran_fliatran = "PF "
+		CALL post:MISCmanejo_iPlan
+		l_retval = RETVAL
+		siaf:adt_tran_fliatran = l_fliatran
+		IF (l_retval < 0) THEN
+			enAnulacion = loc_enAnul
+			CALL CDSborro_NcTable
+			CLEARFIELD post:consulta_excepcion
+			CLEARFIELD post:consulta_excepcionCM
+			CLEARFIELD post:consulta_ordenCM
+			//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+			//    y en consulta y venta por OC.
+			CLEARFIELD post:cliente_inhibido
+			CLEARFIELD post:cliente_pagodiferido
+			RETURN (-2)
+		ELSE
+			CALL CDSgraboCaidaEnVuelo
+		END IF
+	ELSE
+		l_fliatran = siaf:adt_tran_fliatran
+		siaf:adt_tran_fliatran = "CSM"
+		CALL giros:MISCmanejo_cancel
+		l_retval = RETVAL
+		siaf:adt_tran_fliatran = l_fliatran
+		IF (l_retval < 0) THEN
+			enAnulacion = loc_enAnul
+			CALL CDSborro_NcTable
+			CLEARFIELD post:consulta_excepcion
+			CLEARFIELD post:consulta_excepcionCM
+			CLEARFIELD post:consulta_ordenCM
+			//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+			//    y en consulta y venta por OC.
+			CLEARFIELD post:cliente_inhibido
+			CLEARFIELD post:cliente_pagodiferido
+			RETURN (-2)
+		END IF
+	END IF
+
+  enAnulacion = loc_enAnul
+END SUB
+
+/*******/

@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:post:CDSverifCaja
+* NOMBRE
+*   OFB:post:CDSverifCaja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSverifCaja(sumaCaptNue)
+	local efec_en_caja like siaf:importe
+	local moneVectorAnt like siaf:moneda
+	local moneVectorNue like siaf:moneda
+	local totalAnt like siaf:importe
+	local totalNue like siaf:importe
+	local descMon like post:adt_mp_desc
+	local auxImporte like siaf:importe
+
+	cds select from dsc:MEDIOS_TAB becomes dsc:MedPag_ctx
+	cds findfirst dsc:MedPag_ctx nolock
+	do
+		if (cdsretval != 0)
+			break
+		end if
+
+		cds extract dsc:MedPag_ctx post:adt_mp_cod into siaf:moneda \
+		post:adt_mp_desc into descMon
+
+		efec_en_caja = siaf:tefec_inic_vec[siaf:moneda] + siaf:tefectivo_vec[siaf:moneda]
+
+		call MISCexisteMoneda("ANT", siaf:moneda)
+		if (retval < 0)
+			totalAnt = 0
+		else
+			totalAnt = totCaptAnt[retval]
+		endif
+
+		if (sumaCaptNue)
+			call MISCexisteMoneda("NUE", siaf:moneda)
+			if (retval < 0)
+				totalNue = 0
+			else
+				totalNue = totCaptNue[retval]
+			endif
+		else
+			totalNue = 0
+		endif
+
+		auxImporte = siaf:importe
+		; convierto por la cotizacion.
+		siaf:importe = totalAnt
+		adt_mp_mon = siaf:moneda
+		call post:MISCcalc_importe_ori
+		totalAnt = post:importe_origen
+
+		; convierto por la cotizacion.
+		siaf:importe = totalNue
+		adt_mp_mon = siaf:moneda
+		call post:MISCcalc_importe_ori
+		totalNue = post:importe_origen
+		siaf:importe = auxImporte
+
+		if ((efec_en_caja - totalAnt + totalNue) < 0)
+			fprint common:csr_string "No cuenta con el medio de pago (%s) en caja para poder realizar la anulacion.", descMon
+			MSGBOX common:csr_string OFB_OK "ERROR"
+			return (-2)
+		endif
+		cds findnext dsc:MedPag_ctx nolock
+	loop
+	cds endselect dsc:MedPag_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,466 @@
+/****o* Entrega de Piezas/OFB:post:CDSsave_EntrPieza
+* NOMBRE
+*   OFB:post:CDSsave_EntrPieza
+* DESCRIPCION
+*   Rutina que graba la tabla EntrPieza utilizada para la tx de Entrega de Piezas.
+*	Esta tabla journaliza un registro por cada servicio que se cobra en cada pieza
+*	que se entrega
+* ENTRADAS
+*   codigo: codigo de servicio que se cobra en la entrega
+*	imp_trn: importe del servicio
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCgrabo_EP
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsave_EntrPieza(codigo,imp_trn)
+	LOCAL imp_tmp LIKE siaf:importe
+	LOCAL cod_tran LIKE cod_EP
+	LOCAL retval_aux LIKE lib:err_retval
+	LOCAL ImpConIva_anterior LIKE siaf:importe
+	LOCAL ImpSinIva_anterior LIKE siaf:importe
+	LOCAL ImpConIva_Bak LIKE siaf:ImporteConIva
+	LOCAL ImpSinIva_Bak LIKE siaf:ImporteSinIva
+	LOCAL Codigo_Bak LIKE siaf:codigo_siaf
+	LOCAL ImpUP_anterior like post:ImpServUP
+	LOCAL Formulario like post:PreDForFis
+	LOCAL l_promo_imp LIKE fld_promo_imp
+	LOCAL l_importe Like siaf:importe
+
+  imp_tmp = imp_trn
+  cod_tran = codigo
+
+  LET cantidad = 1
+  CLEARFIELD formuCalc
+  CLEARFIELD adt_tarif_desde
+  CLEARFIELD adt_tarif_hasta
+  CLEARFIELD adt_tarif_modo
+  CLEARFIELD unidad_fac
+  CLEARFIELD destino
+  CLEARFIELD detalle_cant
+
+	IF (cod_tran != 18701 && cod_tran != 30101)
+		/*Obtengo los parametros que necesito para las transacciones asociadas de la
+		tabla de Servicios*/
+		if (cod_tran == 18100) then // se recuperand los datos de la tabla de Servicios correspondiente al Servicio postal/encomienda a cobrar
+			if (post:emite_fact_stockp != "S") //es pieza corporativa, no se factura, no hago nada
+				RETVAL = 0
+			else
+			CALL post:CDSsel_serv_EP(post:serv_stockp)
+			endif
+		else
+			CALL post:CDSsel_serv_EP(cod_tran)
+		endif
+		IF (RETVAL < 0)
+			MSGBOX "NO SE PUEDEN OBTENER LOS PARAMETROS DE LOS SERVICIOS ASOCIADOS A LA TRANSACCION",0x00,"Error"
+			RETURN (-2)
+		END IF
+
+		IF (cli_tipo == 1)
+			unidad_fac = adt_serv_umstd
+		END IF
+        
+		SELECT (codigo)
+			CASE 18301
+				l_promo_imp = promo_imp_lista
+				BREAK
+			CASE 18401 /*Almacenaje - Nacional*/
+			CASE 28402 /*Almacenaje - Internacional*/
+				l_promo_imp = promo_imp_almc
+				BREAK
+			CASE 18601 /*Pres. Aduana - Pieza Entrante*/
+			CASE 18602 /*Pres. Aduana - Encomienda Entrante*/
+				l_promo_imp = promo_imp_presAdu
+				BREAK
+			CASE ELSE
+				l_promo_imp = 0
+				BREAK
+		END SELECT
+		
+		l_importe = imp_tmp  - l_promo_imp
+		/*Desgloso el Iva con la promocion incluida */
+		//SC 50170
+		CALL MISCdesglosaIva(l_importe,adt_serv_aliciva,1,0)
+		post:ImporteConIvaNeto = l_importe
+		post:ImporteSinIvaNeto = ImporteSinIva
+
+		/*Desgloso el Iva para cada Transaccion*/
+		//SC 50170
+		CALL MISCdesglosaIva(imp_tmp,adt_serv_aliciva,1,0)
+  ELSE
+    CLEARFIELD PreDForFis
+    CLEARFIELD adt_serv_aliciva
+    CLEARFIELD adt_serv_desc
+    CLEARFIELD adt_serv_formfiscal
+    CLEARFIELD adt_serv_formu
+    CLEARFIELD adt_serv_codseq
+    CLEARFIELD ImporteSinIva
+    CLEARFIELD ImporteIva
+    CLEARFIELD siaf:ImporteConIva
+    CLEARFIELD siaf:ImporteSinIva
+    CLEARFIELD post:ImporteConIvaNeto
+    CLEARFIELD post:ImporteSinIvaNeto
+    CLEARFIELD ImpServUP
+    CLEARFIELD AliServUP
+	END IF
+
+  siaf:ImporteConIva = post:ImporteConIvaNeto
+  siaf:ImporteSinIva = post:ImporteSinIvaNeto
+  
+  /*Cargo datos para Ventas UP - Gabriel Falciola*/
+  ImpServUP = siaf:ImporteConIva
+  AliServUP = adt_serv_aliciva
+
+	/*Pedido por Gabriel Falciola para ingresos brutos. Obtiene el campo de
+	afecta_efectivo y la fliatran de cada transaccion*/
+	
+	if (cod_tran == 18100) then 
+		if (post:emite_fact_stockp != "S") //es pieza corporativa, no se factura, no hago nada
+				RETVAL = 0
+		else
+			CALL post:CDSdatosTran_EP(post:serv_stockp)
+		endif
+	else
+			CALL CDSdatosTran_EP(cod_tran)
+			IF ( RETVAL < 0)
+				RETURN (-2)
+			END IF
+ endif
+	CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx \
+	WHERE fecha_EP == common:system_date && \
+		operador_EP == op:op_operator_id && \
+		PresNro_EP == PresNro && \
+		cod_agrupacion == cod_agrupacion && \
+		cod_EP == cod_tran
+            
+	CDS FINDFIRST DSC:EntrPieza_ctx LOCK
+	LET retval_aux = CDSRETVAL
+	IF (retval_aux == 0)
+		CDS EXTRACT DSC:EntrPieza_ctx siaf:ImporteConIva into ImpConIva_anterior \
+			siaf:ImporteSinIva into ImpSinIva_anterior post:monedaNC \
+			ImpServUP into ImpUP_anterior post:PreDForFis into Formulario
+	END IF
+
+  /* Agregado por JPM para resguardar los Importes que borra Ing Brutos */
+  LET ImpConIva_Bak = siaf:ImporteConIva
+  LET ImpSinIva_Bak = siaf:ImporteSinIva
+  LET Codigo_Bak = siaf:codigo_siaf
+
+  LET PreDForFis = adt_serv_formfiscal
+  
+	IF (PreDForFis.numchars == 0 && Formulario.numchars == 0) THEN
+		EstadoFormu = SIN_FORM
+	END IF
+	IF (PreDForFis.numchars != 0 && Formulario.numchars != 0) THEN
+		EstadoFormu = CON_FORM
+	END IF
+	IF (PreDForFis.numchars != 0 && Formulario.numchars == 0) THEN
+		EstadoFormu = CON_FORM_DES
+	END IF
+	IF (PreDForFis.numchars == 0 && Formulario.numchars != 0) THEN
+		EstadoFormu = CON_FORM_ANT
+	END IF
+	
+	CALL CDSAcumImpSes (ImpConIva_anterior,ImpSinIva_anterior,\
+		imp_tmp,ImporteSinIva,fliatran_EP,afec_efvo_EP,PresNro,siaf:moneda,monedaNC)
+
+	/*Acumulo importes para Ventas UP - Gabriel Falciola*/
+	CALL CDSAcumImpUP(ImpUP_anterior,ImpServUP,fliatran_EP,AliServUP,afec_efvo_EP,PresNro)
+
+  /* JPM recupera los Importes que borra Ing Brutos */
+  siaf:ImporteConIva = ImpConIva_Bak
+  siaf:ImporteSinIva = ImpSinIva_Bak
+  siaf:codigo_siaf = Codigo_Bak
+
+	CDS CLEARBUFFER DSC:EntrPieza_ctx
+	CDS APPEND DSC:EntrPieza_ctx \
+		common:system_date AS fecha_EP \
+		op:op_operator_id AS operador_EP \
+		PresNro AS PresNro_EP \
+		PreDForFis \
+		cod_agrupacion \
+		cod_tran AS cod_EP \
+		Pieza \
+		imp_tmp AS siaf:importe
+		
+	SELECT (codigo)
+		CASE 18301
+			siaf:importe_tot_serv = imp_tmp - promo_imp_lista
+			BREAK
+		CASE 18401 /*Almacenaje - Nacional*/
+		CASE 28402 /*Almacenaje - Internacional*/
+			siaf:importe_tot_serv = imp_tmp - promo_imp_almc
+			BREAK
+		CASE 18601 /*Pres. Aduana - Pieza Entrante*/
+		CASE 18602 /*Pres. Aduana - Encomienda Entrante*/
+			siaf:importe_tot_serv = imp_tmp - promo_imp_presAdu
+			BREAK
+	END SELECT
+
+	imp_tmp = imp_trn
+
+	post:BonifLocalOk = "N"
+
+  CDS APPEND DSC:EntrPieza_ctx \
+		siaf:importe_tot_serv \
+		siaf:moneda \
+		medio_pago_desc \
+		cantidad \
+		adt_serv_aliciva \
+		adt_serv_desc \
+		adt_serv_formfiscal \
+		adt_serv_formu \
+		adt_serv_codseq \
+		ImporteSinIva \
+		ImporteIva \
+		SobreTasaIva \
+		siaf:ImporteConIva \
+		siaf:ImporteSinIva \
+		ImporteConIvaNeto \
+		ImporteSinIvaNeto \
+		fliatran_EP \
+		afec_efvo_EP \
+		siaf:moneda as monedaNC \
+		AliServUP \
+		ImpServUP	\
+		post:BonifLocalOk
+
+  SELECT (codigo)
+		CASE 18201 /*Correspondencia de Cargo*/
+			IF (cli_tipo != 1)
+				unidad_fac = uni_med_ff
+			END IF
+			FPRINT detalle_cant "%s  %s",falta_franq,unidad_fac
+			CDS APPEND DSC:EntrPieza_ctx \
+				falta_franq \
+				formuCalc_ff AS formuCalc \
+				tarif_desde_ff AS adt_tarif_desde \
+				tarif_hasta_ff AS adt_tarif_hasta \
+				tarif_modo_ff AS adt_tarif_modo \
+				unidad_fac \
+				tarif_dest_ff AS destino \
+				detalle_cant
+			BREAK
+
+		CASE 18301 /*Lista*/
+			IF (cli_tipo != 1)
+				unidad_fac = uni_med_lista
+			END IF
+			FPRINT detalle_cant "%s  %s",cantidad,unidad_fac
+			CDS APPEND DSC:EntrPieza_ctx \
+				imp_tmp AS post:tarifa \
+				formuCalc_lista AS formuCalc\
+				tarif_desde_lista AS adt_tarif_desde \
+				tarif_hasta_lista AS adt_tarif_hasta \
+				tarif_modo_lista AS adt_tarif_modo \
+				unidad_fac \
+				envios \
+				tarif_dest_lista AS destino \
+				promo_desc_lista \
+				promo_cod_lista \
+				promo_inhibeUpList \
+				promo_imp_lista \
+				promo_bon_lista \
+				promoLisTipoBon \
+				detalle_cant
+			BREAK
+
+		CASE 18401 /*Almacenaje - Nacional*/
+		CASE 28402 /*Almacenaje - Internacional*/
+			/*Agregado por MFM*/
+			cant_dias_almac = adt_stockp_dias_alm + almac_dias
+			/******************/
+			IF (cli_tipo != 1)
+				unidad_fac = uni_med_alm
+			END IF
+			FPRINT detalle_cant "%s  %s",cant_dias_almac,unidad_fac
+			CDS APPEND DSC:EntrPieza_ctx \
+				cant_dias_almac \
+				formuCalc_alm AS formuCalc \
+				tarif_desde_alm AS adt_tarif_desde \
+				tarif_hasta_alm AS adt_tarif_hasta \
+				tarif_modo_alm AS adt_tarif_modo \
+				unidad_fac \
+				tarif_dest_alm AS destino \
+				promo_desc_almc \
+				promo_inhibeUpAlma \
+				promo_imp_almc  \
+				promo_bon_almac \
+				promo_cod_almac \
+				promoAlmaTipoBon \
+				costo_almac \
+				detalle_cant
+			BREAK
+
+		CASE 18601 /*Pres. Aduana - Pieza Entrante*/
+		CASE 18602 /*Pres. Aduana - Encomienda Entrante*/
+			IF (cli_tipo != 1)
+				unidad_fac = uni_med_PAd
+			END IF
+			FPRINT detalle_cant "%s  %s",PresAd_imp,unidad_fac
+			CDS APPEND DSC:EntrPieza_ctx \
+				PresAd_prod \
+				PresAd_imp \
+				formuCalc_PAd AS formuCalc \
+				tarif_desde_PAd AS adt_tarif_desde \
+				tarif_hasta_PAd AS adt_tarif_hasta \
+				tarif_modo_PAd AS adt_tarif_modo \
+				unidad_fac \
+				tarif_dest_PAd AS destino \
+				promo_desc_presAd \
+				promo_cod_presAd \
+				promo_inhibeUpPrAd \
+				promo_bon_presAdu \
+				promo_imp_presAdu \
+				promoPrsAdTipoBon \
+				costo_presAd \
+				detalle_cant
+			BREAK
+
+		CASE 18701 /* Contrareembolso*/
+			CDS APPEND DSC:EntrPieza_ctx \
+				CRimp_a_cobr \
+				formuCalc \
+				adt_tarif_desde \
+				adt_tarif_hasta \
+				adt_tarif_modo \
+				unidad_fac \
+				destino \
+				detalle_cant \
+				adt_stockp_es_grancl \
+				adt_stockp_rendicion \
+				adt_stockp_rem_nom \
+				adt_stockp_rem_domic \
+				adt_stockp_rem_loc \
+				adt_stockp_rem_CP \
+				adt_stockp_rem_pcia \
+				id_cupon_CCT \
+				adt_cct_nis_liq \
+				adt_cct_comitente \
+				adt_cct_cod_serv \
+				adt_cct_def_cupon \
+				adt_cct_cta_sap \
+				adt_cct_rend_fis \
+				adt_climay_razon \
+				cod_barra_CREM \
+				adt_stockp_ctaOM        
+  			BREAK
+  		
+		CASE 30101 /*Cobranza PED*/
+			CDS APPEND DSC:EntrPieza_ctx \
+				impCobro_ped \
+				formuCalc \
+				adt_tarif_desde \
+				adt_tarif_hasta \
+				adt_tarif_modo \
+				unidad_fac \
+				destino \
+				detalle_cant \
+				stockp_NISorig_ped \
+				stockp_cli_nro_ped
+			break
+		case 18100 /*Cobranza RPP*/
+				IF (cli_tipo != 1) THEN
+					unidad_fac = uni_med_ff
+			END IF
+			
+		CDS APPEND DSC:EntrPieza_ctx \
+			formuCalc_ff AS formuCalc \
+			tarif_desde_ff AS adt_tarif_desde \
+			tarif_hasta_ff AS adt_tarif_hasta \
+			tarif_modo_ff AS adt_tarif_modo \
+			unidad_fac \
+			tarif_dest_ff AS destino 
+			
+		//	post:serv_stockp tiene que tener el codigo del servicio postal o encomienda que se cobra
+		CDS APPEND DSC:EntrPieza_ctx \
+			post:emite_fact_stockp \
+			post:adt_stockp_rpp_corp \
+			post:serv_stockp \
+			post:adt_serv_serv \
+			post:peso_en_kgs \
+			post:aforo1 \
+			post:aforo2 \
+			post:aforo3 \
+			post:aforo \
+			siaf:importe AS  siaf:importe_tot_serv \
+			siaf:importe AS  post:tarifa \
+			post:rpp_imp \
+			siaf:ImporteSinIva AS post:ImpSinIva_serv \
+			post:adt_tarif_um \
+			post:adt_tarif_hasta_eq \
+			post:adt_tarif_um_eq
+
+		CDS APPEND DSC:EntrPieza_ctx \
+			rel_vol \
+			rel_vol_l1 \
+			rel_vol_l2 \
+			rel_vol_l3 \
+			tipo_caja \
+			peso_en_grs
+ 
+			BREAK
+  END SELECT
+
+	//gpb:NI50437 VAP Encomienda Comercial
+	IF (post:fliatran_EP == "VAP") THEN
+	  	IF (cli_tipo != 1) THEN
+			unidad_fac = uni_med_ff
+		END IF
+		CDS APPEND DSC:EntrPieza_ctx \
+			formuCalc_ff AS formuCalc \
+			tarif_desde_ff AS adt_tarif_desde \
+			tarif_hasta_ff AS adt_tarif_hasta \
+			tarif_modo_ff AS adt_tarif_modo \
+			unidad_fac \
+			tarif_dest_ff AS destino 
+			
+		CDS APPEND DSC:EntrPieza_ctx \
+			post:serv_stockp \
+			post:adt_serv_serv \
+			post:peso_en_kgs \
+			post:peso_desc_VAP \
+			post:aforo1 \
+			post:aforo2 \
+			post:aforo3 \
+			post:aforo \
+			NIS_Imposicion \
+			siaf:importe AS  siaf:importe_tot_serv \
+			siaf:importe AS  post:tarifa \
+			post:imp_ff_aux \
+			siaf:ImporteSinIva AS post:ImpSinIva_serv \
+			post:adt_tarif_um \
+			post:adt_tarif_hasta_eq \
+			post:adt_tarif_um_eq
+
+		CDS APPEND DSC:EntrPieza_ctx \
+			rel_vol \
+			rel_vol_l1 \
+			rel_vol_l2 \
+			rel_vol_l3 \
+			tipo_caja \
+			peso_en_grs
+	
+	END IF
+		
+	//SC 50170 -FACTURACION
+	CDS APPEND DSC:EntrPieza_ctx \
+	post:ImporteSinIva_bis
+	
+	IF (retval_aux == -801)
+		CDS INSERT DSC:EntrPieza_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:EntrPieza_ctx LOCK
+	END IF
+	CDS ENDSELECT DSC:EntrPieza_ctx
+	
+END SUB
+
+/*******/

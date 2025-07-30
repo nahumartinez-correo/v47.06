@@ -1,0 +1,255 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALpase_forz_tes
+* NOMBRE
+*   OFB:tes:SVALpase_forz_tes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALpase_forz_tes
+local varl_tesoro_dest    like op:adt_tesoro
+local varl_tesoro_id_dest like op:adt_tesoro_id
+local varl_tesoro_orig    like op:adt_tesoro
+local varl_tesoro_id_orig like op:adt_tesoro_id
+local varl_tes_llave_orig like op:adt_llave_tesoro
+local varl_tes_llave_dest like op:adt_llave_tesoro
+local i                   like siaf:i
+local loc_op_id_aux       like op:op_operator_id
+local loc_branch_aux      like op:op_branch_id
+local tes_auth_orig       like op:adt_tes_auth
+local tesforz_auth_orig   like op:adt_tesforz_auth
+local tes_auth_dest       like op:adt_tes_auth
+local tesforz_auth_dest   like op:adt_tesforz_auth
+
+	siaf:codigo_siaf = 8680
+	clearfield siaf:importe
+    
+	call CDSpases_incompletos
+	if (retval < 0)
+		return (-2)
+	endif
+    
+	CALL tes:CDSpases_ev_incomp    
+	If (retval != 0)
+		RETURN (-1)
+	End If
+
+	call op:CDSidentif_op(tes_operator_id_orig,"X")
+	select (retval)
+	case -1
+		errmsg lst:common:errmsg_list, "No se pudo leer estado operador"
+		return (-2)
+	case -2
+		errmsg lst:common:errmsg_list, "El operdor no debe estar identificado"
+		return (-2)
+	end select             
+
+	tes_op_inter  = op:op_operator_id
+	tes_login_inter = op:op_login_id
+	loc_branch_aux = common:sucursal_activa
+    
+	op:op_operator_id = tes:tes_operator_id_orig
+	op:op_branch_id   = tes:sucursal
+    
+	CALL tlr:JNLinitialize
+    
+	if (retval < 0)
+		op:op_operator_id = tes_op_inter
+		op:op_login_id = tes_login_inter
+		op:op_branch_id = common:sucursal_activa
+		return (-2)
+	end if
+	if (tlr:bus_date == "") then
+		/* si sale con la fecha vacia le pongo la de hoy para que no de
+		error al journalizar */
+		tlr:bus_date = common:system_date
+	end if
+    
+	let siaf:codigo_siaf = 8680
+    
+	call siaf:PRESfecha_hora
+	if (retval < 0)
+		op:op_operator_id = tes_op_inter
+		op:op_login_id = tes_login_inter
+		op:op_branch_id = common:sucursal_activa
+		return (-2)
+	end if
+
+	/* permito realizar el pase */
+	if (LASTKEY != RT_ESC) then
+		cutscreen tes:SCRNpase_forz_tes,nocursor
+		UNDISPLAY tes:SCRNpase_forz_tes
+		UNGETKEY 0x190
+		CALL tes:SVALev_pforz_tes 
+    
+		CALL tes:SVALaux_pforz_tes
+      
+
+		let siaf:codigo_siaf = 8680
+		call siaf:PRESfecha_hora
+  
+		clearfield tlr:INDtots_append
+		clearfield drv:INDspc_rtn[0]
+		clearfield siaf:moneda
+		clearfield siaf:importe
+		let drv:INDscreen[0]   = SCR:tes:SCRNpase_forz_tes
+		let drv:INDjnl_rtn     = OFB:tes:JNLpase_forz_tes
+
+		// selecciono los registros del orig. y el dest de la tabla profiles
+		/*Se agrega marca de borrado logico - Gabriel Falciola*/
+		CDS SELECT op:op_tesoro,op:op_tesoro_id op:op_llave_tesoro,op:op_tes_auth,op:op_tesforz_auth FROM DSC:op:adt_op_table \
+		BECOMES DSC:op:adt_op_context                     \
+		WHERE (op:op_login_id == tes:tes_login_orig    && \
+		op:op_operator_id == tes:tes_operator_id_orig) || \
+		(op:op_login_id == tes:tes_login_dest          && \
+		op:op_operator_id == tes:tes_operator_id_dest) && \
+		op:op_borrado_logico != "S"
+		if (cdsretval == 0) then
+			// busco el primero de los registros
+			CDS FINDFIRST DSC:op:adt_op_context LOCK
+			if (cdsretval == 0) then
+				// guardo las marcas de tesoro en las variables xxx_orig
+				CDS EXTRACT DSC:op:adt_op_context        \
+				op:op_tesoro INTO varl_tesoro_orig       \
+				op:op_tesoro_id INTO varl_tesoro_id_orig \
+				op:op_llave_tesoro INTO varl_tes_llave_orig \
+				op:op_tes_auth into tes_auth_orig \
+				op:op_tesforz_auth into tesforz_auth_orig
+				if (cdsretval == 0) then
+					// busco el segundo de los registros
+					CDS FINDNEXT DSC:op:adt_op_context LOCK
+					if (cdsretval == 0) then
+						// guardo las marcas de tesoro en las variables xxx_dest
+						CDS EXTRACT DSC:op:adt_op_context        \
+						op:op_tesoro INTO varl_tesoro_dest       \
+						op:op_tesoro_id INTO varl_tesoro_id_dest \
+						op:op_llave_tesoro INTO varl_tes_llave_dest \
+						op:op_tes_auth into tes_auth_dest \
+						op:op_tesforz_auth into tesforz_auth_dest
+						if (cdsretval == 0) then
+							// INTERCAMBIO LAS MARCAS
+							/*Verifico si hay que sacarle o ponerle el perfil de Supervisor - Gabriel Falciola*/
+							if (varl_tesoro_dest == "N" && tesforz_auth_orig == "X")
+								clearfield tes_auth_orig
+								clearfield tesforz_auth_orig
+							end if
+							if (varl_tesoro_dest == "S" && tes_auth_orig != "X")
+								tes_auth_orig = "X"
+								tesforz_auth_orig = "X"
+							end if
+							CDS CLEARBUFFER DSC:op:adt_op_context
+							CDS APPEND DSC:op:adt_op_context       \
+							varl_tesoro_dest AS op:op_tesoro       \
+							varl_tesoro_id_dest AS op:op_tesoro_id \
+							varl_tes_llave_dest AS op:op_llave_tesoro \
+							tes_auth_orig AS op:op_tes_auth \
+							tesforz_auth_orig AS op:op_tesforz_auth
+							CDS FINDFIRST DSC:op:adt_op_context LOCK
+							if (cdsretval == 0) then
+								// actualizo el primer registro con las marcas
+								// que tenia el segundo
+								CDS UPDATE DSC:op:adt_op_context LOCK
+								if (cdsretval == 0) then
+									/*Verifico si hay que sacarle o ponerle el perfil de Supervisor - Gabriel Falciola*/
+									if (varl_tesoro_orig == "N" && tesforz_auth_dest == "X")
+										clearfield tes_auth_dest
+										clearfield tesforz_auth_dest
+									end if
+									if (varl_tesoro_orig == "S" && tes_auth_dest != "X")
+										tes_auth_dest = "X"
+										tesforz_auth_dest = "X"
+									end if
+									CDS CLEARBUFFER DSC:op:adt_op_context
+									CDS APPEND DSC:op:adt_op_context       \
+									varl_tesoro_orig AS op:op_tesoro       \
+									varl_tesoro_id_orig AS op:op_tesoro_id \
+									varl_tes_llave_orig AS op:op_llave_tesoro \
+									tes_auth_dest AS op:op_tes_auth \
+									tesforz_auth_dest AS op:op_tesforz_auth
+									CDS FINDNEXT DSC:op:adt_op_context LOCK
+									if (cdsretval == 0) then
+										// actualizo el segundo registro con las
+										// marcas que tenia el primero
+										CDS UPDATE DSC:op:adt_op_context LOCK
+										if (cdsretval == 0) then
+											// si llegue hasta aca es porque:
+											// TODO SALIO BIEN !!!!
+											CDS UNLOCK DSC:op:adt_op_context
+											CDS ENDSELECT DSC:op:adt_op_context
+											CDS COMMITWORK    // fin LUW
+				  
+											/* Cambio al tesorero de la sucursal */
+											;call tes:CDScambio_tesorero(tes:tes_operator_id_dest)
+
+											FLD:drv:INDjnl_rtn = OFB:tes:JNLpforzado
+											UNGETKEY 0x190
+											CALL siaf:MISClleno_modalidad
+
+											CALL tlr:JNLtran
+
+											call MISCsend_msg_dest(tes:tes_login_dest,\
+											"HA RECIBIDO UN PASE FORZADO DE MARCA DE TESORO Y DE DINERO Y/O ESPECIES A SU CAJA")
+											call tlr:JNLterminate
+				      
+											call op:CDSidentif_op(tes:tes_operator_id_orig,"")
+											if (retval < 0) then
+												errmsg lst:common:errmsg_list "No se pudo desidentificar al operador"
+											end if
+    
+				  
+											op:op_operator_id = tes_op_inter
+											op:op_login_id    = tes_login_inter
+											op:op_branch_id   = common:sucursal_activa
+											clearfield drv:INDjnl_rtn	
+											/* Si es local marco el cambio */
+ 										    call op:MISCes_serv_central
+                                            if (retval < 0) then
+												/*Pongo la marca de cambio de perfil en la Sucursal Activa - Gabriel Falciola*/
+												call CDSCambioPerfil(common:sucursal_activa,"MARCA")									
+                							end if                            	
+ 												  
+											return (0)
+										end if
+									end if
+								end if
+							end if
+						end if
+					end if
+				end if
+			end if
+		end if
+		// si llego hasta aca es porque ALGO SALIO MAL !!!!!
+		CDS ROLLBACKWORK // vuelvo atras los cambios hechos en la LUW
+		call op:CDSidentif_op(tes:tes_operator_id_orig,"")
+		if (retval < 0) then
+			errmsg lst:common:errmsg_list "No se pudo desidentificar al operador"
+		end if
+		op:op_operator_id = tes_op_inter
+		op:op_login_id    = tes_login_inter
+		op:op_branch_id   = common:sucursal_activa
+
+		return (-2)
+	end if
+	call op:CDSidentif_op(tes:tes_operator_id_orig,"")
+	if (retval < 0) then
+		errmsg lst:common:errmsg_list "No se pudo desidentificar al operador"
+	end if
+    
+	op:op_operator_id = tes_op_inter
+	op:op_login_id    = tes_login_inter
+	op:op_branch_id   = common:sucursal_activa
+
+END SUB 
+
+/*******/

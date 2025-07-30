@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:post:PBConsulta_OnLine
+* NOMBRE
+*   OFB:post:PBConsulta_OnLine
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBConsulta_OnLine
+   LOCAL locCantBarras LIKE cant_barras
+   locCantBarras = cant_barras
+
+    // Para que no se modifique la opcion cuando se ve a traves del journal
+    // ni cuando se confirma la trx o cuando el codigo de barras ya ha sido
+    // leido
+    if ((testflag(lib:state_flags,scan_mode)) || (estado_presu == 4))
+/*        let cant_barras = 0
+        altercontrolset TAG:post:CHK0
+        altercontrolset TAG:post:CHK1
+        altercontrolset TAG:post:CHK2*/
+        return
+    end if
+
+
+	if ((post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) && !TESTFLAG(hcomm:state_flags,on_line))
+		MSGBOX "HOST fuera de Linea, imposible realizar la consulta online, intente en unos instantes",0x00,"ERROR"
+		return (-2)
+	end if
+
+
+   ;cgw:limpio el codigo de barra doble
+   clearfield post:sf1_codbarras2
+   HIDEFIELD  post:sf1_codbarras2
+   PROTFIELD  post:sf1_codbarras2
+
+   if (testflag(lib:state_flags,scan_mode)) then
+       cant_barras = 1
+       altercontrolset TAG:post:CHK0
+       altercontrolset TAG:post:CHK1
+       altercontrolset TAG:post:CHK2
+       return
+   end if
+   if (post:estado_presu == 4)
+       cant_barras = locCantBarras
+       altercontrolset TAG:post:CHK0
+       altercontrolset TAG:post:CHK1
+       altercontrolset TAG:post:CHK2
+       return
+   endif
+   if (siaf:moneda.NUMCHARS == 0)
+       errmsg common:errmsg_list,dsc:siaf:ERRmoneda_invalida
+       cant_barras = 1
+       altercontrolset TAG:post:CHK0
+       altercontrolset TAG:post:CHK1
+       altercontrolset TAG:post:CHK2
+       NEXTFIELD siaf:moneda
+       refresh window
+       RETURN -1
+   endif
+
+   clearfield post:sf1_utility_tmp
+   clearfield post:codigo_cliente
+   clearfield post:sf1_codbarras_tmp
+   clearfield post:apellido_cliente ;cgw:no lo estaba limpiando
+   clearfield post:identif_secun
+   clearfield post:sf1_utility_desc
+   PROTFIELD sf1_codbarras_tmp
+   PROTFIELD apellido_cliente
+   /* TBC 20020628 Agrego codigo auxiliar */
+   protfield identif_secun
+   protfield post:sf1_utility_desc
+
+   CatGCod = 1      //el default es codigo de cliente
+
+   ;Rotulos default de campos en la pantalla. Despues podran ser cambiados por datos
+   ;cargados desde la tabla utilities que a su vez es actualizada desde la UTONLINE.DAT (BOBS)
+   let utonline_campo1_desc = "CODIGO CLIENTE:"
+   let utonline_campo2_desc = "CODIGO AUXILIAR:"
+
+
+
+   ;cgw: Se le agrego la pcol al popup para poder deshabilitar
+   ;     el boton picklist de post:sf1_codbarras_tmp
+   popup post:SCRNConsultacodbarra,-,post:PCOLConsultacodbarra,-
+
+   if (lastkey == RT_ESC) then
+       clearfield sf1_codbarras_tmp ;cgw:limpio
+       /* cgw:al tener sf1_codbarras_tmp limpio, se setea la barra unica
+       cant_barras = 1
+       altercontrolset TAG:post:CHK0
+       */
+/*   else
+		disablecontrol post:CHK0
+		disablecontrol post:CHK1
+		disablecontrol post:CHK2*/
+   endif
+
+   CALL  csr:f_sadroppl DSC:post:PickCodBarraOl ;cgw: Destruyo PickList
+
+   UNPROTFIELD sf1_codbarras_tmp
+   UNPROTFIELD apellido_cliente
+
+   LET common:trap_reset = OFB:drv:KEYSreset_esc
+
+   sf1_codbarras1 = sf1_codbarras_tmp
+
+   if (post:sf1_codbarras1.numchars == 0) then
+   	   ;cgw: Si no hago la consulta multicanal, seteo barra unica
+	   Call post:MISCseteo_barraunica
+	else
+		post:sf1_codbarras1_aux = post:sf1_codbarras1
+   endif
+
+   if (lastkey != RT_ESC) then
+   	UngetKey RT_TAB
+   endif
+
+   refresh window
+
+END SUB
+
+/*******/

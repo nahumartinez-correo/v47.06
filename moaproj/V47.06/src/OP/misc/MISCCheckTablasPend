@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:op:MISCCheckTablasPend
+* NOMBRE
+*   OFB:op:MISCCheckTablasPend
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCCheckTablasPend(OperadorID)
+    local LRetVal like lib:err_retval
+    local LAccion like common:csr_string
+    local LContador like op:op_operator_id
+    local LMensaje like common:csr_string
+    local LFecha like common:system_date
+    local LCantDias like op:idx
+
+    ;singlestep on
+    ;SMC si no es Administrador de Tablas, no ejecuto
+    if (op:adt_tables_auth != "X") then
+        return 0
+    endif
+
+    let FLD:LRetVal = 0
+
+    FYIMSG drv:fyimsg_list,"BUSCANDO MODIFICACIONES DE TABLAS PENDIENTES..."
+
+    ;SMC Checkeo por tablas pendientes vencidas
+    let FLD:LAccion = "CHECK"
+    Call op:MISCtabla_pend_venc(FLD:OperadorID, FLD:LAccion)
+    Let LContador = RETVAL
+    ;SMC Si distinto a Cero, -801 por Ejemplo, significa
+    ;    que el FINDFIRST no encontro nada. Salgo sin mostrar mensajes porque
+    ;    no es error
+    if (RETVAL > 0) then
+        FYIMSG drv:fyimsg_list,"IMPRIMIENDO MODIFICACIONES DE TABLAS PENDIENTES..."
+        let FLD:LCantDias = (FLD:op:adt_validez_tablas * -1)
+        ;let FLD:LCantDias = (FLD:op:adt_validez_tablas * 1)
+        CALL csr:date_add(common:system_date,FLD:LCantDias,"D",FLD:LFecha)
+
+        ;Seteo los valores para la impresion
+        let op:adt_modif_sel = "PENDIENTE"
+        let op:modif_desde = 0
+        let op:modif_hasta = FLD:LFecha
+
+        siaf:adt_tabla_context = DSC:adt_ctx_aux
+        siaf:INDencab_lis = OFB:op:MISCencab_modif
+        siaf:INDselect_tabla = OFB:op:CDSmodif_select
+        siaf:INDpaso_str_tabla = OFB:op:MISCpaso_str_modif
+        siaf:INDestado_clave = OFB:op:MISCclave_modif
+        siaf:INDadt_sval = 0
+        CALL siaf:TRANimprimo_driver
+
+        ;Limpio los campos usados
+        clearfield op:adt_modif_sel
+        clearfield op:modif_desde
+        clearfield op:modif_hasta
+
+        FPRINT FLD:LMensaje "HAY (%s) MODIFICACIONES PENDIENTES VENCIDAS\nDESEA ELIMINARLAS?\n" ,FLD:LContador
+        MSGBOX FLD:LMensaje OFB_YESNO "ATENCIÓN"
+        ;SMC 6 = YES, 7 = NO
+        IF (RETVAL == 6) THEN
+            ;SMC Checkeo por tablas pendientes vencidas
+            let FLD:LAccion = "RECHAZO"
+            Call op:MISCtabla_pend_venc(FLD:OperadorID, FLD:LAccion)
+            Let LContador = RETVAL
+        END IF
+    end if
+
+    FYIMSG CLEAR
+
+    return 0
+END SUB
+
+/*******/

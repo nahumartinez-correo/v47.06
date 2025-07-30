@@ -1,0 +1,70 @@
+/****o* Pendientes de agrupación/OFB:post:CDSstockp_recep_save
+* NOMBRE
+*   OFB:post:CDSstockp_recep_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+Sub post:CDSstockp_recep_save
+
+    /*Primero selecciono los registros de la tabla temporal que pertenecen al op logueado*/
+    CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx \
+    WHERE (post:stockp_operador == op:op_operator_id && \
+    post:stockp_fecha == common:system_date)
+	CDS FINDFIRST DSC:stockp_temp_ctx LOCK
+    If (CDSRETVAL == -801) Then
+        MSGBOX "NO HAY PIEZAS PARA REGISTRAR.",0x00,"ATENCION"
+        CDS UNLOCK DSC:stockp_temp_ctx
+        CDS ENDSELECT DSC:stockp_temp_ctx
+        RETURN -2
+    End If
+
+    DO
+        CDS EXTRACT DSC:stockp_temp_ctx ALL
+        
+        /*Inserto el reg en la tabla stockp_recep*/
+        CDS SELECT FROM DSC:stockp_recep_tbl BECOMES DSC:stockp_recep_ctx \
+        WHERE (stockp_pieza == stockp_pieza)
+	    CDS FINDFIRST DSC:stockp_recep_ctx LOCK
+	    LET lib:err_retval = CDSRETVAL
+	    CDS CLEARBUFFER DSC:stockp_recep_ctx
+		post:fecha = common:system_date
+		post:op_operator_id = op:op_operator_id
+        CDS APPEND DSC:stockp_recep_ctx post:stockp_pieza \
+        post:AsignaDestino post:fecha post:op_operator_id
+             
+        IF (lib:err_retval == -801) THEN
+            CDS INSERT DSC:stockp_recep_ctx LOCK
+        ELSE
+            CDS REPLACE DSC:stockp_recep_ctx LOCK
+        END IF
+        
+        /* Termino seleccion de tabla stockp original*/
+        CDS UNLOCK DSC:stockp_recep_ctx
+        CDS ENDSELECT DSC:stockp_recep_ctx
+         
+                    
+        /*Busco el siguiente reg de la tabla temporal*/
+        CDS FINDNEXT DSC:stockp_temp_ctx LOCK
+        If (CDSRETVAL == -801) Then
+            /* Termino seleccion de tabla temporal*/
+            CDS UNLOCK DSC:stockp_temp_ctx
+            CDS ENDSELECT DSC:stockp_temp_ctx
+            BREAK
+        End If
+    LOOP
+End Sub
+
+/*******/

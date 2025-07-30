@@ -1,0 +1,84 @@
+/****o* Pendientes de agrupación/OFB:post:CDStotal_utility_sf1
+* NOMBRE
+*   OFB:post:CDStotal_utility_sf1
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDStotal_utility_sf1
+    local esPFconViaje 		like siaf:i
+	// sba 19.01.2004 - Ahora se busca por la utility en la tabla utilities
+	// para saber si es IPLAN
+	/*
+	esIplan = (post:sf1_id_paycode == "2NN" || post:sf1_id_paycode == "2PN")
+	*/
+	// call post:CDSutility_cod_prod
+	// esIplan = (post:utility_cod_prod == "IPLAN")
+	//
+	call post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+	esPFconViaje = (retval == 1)
+	
+	; PAW 12.08.2003 : Si es iplan y fue rechazado no totalizo.
+	if (!(esPFconViaje && hcomm:tran_status >= 100))
+	    ClearField  totales_sf1
+	    ClearField  sf1_cantidad_op
+	    CDS SELECT FROM TotalesSf1_Tab BECOMES TotalesSf1_Ctx  \
+	    WHERE sf1_id_paycode == sf1_id_paycode && \
+	          siaf:op_login_id == op:op_login_id  && \
+	          post:fecha == common:system_date && \
+	          post:totales_mp_sf1 == post:totales_mp_sf1
+
+	    // NO ES NECESARIO LOCKEARLO YA QUE EL
+	    // OPERADOR ES PARTE DE LA CLAVE
+	    CDS FINDFIRST dsc:TotalesSf1_Ctx   LOCK
+	    If (cdsretval == 0) then
+	       	 CDS EXTRACT dsc:TotalesSf1_Ctx   ALL
+	          If (testflag(tlr:tran_flags,correction))
+	             totales_sf1 =  totales_sf1 - siaf:importe
+	             totales_bono_sf1 = totales_bono_sf1 - post:total_bonos
+	             sf1_cantidad_op = sf1_cantidad_op  - 1
+	           Else
+	             totales_sf1 =  totales_sf1 + siaf:importe
+	             totales_bono_sf1 = totales_bono_sf1 + post:total_bonos
+	             sf1_cantidad_op = sf1_cantidad_op  + 1
+	          Endif
+	          Cds APPEND DSC:post:TotalesSf1_Ctx \
+	               totales_sf1 \
+	               totales_bono_sf1 \
+	               sf1_cantidad_op
+	          Cds Update DSC:post:TotalesSf1_Ctx  LOCK
+		 Else
+	          totales_sf1 =   siaf:importe
+	          totales_bono_sf1 = post:total_bonos
+	          sf1_cantidad_op = 1
+	          ;post:totales_mp_sf1 = siaf:tipo_moneda
+
+	          Cds APPEND DSC:post:TotalesSf1_Ctx  \
+	               totales_sf1 \
+	               totales_bono_sf1 \
+	               sf1_cantidad_op \
+	               sf1_id_paycode \
+	               op:op_login_id as siaf:op_login_id \
+	               common:system_date as fecha \
+	               post:totales_mp_sf1 \
+	               sf1_serv_desc
+
+	          Cds Insert DSC:post:TotalesSf1_Ctx NOLOCK
+	    Endif
+	  	 Cds EndSelect dsc:TotalesSf1_Ctx
+	 endif
+END SUB
+
+/*******/

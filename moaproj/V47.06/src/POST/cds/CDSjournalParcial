@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:CDSjournalParcial
+* NOMBRE
+*   OFB:post:CDSjournalParcial
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSjournalParcial
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 13/05/99]      Esta rutina se encarga de generar el journal para las directas de la           */
+   /*                       transacción de anulación parcial.                                              */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+	local PreDNroTrn_aux like post:PreDNroTrn
+	local adt_PreDNroTrn_aux like post:adt_PreDNroTrn
+	local tipoForm like post:Tipo_Formulario
+	local cont_aux_dire like contador_directas
+	local tmpPresNew like presNroNew
+	tipoForm = post:Tipo_Formulario
+	clearfield siaf:importe
+	clearfield tlr:jnl_amount_1
+	/*Resguardo el nro. de transaccion - Gabriel Falciola*/
+	PreDNroTrn_aux = PreDNroTrn
+	adt_PreDNroTrn_aux = adt_PreDNroTrn
+	cont_aux_dire = contador_directas
+	if (enSesion != "S" && estAnul != "D2_")
+		NotaCredito = "S"
+		if (siaf:codigo_siaf != 7100)
+			/*Seteo el campo que indica el modo Nota de Credito - Gabriel Falciola*/
+			drv:INDjnl_rtn = OFB:post:JNLnada
+		else
+			call siaf:PRESfecha_hora
+			clearfield NotaCredito
+			tlr:INDdcol_scrn[0] = SCR:post:SCRNanulacion
+			tlr:INDtran_name = LST:post:TRANanulacion
+			tlr:INDjnl_append = OFB:post:JNLanulacion
+		end if
+		Cds FINDAGAIN dsc:NC_CON nolock
+		CDS EXTRACT dsc:NC_CON all
+	else
+		swapdup post:DocInic
+		swapdup post:DocFin
+		dupfield post:DocInic
+		dupfield post:DocFin
+		NotaCredito = "S"
+		call siaf:PRESfecha_hora
+		Cds FINDAGAIN dsc:post:Jounarl_anul_Ctx nolock
+		CDS EXTRACT dsc:post:Jounarl_anul_Ctx all
+
+		if (siaf:codigo_siaf == 99023)
+			dupfield post:DocInic
+			dupfield post:DocFin
+			post:Tipo_Formulario = tipoForm
+			select (Tipo_Formulario)
+			case FACTURA_A
+			    DocFiscal = "FACTURA A"
+			    break
+			case FACTURA_B
+			    DocFiscal = "FACTURA B"
+			    break
+			case TICKET
+		    	DocFiscal = "TICKET"
+			    break
+			end select
+		endif
+	endif
+	adt_PreDNroTrn = adt_PreDNroTrn_aux
+	contador_directas = cont_aux_dire
+	
+	// PAW - Genero la tabla auxiliar de Entrega de piezas de
+	// forma parcial para tener disponibles los datos de bonificaciones
+	// por productos en el calculo de la misma.
+
+	call CDSgrabaAuxEntPzas
+
+	if (siaf:codigo_siaf == 99098 || siaf:codigo_siaf == 99099)
+		; voy a buscar a la tabla de medios de pago si captura codigo interno.
+
+		call post:CDSbuscoCaptCodInt
+	endif
+	
+	call MISCmuevo_campos_jou
+	clearfield drv:INDspc_rtn[2]
+	clearfield tlr:INDdocs_list
+	call siaf:MISClleno_modalidad
+	/*Seteo el flag de transacción activa porque a raíz de los varios llamados
+	que se hacen a la JNLtran queda reseteado y no debe ser así- Gabriel Falciola*/
+	setflag tlr:state_flags,tran_active
+	CALL tlr:JNLtran
+	clearfield NotaCredito
+	/*Restauro el nro. de transaccion - Gabriel Falciola*/
+	PreDNroTrn = PreDNroTrn_aux
+END SUB
+
+/*******/

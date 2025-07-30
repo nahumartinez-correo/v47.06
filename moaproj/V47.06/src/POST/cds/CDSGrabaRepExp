@@ -1,0 +1,283 @@
+/****o* Pendientes de agrupación/OFB:post:CDSGrabaRepExp
+* NOMBRE
+*   OFB:post:CDSGrabaRepExp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCjnl_DetCCont
+*	post:MISCjnl_DetCSaca
+*	post:MISCjnl_DetCteL
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGrabaRepExp(P_operation, P_pieza_id,P_jnl_sequence,P_jnl_date)
+	
+	LOCAL l_operation LIKE common:csr_string
+	LOCAL l_pieza_id LIKE post:Pieza_id
+	LOCAL l_jnl_sequence LIKE tlr:jnl_sequence
+	LOCAL l_jnl_date LIKE tlr:jnl_date
+	LOCAL l_auxiliar LIKE common:csr_string
+	LOCAL l_err_cds LIKE lib:err_retval
+
+	l_operation = P_operation
+	l_pieza_id = P_pieza_id
+	l_jnl_sequence = P_jnl_sequence
+	l_jnl_date = P_jnl_date
+	
+	l_err_cds = 0
+	
+	//Valido si es una carta rapida
+	IF (SUBSTR(l_pieza_id,0,2) == "SR" || SUBSTR(l_pieza_id,0,2) == "SU" || \
+	    SUBSTR(l_pieza_id,0,2) == "GR" || SUBSTR(l_pieza_id,0,2) == "GS") THEN
+        
+        //Valido si es un Track and Trace valido
+        CALL post:MISCesTT (l_pieza_id)
+        
+        IF (RETVAL == 0) then
+            ;No deben visualizarse
+            RETURN (0)
+        END IF
+    END IF
+	
+	//Limpio los campos asociados a la tabla Rep_Exp
+	CALL CSR:proc_list(F_CLEAR,LST:LISTRep_Exp) 
+	
+	//Si es una Pieza//
+	IF (post:TipoContenido == "A") THEN
+		
+		CDS SELECT FROM "Rep_Exp" BECOMES "Rep_Exp_ctx" WHERE \
+			post:adt_exp_pieza == l_pieza_id  && \
+			post:adt_exp_seq == l_jnl_sequence && \
+			post:adt_exp_fecha == l_jnl_date
+			 
+	    CDS FINDFIRST "Rep_Exp_ctx" LOCK
+	    LET l_err_cds = CDSRETVAL
+
+    	CDS CLEARBUFFER "Rep_Exp_ctx"
+	   		
+   		//Cargo una lista con los campos a apendar segun operacion
+   		SELECT (l_operation)
+			CASE "CIERRECONTENEDOR"
+					CALL post:CDSobtieneCTP
+					CALL post:CDSdescripCorteOp
+					CALL csr:proc_list(F_COPY,LST:post:LISTCierre_Cont,LST:post:LISTRep_Exp) 
+					CLEARFIELD post:CTP_Guia
+					BREAK
+				
+			CASE "CIERRESACA"
+			        CLEARFIELD post:CTP_Guia
+					CLEARFIELD post:adt_grucorte_desc
+					
+					CALL post:CDSobtieneCTPsaca
+					CALL post:CDSdescripGruCte
+					
+					IF (post:Pieza_id == "NO CONTROL") THEN
+						LET post:jnl_sequence_ori = post:adt_novtt_sequence
+						LET l_auxiliar = post:adt_novtt_saca_desc
+						LET post:adt_novtt_saca_desc = post:adt_novtt_grupo_desc
+						LET post:adt_novtt_grupo_desc  = l_auxiliar
+						LET l_auxiliar = ""
+						LET post:adt_novtt_grupo_desc = post:adt_novtt_saca_desc
+					END IF
+				
+					LET post:adt_novtt_saca_desc = post:adt_grucorte_desc
+				    LET post:adt_novtt_grupo_desc = SUBSTR(post:SacaTipoDesc,0,20)
+				    CALL post:MISCFtrim(post:adt_novtt_grupo_desc) 
+					
+					//LET post:adt_novtt_grupo_desc = post:adt_grucorte_desc
+					//LET post:adt_novtt_grupo_desc = post:adt_novtt_saca_tipo
+	                
+					CALL csr:proc_list(F_COPY,LST:post:LISTCierre_Saca,LST:post:LISTRep_Exp) 
+
+					BREAK
+				
+			CASE "CORTELINEA"	
+					CALL csr:proc_list(F_COPY,LST:post:LISTCorte_Linea,LST:post:LISTRep_Exp) 
+					BREAK
+				
+    	END SELECT
+    	
+    	//Apendo los campos 
+   		CALL csr:proc_list(F_APPEND,"Rep_Exp_ctx",LST:post:LISTRep_Exp,0)
+   		
+	    IF (lib:err_retval == -801) THEN
+	        CDS INSERT "Rep_Exp_ctx" LOCK
+	    END IF
+	    
+	    CDS UNLOCK "Rep_Exp_ctx"
+	    
+ 	END IF
+	 	
+ 	//Si es un Contenedor//
+ 	IF (post:TipoContenido == "C") THEN
+	
+		//Obtengo los datos del Contenedor de la Rep_Exp segun el tipo de operacion
+		SELECT (l_operation)
+			CASE "CIERRECONTENEDOR"
+					BREAK
+				
+			CASE "CIERRESACA"
+
+					CALL post:MISCFtrim(l_pieza_id)
+			
+					CDS SELECT FROM "Rep_Exp" BECOMES "Rep_Exp_ctx" WHERE \
+						post:adt_exp_cont_guia == l_pieza_id \
+						&& post:adt_exp_saca_guia == "" \
+						&& post:adt_exp_desp_guia == ""
+					BREAK
+				
+			CASE "CORTELINEA"
+					CALL post:MISCFtrim(l_pieza_id)
+			
+					CDS SELECT FROM "Rep_Exp" BECOMES "Rep_Exp_ctx" WHERE \
+						post:adt_exp_cont_guia == l_pieza_id \
+					    && post:adt_exp_desp_guia == ""
+					BREAK
+			
+    	END SELECT
+	
+		CDS FINDFIRST "Rep_Exp_ctx" LOCK
+		LET l_err_cds = CDSRETVAL
+		
+		CDS CLEARBUFFER "Rep_Exp_ctx"
+		
+		DO	
+			IF (l_err_cds != 0) THEN
+				BREAK
+			END IF
+			
+			//Apendo los campos 
+			SELECT (l_operation)
+				CASE "CIERRECONTENEDOR"
+						BREAK
+				
+				CASE "CIERRESACA"
+				   		CLEARFIELD post:CTP_Guia
+					    CLEARFIELD post:adt_novtt_grupo_desc
+					    
+						CALL post:CDSobtieneCTPsaca
+					    CALL post:CDSdescripGruCte      
+						
+						LET post:adt_novtt_grupo_desc = post:adt_grucorte_desc
+						
+						CDS EXTRACT "Rep_Exp_ctx" post:adt_exp_cont_tipo 
+						
+						CALL csr:proc_list(F_COPY,lst:post:LISTCierre_Saca_FLD,LST:post:LISTCierre_Saca_UPD) 
+   						CALL csr:proc_list(F_APPEND,"Rep_Exp_ctx",LST:post:LISTCierre_Saca_UPD,0)
+   						
+						BREAK
+					
+				CASE "CORTELINEA"	
+						CALL csr:proc_list(F_COPY,lst:post:LISTCorte_Linea_FLD,LST:post:LISTCorte_Linea_UPD) 
+						CALL csr:proc_list(F_APPEND,"Rep_Exp_ctx",LST:post:LISTCorte_Linea_UPD,0)
+						BREAK
+				
+	    	END SELECT
+			
+			CDS UPDATE "Rep_Exp_ctx" LOCK 
+			
+			CDS FINDNEXT "Rep_Exp_ctx" LOCK
+			LET l_err_cds = CDSRETVAL
+			
+			CDS CLEARBUFFER "Rep_Exp_ctx" 
+			
+		LOOP		
+		CDS UNLOCK "Rep_Exp_ctx"	
+		
+	END IF
+	
+	//Si es una Saca//
+	 IF (post:TipoContenido == "S") THEN	
+		
+		//Obtengo los datos de la Saca de la Rep_Exp segun el tipo de operacion
+		SELECT (l_operation)
+			CASE "CIERRECONTENEDOR"
+					BREAK
+				
+			CASE "CIERRESACA"
+					BREAK
+				
+			CASE "CORTELINEA"	
+					CALL post:MISCFtrim(l_pieza_id)
+			
+					CDS SELECT FROM "Rep_Exp" BECOMES "Rep_Exp_ctx" WHERE \
+						post:adt_exp_saca_guia == l_pieza_id \
+						&& post:adt_exp_desp_guia == ""
+					BREAK
+			
+    	END SELECT
+	
+		CDS FINDFIRST "Rep_Exp_ctx" LOCK
+		LET l_err_cds = CDSRETVAL
+		
+		CDS CLEARBUFFER "Rep_Exp_ctx"
+		
+		DO	
+			IF (l_err_cds != 0) THEN
+				BREAK
+			END IF
+			
+			//Apendo los campos 
+			SELECT (l_operation)
+				CASE "CIERRECONTENEDOR"
+						BREAK
+					
+				CASE "CIERRESACA"
+						BREAK
+					
+				CASE "CORTELINEA"
+				        	
+						CALL csr:proc_list(F_COPY,lst:post:LISTCorte_Linea_FLD,LST:post:LISTCorte_Linea_UPD) 
+   						CALL csr:proc_list(F_APPEND,"Rep_Exp_ctx",LST:post:LISTCorte_Linea_UPD,0)
+
+   						/***
+   						LET post:adt_exp_desp_op = op:op_operator_id
+   						LET post:adt_exp_desp_fecha = common:system_date
+   						LET post:adt_exp_desp_hora = common:time_of_day
+   						LET post:adt_exp_desp_guia = post:adt_codseq_nro
+   						LET post:adt_exp_desp_ctp = post:jnl_CTP_Guia
+   						LET post:adt_exp_desp_tipo = post:jnl_CTP_Desc
+   						LET post:adt_exp_desp_transp = post:cod_transp
+   						LET post:adt_exp_desp_carat = post:CaratulaDespacho
+   						LET post:adt_exp_desp_desc = post:adt_desptipos_desc
+   						
+   						CDS APPEND "Rep_Exp_ctx" \
+   						    	post:adt_exp_desp_op \
+                                post:adt_exp_desp_fecha \
+                                post:adt_exp_desp_hora \
+                                post:adt_exp_desp_guia \
+                                post:adt_exp_desp_ctp \
+                                post:adt_exp_desp_tipo \
+                                post:adt_exp_desp_transp \
+                                post:adt_exp_desp_carat \
+                                post:adt_exp_desp_desc
+   						***/
+   						
+						BREAK
+				
+	    	END SELECT
+			
+			CDS UPDATE "Rep_Exp_ctx" LOCK 
+			  
+			CDS FINDNEXT "Rep_Exp_ctx" LOCK
+			LET l_err_cds = CDSRETVAL
+			
+			CDS CLEARBUFFER "Rep_Exp_ctx"
+		LOOP		
+		CDS UNLOCK "Rep_Exp_ctx"
+	
+	END IF
+
+			
+END SUB
+
+/*******/

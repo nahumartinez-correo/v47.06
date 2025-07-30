@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:post:MISCprocBonifPostTel
+* NOMBRE
+*   OFB:post:MISCprocBonifPostTel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCprocBonifPostTel(l_promo_cod, l_promo_desc, l_PreDNroTrn, conJournal)
+	local l_alicuota_iva like post:adt_prodvs_aliciva
+	local l_importe_bon like post:promo_imp_tot
+	local ll_cantidad like post:cantidad2
+	local l_cantidad_bloq like post:cantidad2
+	local ind like siaf:i
+	local l_inhibeUp like promo_inhibeUpPdvs
+	local l_vecesp like post:cantidad2
+	local l_fliatran like siaf:adt_tran_fliatran
+
+dprint "\n\n ======================================================================== \n\n"
+
+	CDS EXTRACT DSC:CONPresuDeta 					   \
+		post:cantidad			into 	ll_cantidad	   \
+		post:promo_imp_srv_tot	into 	l_importe_bon  \
+		post:adt_serv_aliciva 	into 	l_alicuota_iva \
+		promo_inhibeUpServ 		into	l_inhibeUp\
+		siaf:adt_tran_fliatran	into 	l_fliatran \
+		post:tipo_produc \
+	
+
+	bInhibirUP = (bInhibirUP || l_inhibeUp == "S")
+
+dprint "Bonifica Servicio: \n"
+	call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, ll_cantidad)
+
+	l_cantidad_bloq	= post:cant_bloq
+
+	CDS EXTRACT DSC:CONPresuDeta 				  	 	\
+		post:cant_bloq									\
+		post:promo_imp_blq_tot	into 	l_importe_bon 	\
+		post:adt_serv_aliciva 	into 	l_alicuota_iva
+
+dprint "Bonifica Bloques: \n"
+	;let post:cant_bloq = post:cant_bloq * ll_cantidad
+	call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, ll_cantidad)
+	post:cant_bloq = l_cantidad_bloq
+
+	ind = 0
+	while (ind < MAX_VEC_OPC)
+	    cds findagain DSC:CONPresuDeta lock
+		cds extract DSC:CONPresuDeta 						\
+			post:ali_opc[ind] 			into l_alicuota_iva	\
+			post:promo_imp_opc_tot[ind] into l_importe_bon \
+			post:cod_opc[ind]
+		
+		/*ACP- Ps9318 error de redondeo con opcional CDFA*/
+
+dprint "Bonifica Opcional: %s \n"	post:cod_opc[ind]
+		if (l_fliatran == "CST") then
+			// tratamiento especial para telegrafía
+			l_vecesp = 0	
+			;PS9490
+            CALL post:MISCopcCantPart(post:cod_opc[ind], post:tipo_produc, l_vecesp)
+			if ( retval == 1)
+		   		call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, 1)
+			else
+				l_importe_bon = l_importe_bon / ll_cantidad
+				while (l_vecesp < ll_cantidad)
+		   			call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, 1)
+		   			l_vecesp = l_vecesp + 1
+		   	    end while
+		   endif
+		else
+			// resto del mundo
+		   	call post:MISCacumula_vec_bon(l_importe_bon, l_alicuota_iva, ll_cantidad)			
+	    end if
+		ind = ind + 1
+	end while
+
+	call post:MISCtotal_vec_bon
+	call post:CDSgeneraTrnBonLocal(l_promo_cod, l_promo_desc, ImporteTotBon, l_PreDNroTrn, conJournal, "", "", "")
+END SUB
+
+/*******/

@@ -1,0 +1,196 @@
+/****o* Pendientes de agrupación/OFB:post:MISCactualizo_tarifa
+* NOMBRE
+*   OFB:post:MISCactualizo_tarifa
+* DESCRIPCION
+* 	Este OFB recalcula la Tarifa básica de un determinado
+* 	Servicio y actualiza los campos tarifa e importe.    
+* 	Es llamado cada vez que se modifica un parámetro que 
+* 	influye en la tarifa, tal como peso o cantidad.      
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postmisc.h"
+
+SUB post:MISCactualizo_tarifa
+LOCAL l_importe like post:adt_tarif_precio
+    IF (post:cli_tipo != 1 && \
+	    post:enCombo != "S") THEN
+	    //cgw:si no es un producto de un combo, calcula importes.
+
+         /*******************************************/
+	     /* Calculo el Importe solo si es Minorista */
+      	 /* y el Servicio no es SurPostal Express.  */
+       	 /*******************************************/
+        IF (post:adt_serv_umstd == "GMS" && post:peso_en_grs > 0) THEN
+	        post:adt_tarif_desde = post:peso_en_grs
+        ELSE
+	        IF (post:adt_serv_umstd == "KGS" && post:peso_en_kgs > 0) THEN
+	            post:adt_tarif_desde = post:peso_en_kgs
+	        END IF
+        END IF
+
+        /*Agregado por Florencia Marco*/
+        IF (post:adt_serv_umstd == "CMS" && post:peso_en_kgs > 0) THEN
+	        post:adt_tarif_desde = post:peso_en_kgs
+        END IF
+
+        /* Agregado para el productos con unidad de medida UNI */
+        IF (post:adt_serv_umstd == "UNI") THEN
+	        SELECT (siaf:codigo_siaf)
+	            CASE 18301 // Lista
+	                post:adt_tarif_desde = post:envios
+	                BREAK
+	            //CASE 11203 // Promo Mailing
+
+	            CASE 21802 // Sur Postal Express
+	            	BREAK
+	            CASE 18501 // Gestiones Varias
+	            	post:destino = post:adt_tarif_dest
+	                BREAK
+
+	            CASE ELSE
+	                post:adt_tarif_desde = post:cantidad
+	                BREAK
+	        END SELECT
+	    END IF
+
+	   /* Estp se agrega para permitir a los productos que tienen la  marca de usa_caja = "S"
+	   de la tabla Servicio, cuando recien ingresan y su  peso esta en cero, que al modificar el
+	   tipo de caja el precio tambien lo haga. Maricel 10/7/2000*/
+	   IF (post:adt_serv_usa_caja == "S" ) THEN
+	       IF (post:adt_serv_umstd == "GMS" && post:peso_en_grs == 0) THEN
+	           post:adt_tarif_desde = post:peso_en_grs
+           ELSE
+	           IF (post:adt_serv_umstd == "KGS" && post:peso_en_kgs == 0) THEN
+	               post:adt_tarif_desde = post:peso_en_kgs
+	           END IF
+           END IF
+
+           IF (post:adt_serv_umstd == "CMS" && post:peso_en_kgs == 0) THEN
+	           post:adt_tarif_desde = post:peso_en_kgs
+           END IF
+
+        END IF
+
+        CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+        IF (RETVAL < 0)
+            CALL MISCParamDefect(post:tipo_produc2,post:adt_tarif_dest,post:adt_serv_umstd)
+            RETURN (-2)
+        END IF
+
+        giros:err_retval = retval      /*agregado para giros */
+        post:tarifa =  post:adt_tarif_precio * post:cantidad
+
+	    IF ((post:estado_presu == 2 || post:estado_presu == 3) && \
+	        post:IvaCod == "RNI") THEN
+	        //SC 50170
+	        CALL MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+	        post:sobretasa_prod = post:SobreTasaIva
+	    END IF
+
+       	/*MDG se agrego el descuento por promocion */
+   if (siaf:codigo_siaf != 18101) //REGISTRO SIMPLE RPP 
+     if (siaf:adt_tran_fliatran != "CSM") THEN
+       		CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+       		IF (aplica_bonif_serv == "S") THEN
+       			CALL post:MISCBonifSrv()
+				;cuando el servicio es una lista la tarifa es multiplo de la cantidad de envios
+				;por lo tanto la bonificacion por valor lo es tambien
+				IF (siaf:codigo_siaf == 18301 && promoSrvTipoBon == TIPO_BONIF_VALOR)
+					CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+					promo_imp_srv_tot = promo_imp_srv_tot * post:envios
+					CALL post:MISCcalcBonifGral(promoSrvTipoBon, "")
+					CALL post:MISCdetalleBonifGral(promo_desc,post:adt_tarif_precio,"----",promo_imp_srv_tot,TIPO_SERVICIO, "")
+				END IF
+			ELSE
+				promo_imp_srv_tot = 0
+				CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+			END IF
+			IF (siaf:codigo_siaf != 18301 || siaf:codigo_siaf != 18501) THEN
+				CALL post:MISCBonifBlq()
+			END IF
+		END if
+	ENDIF
+
+        /*MDG AGREGUE EL DESCUENTO post:fld_promo_imp*/
+	    post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+	    siaf:importe = post:tarifa + post:costo_opc - post:descuento + post:sobretasa + imp_bloques
+
+        REFRESH post:tarifa
+        REFRESH siaf:importe
+        REFRESH post:sobretasa
+
+		// FGB: saco mensaje por el visor
+		CALL MISCmensaje_visor("D")
+    END IF
+
+    IF (siaf:codigo_siaf == 21802) THEN
+        post:adt_tarif_hasta = 1
+    END IF
+
+    /*se usa para encomienda porque la tarifa no depende de la unidad de medida del servicio*/
+    unidad_fac_aux = adt_tarif_um
+
+    /* Agregado para que salga correcto el IRP */
+    /* JPM - 02/2000 */
+    /*IF (post:cli_tipo == 1 && siaf:codigo_siaf != 21802) THEN*/
+    IF (post:cli_tipo == 1 || \
+        post:enCombo == "S") THEN
+        //cgw:si es un producto de un combo, no calcula importes.
+        IF (post:adt_serv_umstd == "GMS" && post:peso_en_grs > 0) THEN
+	        post:adt_tarif_desde = post:peso_en_grs
+        ELSE
+	        IF (post:adt_serv_umstd == "KGS" && post:peso_en_kgs > 0) THEN
+	            post:adt_tarif_desde = post:peso_en_kgs
+	        END IF
+        END IF
+        /*Agregado por Florencia Marco*/
+        IF (post:adt_serv_umstd == "CMS" && post:peso_en_kgs > 0) THEN
+	        post:adt_tarif_desde = post:peso_en_kgs
+       END IF
+        /* Agregado para el productos con unidad de medida UNI */
+        IF (post:adt_serv_umstd == "UNI") THEN
+	        SELECT (siaf:codigo_siaf)
+	            CASE 18301 // Lista
+	                post:adt_tarif_desde = post:envios
+	                BREAK
+	            CASE 21802 // Sur Postal Express
+	            CASE 18501 // Gestiones Varias
+	                BREAK
+	            CASE ELSE
+	                post:adt_tarif_desde = post:cantidad
+	                BREAK
+	        END SELECT
+	    END IF
+
+	    CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+        IF (RETVAL < 0 && siaf:codigo_siaf == 11203 )
+
+            /*Si el CDSbasico me retorna un valor negativo y el producto es Promo
+            Mailing, entonces se eligio un destino no correspondiente a la cantidad
+            por lo tanto esta rutina debe retornar un valor negativo*/
+            CALL MISCParamDefect(post:tipo_produc2,post:adt_tarif_dest,post:adt_serv_umstd)
+            RETURN (-2)
+
+		// FGB (SAP) - 4.10.2000: Existe el caso en que en Ctas/Ctes se imprima label.
+		// Por lo tanto, guardo el valor calculado por el CDSbasico para ese fin...
+        ELSE
+            LET post:tarifa_label_cc =  post:adt_tarif_precio
+		// FGB fin
+        END IF
+     END IF
+	 /*Calcula la tarifa total del servicio*/
+     CALL MISCact_tarif_serv
+END SUB
+
+/*******/

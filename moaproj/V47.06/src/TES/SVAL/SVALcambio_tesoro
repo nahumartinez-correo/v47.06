@@ -1,0 +1,166 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALcambio_tesoro
+* NOMBRE
+*   OFB:tes:SVALcambio_tesoro
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALcambio_tesoro
+local varl_tesoro_dest like op:adt_tesoro
+local varl_tesoro_id_dest like op:adt_tesoro_id
+local varl_tesoro_orig like op:adt_tesoro
+local varl_tesoro_id_orig like op:adt_tesoro_id
+local varl_tes_llave_orig like op:adt_llave_tesoro
+local varl_tes_llave_dest like op:adt_llave_tesoro
+local tes_auth_orig       like op:adt_tes_auth
+local tesforz_auth_orig   like op:adt_tesforz_auth
+local tes_auth_dest       like op:adt_tes_auth
+local tesforz_auth_dest   like op:adt_tesforz_auth
+    
+
+	move "S" to arqueo_marca
+	call MISCarqueo_de_tesoro // Llamo al arqueo de los valores del tesoro
+    
+	clearfield siaf:importe
+    
+	/* si el arqueo salió OK y no salio con esc le permito realizar el pase */
+	if (arqueo_marca == "S") && (LASTKEY != RT_ESC) then
+		/* Realizo el pedido de la password del tesoro destino */
+		protfield tes:tes_login_dest
+		clearfield tes:tes_passwd
+		popup tes:SCRNingresa_password
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+
+		call ovr:MISCValidaPassNT(tes:tes_login_dest,tes:tes_passwd)
+		IF (retval != 0) THEN        
+			return -2
+		END IF 
+		;call  csr:f_sacrypt tes:tes_passwd op:crypt_passwd
+		;if (op:crypt_passwd != op:adt_password)//op:adt_password esta en memoria
+		;        errmsg drv:errmsg_list,DSC:op:ERRbad_passwd
+		;        return (-2)
+		;end if
+        
+		/* El tesoro destino confirmo el cambio => Realizo el cambio de marca */
+		CDS BEGINWORK // comienzo LUW
+		// selecciono los registros del orig. y el dest de la tabla profiles
+		/*Se agrega marca de borrado logico - Gabriel Falciola*/
+		CDS SELECT op:op_tesoro,op:op_tesoro_id op:op_llave_tesoro,op:op_tes_auth op:op_tesforz_auth FROM DSC:op:adt_op_table \
+		BECOMES DSC:op:adt_op_context \
+		WHERE (op:op_login_id == tes:tes_login_orig && \
+		op:op_operator_id == tes:tes_operator_id_orig) || \
+		(op:op_login_id == tes:tes_login_dest && \
+		op:op_operator_id == tes:tes_operator_id_dest) && \
+		op:op_borrado_logico != "S"
+		if (cdsretval == 0) then
+			// busco el primero de los registros
+			CDS FINDFIRST DSC:op:adt_op_context LOCK
+			if (cdsretval == 0) then
+				// guardo las marcas de tesoro en las variables xxx_orig
+				CDS EXTRACT DSC:op:adt_op_context \
+				op:op_tesoro INTO varl_tesoro_orig \
+				op:op_tesoro_id INTO varl_tesoro_id_orig \
+				op:op_llave_tesoro INTO varl_tes_llave_orig \
+				op:op_tes_auth into tes_auth_orig \
+				op:op_tesforz_auth into tesforz_auth_orig
+				if (cdsretval == 0) then
+					// busco el segundo de los registros
+					CDS FINDNEXT DSC:op:adt_op_context LOCK
+					if (cdsretval == 0) then
+						// guardo las marcas de tesoro en las variables xxx_dest
+						CDS EXTRACT DSC:op:adt_op_context \
+						op:op_tesoro INTO varl_tesoro_dest \
+						op:op_tesoro_id INTO varl_tesoro_id_dest \
+						op:op_llave_tesoro INTO varl_tes_llave_dest \
+						op:op_tes_auth into tes_auth_dest \
+						op:op_tesforz_auth into tesforz_auth_dest
+						if (cdsretval == 0) then
+							// INTERCAMBIO LAS MARCAS
+							/*Verifico si hay que sacarle o ponerle el perfil de Supervisor - Gabriel Falciola*/
+							if (varl_tesoro_dest == "N" && tesforz_auth_orig == "X")
+								clearfield tes_auth_orig
+								clearfield tesforz_auth_orig
+							end if
+							if (varl_tesoro_dest == "S" && tes_auth_orig != "X")
+								tes_auth_orig = "X"
+								tesforz_auth_orig = "X"
+							end if
+							CDS CLEARBUFFER DSC:op:adt_op_context
+							CDS APPEND DSC:op:adt_op_context \
+							varl_tesoro_dest AS op:op_tesoro \
+							varl_tesoro_id_dest AS op:op_tesoro_id \
+							varl_tes_llave_dest AS op:op_llave_tesoro \
+							tes_auth_orig AS op:op_tes_auth \
+							tesforz_auth_orig AS op:op_tesforz_auth
+							CDS FINDFIRST DSC:op:adt_op_context LOCK
+							if (cdsretval == 0) then
+								// actualizo el primer registro con las marcas
+								// que tenia el segundo
+								CDS UPDATE DSC:op:adt_op_context LOCK
+								if (cdsretval == 0) then
+									/*Verifico si hay que sacarle o ponerle el perfil de Supervisor - Gabriel Falciola*/
+									if (varl_tesoro_orig == "N" && tesforz_auth_dest == "X")
+										clearfield tes_auth_dest
+										clearfield tesforz_auth_dest
+									end if
+									if (varl_tesoro_orig == "S" && tes_auth_dest != "X")
+										tes_auth_dest = "X"
+										tesforz_auth_dest = "X"
+									end if
+									CDS CLEARBUFFER DSC:op:adt_op_context
+									CDS APPEND DSC:op:adt_op_context \
+									varl_tesoro_orig AS op:op_tesoro \
+									varl_tesoro_id_orig AS op:op_tesoro_id \
+									varl_tes_llave_orig AS op:op_llave_tesoro \
+									tes_auth_dest AS op:op_tes_auth \
+									tesforz_auth_dest AS op:op_tesforz_auth					
+									CDS FINDNEXT DSC:op:adt_op_context LOCK
+									if (cdsretval == 0) then
+										// actualizo el segundo registro con las
+										// marcas que tenia el primero
+										CDS UPDATE DSC:op:adt_op_context LOCK
+										if (cdsretval == 0) then
+											// si llegue hasta aca es porque:
+											// TODO SALIO BIEN !!!!
+											CDS UNLOCK DSC:op:adt_op_context
+											CDS ENDSELECT DSC:op:adt_op_context
+											CDS COMMITWORK // fin LUW
+											/* Cambio al tesorero de la sucursal */
+											call tes:CDScambio_tesorero(tes:tes_operator_id_dest)
+											/*Pongo la marca de cambio de perfil en la Sucursal Activa - Gabriel Falciola*/
+											call CDSCambioPerfil(common:sucursal_activa,"MARCA")
+											return (0)
+										end if
+									end if
+								end if
+							end if
+						end if
+					end if
+				end if
+			end if
+		end if
+		// si llego hasta aca es porque ALGO SALIO MAL !!!!!
+		CDS ROLLBACKWORK // vuelvo atras los cambios hechos en la LUW
+		return (-2)
+	else
+		errmsg common:errmsg_list,"El Arqueo No Fue correcto, No podrá realizar el pase."
+		init 33,0
+		return (-2)
+	end if
+END SUB
+
+/*******/

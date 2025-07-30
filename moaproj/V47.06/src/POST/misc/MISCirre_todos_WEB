@@ -1,0 +1,98 @@
+/****o* Reportes/OFB:post:MISCirre_todos_WEB
+* NOMBRE
+*   OFB:post:MISCirre_todos_WEB
+* DESCRIPCION
+*   Reporte Irregularidades - Todas Las Irregularidades.
+*   Motivo: Fallos por registraciones WEB.
+*   Realiza el query de la tabla web_tmp segun la fecha seleccionada, y ordenada por:
+*   Operador, fecha, nro. de presupuesto de la transac. que se canceló y nro que se registro en la base web para la tx
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay Fallos a reportar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCirre_todos_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirre_todos_WEB /*Todas las Irregularidades WEB*/
+    LOCAL loc_modif  LIKE post:cant_barras
+    LOCAL oper_irre  LIKE tlr:jnl_operator
+
+    //Se realiza el query teniendo en cuenta la clave primaria que ordena por:
+    //Operador, fecha, nro. de presupuesto de la transac. que se canceló y nro que se registro en la base web para la tx
+    IF (post:opcion_irregula == "SUCURSAL") THEN
+    	//Por Sucursal
+        CDS SELECT FROM DSC:post:web_tmp_tbl BECOMES DSC:post:web_tmp_ctx \
+		WHERE (post:web_tmp_fecha >= FLD:adt_umov_fecha_ini \
+		&& post:web_tmp_fecha <= FLD:adt_umov_fecha_fin)  \
+		&& (post:web_tmp_Lestado == "C") ASCENDING SORT "primary"
+
+	ELSE
+		//Por Operador
+		CDS SELECT FROM DSC:post:web_tmp_tbl BECOMES DSC:post:web_tmp_ctx \
+		WHERE 	 post:web_tmp_operator == adt_umev_op \
+		&& (post:web_tmp_fecha >= FLD:adt_umov_fecha_ini \
+		&& post:web_tmp_fecha <= FLD:adt_umov_fecha_fin ) \
+		&& (post:web_tmp_Lestado == "C" ) \
+		SORT "primary"
+
+    END IF 	
+    CDS FINDFIRST DSC:post:web_tmp_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+
+    IF (post:irregu_esp == "S" && lib:err_retval == 0) THEN
+        //imprime titulo de separacion de Irregularidades especiales,
+        //si es la primera irregularidad especial a reportar. 
+        CALL post:MISCtitulo_irreg_esp
+        CLEARFIELD post:irregu_esp //limpia variable de control de titulo de irregularidades especiales.
+    END IF
+
+	siaf:codigo_siaf = 6680
+	CLEARFIELD siaf:adt_tran_desc
+	CALL CDSdesc_tran_web
+	CALL CSR:trimfield(siaf:adt_tran_desc)
+	
+    //CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+    CDS FINDAGAIN DSC:post:web_tmp_ctx NOLOCK
+    lib:err_retval = CDSRETVAL
+
+    oper_irre = -1 //Intancia variable utilizada para el corte de control por operador.
+
+    loc_modif = 0
+    WHILE (lib:err_retval == 0)    
+        CDS EXTRACT DSC:post:web_tmp_ctx ALL
+
+        //Corte de Control por Operador.
+	    //El reporte de todas las irregularidades, solo imprime los operadores con irregularidades en el
+	    //rango fecha de selección, a diferecia del reporte del motivo irregularidad particular por sucursal.
+	    //que imprime todos los operadores que operaron en el rango seleccionado.
+        IF (oper_irre != post:web_tmp_operator) THEN
+            oper_irre = post:web_tmp_operator
+            //Imprime Operador.
+            post:operator_irre = oper_irre
+            CALL post:MISCencab_oper_irre
+        END IF
+
+        CALL post:MISCwrite_irre_web
+	    loc_modif = 1        
+        CDS FINDNEXT DSC:post:web_tmp_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    IF (loc_modif == 0) THEN
+    	CDS ENDSELECT DSC:post:web_tmp_ctx
+    	CLEARFIELD siaf:adt_tran_desc
+	    RETURN (-2)
+	  ELSE
+		post:flag_irregularidades = "S"
+    END IF
+	CLEARFIELD siaf:adt_tran_desc
+	CDS ENDSELECT DSC:post:web_tmp_ctx
+END SUB
+
+/*******/

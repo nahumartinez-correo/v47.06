@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:CDSchqMultsave
+* NOMBRE
+*   OFB:post:CDSchqMultsave
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postCDS.h"
+
+Sub post:CDSchqMultsave
+	local l_NroComp like post:NroCompPago
+	local tieneCotizacion like siaf:i
+	local cotizacion like post:adt_coti_venta
+
+	If (adt_mp_mon != adt_emp_moneda)
+		Call  post:MISCcheck_cotizacion(adt_mp_mon)
+		If (Retval < 0)
+			tieneCotizacion = false
+		Else
+			tieneCotizacion = true
+		Endif
+	else
+		tieneCotizacion = false
+	endif
+
+	siaf:importe = importeChqMult
+	cotizacion = post:adt_coti_compra
+
+	if (tieneCotizacion)
+		importe_origen = siaf:importe
+		INIT 22,1
+		siaf:importe = siaf:importe * cotizacion
+		INIT 22,0
+	else
+		importe_origen = siaf:importe
+	endif
+
+	fprint l_NroComp, "%03.3s%020.20s%020.20s", cod_banco, cuenta, nro_cheque
+	NroCompPago = l_NroComp
+	journalizacionOk = "N"
+	Cds SELECT FROM Dsc:TblImpreMedio BECOMES DSC:CtxImpreMedio \
+	            WHERE (Fld:post:op_operator_id == fld:post:op_operator_id ) && \
+	                  (siaf:moneda == siaf:moneda) && (NroCompPago == l_NroComp)
+	Cds FINDFIRST DSC:CtxImpreMedio  LOCK
+	Let lib:err_retval = cdsretval
+	If (lib:err_retval == -801) THEN
+		
+		Cds CLEARBUFFER DSC:CtxImpreMedio
+	    Cds APPEND DSC:CtxImpreMedio 	\
+	                 op_operator_id  	\
+	                 post:NroCompPago 	\
+	                 siaf:moneda  		\
+	                 DescripMedPag 		\
+					 adt_mp_mon 		\
+				     adt_mp_rest 		\
+				     adt_mp_min 		\
+				     adt_mp_max 		\
+		  			 adt_mp_auto  		\
+				     adt_mp_adm 		\
+			         adt_mp_admban 		\
+				     adt_mp_int 		\
+					 codigo_interno 	\
+					 journalizacionOk 	\
+					 Tipo_Adm 			\
+					 SupMedPago 		\
+					 ovr:ovr_sup_id		\
+					 adt_mp_viaje		\
+					 post:jnl_interes_diferido \
+					 post:iva_Porcentaje \
+					 post:imp_intereses   \
+					 post:cheque_dif \
+					 post:excep_dif_codseq
+					 
+
+		// Agregar todos los datos que se capturan!!!
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTtarjeta,2)
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTcheque,2)
+		// Importes
+		CALL csr:proc_list(F_APPEND,DSC:CtxImpreMedio,LST:LISTimportes,2)
+		
+		post:moneda_status = "002"
+		es_diferido = "D"
+		status_up_dif = 999 //status trucho para saber que todavia no se realizò
+        					//el viaje al switch
+        			
+        Cds APPEND DSC:CtxImpreMedio \
+              	 es_diferido \
+              	 status_up_dif \
+        		post:moneda_status
+
+		Cds INSERT  DSC:CtxImpreMedio LOCK
+	Else
+		MSGBOX "El cheque que se intenta cargar ya fue ingresado!" OFB_OK "ERROR"
+		Cds EndSelect DSC:CtxImpreMedio
+		Return -2
+	End If
+	Cds EndSelect DSC:CtxImpreMedio
+END SUB
+
+/*******/

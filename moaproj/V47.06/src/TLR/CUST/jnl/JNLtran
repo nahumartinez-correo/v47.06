@@ -1,0 +1,488 @@
+/****o* Pendientes de agrupación/OFB:tlr:JNLtran
+* NOMBRE
+*   OFB:tlr:JNLtran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "custjnl.h"
+
+SUB tlr:JNLtran 
+    local prelog_retval like lib:err_retval
+    local cdswait_retval like lib:err_retval
+    local retval_tmp like lib:err_retval
+
+    cdswait_retval = 0
+    prelog_retval = 0
+	
+	//Paleativo
+/*	IF (post:PresEst == 3 && post:cli_tipo == 0 && drv:dt_app != 11)
+		CALL post:MISCexisteInicio
+		IF (RETVAL < 0) THEN
+			//No se debe journalizar el fin de sesion pues no hay inicio de sesion journalizado
+			RETURN
+		ENDIF
+	END IF
+	*/
+	//MFM - Si es un cliente medio con facturacion diferida fuerzo la journalizacion
+	// de los importes en cero
+	IF (post:ImpCC_Min == "S") THEN
+	call post:MISCFuerzo_Jnl_CD(siaf:adt_tran_fliatran)
+ENDIF
+
+/*Para que no totalice productos de un combo que no sean principales.*/
+if (post:enCombo == "S" && post:esPpalCombo != "S" && \
+    giros:es_emision_tele != "S" && giros:es_emision_postal != "S" && \
+    giros:es_envio_WU != "S" ) then
+	clearfield drv:INDspc_rtn[0]
+	clearfield tlr:INDtots_append
+endif
+
+    /* we will save the screen because they will all
+       be journaled later
+    */
+    LET INDdcol_scrn[drv:screen_active] = drv:INDscr
+    /*  if drv:next_screen isn't -1 we aren't done
+        with the transaction yet
+    */
+    LET drv:screen_active = drv:screen_active + 1
+    IF (drv:INDscreen[drv:screen_active] != 0) THEN
+        LET drv:screen_active = drv:screen_active -1
+        RETURN
+    END IF
+    
+    //Se hace esto para que no totalice las Notas de Credito Y Refacturacion PED
+    IF (post:DocFisPed == "NCRED" || post:DocFisPed == "FACTU")
+    	CLEARFIELD drv:INDspc_rtn[0]
+    END IF
+    
+    setflag tlr:state_flags,end_tran
+    LET drv:screen_active = drv:screen_active -1
+    LET hcomm:INDhost_sndrt = drv:INDhcomm_rtn
+    LET hcomm:INDhost_rcvrt = drv:INDspc_rtn[1]
+    LET INDtran_name = drv:INDcur_tran
+    LET INDjnl_append = drv:INDjnl_rtn
+    LET INDtots_append = drv:INDspc_rtn[0]
+    LET INDdocs_list = drv:INDspc_rtn[2]
+    if (fld:INDjnl_append != 0 ) then
+    /* Guarda una primer instancia del registro de Journal */
+    #ifdef MENSAJES_CIERRE
+	if (siaf:codigo_siaf == 9560)
+	    dprint "Cierre del dia, JNLtran INDjnl_append %s\r\n",tlr:INDjnl_append
+	end if
+	#endif
+# if TDRV_PRELOG == 1
+         /* 7606-7636-7646-7806-7836-7846 */
+	if (siaf:compra_venta == "S") then
+    	IF (TESTFLAG(tlr:tran_flags,correction)) then
+            let siaf:codigo_siaf_tmp = siaf:codigo_siaf
+            let siaf:codigo_siaf = siaf:codigo_siaf - 6
+            call OFB:tlr:JNLprelog_tran
+            let siaf:codigo_siaf = siaf:codigo_siaf_tmp
+        else
+            let siaf:codigo_siaf_tmp = siaf:codigo_siaf
+            let siaf:codigo_siaf = siaf:codigo_siaf_cv
+            call OFB:tlr:JNLprelog_tran
+            let siaf:codigo_siaf = siaf:codigo_siaf_tmp
+        endif
+	else
+        let context_retval = 0
+        call OFB:tlr:JNLprelog_tran
+        if (retval < 0)
+            prelog_retval = retval
+        end if
+        if (cdsretval == -932) /* Tabla no definida no se abrio el contexto */
+            context_retval = -932
+        end if
+    endif
+	// Reingenieria: proceso de confirmacion de transacciones
+    //Incremento en 1 el contador de items para mostrar en pantalla los items 
+    //de una transaccion. Se inicializa en la plataf:confirma_driver
+    plataf:cant_items = plataf:cant_items + 1
+    refresh plataf:cant_items
+	// fin reingenieria.
+#endif
+    endif
+
+/* Si es una transaccion Multiple llama a otro manejador de envio */
+    if (siaf:multiple == "S")
+        if (testflag(tlr:tran_flags,correction))
+            siaf:i = 0
+            do
+            if (siaf:i == 15)
+            break
+            endif
+            if (siaf:cod_tran_mult[siaf:i] > 0 )
+             siaf:cod_tran_mult[siaf:i] = siaf:cod_tran_mult[siaf:i] + 1
+            endif
+            siaf:i = siaf:i + 1
+            loop
+        endif
+        call siaf:COMMenvio_transac
+        goto seguir
+    endif
+reentry:
+    /* agregado por martin para que no grabe el mensaje de rechazada en
+       una transaccion aceptada */
+       /* se agrega para anulacion de operaciones y reimpresion de factura que no pierda el siaf:mensaje */
+	/*MFM - Se agregar la ultima condición para que no borre el mensaje en la consulta de excepcines*/
+	if (!testflag(tlr:tran_flags,correction) && post:NotaCredito != "S" \
+	&& post:NotaCreditoRev != "S" && post:enSesion != "S" && post:enSesion != "P" && siaf:codigo_siaf != 99180) then
+	    clearfield siaf:mensaje
+    endif
+    /* Controla si es que la tr. vino con el mensaje de
+    Enviado a Consulta */
+    if (siaf:codigo_siaf == 7626 || siaf:codigo_siaf == 7826) then
+        clearfield siaf:pantalla_impreso
+    endif
+    CALL  hcomm:COMM_stat_init
+  /************************************************************************/
+    /*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+    /************************************************************************/
+
+	/* Respaldo la secuencia de la transaccion actual porque el mismo campo se usa para actualizar el secuenciador*/
+	/* de la tabla de totales */
+	tlr:aux_sequence = tlr:jnl_sequence // SECUENCIA DE LA TRANSACCION EN CURSO
+
+    /* Si el flag de TRAN caidas en Vuelo esta ON,
+    Ejecuto proceso correspondiente,para su procesamiento
+    Se ejecutara el proceso de recuperacion siempre y cuando la transaccion
+    en curso tenga rutina de send y  de rcve, es decir las que viajan a
+    HOST.  Se realizo el procedimiento anterior, para que no se modifique
+    el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+
+	if (post:NotaCredito != "S" && post:NotaCreditoRev != "S" && post:enSesion != "S" && post:enSesion != "P") then
+	// FGB 5.6.2001: reemplazo el control de la flag por la lectura de la jnl_caidas, por existir una secuencia donde
+	// la flag no queda seteada... tambien obvio la verificacion de la rutina de rcve 
+	//    if (testflag(tlr:controla_marca,mayor_cien) && drv:INDhcomm_rtn != 0 && drv:INDspc_rtn[1] != 0  && \
+	//		testflag(hcomm:state_flags,on_line))
+	// FGB fin		
+		if (drv:INDhcomm_rtn != 0 && siaf:codigo_siaf != 9550) then // si tiene rutina de SEND y distinto de cierre forzado		
+			call siaf:CDSchk_trxs_caidas 
+			if (retval == 0 && testflag(hcomm:state_flags,on_line)) // si hay trx's con caida y hay linea 
+				FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+				call siaf:CDSjnl_mayor_cien
+				retval_tmp = RETVAL
+				if ( retval_tmp == TRAN_CAIDA_VUELO )
+
+	    			clearfield lib:stat_message
+	    			let lib:stat_message.highlite = 0
+	    			refresh statusline
+	/*
+	    			CALL  MISCendtran_nowait
+	    			CLEARFIELD link_y_n
+	    			LET common:trap_reset = ofb:drv:KEYSreset_esc
+	    			resetflag tlr:state_flags,end_tran
+	    			setflag drv:mode_flags,no_stack_list
+	*/
+
+					// Blanquear Campos Indirectos para que no envie Tran en Curso.
+					/*Cuando se esta recuperando una caída y se pierde la comunicacion
+					 con el host, la transaccion no debe seguir en curso para evitar
+					 inconsistencias en el switch (especialmente para las cancelaciones
+					 de giros que no tienen consulta previa)*/
+					clearfield hcomm:INDhost_sndrt
+					clearfield hcomm:INDhost_rcvrt
+					siaf:mensaje = "TRANSACCION RECHAZADA POR PROBLEMAS DE COMUNICACION"
+
+				end if
+				FYIMSG CLEAR
+			
+				/*Mensajes en pantalla Para Tx con Cheque Diferido*/
+				//CALL post:MISCrecCaidaChkDif(retval_tmp)
+			
+			elseif (retval == -5) then // hay trx's c/caida pero tomadas por el RTbatch .
+				clearfield hcomm:INDhost_sndrt
+				clearfield hcomm:INDhost_rcvrt
+				siaf:mensaje = "TRANSACCION RECHAZADA - RECUPERACIONES PENDIENTES"
+				FYIMSG CLEAR
+			end if // si hay trx's con caida y hay linea 
+		end if // si tiene rutina de SEND 
+	end if // si no es nota de credio o reimpresion 
+    /************************************************************************/
+    /*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+    /************************************************************************/
+    CALL  hcomm:COMM_host_tran
+    /* Analizamos si vino por Enviado a Consulta */
+    if (siaf:pantalla_impreso == "R")
+        let hcomm:tran_status = ENVIADA_CONSULTA
+    endif 
+    /* Agregado por Giros */
+    IF (TESTFLAG(controla_firma,cancelacion)) THEN
+      GOTO reentry:
+    END IF
+    
+    /* Agragado para Pago Fácil (FGB)*/
+    call post:MISCpfacil_reenvio
+    if (retval == 1) then
+    	GOTO reentry:
+    endif
+    
+    /* Agregado por AD - 1/4/96 para que en las transacciones con link
+       la primera transaccion no muestre el estado */
+    /* EC - 11/10/96. Si es la 0089 (Identificacion cliente debe proceder
+       igual que si no tuviera una linkeada */
+    if (drv:INDspc_rtn[3] == 0 || siaf:codigo_siaf == 0089) then
+        CALL  hcomm:COMM_host_msg
+    else
+        if (hcomm:tran_status != 3) then
+            call hcomm:COMM_host_msg
+        else
+            clearfield lib:stat_message
+            REFRESH lib:stat_message
+        endif
+    endif
+    /* Si el mensaje que vino pide supervision vuelve a enviar la
+       transaccion */
+    IF (TESTFLAG(tlr:tran_flags,supovr_request)) THEN
+        /* Agrego que llame a la rutina MISCovr_process de SIAF porque sino llama a la
+            de tlr - M.Laura    (Supervision) */
+        CALL siaf:MISCovr_process
+
+        IF (TESTFLAG(tlr:tran_flags,supovr_granted)) THEN
+            LET tlr:jnl_supervisor = ovr:ovr_sup_id
+            if (testflag(siaf:siaf_flags,cajero)) then
+                   fprint gali:jerarquia "%s" "1" /* Cajero */
+            else
+               if (testflag(siaf:siaf_flags,req_tes)) then
+                    fprint gali:jerarquia "%s" "A" /* Cajero Tesorero */
+               else
+                    fprint gali:jerarquia "%s" "M" /* Jefe de Oficina */
+               endif
+            endif
+
+            GOTO reentry
+        else
+            fprint gali:jerarquia "%s" "0"
+
+        ENDIF
+    ENDIF
+    /* Se elimina el tratamiento especial para Pago de Prestamo 2810 M.Laura */
+    /* Tratamiento rutinas Tesoro */
+    // PJM 19/04/1998 Se agrego que para Nota de Credito si tiene seteado el Flag no entre
+    //cgw:siaf:codigo_siaf = 99097 es la captura de medio de pago tipo cheque para cliente cuentacorrentista.
+    if ((tes:es_tesoro == "S" && post:jnl_sequence_dire != "D" ) || (( siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99098 || siaf:codigo_siaf == 99097) && post:Tipo_Adm == "I" ))
+        if (context_retval == 0)
+            call tes:MISCjnltran
+        end if
+    else
+        if ((tes:es_tesoro == "S") ||(( siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99098 || siaf:codigo_siaf == 99097) && post:Tipo_Adm == "I" ))
+            /* Directa de una anulación parcial*/
+            call tes:MISCjnlAnula
+        end if
+    end if
+
+seguir:
+
+    IF (hcomm:tran_status < 100) THEN
+    /*  we will not try and log it if it does not have
+        a journal append routine */
+        IF (drv:INDjnl_rtn != 0) THEN
+/* Para que actualice el registro ya grabado por el JNLprelog_tran */
+
+            if (siaf:compra_venta == "S") then
+                IF (TESTFLAG(tlr:tran_flags,correction)) then
+                  let siaf:codigo_siaf_tmp = siaf:codigo_siaf
+                  let siaf:codigo_siaf = siaf:codigo_siaf - 6
+                  call OFB:tlr:JNLwait
+                  call OFB:tlr:JNLupdate_commit
+                  let siaf:codigo_siaf = siaf:codigo_siaf_tmp
+                else
+                  let siaf:codigo_siaf_tmp = siaf:codigo_siaf
+                  let siaf:codigo_siaf = siaf:codigo_siaf_cv
+                  CALL  JNLwait
+                  CALL  JNLupdate_commit
+                  let siaf:codigo_siaf = siaf:codigo_siaf_tmp
+                endif
+            else
+                // LLamo a una rutina que pregunte por el retval
+                // del cds wait.
+                CALL  JNLwait_retval
+                if (retval == -2)
+                    cdswait_retval = retval
+                end if
+                CALL  JNLupdate_commit
+            endif
+        endif
+
+        /* Agregado para que imprima el Label en Transacciones Postales */
+        IF ((post:tipo_transac == "CSP" || post:tipo_transac == "CSE") &&\
+            (!TESTFLAG(tlr:tran_flags,correction)) &&\
+            (post:estado_presu == 1 || post:estado_presu == 3 || post:estado_presu == 4)) THEN
+                    drv:collect = 1
+                    lib:ind_type = (INDdocs_list >> 24) & 0xFF
+                    CALL FLD:INDdocs_list
+        END IF
+        
+        //gpb:NI50458
+        /* Agregado para que imprima tickets cuando la tx es una reversa por journal*/
+				IF ((TESTFLAG(tlr:tran_flags,correction)) && (post:estado_presu == 1 || post:estado_presu == 3 || post:estado_presu == 4)) THEN
+					CALL post:MISCimpre_rev
+				END IF
+				
+
+
+// Imprimo el comprobante si journalizo bien, unicamente.
+#if TLR_JNL_WAIT == 0
+        if (cdswait_retval == 0)
+#else
+        if (prelog_retval == 0)
+#endif
+// MLD 23-05-2001 Imprimo el comprobante si journalizo bien, unicamente.
+
+        if (tlr:context_retval == 0)
+        IF (((siaf:imprime_comprobante == "S") || \
+              ((siaf:imprime_comprobante == "D") && \
+            (!testflag(tlr:tran_flags, correction)))) && \
+            (siaf:automatico != "S") && \
+            (tlr:INDdocs_list != 0) && (siaf:reversar != "S") \
+            && (!testflag(common:rt_flags,reentry_active)))
+                if (siaf:imprime_comprobante == "D")
+                   let siaf:nro_de_copia = RPT_ORIGINAL
+                end if
+                LET drv:collect = 1
+                let lib:ind_type = (tlr:INDdocs_list >> 24) & 0xff
+                select (lib:ind_type)
+                case OFB_OBJ
+                call fld:tlr:INDdocs_list
+                break
+                case LST_OBJ
+                /******************************************************/
+                /* Comento porque esto para GaliciaAhora no va. Sebas */
+                /******************************************************
+                if (siaf:ve_firma == "S" && (\
+                    siaf:codigo_siaf == 0700 || \
+                    siaf:codigo_siaf == 0710))
+                         let siaf:nro_de_copia = RPT_COPIA
+                         let tlr:INDdocs_list = \
+                         LST:siaf:DLSTdepext_efvo2
+                end if
+                *******************************************************/
+                CALL CSR:printlist tlr:INDdocs_list 0
+                break
+                end select
+                clearfield lib:ind_type
+                LET drv:collect = 0
+
+    ENDIF
+    end if
+    end if
+    
+
+    
+    
+    ELSE            /* transaccion rechazada = 100 */
+        IF (drv:INDjnl_rtn != 0) THEN
+				/*Tratamiento para reemplazo de cheques*/
+                CALL post:MISCreemp_mayor_99
+                
+                CALL  JNLwait
+                CALL  JNLupdate_backout
+
+				
+				
+        END IF
+    END IF
+    
+    let siaf:compra_venta = "N"
+    if (drv:INDjnl_rtn != 0)
+        CALL  JNLwait
+#if BASE_CFIG_TLRTRK == 1
+                CALL tlr:TRKlog_tracking
+#endif
+    END IF
+    IF (drv:INDjnl_rtn == 0) THEN
+          MOVE "Y" TO hcomm:no_msg
+    END IF
+    IF (TESTFLAG(tlr:tran_flags,correction) && \
+    	(TESTFLAG(giros:flags_back,cancelacion) || hcomm:tran_status < 100)) THEN
+        CALL siaf:MISCmarca_corregida
+    ENDIF
+
+	//Marco registro PresuDet como reversado para control de Adm PrePaq
+	IF (TESTFLAG(tlr:tran_flags,correction) && siaf:codigo_siaf == 18901)
+		CALL post:CDSupdPDet_revPP
+	end if
+    
+    
+    
+    CLEARFIELD tlr:jnl_sequence_corr
+    CLEARFIELD tlr:sequence_corr
+    siaf:automatico = "N"
+    IF (drv:INDspc_rtn[4] != 0) THEN
+        CALL  tlr:MISClink_tran
+        IF (RETVAL != -2) THEN
+            link_y_n = "Y"
+        END IF
+    END IF
+    /* La transaccion linkeada termino */
+    if (INDjnl_append != 0) && (link_y_n != "Y")
+        if (hcomm:tran_status != 3) then
+            CALL  MISCdisable_pbcb
+            LET drv:collect = 1
+            /* la plataf:TRANfin_sesion no muestra el mensaje ya
+               que la misma no tiene pantalla */
+#ifdef COMPCONBARRA
+			if (siaf:codigo_siaf != 9001 && post:progressBar.numchars == 0) then
+#else
+            if (siaf:codigo_siaf != 9001) then
+#endif
+                if (siaf:codigo_siaf != 8950 ) then
+                    FYIMSG drv:fyimsg_list,\
+                         "Presione una Tecla para Continuar"
+                end if
+                CALL  csr:f_orsklock
+                // FGB (reingenieria): cuando es teclas rapidas, elimino el getkey
+                
+                //cgw:elimino el getkey si es venta prod.postal
+                if (post:Modo == "R" && plataf:chosen_codtrn.NUMCHARS > 0 && \
+                	plataf:chosen_lsttrn.NUMCHARS > 0 || \
+                	siaf:codigo_siaf_aux == 11000) then                		
+                	// it's a NOP 
+                else
+                    if (siaf:codigo_siaf != 8950 ) then
+                	    GETKEY
+                	endif
+                endif
+
+                FYIMSG CLEAR
+                CALL  csr:f_orskunlk
+            end if
+//                      ungetkey lastkey
+            let drv:collect = 0
+        endif
+    END IF
+    CLEARFIELD lib:stat_message
+    let lib:stat_message.highlite = 0
+    REFRESH STATUSLINE
+    CALL  MISCendtran_nowait
+    CLEARFIELD link_y_n
+    LET common:trap_reset = ofb:drv:KEYSreset_esc
+    resetflag tlr:state_flags,end_tran
+    setflag drv:mode_flags,no_stack_list
+
+    if ( siaf:multiple == "S" && siaf:reversar == "S")
+        setflag lib:state_flags,scan_mode
+        clearfield tlr:jnl_sequence_corr
+        siaf:automatico = "S"
+        call OFB:siaf:KEYScorrection
+        resetflag lib:state_flags,scan_mode
+    endif
+    
+    /* CGW: Si es Cierre Forzado, habilita el boton F5 - Sucursal */
+    if (siaf:codigo_siaf == 9550) then
+       CALL tes:MISCHab_Sucursal
+    endif
+END SUB
+
+/*******/

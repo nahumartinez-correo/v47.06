@@ -1,0 +1,96 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCchk_cheqmov_caje
+* NOMBRE
+*   OFB:tes:MISCchk_cheqmov_caje
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCchk_cheqmov_caje(tipo_pase)
+    local hay_lerdos  like siaf:i // flag: otros no hicieron su ingreso
+    local falta_ingresar like siaf:i // cuenta la entradas a caja no hechas
+
+   	let hay_lerdos = 0 // se comienza pensando que los otros hicieron sus ingr.
+	
+	select (tipo_pase)
+	case "TODOS"
+	/* selecciono todos los movimientos no ingresados en los que se
+	   interviene como origen o destino del mismo */
+	    CDS SELECT FROM DSC:CheqMov_tbl BECOMES DSC:CheqMov_ctx \
+	    WHERE tes:chmov_suc_id == op:op_branch_id && \
+	    tes:chmov_fecha == common:system_date && \
+	    ((tes:chmov_marca_ing  == " " || tes:chmov_marca_ing == "E" ) && \
+	    (tes:chmov_op_id_orig == op:op_operator_id || \
+	    tes:chmov_op_id_dest == op:op_operator_id)) || \
+	    (tes:chmov_marca_ing == "S" && tes:chmov_op_id_dest == op:op_operator_id)
+		break
+	case "DESTINO"
+	    CDS SELECT FROM DSC:CheqMov_tbl BECOMES DSC:CheqMov_ctx \
+	    WHERE tes:chmov_suc_id == op:op_branch_id && \
+	    tes:chmov_fecha == common:system_date && \
+	    ((tes:chmov_marca_ing == "S" && tes:chmov_op_id_dest == op:op_operator_id) || \
+	    (tes:chmov_marca_ing == "" && tes:chmov_op_id_dest == op:op_operator_id))
+		break
+	end select	    
+    CDS FINDFIRST DSC:CheqMov_ctx NOLOCK
+    if (cdsretval == -801) then
+        /* si no hay registros => OK! se puede realizar el cierre */
+        return (0)
+    end if	
+/* Hay movimientos pendientes */
+
+    /* creo un picklist para mostrar todo lo que queda pendiente */
+    call csr:f_sanewpl "pendientes" PIC:tes:movements
+    call csr:f_saaddpl "pendientes" "NO INGRESARON OPERACIONES"
+    let falta_ingresar = 0
+    do
+        CDS EXTRACT DSC:CheqMov_ctx ALL
+
+        if (tes:chmov_op_id_orig == op:op_operator_id) then
+            /* soy el operador que origino el movimiento y el
+               operador destino no lo ha ingresado aun */
+            call csr:f_saaddpl "pendientes" tes:chmov_login_dest
+            let hay_lerdos = 1 // hay terceros sin ingresar movim.
+        end if
+        if (tes:chmov_op_id_dest == op:op_operator_id) then
+            /* soy el operador destino de un movimiento y aun no
+               he hecho el ingreso a caja */
+            let falta_ingresar = falta_ingresar + 1
+        end if
+
+        CDS FINDNEXT DSC:CheqMov_ctx NOLOCK
+        if (cdsretval < 0) then
+            if (!hay_lerdos) then
+                call csr:f_saaddpl "pendientes" "sin pendientes"
+            end if
+            break
+        end if
+    loop
+    call csr:f_saaddpl "pendientes" "------------------------------"
+    call csr:f_saaddpl "pendientes" "OPERACIONES SIN INGRESAR"
+    fprint common:csr_string "%d operacion/es" falta_ingresar
+    call csr:f_saaddpl "pendientes" FLD:common:csr_string
+
+   // move "Error en Cierre Caja: Movimientos de Cheques no Completados"  to 
+   //PS
+    move "Error en Cierre Caja: Movimiento de Valores no Completados"  to \
+        common:csr_string
+    errmsg common:errmsg_list FLD:common:csr_string
+    clearfield common:csr_string
+    call csr:f_sadopl "pendientes" FLD:common:csr_string
+    cds endselect dsc:CheqMov_ctx
+    return (-2)
+END SUB
+
+/*******/

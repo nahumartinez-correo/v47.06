@@ -1,0 +1,153 @@
+/****o* Pendientes de agrupación/OFB:tes:FVALmot_debcre_dcta
+* NOMBRE
+*   OFB:tes:FVALmot_debcre_dcta
+* DESCRIPCION
+*   Valida el código de motivo ingresado. De acuerdo al resultado de la validación, habilita y/o deshabilita
+*	algunos campos y botones de la pantalla.
+* ENTRADAS
+*   FLD:tes:motivo	(OPCIONAL - Código del motivo a validar. De estar vacío, genera picklist para selección)
+* SALIDAS
+*   N/A
+* IMPACTOS
+*   Transacción 7580/90 (Débito en Cuenta Propia)
+* REFERENCIADO POR
+*   SCR:tes:SCRNreg_deb
+* DOCUMENTACION
+*   NS/NC
+* SOURCE
+*/
+#include "tesFVAL.h"
+
+SUB tes:FVALmot_debcre_dcta
+    LOCAL l_codigo_siaf     LIKE siaf:codigo_siaf
+    LOCAL l_adt_tran_codigo LIKE siaf:adt_tran_codigo
+
+    //cgw: Valida Concepto Debito Cuenta e instancia siaf:codigo_siaf segun el mismo.
+    IF (!testflag(tlr:tran_flags,correction))
+        IF (tes:motivo != post:item_motivo) THEN
+            clearfield tes:sel_concep_pb //cgw:limpia campo modo de seleccion concepto.            
+        END IF
+
+        //reserva codigo
+        l_codigo_siaf = siaf:codigo_siaf
+        l_adt_tran_codigo = siaf:adt_tran_codigo
+
+        IF (tes:motivo.numchars == 0) THEN
+            call siaf:FVALcampo_requerido
+            return -2
+        END IF
+
+        //siaf:adt_motvarios_tran = siaf:codigo_siaf
+        siaf:adt_motvarios_cod = tes:motivo
+        CALL tes:CDSmotvs_dcta_load
+        IF (RETVAL == 0) THEN
+    	    if (siaf:adt_motvarios_tipo != adt_tipo_tipo) then
+    	    	// FGB (13.09.06 - Dia del Desarrollador) - PS 9598: se tiene que poder seleccionar los motivos
+    	    	// correspondientes al tipo de cuenta y aquellos donde el tipo no esté especificado.
+    	    	if (siaf:adt_motvarios_tipo != "" && siaf:adt_motvarios_tipo != " ") then
+    				errmsg lst:common:errmsg_list, "Motivo Incorrecto"
+    				return (-2)
+    			endif
+    	    end if
+            siaf:motivo_desc = siaf:adt_motvarios_desc
+            refresh siaf:motivo_desc
+        ELSE
+            IF (RETVAL == -1) THEN
+            	//cgw:no existe motivo para este concepto.
+            	clearfield post:item_motivo
+            ELSE
+                //cgw:existe mas de un motivo para este concepto.
+                post:item_motivo = tes:motivo
+            END IF
+            drv:button = 3
+            call drv:but_disable
+            //call CDSmoti_cierre_sel
+            CALL tes:CDSmotvs_dcta_sel
+            if (retval < 0 ) then
+                drv:button = 3
+                call drv:but_enable
+                return (-2)
+            endif
+            tes:motivo = siaf:adt_motvarios_cod
+            siaf:motivo_desc = siaf:motivo_desc
+            refresh tes:motivo
+            refresh siaf:motivo_desc
+        END IF
+        drv:button = 3
+        call drv:but_enable
+        if (siaf:adt_motvarios_ctrl == "S")
+            //cgw:obtiene datos de transaccion 7590.
+            siaf:codigo_siaf = 7590
+            if (siaf:codigo_siaf != siaf:adt_tran_codigo) then
+                call tes:MISCdatos_Transac
+                if (retval < 0) then
+                    //repone codigo.
+                    siaf:codigo_siaf = l_codigo_siaf
+                    siaf:adt_tran_codigo = l_adt_tran_codigo
+                    return (-2)
+                end if
+            end if
+            clearfield comprobante
+    	    refresh comprobante
+    	    protfield comprobante
+    	    unprotfield siaf:cod_banco
+    	    unprotfield siaf:cheqcuenta
+    	    unprotfield siaf:nro_cheque
+            drv:button = 4
+            call drv:but_enable
+            protfield siaf:importe
+            protfield post:importe_origen
+            drv:button = 5
+            call drv:but_enable
+        else
+            //cgw:obtiene datos de transaccion 7580.
+            siaf:codigo_siaf = 7580
+            if (siaf:codigo_siaf != siaf:adt_tran_codigo) then
+                call tes:MISCdatos_Transac
+                if (retval < 0) then
+                    //repone codigo.
+                    siaf:codigo_siaf = l_codigo_siaf
+                    siaf:adt_tran_codigo = l_adt_tran_codigo
+                    return (-2)
+                end if
+            end if
+            //cgw:limpio datos del cliente
+            clearfield post:cli_tipo_aux
+            clearfield post:NisUP
+            clearfield post:CliUP
+            refresh post:cli_tipo_aux
+            refresh post:NisUP
+            refresh post:CliUP
+
+    	    clearfield siaf:cod_banco
+    	    clearfield siaf:cheqcuenta
+    	    clearfield siaf:nro_cheque
+    	    refresh siaf:cod_banco
+    	    refresh siaf:cheqcuenta
+    	    refresh siaf:nro_cheque
+    	    protfield siaf:cod_banco
+    	    protfield siaf:cheqcuenta
+    	    protfield siaf:nro_cheque
+    	    drv:button = 4
+            call drv:but_disable
+            unprotfield tes:comprobante
+            unprotfield siaf:importe
+            unprotfield post:importe_origen
+            protfield post:CliCod 
+    	    //protfield post:ClsuCod
+    	    clearfield post:CliCod 
+    	    //clearfield post:ClsuCod
+    	    refresh post:CliCod 
+    	    //refresh post:ClsuCod
+    	    drv:button = 5
+            call drv:but_disable
+            let cobra_comision = "N"
+        end if
+        call tes:MISCtipo_responsable
+    end if
+    clearfield post:item_motivo //cgw:limpia concepto seleccionado por boton.
+    clearfield tes:sel_concep_pb //cgw:limpia campo modo de seleccion concepto.
+    setvaldone tes:motivo //cgw:para que no vuelva a solicitar el concepto si no cambio su seleccion.
+
+END SUB
+/*******/

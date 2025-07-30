@@ -1,0 +1,76 @@
+/****o* Pendientes de agrupación/OFB:post:CDSTotalTransac_save
+* NOMBRE
+*   OFB:post:CDSTotalTransac_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSTotalTransac_save
+Local TIPOTRANSAC like  common:csr_string_171
+Local CODIGOFINAL like  common:csr_string_171
+LOCAL esImpuesto like siaf:i
+	//Lo resguardo porque se usaba en el journal
+	TIPOTRANSAC = post:tipo_transac
+
+	//Ingresos
+	If (  siaf:adt_mot_modulo == "01" || post:motagr_modulo == "01" )
+		tipo_transac = "I"
+	End IF
+	//Egresos
+	If (  siaf:adt_mot_modulo == "02" || post:motagr_modulo == "02")
+		tipo_transac = "E"
+	End IF
+	//Si no es ingreso
+	If (  siaf:adt_mot_modulo != "01" && siaf:adt_mot_modulo != "02" && post:motagr_modulo != "01" && post:motagr_modulo != "02")
+		tipo_transac = " "
+	End IF
+ 	If ( adt_codigo == "COMPFISCAL"  )
+		ClearField tipo_transac
+	End If
+
+; PAW!!!! ---> modifique el IF que sigue: le agregue los impuestos.
+; MFM!!!! ---> modifique el IF que sigue: le agregue la transacción de intereses.
+	call csr:trimfield(post:PreDForFis)
+	esImpuesto = (post:adt_codigo == 99019 || post:adt_codigo == 99027 || post:adt_codigo == 99006 || \
+		      post:adt_codigo == 99028 || post:adt_codigo == 99029 || post:adt_codigo == 99160)
+	If (post:PreDForFis.numchars != 0 || esImpuesto)
+		adt_formu_fiscal = "S"
+	Else
+		adt_formu_fiscal = "N"
+	End If
+    cds select from DSC:TOTALTRANSAC_TAB BECOMES DSC:TOTALTRANSAC_CTX \
+     where (adt_codigo == adt_codigo && op_operator_id == FLD:op:op_operator_id)
+
+    cds findfirst DSC:TOTALTRANSAC_CTX LOCK
+    let lib:err_retval = CDSRETVAL
+    cds clearbuffer  DSC:TOTALTRANSAC_CTX
+    cds append  DSC:TOTALTRANSAC_CTX   FLD:adt_codigo \
+                                      FLD:op_operator_id \
+                                      FLD:adt_importe \
+                                      FLD:adt_captura  \
+									  tipo_transac \
+									  adt_formu_fiscal
+
+    if (lib:err_retval == -801) then
+        cds insert DSC:TOTALTRANSAC_CTX LOCK
+    else
+        cds replace DSC:TOTALTRANSAC_CTX  LOCK
+    end if
+    cds unlock DSC:TOTALTRANSAC_CTX
+
+    post:tipo_transac = TIPOTRANSAC
+END SUB
+
+/*******/

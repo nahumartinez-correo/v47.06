@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSAddTrnGM
+* NOMBRE
+*   OFB:giros:CDSAddTrnGM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSAddTrnGM(Tipo_Trn)
+
+	local tran_aux like siaf:codigo_siaf
+	local TipoTrn  like common:csr_string
+	local INDTrn   like tlr:INDtran_name
+	local aux_importe like siaf:importe
+	local aux_afec_efvo like siaf:adt_tran_afec_efvo
+
+
+	fprint TipoTrn,"%s",Tipo_Trn
+	tran_aux = siaf:codigo_siaf
+
+	
+	if ( TipoTrn == GM_SOBRANTE )
+		// Sobrante de Cheq. Acreditado.
+		siaf:codigo_siaf = 70630
+       		let INDTrn       = LST:giros:TRAN70630
+	else
+		// Faltante de Cheq. Acreditado.
+		siaf:codigo_siaf = 70620
+       		let INDTrn       = LST:giros:TRAN70620
+	end if
+
+      	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta \
+        WHERE post:fecha == FLD:post:fecha && \
+        post:op_operator_id == FLD:post:op_operator_id && \
+        post:PresNro == post:PresNro && \
+	siaf:codigo_siaf == siaf:codigo_siaf
+
+	CDS FINDFIRST DSC:post:CONPresuDeta LOCK
+	select (cdsretval)
+
+		case 0
+			// Transaccion de giros masivos no admite
+			// modificacion
+			break
+
+		case -801
+
+			// No existe transaccion de sobrante o faltante
+
+			siaf:moneda = 99
+			clearfield post:medio_pago_desc
+			clearfield post:MedPTipMon
+
+			if ( giros:ImpDifCheque == 0 )
+
+				/*Actualizo la PresuPag*/
+				aux_importe = siaf:importe
+				aux_afec_efvo = siaf:adt_tran_afec_efvo
+	
+				siaf:adt_tran_afec_efvo = "-"
+				siaf:importe = giros:ImpChqAcreditado
+	
+				call post:CDSadt_PresuPag_save\
+				(siaf:moneda,siaf:moneda,siaf:importe,0)
+	
+				siaf:importe = aux_importe 
+				siaf:adt_tran_afec_efvo = aux_afec_efvo 
+				break
+			end if
+
+			call post:CDSIncSecSesion\
+				(post:PresNro,"TRN",1,post:enAnulacion)
+       			post:PreDNroTrn = retval
+
+			siaf:importe =  giros:ImpDifCheque
+
+      			let tlr:INDtran_name     = INDTrn
+       			post:PrePEst             = 1
+       			post:PreDEst             = 1
+       			post:NroCompPago         = 0
+       			post:modif_operator      = 0
+       			let siaf:adt_tran_codigo = siaf:codigo_siaf
+
+       			call siaf:CDSadt_tran_load
+        		call post:CDSmedio_pago(siaf:moneda,siaf:codigo_siaf)
+
+        		CDS CLEARBUFFER DSC:post:CONPresuDeta
+
+			/*Actualizo la PresuPag*/
+			aux_importe = siaf:importe
+			aux_afec_efvo = siaf:adt_tran_afec_efvo
+
+			siaf:adt_tran_afec_efvo = "-"
+			siaf:importe = giros:ImpChqAcreditado
+
+			call post:CDSadt_PresuPag_save\
+			(siaf:moneda,siaf:moneda,siaf:importe,0)
+
+			siaf:importe = aux_importe 
+			siaf:adt_tran_afec_efvo = aux_afec_efvo 
+
+        		CDS APPEND DSC:post:CONPresuDeta \
+			post:fecha post:op_operator_id  \
+                     	post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn  \
+                     	post:MedPAdmIte tlr:INDtran_name post:PreDEst \
+                     	post:PrePNroPag siaf:codigo_siaf post:MedPMon \
+		     	post:MedPTipMon    \
+                     	post:PreDForFis siaf:importe siaf:adt_tran_afec_efvo \
+                     	siaf:adt_tran_fliatran post:PrePEst siaf:moneda    \
+                     	post:medio_pago_desc post:NroCompPago         \
+                     	post:modif_operator  \
+		     	giros:gir_nro_lote \
+		     	giros:gir_imp_acre \
+		     	giros:gir_totimp_lote \
+			gir_totimp_fact \
+			gir_totimp_emi \
+			siaf:moneda \
+			giros:giros_masivos_trx \
+			giros:adt_girChqtmp_rem  \
+			giros:ImpFactChq \
+			giros:ImpNetoChq \
+			giros:checkpoint_emision
+
+	
+			if (post:NotaCredito == "S" && siaf:moneda != 0)
+				post:monedaNC = siaf:moneda
+				clearfield post:NroCompPagoNC
+				post:jnl_nuevo_medpag = "S"
+
+				CDS APPEND DSC:post:CONPresuDeta \
+				post:monedaNC post:NroCompPagoNC\
+				post:jnl_nuevo_medpag
+			end if
+
+        		CDS INSERT    DSC:post:CONPresuDeta LOCK
+			break
+	end select
+
+	CDS UNLOCK    DSC:post:CONPresuDeta
+	CDS ENDSELECT DSC:post:CONPresuDeta
+
+	siaf:codigo_siaf = tran_aux
+	let siaf:adt_tran_codigo = siaf:codigo_siaf
+	call siaf:CDSadt_tran_load
+
+END SUB
+
+/*******/

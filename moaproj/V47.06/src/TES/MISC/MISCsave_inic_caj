@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCsave_inic_caj
+* NOMBRE
+*   OFB:tes:MISCsave_inic_caj
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCsave_inic_caj
+    LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+    LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+    LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+    LOCAL mone          LIKE siaf:cant
+    LOCAL loc_scr       LIKE drv:INDscr
+
+
+	CDS JOIN FROM DSC:tlr:TABtots AS "a" DSC:op:adt_op_table AS "b" \
+		BECOMES DSC:siaf:CONtots_read \
+		WHERE "a".tlr:tots_branch == common:sucursal_activa && \
+		"a".tlr:tots_operator == "b".op:op_operator_id && \
+		"a".tlr:tots_branch == "b".op:op_branch_id
+		
+    //CDS SELECT FROM DSC:tlr:TABtots BECOMES DSC:siaf:CONtots_read WHERE  \
+    //tlr:tots_branch == fld:op:op_branch_id
+
+    CDS FINDFIRST DSC:siaf:CONtots_read NOLOCK
+
+    DO
+       if (cdsretval != 0) then
+	       break
+       end if
+       /* 
+       call csr:cleararray(siaf:monto_vec)
+       call csr:cleararray(siaf:monto_auxi)
+       call csr:cleararray(tes:saldo_inic)
+       */
+
+       call csr:cleararray(siaf:monto_inic_vec)
+       call csr:cleararray(siaf:monto_efec_vec)
+       call csr:cleararray(tes:saldo_inic)       
+
+       CDS EXTRACT DSC:siaf:CONtots_read                         \
+       array siaf:tefec_inic_vec into array siaf:monto_inic_vec  \
+       array siaf:tefectivo_vec  into array siaf:monto_efec_vec  \
+       tlr:tots_operator         into post:CodOperador
+       /*monto_vec   -> monto_inic_vec */
+       /*monto_auxi  -> monto_efec_vec */
+       
+         
+       if (cdsretval == 0) then
+	      mone = 0
+	      do
+	         IF (mone > IDX_MONEDA) then
+		        break
+	         End if
+	         saldo_inic[mone] = siaf:monto_inic_vec[mone] + siaf:monto_efec_vec[mone]
+	         mone = mone + 1
+	      loop
+       end if
+
+
+       //journalizar saldo_inic
+       loc_jnl_rtn   = drv:INDjnl_rtn
+       loc_tran_name = tlr:jnl_tran_name
+       loc_mnemonic  = tlr:tran_mnemonic
+       loc_nom_tran  = siaf:nombre_transac
+       loc_scr       = drv:INDscr
+
+
+       drv:INDjnl_rtn       = "INICAJ"
+       tlr:jnl_tran_name    = "INICAJ"
+       tlr:tran_mnemonic    = "INICAJ"
+       siaf:nombre_transac  = "SALDO INICIAL DE CAJA"
+       let siaf:codigo_siaf = 6060
+       FLD:drv:INDjnl_rtn   = OFB:tes:JNLinic_caj
+       let drv:INDscr       = SCR:tes:SCRNrend_inic_caj
+
+       ungetkey 0x190
+       call siaf:MISClleno_modalidad
+       call tlr:JNLtran
+
+       drv:INDjnl_rtn      = loc_jnl_rtn
+       tlr:jnl_tran_name   = loc_tran_name
+       tlr:tran_mnemonic   = loc_mnemonic
+       siaf:nombre_transac = loc_nom_tran
+       drv:INDscr          = loc_scr
+
+      CDS FINDNEXT DSC:siaf:CONtots_read NOLOCK
+    LOOP
+    CDS ENDSELECT siaf:CONtots_read
+
+END SUB
+
+/*******/

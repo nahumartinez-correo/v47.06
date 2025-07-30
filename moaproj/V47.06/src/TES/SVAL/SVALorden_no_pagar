@@ -1,0 +1,165 @@
+/****o* Cuentas Bancarias/OFB:tes:SVALorden_no_pagar
+* NOMBRE
+*   OFB:tes:SVALorden_no_pagar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRAN7660,LST:tes:TRAN7650
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALorden_no_pagar
+    local Ind like tes:nro_cheque_desde
+    local superviso like tes:rend_marca_cierre
+    local total_caja like siaf:importe
+    local banco_desc like siaf:adt_banco_desc
+    local hora_aux like tlr:jnl_time
+    local saldo_cuenta like siaf:importe
+    local ix like tes:nro_cheque_desde
+            
+    if (testflag(tlr:tran_flags,correction))
+	call tes:CDSctasbanc_lock	
+	/* Esta lockeado */
+        if (retval < 0)
+             return (-2)
+        end if
+    end if    
+    
+
+    if (!testflag(tlr:tran_flags,correction))
+	call MISCcheques_inter
+	if (retval < 0)
+		return (-2)
+	end if
+	call MISCreviso_inter(nro_cheque_desde,nro_cheque_hasta,adt_chequera_ini)
+	if (retval < 0)
+		return (-2)
+	end if
+    end if
+
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+	
+       popup tes:SCRNconfirma
+       if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+          return (-2)
+       END IF
+       tes:adt_tipo_cod = tipo_cuenta
+       call tes:CDSadt_tipo_load
+       siaf:moneda = tes:adt_tipo_medio
+       //post:medio_pago_desc = post:adt_mp_desc
+       if (tes:adt_tipo_medio.numchars == 0)
+            errmsg lst:common:errmsg_list, "Falta Medio de Pago en tabla de Productos"
+            return (-2)
+       end if
+    
+   end if
+   /* Lo hago con las cuentas del tipo 1 */
+   if (tes:lugar_cuenta == 1)
+        call tes:CDSSaldo_cta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,saldo_cuenta)
+        if (retval < 0) 
+                return (-2)
+        end if
+   end if
+
+
+    
+   CALL siaf:SVALnivel_sup
+   if (retval < 0)
+      return (-2)
+   end if
+   // Guardo si fue supervisada para marcar las otras
+   if (testflag(tlr:tran_flags,supovr_granted)) then
+      let superviso = "S"
+   else
+      let superviso = "N"
+   endif
+    
+   if (!TESTFLAG(tlr:tran_flags,correction)) then 
+      clearfield siaf:importe
+        
+      
+      let post:adt_mp_cod = siaf:moneda
+      call post:CDSadt_MedPago_load
+      post:medio_pago_desc = post:adt_mp_desc
+      
+      siaf:nro_cheque = adt_chequera_ini
+      let fecha_valor = common:system_date
+      UNGETKEY 0x190
+      CALL siaf:MISClleno_modalidad
+      CALL tlr:JNLtran
+
+      // le sumo 6 al codigo de transacción porque cada uno de los pases
+      // tiene ese código de transacción
+      let hora_aux = siaf:hora
+
+      let siaf:codigo_siaf = siaf:codigo_siaf + 6
+      call siaf:PRESfecha_hora
+      let siaf:hora = hora_aux
+      
+      Ind = nro_cheque_desde          
+      protfield motivo
+      DO
+         IF (nro_cheque_desde > nro_cheque_hasta) THEN
+         	break
+         END IF
+	
+	    let drv:INDscr = SCR:tes:SCRNcheq_anulado
+	    ix = nro_cheque_desde - adt_chequera_ini
+        tes:estado_cheque = tes:adt_chequera_cheques[ix]
+         
+        if (tes:adt_chequera_cheques[ix] == EMITIDO)
+            let siaf:importe = tes:adt_chequera_impcoti[ix]
+         	// Tiene que tomar el valor de lo que cotizon el momento.
+         	let post:importe_origen = tes:adt_chequera_importe[ix]
+         	if (siaf:codigo_siaf == 7666)
+                let tlr:INDtots_append = LST:siaf:TOTS7660
+                let drv:INDspc_rtn[0]  = LST:siaf:TOTS7660
+            else
+                let tlr:INDtots_append = LST:siaf:TOTS7650
+                let drv:INDspc_rtn[0]  = LST:siaf:TOTS7650
+            end if        
+        else     
+     	    clearfield siaf:importe
+     	    clearfield post:importe_origen
+            clearfield tlr:INDtots_append 
+            clearfield drv:INDspc_rtn[0]
+        end if
+         
+        let tes:es_tesoro = "S"
+        if (superviso == "S") then
+	        // si la primera fue supervisada , marco todas
+	        setflag tlr:tran_flags,supovr_granted
+    	endif
+
+        UNGETKEY 0x190
+        CALL tlr:JNLtran
+        nro_cheque_desde = nro_cheque_desde + 1
+         
+      LOOP
+      nro_cheque_desde = Ind
+      CLEARFIELD drv:INDjnl_rtn
+      let drv:INDspc_rtn[2] = ofb:tes:TRANprt_anul_cheq
+
+   else
+      CALL MISCreverso_sesion
+      if (retval < 0) then
+         return (-2)
+      end if
+      setflag tlr:tran_flags,correction
+
+   end if
+   call tes:MISCupdate_cheq_stat
+   cds unlock dsc:adt_cta_ctx
+   cds endselect dsc:adt_cta_ctx
+END SUB
+
+/*******/

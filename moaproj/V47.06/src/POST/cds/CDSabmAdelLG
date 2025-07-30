@@ -1,0 +1,174 @@
+/****o* Adelantos/OFB:post:CDSabmAdelLG
+* NOMBRE
+*   OFB:post:CDSabmAdelLG
+* DESCRIPCION
+* Esta rutina la finalidad de hacer el abm de la tabla AdelLG
+* según la ingresado por parámetro
+* A --> AGREGA UN REGISTRO Y ACUMULA EL SALDO DEL ADELANTO
+* X --> DA DE BAJA TODOS LOS REGISTROS QUE TIENEN REMITO PAGADOS CON ADELANTO POR OPERADOR
+* B --> DA DE BAJA TODOS LOS REGISTROS POR OPERADOR
+* M --> ACTUALIZA EL CONSUMO DESGLOZANDOLO EN LOS DIFERENTES ADELANTOS
+* ENTRADAS
+*   pAccion
+*   pImporte
+*   pNroRecibo
+*   pTipo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCadel_mon_climed
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSabmAdelLG(pAccion, pImporte, pNroRecibo, pTipo)
+
+LOCAL l_err_retval LIKE lib:err_retval
+LOCAL l_saldo LIKE post:adt_adelcm_saldo
+LOCAL l_nro_recibo LIKE post:adt_adelcm_id
+LOCAL l_cont like post:cantidad
+LOCAL l_adel like post:adt_adelcm_id
+	l_saldo = pImporte
+	l_nro_recibo = pNroRecibo
+
+	SELECT (pAccion)
+		CASE "A"
+			CALL post:CDSnro_orden_AdelLG()
+			LET post:adt_adelcm_orden = RETVAL
+    		post:adt_adelcm_consumo = 0
+    		CDS SELECT FROM DSC:TABAdelLG BECOMES DSC:CTXAdelLG WHERE \
+				post:adt_adelcm_orden == post:adt_adelcm_orden && \
+				post:adt_adelcm_op == op:op_operator_id && \
+				post:adt_adelcm_cliente == post:climed_numero /*&& \
+			 	post:adt_adelcm_id == l_nro_recibo*/
+    		CDS FINDFIRST DSC:CTXAdelLG LOCK
+    		LET l_err_retval = CDSRETVAL
+    		CDS CLEARBUFFER DSC:CTXAdelLG
+    		IF (pTipo == CM_CREM || pTipo == CM_ADEL) THEN
+    			post:adt_adelcm_consumo = l_saldo
+    		ENDIF
+    		IF (pTipo == CM_ADEL) THEN
+    			post:adt_adelcm_marca = "*"
+    		ENDIF
+    		CDS APPEND DSC:CTXAdelLG \
+    			FLD:post:adt_adelcm_orden \
+    			FLD:op:op_operator_id as post:adt_adelcm_op \
+    			FLD:post:climed_numero as post:adt_adelcm_cliente \
+    			l_nro_recibo as post:adt_adelcm_id \
+    			l_saldo as post:adt_adelcm_saldo \
+    			FLD:post:adt_adelcm_consumo \
+    			FLD:post:adt_adelcm_marca
+    		    		
+    		IF (l_err_retval == -801) THEN
+    			CDS INSERT DSC:CTXAdelLG LOCK
+    			; Acumulo el importe de los adelantos solo si se esta instanciando la rutina desde la consulta simple de cliente
+    			;si se instancia desde la consulta de deuda no debo acumularlo.
+    			if (pTipo == CM_CSIM) then
+    				post:saldoAnticipo_CM = post:saldoAnticipo_CM + l_saldo
+    			endif
+    		ELSE
+    			ERRMSG lst:common:errmsg_list, "¡No se puede insertar en la tabla AdelCM, \nel registro ya existe!"
+    		END IF
+    		BREAK
+    	CASE "B"
+    		CDS ENDSELECT DSC:CTXAdelLG
+			CDS SELECT FROM DSC:TABAdelLG BECOMES DSC:CTXAdelLG WHERE \
+				post:adt_adelcm_op == op:op_operator_id
+			CDS FINDFIRST DSC:CTXAdelLG LOCK
+    		LET l_err_retval = CDSRETVAL
+    		WHILE (l_err_retval == 0)
+    			CDS DELETE DSC:CTXAdelLG
+    			CDS FINDNEXT DSC:CTXAdelLG LOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		BREAK
+    	CASE "X"
+    		CDS ENDSELECT DSC:CTXAdelLG
+			CDS SELECT FROM DSC:TABAdelLG BECOMES DSC:CTXAdelLG WHERE \
+				post:adt_adelcm_op == op:op_operator_id
+				
+			CDS FINDFIRST DSC:CTXAdelLG LOCK
+    		LET l_err_retval = CDSRETVAL
+    		WHILE (l_err_retval == 0)
+    			CDS DELETE DSC:CTXAdelLG
+    			CDS FINDNEXT DSC:CTXAdelLG LOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		BREAK
+    	CASE "M"
+    		CDS ENDSELECT DSC:CTXAdelLG
+    		; Atomizo la actualizacion.
+			CDS BEGINWORK
+    		
+    			CDS SELECT FROM DSC:TABAdelLG BECOMES DSC:CTXAdelLG WHERE \
+    			post:adt_adelcm_op == op:op_operator_id && \
+			post:adt_adelcm_cliente == post:climed_numero ascending //habria que hacer un order by el nro de orden
+		
+
+    		CDS FINDFIRST DSC:CTXAdelLG NOLOCK
+    		LET l_err_retval = CDSRETVAL
+    		l_cont = 0
+    		WHILE (l_err_retval == 0)
+    			CDS EXTRACT DSC:CTXAdelLG post:adt_adelcm_saldo \
+    			post:adt_adelcm_id into l_adel
+    			if (pTipo != CM_CREM) then
+	    			IF (post:adt_adelcm_saldo > l_saldo) THEN
+    					post:adt_adelcm_consumo = l_saldo
+    					l_saldo = 0
+    				ELSE
+    					post:adt_adelcm_consumo = post:adt_adelcm_saldo
+	    				l_saldo = l_saldo - post:adt_adelcm_saldo
+    				END IF
+    				IF (pTipo == CM_EMIS) then
+    					if (l_cont < 36) then
+    						giros:id_adel_mon[l_cont] = l_adel
+    						giros:imp_adel_mon[l_cont] = post:adt_adelcm_consumo
+    						l_cont = l_cont + 1
+    					end if
+    				ENDIF
+    			else
+    				//acumulo el valor de los remitos pagados con adelantos previamente
+    				post:anticipo_rem_CM = post:anticipo_rem_CM + post:adt_adelcm_saldo
+    			endif
+    			
+    			CDS FINDAGAIN DSC:CTXAdelLG LOCK
+
+    			CDS CLEARBUFFER DSC:CTXAdelLG
+    			
+    			post:adt_adelcm_marca = "*"
+    			if (pTipo != CM_CREM) then
+    				CDS APPEND DSC:CTXAdelLG \
+    				FLD:post:adt_adelcm_consumo
+    			endif
+    			CDS APPEND DSC:CTXAdelLG \
+    			FLD:post:adt_adelcm_marca 
+    			CDS UPDATE DSC:CTXAdelLG LOCK
+    			
+    			IF (CDSRETVAL < 0) THEN
+    				CDS ROLLBACKWORK
+    				ERRMSG lst:common:errmsg_list, "¡No se puedo actualizar el consumo en la tabla AdelLG!"
+    				RETURN (-2)
+    			END IF
+    			
+    			IF (pTipo != CM_CREM && l_saldo == 0) THEN
+    				BREAK
+    			END IF
+    			
+    			CDS UNLOCK DSC:CTXAdelLG
+    			CDS FINDNEXT DSC:CTXAdelLG NOLOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		
+    		CDS COMMITWORK
+    		BREAK
+    END SELECT
+    CDS UNLOCK DSC:CTXAdelLG
+   	CDS ENDSELECT DSC:CTXAdelLG
+
+END SUB
+
+/*******/

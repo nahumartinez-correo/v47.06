@@ -1,0 +1,173 @@
+/****o* Clientes UP/OFB:post:CDSAcumImpUP
+* NOMBRE
+*   OFB:post:CDSAcumImpUP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSAcumImpUP(Imp_anterior,Imp,fliatran,Alicuota,afecta_efectivo,Presupuesto)
+/*Rutina que va acumulando por Operador, Presupuesto, Familia y Alicuota el importe 
+para el cálculo de Bonificaciones para Ventas UP - Gabriel Falciola*/
+local Presu_aux like PresNro
+local Fliatran_aux like post:jnl_flia_tran
+local l_impIvaAnterior like post:ImporteSinIva_bis
+local l_impIva like post:ImporteSinIva_bis
+local l_cantidad like post:cantidad
+local l_imp like post:ImporteSinIva
+local l_importe_iva like post:ImporteIva
+local l_impSinIva like post:ImporteSinIva
+local l_impsiniva_bis like ImporteSinIva_bis 
+local l_importe_iva_bis like post:ImporteIva_bis
+
+    l_impSinIva = post:ImporteSinIva
+    //SC 50170
+    l_impsiniva_bis = ImporteSinIva_bis
+
+	//resguardo el campo post:ImporteIva porque en el caso de los bienes de cambio se pisa
+	if (siaf:codigo_siaf == 40002)
+		l_importe_iva = post:ImporteIva
+		l_importe_iva_bis = post:ImporteIva_bis
+	endif
+	
+  	Presu_aux = PresNro
+  	PresNro = Presupuesto
+  	Fliatran_aux = siaf:adt_tran_fliatran
+  	siaf:adt_tran_fliatran = fliatran
+	AliIvaUP = Alicuota
+	l_imp = Imp
+  	/*Tengo que tener numchars mayor a 0, porque si no me trae problemas para
+  	calcular*/
+  	if (AliIvaUP.numchars == 0)
+  		AliIvaUP = 0.00
+  	end if
+
+	select (siaf:adt_tran_fliatran)
+		case "CSE"
+		case "NET"
+		case "CSP"
+		case "CST"
+		case "SVC"
+			l_cantidad = post:cantidad
+			break
+		case "CME"
+			l_cantidad = post:cantidad2
+			break
+		case else
+			l_cantidad = 1
+			break
+	end select
+	
+	// FGB: en la 6800 la cantidad puede que esté vacía.
+	if (l_cantidad <= 0) then
+		l_cantidad = 1
+	endif
+	
+	if (post:aux_cantidad == 0) then
+		;Cuando post:aux_cantidad es cero es porque se está borrando la tx
+		//SC 50170
+		Call post:MISCdesglosaIva(Imp_anterior,Alicuota,l_cantidad,0)
+	else
+		//SC 50170
+		Call post:MISCdesglosaIva(Imp_anterior,Alicuota,post:aux_cantidad,0)
+	end if
+	
+	l_impIvaAnterior = post:ImporteSinIva_bis
+	//SC 50170
+	Call post:MISCdesglosaIva(Imp,Alicuota,l_cantidad,0)
+	l_impIva = post:ImporteSinIva_bis
+	
+	/*Sólo acumulo los importes si se cumple esta condición*/
+	/*PresIngTas > 0 --> Chequear si debe ir*/
+	if ((afecta_efectivo == "+" || afecta_efectivo == "-") && \
+	cli_tipo == CLIUP && EstadoFormu != SIN_FORM && siaf:codigo_siaf != 6900)
+		CDS SELECT FROM DSC:AuxIvaUP_tbl BECOMES DSC:AuxIvaUP_ctx \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		PresNro == fld:PresNro && \
+		siaf:adt_tran_fliatran == fliatran && \
+		AliIvaUP == fld:Alicuota
+		CDS FINDFIRST DSC:AuxIvaUP_ctx LOCK
+		LET lib:err_retval = CDSRETVAL
+		CDS CLEARBUFFER DSC:AuxIvaUP_ctx
+		IF (lib:err_retval == -801) THEN
+			if (EstadoFormu == CON_FORM || EstadoFormu == CON_FORM_DES)
+				ImporteIvaUP = Imp
+				ImporteSinIvaUP = l_impIva
+				if (afecta_efectivo == "-")
+					ImporteIvaUP = ImporteIvaUP * -1
+					ImporteSinIvaUP = ImporteSinIvaUP * -1
+				end if
+				CDS APPEND DSC:AuxIvaUP_ctx \
+				op:op_operator_id as post:op_operator_id \
+				PresNro \
+				siaf:adt_tran_fliatran \
+				AliIvaUP \
+				ImporteIvaUP \
+				ImporteSinIvaUP
+				CDS INSERT DSC:AuxIvaUP_ctx LOCK
+			end if
+		ELSE
+			CDS EXTRACT DSC:AuxIvaUP_ctx ImporteIvaUP ImporteSinIvaUP
+			select (afecta_efectivo)
+			case "+"
+				if (EstadoFormu == CON_FORM)
+					ImporteIvaUP = ImporteIvaUP - Imp_anterior + Imp
+					ImporteSinIvaUP = ImporteSinIvaUP - l_impIvaAnterior + l_impIva
+				else
+					if (EstadoFormu == CON_FORM_ANT)
+						ImporteIvaUP = ImporteIvaUP - Imp_anterior
+						ImporteSinIvaUP = ImporteSinIvaUP - l_impIvaAnterior
+					end if
+					if (EstadoFormu == CON_FORM_DES)
+						ImporteIvaUP = ImporteIvaUP + Imp
+						ImporteSinIvaUP = ImporteSinIvaUP + l_impIva
+					end if
+				end if
+				break
+			case "-"
+				if (EstadoFormu == CON_FORM)
+					ImporteIvaUP = ImporteIvaUP + Imp_anterior - Imp
+					ImporteSinIvaUP = ImporteSinIvaUP + l_impIvaAnterior - l_impIva
+				else
+					if (EstadoFormu == CON_FORM_ANT)
+						ImporteIvaUP = ImporteIvaUP + Imp_anterior
+						ImporteSinIvaUP = ImporteSinIvaUP + l_impIvaAnterior
+					end if
+					if (EstadoFormu == CON_FORM_DES)
+						ImporteIvaUP = ImporteIvaUP - Imp
+						ImporteSinIvaUP = ImporteSinIvaUP - l_impIva
+					end if
+				end if
+				break
+			end select
+			CDS APPEND DSC:AuxIvaUP_ctx ImporteIvaUP ImporteSinIvaUP
+			CDS UPDATE DSC:AuxIvaUP_ctx LOCK
+		END IF
+		CDS UNLOCK DSC:AuxIvaUP_ctx
+		CDS ENDSELECT DSC:AuxIvaUP_ctx
+	end if
+	PresNro = Presu_aux
+	siaf:adt_tran_fliatran = Fliatran_aux
+	
+	//restauro el campo post:ImporteIva
+	if (siaf:codigo_siaf == 40002)
+	    post:ImporteIva = l_importe_iva
+	    post:ImporteIva_bis = l_importe_iva_bis
+	end if
+	post:ImporteSinIva = l_impSinIva
+	 //SC 50170
+	post:ImporteSinIva_bis = l_impsiniva_bis
+END SUB
+
+/*******/

@@ -1,0 +1,127 @@
+/****o* Pendientes de agrupación/OFB:hcomm:COMM_rcv_event
+* NOMBRE
+*   OFB:hcomm:COMM_rcv_event
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "ONACOMMRCV.OFB.h"
+
+/*eject*/
+
+/* NAME: hcomm:COMM_rcv_event						*/
+/*									*/
+/* This is the main hostcomm receive event script which gets called	*/
+/* upon receipt of a message from the host.				*/
+/*									*/
+/* If there is specific processing required for the transaction after	*/
+/* the receipt of the host comm message, the PCL routine defined in the	*/
+/* hcomm:INDhost_rcvrt field is executed.  If no specific processing	*/
+/* is required, then no routine is defined in the field.  The		*/
+/* hcomm:INDhost_rcvrt field is defined prior to host comm in the	*/
+/* transaction definition or in the COMM_snd_bldhdr routine.		*/
+/*									*/
+
+SUB hcomm:COMM_rcv_event
+	SELECT ( commhdr(CSH_VERB) )
+		case CS_DATA		// data for unformatted session
+#ifdef GIROS			
+			// la sig. linea se comenta para giros 
+			// comm get siaf:inicio_paq from msg type EBCDIC length 3
+#else
+            comm get siaf:inicio_paq from msg type EBCDIC length 3
+#endif			
+			/* Se comenta el procesamiento de mensajes multiples,
+			 * pues en el Galicia no existen y asumo que el unico 
+			 * que devuelve es el ultimo
+			*/
+			let siaf:inicio_paq = 310
+
+			if (siaf:inicio_paq == 310)	
+				/* mensajes simples o el ultimo	mensaje de 
+				   una serie de mensajes multiples */
+				if (hcomm:tran_status == HOST_REJECTED)
+					break
+			     	end if
+				comm set_event hcomm:host1 ofb:hcomm:COMM_unso
+
+				if (INDhost_rcvrt != 0)
+				// En la lua_event: Pindex llegaba como param.
+				//	CALL  FLD:hcomm:INDhost_rcvrt (Pindex)
+				// En la COMM_rcv_event: no recibe parametros
+					call fld:hcomm:INDhost_rcvrt
+				else
+					call siaf:rcve_proc_data
+				endif
+			else	/* viene un 300 para mensajes multiples 
+				   (al final vendra un 310)		*/
+				let msg = msg - 3
+				comm get siaf:paquete_rcv[siaf:ind] from msg \
+							type EBCDIC length 512
+				let siaf:ind = siaf:ind + 1
+			end if
+			break
+		case COMM_CRTDATA					// data on CRT screen (NOTIFY mode)
+			CALL  FLD:hcomm:INDhost_rcvrt
+			break
+		case CS_ERROR
+			let hcomm:tran_status = SEND_ERROR
+			let hcomm:host_error = commhdr(CSH_ERROR_CODE)
+			fprint hcomm:host_line "COMM SRVR ERROR (%s) OCCURED", hcomm:host_error
+			if (testflag(common:rt_flags,batch_mode) && \
+				batch:batch_options == "REC_CAIDAS_VUELO") then
+					fprint hcomm:host_line "\n%s\n" hcomm:host_line
+					call batch:MISCgeneraLog(hcomm:host_line,"AMBOS","N")
+			else
+				msgbox hcomm:host_line OFB_ICONSTOP "Communications Error"
+			endif
+			break
+		case CS_STATUS
+		case CS_ESTATUS
+			;PS9785 problema con el status 105
+			if (hcomm:INDhost_rcvrt  != 0) then
+			    // These are the possible status messages you can receive
+			    
+			    select (commhdr(CSH_SESSION_STATUS))
+			    case CS_UP										// in session with host appl
+			      /* Si el operador estuvo trabajando fuera de linea 
+			      y la linea se pone en up setear para hacer el reentry
+			      automatico */
+			      if (testflag(op:op_state_flags,tlr_reentry_req))
+			    	/* Para obligarlo ha realizar el reentry */
+			    	call siaf:MISCset_reentryaut
+			    	if (!testflag(tlr:state_flags,tran_active))
+			    		ungetkey ' '
+			    	endif
+			      endif
+			      break
+			      case CS_SSCP					// SNA host only need to LOGON
+			    	let hcomm:tran_status = SESSION_LOST
+			    	break
+			    case CS_DOWN					// host session for this LU/station not activated
+			    	let hcomm:tran_status = HOST_RCV_DOWN
+			    	break
+			    case CS_CSDN					// lost network connection to COMM Server
+			    	let hcomm:tran_status = HOST_COMMSRVR_DOWN
+			    	break
+			    end select
+			end if
+			CALL  OFB:hcomm:COMM_hoststat_update
+			break
+		case CS_COMM
+			CALL  OFB:hcomm:COMM_pro_commreq /* received a comm request */
+			break
+	END SELECT
+END SUB
+
+/*******/

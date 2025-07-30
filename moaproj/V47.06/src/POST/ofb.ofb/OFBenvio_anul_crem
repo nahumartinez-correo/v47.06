@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:post:OFBenvio_anul_crem
+* NOMBRE
+*   OFB:post:OFBenvio_anul_crem
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBenvio_anul_crem
+local l_retval like lib:err_retval
+    ;PROCESO DE ENVIO DE ANULACION CREM (MSG = 0200) 
+    ;----------------------------------------------
+
+    local loc_retval like lib:err_retval
+    
+    ;Guardar numero de operador
+    op:operator_tmp = op:op_operator_id
+
+    ;Resetear flags
+    resetflag tlr:controla_firma,cancelacion
+    resetflag tlr:controla_marca,cancel
+    resetflag tlr:controla_marca,reverso_auto
+    
+    
+    Setflag giros:flags_back,cancelacion
+    SetFlag tlr:tran_flags,correction
+    giros:cancelacion = "ANULACION GIRO EMITIDO"
+    
+    
+    siaf:siaf_flags = post:siaf_flags_aux
+    tlr:state_flags = tlr:jnl_tran_flags
+    
+    call giros:CDScancel_crem_flds
+        
+    if (testflag(post:journal_flags,enviar_mensaje_host))   
+        siaf:hora = tlr:jnl_time
+        siaf:fecha = tlr:jnl_date
+        hcomm:INDhost_sndrt = OFB:giros:SEND70041
+        hcomm:INDhost_rcvrt = OFB:giros:RCVEcanc_simple
+        
+        
+        call hcomm:COMM_stat_init
+        if (retval == -2 )
+            return -2
+        end if  
+        
+        fprint siaf:nota_1,\
+        "FECHA: %e HORA: %e STAN: %s PCODE: %s",giros:dia_viaje,giros:hora_viaje,\
+        post:adt_codseq_nro,giros:codigo_procesamiento
+        call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+        
+        fprint siaf:nota_1,\
+        "CHEQUE BIT 105: %s",post:datos_msg105
+        call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+        
+        fprint siaf:nota_1,\
+        "Enviando transaccion al host ..."
+        call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+        
+        call hcomm:COMM_host_tran
+        l_retval = retval
+    
+        resetflag giros:flags_back,cancelacion
+        resetflag tlr:tran_flags,correction
+        resetflag tlr:controla_firma,cancelacion
+        resetflag tlr:controla_marca,cancel
+        resetflag tlr:controla_marca,reverso_auto
+        if (l_retval == TRAN_CAIDA_VUELO) then
+            clearfield siaf:tran_retval
+            fprint siaf:nota_1,"%s","Transaccion Caida en Vuelo ... "
+            call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+            return TRAN_CAIDA_VUELO
+        end if
+    else
+        ; Es tx 95000
+        hcomm:tran_status = HOST_ACCEPTED
+        resetflag post:journal_flags,enviar_mensaje_host
+    end if
+    if (hcomm:tran_status == HOST_ACCEPTED)
+        call giros:MISCact_tx_crem
+        fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_ACCEPTED
+        fprint common:csr_string "\nTransaccion Aprobada. CodRespuesta = %e. Hora: %e ",\
+        giros:CodRespuesta_comm,common:time_of_day
+        call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")
+    else
+        if (hcomm:tran_status == HOST_REJECTED )
+            fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_REJECTED
+        else
+            if (hcomm:tran_status > HOST_REJECTED )
+                fprint common:csr_string "\nTransaccion Caida en Vuelo. Hora: %e ",common:time_of_day
+                call batch:MISCgeneraLog(common:csr_string,"AMBOS","N") 
+                fprint siaf:nota_1,"Transaccion caida en vuelo ...",
+                call batch:OFBlog_batch(siaf:nota_1,0,"N","S","AMBOS","N")
+            end if
+        end if
+    end if
+
+    CLEARFIELD siaf:cancelacion
+    op:op_operator_id = op:operator_tmp
+
+END SUB
+
+/*******/

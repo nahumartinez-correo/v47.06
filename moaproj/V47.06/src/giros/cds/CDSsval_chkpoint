@@ -1,0 +1,68 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSsval_chkpoint
+* NOMBRE
+*   OFB:giros:CDSsval_chkpoint
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+//////////////////////////////////////////////////////////
+// Este OFB graba en la PresuDet un campo que indica la //
+// altura en la SVAL a  la que se llegó .               //
+// Esto es asi, porque la logica de las emisiones esta  //
+// dada dentro de la SVAL, y una caida del sistema ge_  //
+// nera enooormes problemas, por lo que es necesario q' //
+// la transaccion vuelva al punto donde se cayo, y no   //
+// antes o despues (cuando se esta confirmando).        //
+//////////////////////////////////  FGB 13.6.2001  ///////
+SUB giros:CDSsval_chkpoint(prm_chkp)
+
+    local Lchkp		like giros:checkpoint_emision
+
+    let Lchkp = prm_chkp
+    if (Lchkp.NUMCHARS > 0) then
+    	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta \
+        	WHERE	(FLD:post:fecha 	 == FLD:post:fecha ) && \
+        		(Fld:post:op_operator_id == FLD:post:op_operator_id) && \
+        		(FLD:post:PresNro 	 == FLD:post:PresNro) && \
+        		(FLD:post:PreDNroTrn	 == post:PreDNroTrn)
+    	if (cdsretval == 0) then
+    		Cds FINDFIRST DSC:post:CONPresuDeta LOCK
+    		if (cdsretval == 0) then
+    			CDS CLEARBUFFER DSC:post:CONPresuDeta
+    			CDS APPEND DSC:post:CONPresuDeta Lchkp as giros:checkpoint_emision
+    			select (Lchkp)
+    				case ANTES_IMPRESION
+    				case ANTES_IMPRE_SUB_1
+    				case ANTES_IMPRE_SUB_2
+    				case ANTES_IMPRE_SUB_3
+    				case ANTES_IMPRE_SUB_4
+    					CDS APPEND DSC:post:CONPresuDeta tlr:aux_sequence as siaf:jnl_secuence_bull
+    					IF (siaf:codigo_siaf == 70140 || siaf:codigo_siaf == 70141)
+    					/*Para las tx de emisiones por duplicado se hace este append porque si el 
+    					sistema se cae luego de reimprimir 2 veces el cheque, al levantarlo
+    					se evía la tx al switch con el campo del nuevo giro vacío*/
+    					    CDS APPEND DSC:post:CONPresuDeta \
+    					        FLD:giros:Serie_fld FLD:giros:NroGiro_fld FLD:giros:digito_fld
+    					END IF
+    					break
+    				case else
+    			end select
+    			CDS UPDATE DSC:post:CONPresuDeta NOLOCK
+    		end if // busqueda del registro 
+    	end if // busqueda de la tabla 
+    end if // parametro vacio
+END SUB
+
+/*******/

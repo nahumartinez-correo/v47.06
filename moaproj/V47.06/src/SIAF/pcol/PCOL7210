@@ -1,0 +1,108 @@
+/****o* Oficios Judiciales/OFB:siaf:PCOL7210
+* NOMBRE
+*   OFB:siaf:PCOL7210
+* DESCRIPCION
+*   Valida el ingreso a la transaccion de Oficios Judiciales
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:TRAN7210
+*		siaf:PRES_7210
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1692
+*		SC-50368
+* SOURCE
+*/
+#include "siafPCOL.h"
+
+SUB siaf:PCOL7210
+  siaf:codigo_siaf        = 7210
+  siaf:adt_tran_codigo    = siaf:codigo_siaf
+  call siaf:CDSadt_tran_load 
+  siaf:nombre_transac     = siaf:adt_tran_desc
+  tlr:tran_mnemonic       = siaf:adt_tran_mnemonic
+  siaf:afecta_efectivo    = siaf:adt_tran_afec_efvo
+  siaf:tiene_reverso      = siaf:adt_tran_tiene_rev
+  siaf:posible_off        = siaf:adt_tran_posoff
+  siaf:adt_oju_reversa = "N" 
+  
+  IF (post:estado_presu == 2 ) THEN
+  	CALL drv:MISCdis_enablePB_ABM(1,0,0)
+  END IF
+  
+  siaf:adt_oju_cant_max = common:cant_cert_OJU
+  
+	IF (post:estado_presu == 1) && (!testflag(tlr:tran_flags, correction)) THEN
+		CLEARFIELD siaf:motivo
+		CLEARFIELD siaf:motivo_desc
+		REFRESH siaf:motivo
+		REFRESH siaf:motivo_desc
+	END IF
+	
+	CALL siaf:PRES_7210
+
+	//gpb:AUT-2097 tratamiento de caidas
+	IF (post:estado_presu == 2) THEN
+		CALL siaf:CDSoficio_caida
+		
+		IF (RETVAL < 0) THEN
+			MSGBOX "Quedaron Oficios pendientes de aceptación para el presupuesto dado.\n                 Presione ENTER para confirmar los mismos.",0x00,"AVISO"
+		ELSE
+			CALL siaf:CDSoficio_DelAll
+		END IF
+	END IF
+
+	CALL giros:MISCImpAbonadoCheq
+
+	// PJM se aumenta el Iva en la Tabla AuxIVa
+	If (post:estado_presu != 4 )
+		Call post:MISCgenerarIva
+	End if
+    
+	/****************************************************************/
+	/* Si tiene captura de medio de pago protejo el campo Medio de  */
+	/* pago. Hernán.     17/10/2000                                 */
+	/****************************************************************/
+	IF (!testflag(tlr:tran_flags,correction)) THEN
+		IF (post:estado_presu == 2 || post:estado_presu == 3 || post:estado_presu == 1) THEN
+			IF (siaf:adt_tran_med_pago != "S") THEN
+				post:captura_mp = siaf:adt_tran_med_pago
+				siaf:moneda = 99
+				clearfield post:medio_pago_desc
+			END IF
+		END IF   
+	END IF
+	
+	IF (post:estado_presu == 2) THEN
+		SETFLAG adt_oju_arancel_flag,oju_arancelado
+		ALTERCONTROLSET op:CHK0
+	END IF
+	
+	CALL siaf:PBOju_Arancelado
+	
+	LET siaf:adt_oju_desc_tmp = siaf:nombre_transac
+	REFRESH siaf:adt_oju_desc_tmp
+	
+	PROTFIELD siaf:ImporteSinSello
+	PROTFIELD siaf:importe2
+	PROTFIELD siaf:nro_impre
+	PROTFIELD siaf:adt_oju_imp_unitario
+	
+	REFRESH siaf:ImporteSinSello
+	REFRESH siaf:importe2
+	REFRESH siaf:nro_impre
+	REFRESH siaf:observaciones
+	REFRESH siaf:adt_oju_imp_unitario
+	
+  //gpb:ART-711		
+	IF (post:estado_presu == 2) THEN
+		NEXTFIELD siaf:adt_oju_cant
+	END IF
+	
+END SUB
+
+/*******/

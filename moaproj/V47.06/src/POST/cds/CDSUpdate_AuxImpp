@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:post:CDSUpdate_AuxImpp
+* NOMBRE
+*   OFB:post:CDSUpdate_AuxImpp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSUpdate_AuxImpp(Provincia,ProvDesc,ImpDesc,Importe,Importe_ant,Tipo_Giro,Presupuesto)
+    local loc_err_retval like lib:err_retval
+    local Presu_aux like post:PresNro
+
+    /*resguardo el nro de presupuesto*/
+    Presu_aux = PresNro
+    PresNro = Presupuesto
+
+    Cds SELECT FROM Dsc:AuxImpp_tbl BECOMES DSC:AuxImpp_ctx \
+            WHERE (Fld:post:adt_auximpp_op == op:op_operator_id ) && \
+                  (PresNro == fld:PresNro) && \
+                  (post:adt_auximpp_prov == Provincia)
+    Cds FINDFIRST DSC:AuxImpp_ctx LOCK
+    Let lib:err_retval = cdsretval
+    let loc_err_retval = lib:err_retval
+    select (lib:err_retval) then
+    case 0
+        Cds EXTRACT DSC:AuxImpp_ctx all
+        break
+    case -801
+        clearfield adt_auximpp_importe
+        break
+    case else
+        errmsg lst:common:errmsg_list, "No se Puede Totalizar el Impuesto"
+        PresNro = Presu_aux
+        return (-1)
+        break
+    End Select
+    if (Tipo_Giro == "A" && Provincia != SUBSTR(Nis_Destino_ant,0,1))
+    	adt_auximpp_importe = adt_auximpp_importe + Importe
+    else
+    	adt_auximpp_importe = adt_auximpp_importe + Importe - Importe_ant
+    end if
+    If (loc_err_retval == -801) THEN
+	    adt_auximpp_op = op:op_operator_id
+	    adt_auximpp_prov = Provincia
+	    adt_auximpp_desc = ProvDesc
+	    adt_auximpp_impdesc = ImpDesc
+	    giros:adt_impp_pdesc = ProvDesc
+	
+	    let adt_pcia_cod = Provincia
+	    call post:CDSprovincias_load
+
+	    if (retval < 0) then
+	    	PresNro = Presu_aux
+			if (adt_auximpp_importe > 0)
+				errmsg lst:common:errmsg_list, "Error en Tabla Provincias "
+				return (-1)
+			else
+				return (0)
+			end if
+	    end if
+	    ;adt_auximpp_impdesc = adt_pcia_desc
+	    giros:adt_impp_pdesc = adt_pcia_desc
+	 end if	
+    Cds CLEARBUFFER DSC:AuxImpp_ctx
+    Cds APPEND DSC:AuxImpp_ctx  \
+                 adt_auximpp_op \
+                 PresNro \
+                 adt_auximpp_prov \
+                 adt_auximpp_desc \
+                 adt_auximpp_impdesc \
+                 adt_auximpp_importe
+    If (loc_err_retval == -801) THEN
+    // Se crea el registro uno Nuevo
+            Cds INSERT dsc:AuxImpp_ctx LOCK
+    Else
+    // Modifico porque ya Existe
+            Cds UPDATE DSC:post:AuxImpp_ctx LOCK
+    End If
+    cds unlock dsc:AuxImpp_ctx
+    cds endselect dsc:AuxImpp_ctx
+    PresNro = Presu_aux
+END SUB
+
+/*******/

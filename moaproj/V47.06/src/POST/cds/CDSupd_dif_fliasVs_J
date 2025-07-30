@@ -1,0 +1,108 @@
+/****o* Facturación/OFB:post:CDSupd_dif_fliasVs_J
+* NOMBRE
+*   OFB:post:CDSupd_dif_fliasVs_J
+* DESCRIPCION
+*   Actualiza la diferencia por redondeo en el registro del JOURNAL 
+*   (para postales, telegramas, productos varios, servicios varios, VAP)
+*   correspondiente al registro de la DifFact
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSupd_dif_journal
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postcds.h"
+
+SUB post:CDSupd_dif_fliasVs_J
+	//Flias involucradas = CSP, CSE, CME, CST, SVC, VAP
+	local x like siaf:i
+	local l_dif like post:dif_calculada
+	//se va a actualizar con la diferencia el primer registro que se encuentre.
+	//seguramente en el caso de una postal o telegrama los importes quedaran journalizados
+	//diferentes que en una directa, pero lo importante es que la sumatoria del imp sin iva
+	// + el imp del iva de el imp con iva.!
+	
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjscn \
+	WHERE  tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	post:PresNro == post:adt_diffact_presn && \
+	post:adt_PreDNroTrn == post:adt_diffact_trann	
+		    
+	CDS FINDFIRST DSC:tlr:CONjscn LOCK
+	IF (CDSRETVAL == 0)
+		CDS CLEARBUFFER DSC:tlr:CONjscn
+		clearfield dif_calculada
+		SELECT (adt_diffact_codigo)
+			CASE "OPC"
+				CDS EXTRACT DSC:tlr:CONjscn cant_opc
+				x = 0
+				//recorro el vector de opcionales para extraer el valor correspondiente
+				//y aplicar la diferencia al campo siniva_opc[]
+				WHILE (x < cant_opc)
+					CDS EXTRACT DSC:tlr:CONjscn \
+						post:cod_opc[x] post:siniva_opc[x]
+					IF (post:cod_opc[x] == adt_diffact_opc)
+						post:siniva_opc[x] = post:siniva_opc[x] - adt_diffact_dif_calc
+						post:dif_opc[x] = adt_diffact_dif_calc
+						CDS APPEND DSC:tlr:CONjscn \
+						post:dif_opc[x]	post:siniva_opc[x]
+					END IF
+					x = x + 1
+				END WHILE
+			BREAK
+			CASE "BLQ"
+				//si es bloque se actualiza en la PresuDet en el campo imp_bloques_siva
+				CDS EXTRACT DSC:tlr:CONjscn post:imp_bloques_siva 
+				post:imp_bloques_siva = post:imp_bloques_siva - adt_diffact_dif_calc
+				CDS APPEND DSC:tlr:CONjscn \
+					adt_diffact_dif_calc as dif_calculada \
+					post:adt_diffact_codigo as cod_dif_aplicada \
+					post:imp_bloques_siva 
+				BREAK
+			CASE ELSE //tx propiamente dicha
+				cod_dif_aplicada = "SERV"
+				IF (adt_diffact_flia == "CST")
+					CDS EXTRACT DSC:tlr:CONjscn tele:imp_siniva_serv
+					tele:imp_siniva_serv = tele:imp_siniva_serv - adt_diffact_dif_calc
+					post:adt_dump_siniva = tele:imp_siniva_serv
+					CDS APPEND DSC:tlr:CONjscn tele:imp_siniva_serv 
+				ELSE
+					if (post:adt_diffact_flia == "CSE" || post:adt_diffact_flia == "CSP" || post:adt_diffact_flia == "VAP") then
+						CDS EXTRACT DSC:tlr:CONjscn post:ImporteSinIva post:ImporteIva
+						ImpSinIva_serv = ImpSinIva_serv - adt_diffact_dif_calc
+						post:adt_dump_siniva = ImpSinIva_serv
+						CDS APPEND DSC:tlr:CONjscn \
+						post:ImpSinIva_serv 
+					else
+						CDS EXTRACT DSC:tlr:CONjscn post:ImporteSinIva post:ImporteIva
+						ImporteSinIva = ImporteSinIva - adt_diffact_dif_calc
+						ImporteIva = ImporteIva + adt_diffact_dif_calc
+						post:adt_dump_siniva = ImporteSinIva
+						CDS APPEND DSC:tlr:CONjscn \
+						ImporteSinIva \
+						ImporteIva
+					endif
+				ENDIF
+				CDS APPEND DSC:tlr:CONjscn \
+				adt_diffact_dif_calc as dif_calculada \
+				cod_dif_aplicada  \
+				post:adt_dump_siniva
+				
+				BREAK
+		END SELECT
+		CDS UPDATE DSC:tlr:CONjscn LOCK
+	END IF
+	CDS UNLOCK DSC:tlr:CONjscn
+	CDS ENDSELECT DSC:tlr:CONjscn
+END SUB
+
+/*******/
+

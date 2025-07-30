@@ -1,0 +1,509 @@
+/****o* Facturacion/OFB:post:PRT_Encabe_Fac
+* NOMBRE
+*   OFB:post:PRT_Encabe_Fac
+* DESCRIPCION
+*   Imprime el encabezado de la Factura
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  	post:PRT_Factura
+*		post:PRTcortePagina
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Encabe_Fac()
+	LOCAL ES_CONSUMIDORFINAL LIKE common:csr_string
+	LOCAL NOMBRE LIKE admin:adt_br_bank_name
+	LOCAL DIRECCION LIKE admin:adt_br_address
+	LOCAL CODIGO LIKE admin:adt_br_zip
+	LOCAL CIUDAD LIKE admin:adt_br_city
+	LOCAL MUNI LIKE admin:adt_br_mun
+	LOCAL NUMERO LIKE admin:adt_br_nro_calle
+	LOCAL PISO LIKE admin:adt_br_piso
+	LOCAL DEPTO LIKE admin:adt_br_departamento
+	LOCAL NROESPACIOS LIKE siaf:i
+	LOCAL SUCURSAL_ACTIVA LIKE common:sucursal_activa
+	LOCAL lcsr_string LIKE common:csr_string
+	LOCAL NC_nro LIKE common:csr_string
+
+	//NROESPACIOS = 89
+	//Termica
+	NROESPACIOS = 47
+	
+	
+	ES_CONSUMIDORFINAL = "N"
+
+	/*Si va por la LASER, agrego unas lineas aclarando que no es un documento
+	valido como factura - Gabriel Falciola*/
+	IF (modoPrt == LASER) THEN
+		CALL PRT_encabe_NC_laser
+	END IF
+	
+	CALL post:MISCident_tipo_formu
+	CALL post:MISCavaz_linea_imp(1)
+	IF (modoPrt == LASER) THEN
+		IF (impNotaCred == "S") THEN
+			//Si es NC a CM cambio el mensaje - Gabriel Falciola
+			IF (!OperacionNC) THEN
+				FPRINT common:csr_string "%52.52s%s%04.4s-%08.08s\n", " ", "COMPROBANTE DE CREDITO ", common:br_CEC, nro_impre
+			ELSE
+				FPRINT common:csr_string "%52.52s%s%04.4s-%08.08s\n", " ", "               FACTURA ", common:br_CEC, nro_impre
+			END IF
+			CALL post:MISCprt2laser(common:csr_string)   
+		ELSE
+			IF (ModalidadCC || ModalidadCD || OperacionCob || OperacionAut || OperacionInt) THEN
+				//FPRINT common:csr_string "%61.61s%s%04.4s-%08.08s\n", " ", "FACTURA", common:br_CEC, nro_impre
+				FPRINT common:csr_string "%52.52s%s%04.4s-%08.08s\n", " ", "               FACTURA ", common:br_CEC, nro_impre
+			ELSE
+				//FPRINT common:csr_string "%61.61s%s%04.4s-%08.08s\n", " ", "FACTURA VENTA CONTADO ", common:br_CEC, nro_impre
+				FPRINT common:csr_string "%52.52s%s%04.4s-%08.08s\n", " ", " FACTURA VENTA CONTADO ", common:br_CEC, nro_impre
+			END IF
+			CALL post:MISCprt2laser(common:csr_string)
+		END IF		
+		FPRINT common:csr_string "  HOJA %2.2s de %2.2s", pagActual, cantidad2
+		FPRINT common:csr_string "%88.88s\n", common:csr_string
+		pagActual = pagActual + 1
+		CALL post:MISCprt2laser(common:csr_string)
+	ELSE
+		//nuevo mfm
+			FPRINT common:csr_string "%40.40s%s" common:emp_desc,"\n"
+			CALL post:MISCprt2laser(common:csr_string)
+			CALL post:MISCavaz_linea_imp(1)	
+			
+		//50249
+		IF (post:reimpresion == "S" && post:OperacionNC) THEN
+			//FPRINT common:csr_string "%78.78s\n",  "[Tipo Doc. y Num.                    ]"
+			//TM
+			FPRINT common:csr_string "%-78.78s\n",  "[Tipo Doc. y Num.                    ]"
+			CALL post:MISCprt2laser(common:csr_string)
+			FPRINT lcsr_string "%s", "ES COPIA FIEL DEL ORIGINAL"    	   		
+			//FPRINT common:csr_string "%40.40s%s%22.22s\n","",lcsr_string,  "[Hoja XX de XX]"
+			CALL post:MISCprt2laser(common:csr_string)	
+		ELSE
+		    //Por que usa 78???
+		    //FPRINT common:csr_string "%78.78s\n",  "[Tipo Doc. y Num.                    ]"
+			//TM
+			FPRINT common:csr_string "%-78.78s\n",  "[Tipo Doc. y Num.                    ]"
+			CALL post:MISCprt2laser(common:csr_string)
+			//termica se sacan los nros de hoja
+			//FPRINT common:csr_string "%88.88s\n",  "[Hoja XX de XX]"
+			//CALL post:MISCprt2laser(common:csr_string)
+		END IF
+	END IF
+
+	/*  SUCURSAL - DIRECCION - CODIGO/LOCALIDAD */
+	CDS SELECT FROM DSC:siaf:adt_sucur_table BECOMES DSC:siaf:adt_sucur_table
+	CDS FINDFIRST DSC:siaf:adt_sucur_table NOLOCK
+	IF (CDSRETVAL == 0)
+		CDS EXTRACT DSC:siaf:adt_sucur_table siaf:adt_sucur_codigo into SUCURSAL_ACTIVA
+	END IF
+	CDS ENDSELECT DSC:siaf:adt_sucur_table
+
+	CDS SELECT admin:adt_br_mun, admin:adt_br_bank_name, admin:adt_br_address, \
+		admin:adt_br_zip, admin:adt_br_city , admin:adt_br_nro_calle, \
+		admin:adt_br_piso, admin:adt_br_departamento FROM admin:adt_br_table BECOMES admin:adt_br_context \
+		WHERE admin:adt_br_branch == SUCURSAL_ACTIVA 
+	CDS FINDFIRST admin:adt_br_context NOLOCK
+	IF (CDSRETVAL == 0)
+		CDS EXTRACT admin:adt_br_context \
+			admin:adt_br_bank_name INTO NOMBRE \
+			admin:adt_br_address INTO DIRECCION \
+			admin:adt_br_zip INTO CODIGO \
+			admin:adt_br_city INTO CIUDAD \
+			admin:adt_br_mun INTO MUNI \
+			admin:adt_br_nro_calle INTO NUMERO \
+			admin:adt_br_piso INTO PISO \
+			admin:adt_br_departamento INTO DEPTO
+	END IF
+	CDS ENDSELECT admin:adt_br_context
+
+#ifdef SUCU_VIRTUAL
+	IF (post:sucu_virtual == "S") THEN
+		//gpb:Original
+		;FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+		;	" ", post:Letra_Factura, " ", adt_fecfact_web
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THEN	
+			FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+				" ", post:Letra_Factura, " ", adt_fecfact_web			
+		ELSE
+				//justifico a la derecha
+				//FPRINT common:csr_string "\x1Ba\x32  %2.2s %33.33s%e\n", post:Letra_Factura, " ", adt_fecfact_web	
+				FPRINT common:csr_string "\x1Ba\x32     %33.33s%e\n", " ", adt_fecfact_web	
+    END IF
+	
+		CALL post:MISCprt2laser(common:csr_string)
+	ELSE
+		IF (!post:FechaAnt) THEN
+			//gpb:Original
+			;FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+				;	" ", post:Letra_Factura, " ", common:system_date
+				
+			//gpb:PS10705
+			IF (modoPrt == LASER) THEN
+				FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+					" ", post:Letra_Factura, " ", common:system_date			
+			ELSE
+				//justifico a la derecha
+				//FPRINT common:csr_string "\x1Ba\x32  %2.2s %33.33s%e\n",post:Letra_Factura, " ", common:system_date
+				//TM
+				//FPRINT common:csr_string "\x1Ba\x32  %5.5s %2.2s %27.27s%e\n","Tipo:",post:Letra_Factura, "Fecha: ", common:system_date	
+				  FPRINT common:csr_string "\x1Ba\x32          %27.27s%e\n", "Fecha: ", common:system_date	
+			END IF
+			
+			CALL post:MISCprt2laser(common:csr_string)
+		ELSE
+			//gpb:Original
+			;FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+			;	" ", post:Letra_Factura, " ", post:fecha_factCM
+			
+			//gpb:PS10705
+			IF (modoPrt == LASER) THEN
+				FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+					" ", post:Letra_Factura, " ", post:fecha_factCM				
+			ELSE
+				//justifico a la derecha
+				//FPRINT common:csr_string "\x1Ba\x32  %2.2s %33.33s%e\n",post:Letra_Factura, " ", post:fecha_factCM
+				FPRINT common:csr_string "\x1Ba\x32     %33.33s%e\n"," ", post:fecha_factCM
+
+			END IF
+			
+			CALL post:MISCprt2laser(common:csr_string)
+		END IF	    
+	END IF
+#else
+	IF (!post:FechaAnt) THEN
+		//gpb:Original
+		;FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+		;	" ", post:Letra_Factura, " ", common:system_date
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THEN		
+			FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+				" ", post:Letra_Factura, " ", common:system_date			
+		ELSE
+			//justifico a la derecha
+		//	FPRINT common:csr_string "\x1Ba\x32  %2.2s %33.33s%e\n",post:Letra_Factura, " ", common:system_date		
+			FPRINT common:csr_string "\x1Ba\x32     %33.33s%e\n", " ", common:system_date		
+		END IF		
+		
+		CALL post:MISCprt2laser(common:csr_string)
+	ELSE
+		//gpb:Original
+		;FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+		;	" ", post:Letra_Factura, " ", post:fecha_factCM
+		
+		//gpb:PS10705
+		IF (modoPrt == LASER) THE
+			FPRINT common:csr_string "%-40.40s  %2.2s %33.33s%e\n",\
+				" ", post:Letra_Factura, " ", post:fecha_factCM		
+		ELSE
+			//justifico a la derecha
+			//FPRINT common:csr_string "\x1Ba\x32  %2.2s %33.33s%e\n",post:Letra_Factura, " ", post:fecha_factCM	
+			FPRINT common:csr_string "\x1Ba\x32     %33.33s%e\n", " ", post:fecha_factCM			
+		
+		END IF
+		
+		CALL post:MISCprt2laser(common:csr_string)
+	END IF    
+#endif
+ 
+	/*
+	FPRINT common:csr_string "%-40.40s %12.12s%e\n",\
+		" ", "Código N° ", post:cod_ident // ACP-Código Resol. 1885 
+	CALL post:MISCprt2laser(common:csr_string)
+	*/
+	CALL post:MISCavaz_linea_imp(1) //cgw:se corre unas lineas mas abajo el Codigo Nro.
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30") 
+	END IF
+
+	//gpb:Original
+	;FPRINT common:csr_string "SUCURSAL %-40.40s\n", NOMBRE
+	FPRINT common:csr_string "SUCURSAL %-40.40s", NOMBRE
+	//gpb:PS10705
+	//Quito espacios en blancos para no saturar el buffer de impresion  
+	CALL CSR:trimfield (common:csr_string)  
+	FPRINT common:csr_string "%s\n", common:csr_string
+	CALL post:MISCprt2laser(common:csr_string)
+	CALL csr:trimfield(DIRECCION)
+//	FPRINT common:csr_string_171 "%s %6e %2s %2s", DIRECCION,NUMERO,PISO,DEPTO
+// se pide eliminar DEPTO
+  	FPRINT common:csr_string "%s %6e %2s\n", DIRECCION,NUMERO,PISO
+	CALL post:MISCprt2laser(common:csr_string)
+//FPRINT common:csr_string "%-77.77s %e\n", common:csr_string_171, adt_emp_inicact 
+		
+	post:adt_br_branch = op:op_branch_id
+	CALL post:CDSLeyImp_load
+	CALL csr:trimfield(adt_LeyImp_des1)
+	FPRINT common:csr_string "%s",adt_LeyImp_des1
+	CALL csr:trimfield(common:csr_string)
+
+	//cgw:se corre unas lineas mas abajo el Codigo Nro.    
+	//FPRINT common:csr_string "%-5.5s%s %-20.20s %19.19s%41.41s\n", CODIGO, "/", CIUDAD, " ", common:csr_string
+	/*  FPRINT common:csr_string "%-5.5s%s %-20.20s               %12.12s%e %32.32s\n", CODIGO, "/", CIUDAD, \
+		"C\xA2digo N\xA7 ", post:cod_ident, common:csr_string // ACP-Código Resol. 1885*/
+   //nuevo mfm
+   FPRINT common:csr_string "%-5.5s%s %-20.20s", CODIGO, "/", CIUDAD
+   	CALL CSR:trimfield (common:csr_string)       
+	FPRINT common:csr_string "%s\n", common:csr_string
+	CALL post:MISCprt2laser(common:csr_string)
+   Fprint common:csr_string "%-s %s\n",\
+            FLD:common:emp_leyenIB, post:adt_emp_ingbru /*Dsc:IngBrut_Correo,post:adt_emp_ingbru. Norma*/
+			CALL post:MISCprt2laser(common:csr_string)
+Fprint common:csr_string "%-21s %10e\n",\
+   	Dsc:Inic_Actividad,post:adt_emp_inicact
+	CALL post:MISCprt2laser(common:csr_string)
+	  Fprint common:csr_string "%-9.9e%-13.13e %s",\
+                DSC:Cuit_Clie,post:adt_emp_cuit,"IVA-RESP.INSC."
+	FPRINT common:csr_string "%s\n", common:csr_string
+	CALL post:MISCprt2laser(common:csr_string)
+	FPRINT common:csr_string "%-s%e", "C\xA2digo N\xA7 ", post:cod_ident // ACP-Código Resol. 1885*/
+	 
+  //fin nuevo mfm
+	
+  //gpb:PS10705
+  //Quito espacios en blancos para no saturar el buffer de impresion  
+	CALL CSR:trimfield (common:csr_string)       
+	CALL post:MISCprt2laser(common:csr_string)
+	
+	CALL csr:trimfield(adt_LeyImp_des2)
+	FPRINT common:csr_string "%s",adt_LeyImp_des2
+	CALL csr:trimfield(common:csr_string)
+	
+	//gpb:Original
+ ;FPRINT common:csr_string "%47.47s%41.41s\n", " ", common:csr_string 
+	FPRINT common:csr_string "%47.47s%41.41s", " ", common:csr_string
+  //gpb:PS10705
+  //Quito espacios en blancos para no saturar el buffer de impresion  
+	CALL CSR:trimfield (common:csr_string)  
+	FPRINT common:csr_string "%s\n", common:csr_string	
+	CALL post:MISCprt2laser(common:csr_string)
+	
+	CALL csr:trimfield(adt_LeyImp_des3)
+	FPRINT common:csr_string "%s",adt_LeyImp_des3
+	CALL csr:trimfield(common:csr_string)
+	
+	//gpb:Original
+	;FPRINT common:csr_string "%47.47s%41.41s\n", " ", common:csr_string
+	FPRINT common:csr_string "%47.47s%41.41s", " ", common:csr_string
+	//gpb:PS10705
+	//Quito espacios en blancos para no saturar el buffer de impresion  
+	CALL CSR:trimfield (common:csr_string)  
+	FPRINT common:csr_string "%s\n", common:csr_string	
+	
+	CALL post:MISCprt2laser(common:csr_string)
+	CALL post:MISCavaz_linea_imp(1)
+	//NUEVO PEDIDO USUARIO PARA ENCABEZADO
+	FPRINT common:csr_string "%s\n", "CLIENTE:"
+	CALL post:MISCprt2laser(common:csr_string)
+		CALL post:MISCavaz_linea_imp(1)
+		//FIN PEDIDO
+		
+	//se agrega la descripción de la subcuenta para Cliente Medio
+	//gpb:Original
+	;FPRINT common:csr_string "    %-50.50s %-30.30s\n", post:CliRaz, post:subcuentaDesc_CM
+	FPRINT common:csr_string "%-45.45s",post:CliRaz
+	CALL CSR:trimfield (common:csr_string)
+	FPRINT common:csr_string "%s\n", common:csr_string	
+	CALL post:MISCprt2laser(common:csr_string)
+
+	//gpb:PS10705
+	//Quito espacios en blancos para no saturar el buffer de impresion  
+	FPRINT common:csr_string "%-30.30s", post:subcuentaDesc_CM
+	CALL CSR:trimfield (common:csr_string)
+	FPRINT common:csr_string "%s\n", common:csr_string	
+	CALL post:MISCprt2laser(common:csr_string)
+
+	//EN Caso que sea consumidor final y el importe sea meno al parametro no se imprime los datos
+	CALL giros:CDSdatgralsuc_imp
+	CALL post:CDSadt_presu_load
+#ifdef SUCU_VIRTUAL
+	IF (post:sucu_virtual == "S") THEN
+		IF (post:adt_Tipo_Sistema_web == SISTEMAGIR)
+			post:CloCuit = adt_nroDoc_web
+		ELSE
+			post:CloCuit = adt_nroDocFac_web
+		END IF
+	END IF
+#endif
+
+	IF (!((IvaCod == "CF " && post:importe_sesion > adt_dgralsuc_impmin) && \
+		((CloTipDoc == 96 && post:CloCuit == 99999999999) || (CloTipDoc != 96) \
+		|| (post:CloCuit != 99999999999 && post:CloCalle.numchars == 0)))) THEN
+		IF (IvaCod == "CF " && CloTipDoc == 96 && post:CloCuit == 99999999999) THEN
+			CLEARFIELD post:CloCuit
+		END IF
+	END IF
+	IF (post:IvaCod == "CF" && post:importe_sesion < adt_dgralsuc_impmin && CloTipDoc == 96 && post:CloCuit == 99999999999) THEN
+		CALL post:MISCavaz_linea_imp(2)
+		ES_CONSUMIDORFINAL = "S"
+	ELSE
+		//gpb:Original
+		;Fprint common:csr_string "    %s %s %s\n" CloCalle, CloNroDir ,CloPiso
+		CALL CSR:trimfield (post:CloCalle)  
+		//FPRINT common:csr_string "    %s %s %s" CloCalle, CloNroDir ,CloPiso
+		FPRINT common:csr_string "%s %s %s" CloCalle, CloNroDir ,CloPiso
+		if (common:csr_string.numchars > 49) then
+				FPRINT common:csr_string "%37.37s %s %s" CloCalle, CloNroDir ,CloPiso
+		endif
+		//gpb:PS10705
+		//Quito espacios en blancos para no saturar el buffer de impresion  
+		CALL CSR:trimfield (common:csr_string)  
+		FPRINT common:csr_string "%s\n", common:csr_string	
+	
+		CALL post:MISCprt2laser(common:csr_string)
+		FLD:post:adt_pcia_cod =  CloProvin
+		CALL post:CDSadt_pcia_load
+		
+		
+		//NROESPACIOS = 89
+		//termica
+		NROESPACIOS = 47
+		
+		NROESPACIOS = NROESPACIOS - CloLoc.NUMCHARS - CloCodPost.NUMCHARS //- adt_pcia_desc.NUMCHARS - 13
+		
+		IF (CloCodPost.NUMCHARS != 0) THEN
+			//FPRINT common:csr_string "(%s) %-s%*.*s   %s" CloCodPost,CloLoc,NROESPACIOS,NROESPACIOS," ",adt_pcia_desc
+			FPRINT common:csr_string "(%s) %-s\n" CloCodPost,CloLoc
+			CALL post:MISCprt2laser(common:csr_string)	
+			CALL CSR:trimfield (common:csr_string)
+			FPRINT common:csr_string "%s\n",adt_pcia_desc
+		ELSE
+			common:csr_string = LINEANUEVA
+		END IF
+		CALL post:MISCprt2laser(common:csr_string)
+	END IF
+
+	IF (CloCuit.NUMCHARS != 0) THEN
+		CDS SELECT FROM TABTipoDoc BECOMES DSC:CTXTipoDoc \
+			WHERE (post:adt_TipoDoc_tipo == post:CloTipDoc)
+		CDS FINDFIRST DSC:CTXTipoDoc nolock
+		CDS EXTRACT DSC:CTXTipoDoc All
+		CDS ENDSELECT DSC:CTXTipoDoc
+		IF (post:adt_TipoDoc_tipo == 80) THEN
+			//FPRINT common:csr_string "    %-71.71s  %e\n",adt_cativa_desc, CloCuit
+			//termica
+			FPRINT common:csr_string "%-30.30s  %e\n",adt_cativa_desc, CloCuit
+			CALL post:MISCprt2laser(common:csr_string)
+		ELSE
+			
+			//NROESPACIOS = 89 - CloCuit.NUMCHARS - adt_cativa_desc.NUMCHARS - adt_TipoDoc_desc.NUMCHARS - 8
+			//termica
+			NROESPACIOS = 47 - CloCuit.NUMCHARS - adt_cativa_desc.NUMCHARS - adt_TipoDoc_desc.NUMCHARS - 8
+			
+			//gpb:Original
+			;FPRINT common:csr_string "    %-s%*.*s  %s %e\n",adt_cativa_desc,NROESPACIOS,NROESPACIOS," ",post:adt_TipoDoc_desc,CloCuit
+			FPRINT common:csr_string "%-s%*.*s  %s %e",adt_cativa_desc,NROESPACIOS,NROESPACIOS," ",post:adt_TipoDoc_desc,CloCuit
+			//gpb:PS10705
+			//Quito espacios en blancos para no saturar el buffer de impresion
+			CALL CSR:trimfield (common:csr_string)
+			FPRINT common:csr_string "%s\n", common:csr_string			
+			CALL post:MISCprt2laser(common:csr_string)
+		END IF
+	ELSE
+		CALL post:MISCavaz_linea_imp(1)
+	END IF
+	
+	IF (ES_CONSUMIDORFINAL == "N") THEN
+		IF (CloInscripto != "S" ) THEN
+			//gpb:Original
+			;FPRINT common:csr_string "%s" , "Ingresos Brutos EXENTO"
+			;NROESPACIOS = 89 - common:csr_string.NUMCHARS  - 1
+			;FPRINT common:csr_string "%*.*s%s\n" NROESPACIOS , NROESPACIOS ," ",common:csr_string
+			
+			//gpb:PS10705
+			IF (modoPrt == LASER) THEN				
+				FPRINT common:csr_string "%s" , "Ingresos Brutos EXENTO"
+				NROESPACIOS = 89 - common:csr_string.NUMCHARS  - 1
+				FPRINT common:csr_string "%*.*s%s\n" NROESPACIOS , NROESPACIOS ," ",common:csr_string			
+			ELSE
+				//justifico a la derecha
+			//	FPRINT common:csr_string "\x1Ba\x32%s\n" , "Ingresos Brutos EXENTO"
+	  		FPRINT common:csr_string "%-s" , "Ingresos Brutos EXENTO"
+  			NROESPACIOS = 47 - common:csr_string.NUMCHARS
+				FPRINT common:csr_string "\x1Ba\x32%*.*s%s\n" NROESPACIOS , NROESPACIOS ," ",common:csr_string			
+			
+			END IF
+		ELSE
+			adt_CatIngBr_cod = CloCatCodIB
+			CALL post:CDSCatIngBr_load
+			//gpb:Original
+			;FPRINT common:csr_string "Ingresos Brutos %s - %s ", adt_CatIngBr_desc, CloCatCodIB
+			;NROESPACIOS = 89 - common:csr_string.NUMCHARS  -  post:CloNroInb.NUMCHARS - 1
+			;FPRINT common:csr_string "%*.*s%s%s\n",NROESPACIOS,NROESPACIOS," ",common:csr_string,post:CloNroInb
+			
+			//gpb:PS10705
+			IF (modoPrt == LASER) THEN				
+				FPRINT common:csr_string "Ingresos Brutos %s - %s ", adt_CatIngBr_desc, CloCatCodIB
+				NROESPACIOS = 89 - common:csr_string.NUMCHARS  -  post:CloNroInb.NUMCHARS - 1
+				FPRINT common:csr_string "%*.*s%s%s\n",NROESPACIOS,NROESPACIOS," ",common:csr_string,post:CloNroInb			
+			ELSE
+				//justifico a la derecha
+				//FPRINT common:csr_string "\x1Ba\x32Ingresos Brutos %s - %s %s", adt_CatIngBr_desc, CloCatCodIB,post:CloNroInb
+				//FPRINT common:csr_string "Ingresos Brutos %s - %s ", adt_CatIngBr_desc, CloCatCodIB
+				FPRINT common:csr_string "IIBB %s - %s ", adt_CatIngBr_desc, CloCatCodIB
+				NROESPACIOS = 47 - common:csr_string.NUMCHARS  -  post:CloNroInb.NUMCHARS
+				FPRINT common:csr_string "\x1Ba\x32%*.*s%s%s\n",NROESPACIOS,NROESPACIOS," ",common:csr_string,post:CloNroInb			
+
+			END IF
+		END IF
+		CALL post:MISCprt2laser(common:csr_string)
+	
+		IF (AnulOperNC) THEN
+			CALL post:MISCavaz_linea_imp(1)
+		ELSE
+			CALL post:MISCavaz_linea_imp(2)
+		END if
+		
+		
+	ELSE
+		IF (AnulOperNC) THEN
+			CALL post:MISCavaz_linea_imp(2)
+		ELSE
+			CALL post:MISCavaz_linea_imp(3)
+		END IF
+	END IF
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+		//nuevo encabezado
+		FPRINT common:csr_string "%s%s%s", "CANT.        ","DETALLE ITEM             ","MONTO"
+		CALL post:MISCprt2laser(common:csr_string)
+		CALL post:MISCavaz_linea_imp(2)
+		clearfield common:csr_string
+		CALL post:MISCprt2laser(common:csr_string)
+
+	else
+	// PARA LASER POR AHORA SE DEJA COMO SALE HOY		
+	END IF
+	
+	//50249
+	IF (AnulOperNC) THEN
+		NC_nro = SUBSTR (post:sesion_anul_string,34,13)
+		FPRINT common:csr_string "%s %s %e", "ANULACION NOTA DE CREDITO NRO.",post:Letra_Factura,NC_nro
+		//NROESPACIOS = 89 - common:csr_string.NUMCHARS  - 21
+		//termica porqué - 21?
+		NROESPACIOS = 47 - common:csr_string.NUMCHARS  - 21
+		
+		//FPRINT common:csr_string "%*.*s%s\n" NROESPACIOS , NROESPACIOS ," ",common:csr_string
+		FPRINT common:csr_string "%*.*s%s" NROESPACIOS , NROESPACIOS ," ",common:csr_string
+		CALL post:MISCprt2laser(common:csr_string)
+		CALL post:MISCavaz_linea_imp(1)
+	END IF                                           
+END SUB
+
+/*******/

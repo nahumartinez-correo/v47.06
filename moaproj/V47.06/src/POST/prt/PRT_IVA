@@ -1,0 +1,167 @@
+/****o* Facturacion/OFB:post:PRT_IVA
+* NOMBRE
+*   OFB:post:PRT_IVA
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:PRT_Factura
+*   post:PRT_Ticket_Jou
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_IVA(INDICE,SUBTOTAL,Tipo_Impresion,Columna)
+	LOCAL PORCENTAJE LIKE post:IvaPor
+	LOCAL COLUMNA_AUX LIKE post:cantidad
+	LOCAL importe_iva LIKE siaf:importe
+	LOCAL l_IvaBasCalc LIKE siaf:importe
+	LOCAL l_importe LIKE siaf:importe
+
+	//COLUMNA_AUX = Columna - 7
+	CALL post:MISCinic_AuxIva
+	DO
+		CALL post:MISCbusca_AuxIva
+		IF (lib:err_retval != 0) THEN
+			BREAK
+		END IF
+	
+		/*SNE -20020514- Se realizo dicha modificacion debido a que en el salto de pagina
+		se extrae los valores de la Presu, pisando el valor correcto del iva de post:importe 
+		leido anteriormente de AuxIva 
+		*/
+		//MFM - PS 10918Se agrega redondeo para el campo del Importe del Iva de la Tabla AuxIva
+		INIT 22,1
+		importe_iva = post:importe
+		CALL PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA, Tipo_Impresion)
+		INDICE = RETVAL
+		post:importe = importe_iva
+		INIT 22,0
+		IF (IvaPor == 0) THEN
+			IF (factor_conversion == 0) THEN
+				;Se agrega esta salvedad para corregir el PS 9338
+				;PS 9338: Cuando se hace una venta a cliente Medio con consumo de adelanto
+				;en "Si" y el sistema se cae después de grabado "post:estAnul = OK_", 
+				;cuando el sistema se vuelve a levantar se pierde el valor del campo
+				;"post:factor_conversion" haciendo que la división siguiente sea por cero.
+				;Esto ocaciona que el sistema no se pueda volver a levantar y que no se grabe
+				;el fin de sesión. *** MDG
+				CALL post:CDSgetFactorPresu
+			END IF
+			post:IvaBasCalc = post:IvaBasCalc / factor_conversion
+			IF (post:IvaBasCalc > 0 ) THEN
+				//cgw: SC 50170 (redondea post:IvaBasCalc de 4 decimales a 2 decimales)
+				INIT 22,1
+				l_IvaBasCalc = post:IvaBasCalc
+
+			//gpb:PS10705
+			IF (modoPrt == LASER) THEN					
+				FPRINT common:csr_string "%*.*s %14.14e\n",Columna,Columna,"EXENTO IVA ",l_IvaBasCalc
+			ELSE	
+				//justifico a la derecha
+				FPRINT common:csr_string "\x1Ba\x32%s %14.14e\n" , "EXENTO IVA ",l_IvaBasCalc	
+			END IF	
+				
+				INIT 22,0
+				CALL post:MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 1
+			END IF
+		ELSE
+			IF (post:IvaBasCalc != 0 ) THEN 	         
+				/*Para cancelaciones de giros*/
+				IF (factor_conversion == 0) THEN
+					factor_conversion = 1
+				END IF
+				importe = importe / factor_conversion
+				
+				//SC 50170
+				INIT 22,1
+				IF (post:IvaBasCalc > 0) THEN
+					l_IvaBasCalc = post:IvaBasCalc * 1
+					l_importe = importe * 1
+
+					//gpb:PS10705
+					IF (modoPrt == LASER) THEN
+						FPRINT common:csr_string "%*.*s %s%4.4s  %14.14e\n",\
+							COLUMNA_AUX,COLUMNA_AUX,"NETO GRAVADO IVA","%",post:IvaPor,l_IvaBasCalc							
+					ELSE
+						//justifico a la derecha
+						FPRINT common:csr_string "\x1Ba\x32%s %s%4.4s  %14.14e\n","NETO GRAVADO IVA","%",post:IvaPor,l_IvaBasCalc
+					END IF
+					
+					CALL post:MISCprt2laser(common:csr_string)
+
+					//gpb:PS10705
+					IF (modoPrt == LASER) THEN
+						FPRINT common:csr_string "%*.*s %s%4.4s  %14.14e\n",\
+							COLUMNA_AUX,COLUMNA_AUX,"IVA","%",post:IvaPor,l_importe						
+					ELSE
+						//justifico a la derecha
+						FPRINT common:csr_string "\x1Ba\x32%s %s%4.4s  %14.14e\n","IVA","%",post:IvaPor,l_importe
+					END IF
+				ELSE
+					l_IvaBasCalc = post:IvaBasCalc * -1
+					FPRINT common:csr_string "(%e)" l_IvaBasCalc
+
+					//gpb:PS10705
+					IF (modoPrt == LASER) THEN
+						FPRINT common:csr_string "%*.*s %s%4.4s  %14.14e\n",\
+							COLUMNA_AUX,COLUMNA_AUX,"NETO GRAVADO IVA","%",post:IvaPor,common:csr_string						
+					ELSE
+						//justifico a la derecha
+						FPRINT common:csr_string "\x1Ba\x32%s %s%4.4s  %14.14e\n","NETO GRAVADO IVA","%",post:IvaPor,common:csr_string	
+					END IF	
+						
+					CALL post:MISCprt2laser(common:csr_string)
+					l_importe = importe * -1
+					FPRINT common:csr_string "(%e)" l_importe
+
+					//gpb:PS10705
+					IF (modoPrt == LASER) THEN
+						FPRINT common:csr_string "%*.*s %s%4.4s  %14.14e\n",\
+							COLUMNA_AUX,COLUMNA_AUX,"IVA","%",post:IvaPor,common:csr_string				
+					ELSE
+						//justifico a la derecha
+						FPRINT common:csr_string "\x1Ba\x32%s %s%4.4s  %14.14e\n","IVA","%",post:IvaPor,common:csr_string
+					END IF
+				END IF
+				INIT 22,0
+		
+				CALL post:MISCprt2laser(common:csr_string)
+				INDICE = INDICE + 2
+				IF (IvaCod == FACTURAA2) THEN // [PAW] ---> Solo si es RNI.
+					CALL CDSsobreTasa(COLUMNA_AUX, INDICE, SUBTOTAL) // [PAW] ---> Monotributo
+					INDICE = RETVAL
+					SUBTOTAL = siaf:importe /  factor_conversion
+				END IF
+			END IF
+			//PJM 16-07-98 No Importa si se imprime o no siempre se suma
+			//Esto es porque puede haber sobretasa negativa egreso
+			SUBTOTAL = SUBTOTAL + SobreTasaIva
+		END IF
+		
+		//SC 50170
+		INIT 22,1
+		SUBTOTAL = SUBTOTAL + importe
+		INIT 22,0
+	LOOP
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+	END IF
+	
+	CALL post:MISCclose_AuxIva
+	siaf:importe = SUBTOTAL
+	RETURN (INDICE)
+END SUB
+
+/*******/

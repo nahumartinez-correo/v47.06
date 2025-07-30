@@ -1,0 +1,162 @@
+/****o* Facturación Giros/OFB:giros:MISC_ImpreTmp_CSM
+* NOMBRE
+*   OFB:giros:MISC_ImpreTmp_CSM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCarmo_ImpreTmp
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+
+SUB giros:MISC_ImpreTmp_CSM /* nueva para Facturacion */
+
+    LOCAL imp_aux LIKE siaf:importe
+    LOCAL serv_aux LIKE post:adt_serv_serv
+    LOCAL desde_aux LIKE post:adt_tarif_desde
+    LOCAL hasta_aux LIKE post:adt_tarif_hasta
+    LOCAL imp_serv_aux LIKE imp_servicio_fld
+    LOCAL aux_cant_opc like post:cant_opc
+
+  IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+       If (giros:flia_giro_fld == "P" || giros:flia_giro_fld == "T")
+       		FPRINT desc_impre2,"SERVICIO NRO : %s-%s/%s",Serie_fld,NroGiro_fld,digito_fld
+       Else
+			IF (giros:flia_giro_fld == "W") Then
+				FPRINT desc_impre2,"MTCN : %s",giros:clave_hdr_giros
+			Else				
+				FPRINT desc_impre2,"MTCN : %s",giros:cons_nro_ctrol
+			Endif				
+       Endif
+     post:tipo_produc = post:adt_serv_serv
+     IF ((es_emision_postal == "S") || (es_emision_tele == "S" || \
+	     	es_envio_WU == "S"|| es_emision_inte == "S" || giros:es_emision_correohoy == "S" )) THEN
+
+	if ( es_emision_inte == "S" )
+
+		aux_cant_opc = post:cant_opc
+
+		// En internacionales existen opcionales que no se cobran
+		// y no estan dados de alta en Opc/OpcServ y no se agregan
+		// al vector. se instancian con flags.
+
+		if (testflag(giros:opcionales_inter,opc_desc_fisica))
+			post:cant_opc = post:cant_opc + 1
+		end if
+		
+		if (testflag(giros:opcionales_inter,opc_preg_verif))
+			post:cant_opc = post:cant_opc + 1
+		end if
+		
+		if (testflag(giros:opcionales_inter,opc_pag_sver))
+			post:cant_opc = post:cant_opc + 1
+		end if
+		
+		if (testflag(giros:opcionales_inter,opc_ajus_mone))
+			post:cant_opc = post:cant_opc + 1
+		end if
+
+	end if
+	// SC 50170
+	if (post:dif_calculada.numchars != 0 ) then
+		CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,SERVGIROS,post:adt_serv_aliciva,Comision_fld,1,post:dif_calculada)
+	else
+        	CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,SERVGIROS,post:adt_serv_aliciva,Comision_fld,1,0)
+        endif
+	
+	if ( es_emision_inte == "S" )
+		post:cant_opc = aux_cant_opc
+	end if
+
+        IF (post:cant_opc != 0) THEN
+          siaf:afecta_efectivo = "+"
+          CALL post:MISCActua_Opcional
+        END IF 
+
+        siaf:afecta_efectivo = "+"
+        CALL post:MISCActua_OpcInter
+
+        IF (es_emision_tele == "S" && post:adt_tarif_fijo > 0) THEN
+          LET post:desc_impre = post:adt_tarif_fijo_des
+         //SC 50170
+          if (post:dif_calculada_tasa.numchars != 0 ) then
+          	CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,TASAGIROS,post:adt_tarif_fj_aliciva,post:adt_tarif_fijo,1,post:dif_calculada_tasa)
+          else
+          	CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,TASAGIROS,post:adt_tarif_fj_aliciva,post:adt_tarif_fijo,1,0)
+          endif
+        END IF 
+        imp_aux = siaf:importe
+        siaf:importe = Comision_fld + post:costo_opc
+        IF (es_emision_tele == "S") THEN
+          siaf:importe = siaf:importe + post:adt_tarif_fijo
+        END IF 
+        CALL post:MISCtotalizo_MedPag
+        imp_servicio_fld = Comision_fld
+        CALL MISCacumulo_serv
+        siaf:importe = imp_aux
+  	 ELSE 
+  	  	if (imp_servicio_fld > 0) then 
+	        imp_aux = siaf:importe
+	        //SC 50170
+	        if ( post:dif_calculada.numchars != 0 ) then
+	        	CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,SERVGIROS,post:adt_serv_aliciva,imp_servicio_fld,1,post:dif_calculada)
+	        else
+	        	CALL post:MISCgenero_ImpreTmp(post:adt_serv_serv,SERVGIROS,post:adt_serv_aliciva,imp_servicio_fld,1,0)
+	        endif
+			  siaf:importe = imp_servicio_fld
+	        CALL post:MISCtotalizo_MedPag
+	        siaf:importe = imp_aux
+	        CALL MISCacumulo_serv
+      	end if
+     END IF 
+  ENDIF
+  IF (TESTFLAG(flags_back,vencido) && giros:rev_status == HOST_ACCEPTED) THEN
+        FPRINT post:desc_impre,"%s  %s a %s",serv_desc_rev,tarif_desde,tarif_hasta
+        FPRINT desc_impre2,"SERVICIO NRO : %s-%s/%s",Serie_fld,NroGiro_fld,digito_fld
+        IF (rev_status == 3) THEN
+          swapdup siaf:afecta_efectivo
+		  siaf:afecta_efectivo = giros:afecta_efectivo_rev
+          serv_aux = post:adt_serv_serv
+          post:adt_serv_serv = codigo_serv_rev
+          desde_aux = post:adt_tarif_desde
+          hasta_aux = post:adt_tarif_hasta
+          post:adt_tarif_desde = tarif_desde
+          post:adt_tarif_hasta = tarif_hasta
+          post:tipo_produc = post:adt_serv_serv
+          //SC 50170 - en las revalidas no se aplica la diferencia
+          CALL post:MISCgenero_ImpreTmp(codigo_serv_rev,SERVGIROS,serv_aliciva_rev,imp_revalida_rev,1,0)
+          post:adt_tarif_desde = desde_aux
+          post:adt_tarif_desde = hasta_aux
+          post:adt_serv_serv = serv_aux
+          siaf:moneda = moneda_rev
+          post:medio_pago_desc = moneda_desc_rev
+          siaf:importe = imp_revalida_rev
+          CALL post:MISCtotalizo_MedPag
+          serv_aux = post:adt_serv_serv
+          desde_aux = post:adt_tarif_desde
+          hasta_aux = post:adt_tarif_hasta
+          post:adt_serv_serv = codigo_serv_rev
+          post:adt_tarif_desde = tarif_desde
+          post:adt_tarif_hasta = tarif_hasta
+          imp_serv_aux = imp_servicio_fld
+          imp_servicio_fld = imp_revalida_fld
+          CALL MISCacumulo_serv
+          post:adt_serv_serv = serv_aux
+          post:adt_tarif_desde = desde_aux
+          post:adt_tarif_desde = hasta_aux
+          imp_servicio_fld = imp_serv_aux
+          dupfield siaf:afecta_efectivo
+        END IF 
+  END IF 
+END SUB 
+
+/*******/

@@ -1,0 +1,117 @@
+/****o* Lista de Giros/OFB:giros:OFBgenero_caida_lg
+* NOMBRE
+*   OFB:giros:OFBgenero_caida_lg
+* DESCRIPCION
+*   Recorre la tabla sesion_lg y si hay algun giro con caida en vuelo lo graba en la tabla
+*	jnl_caidas_lg para su futura recuperacion
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+
+SUB giros:OFBgenero_caida_lg
+
+	local aux_status like hcomm:tran_status
+	local aux_hora_viaje like giros:hora_viaje
+	local aux_dia_viaje  like giros:dia_viaje
+	local aux_cod_seq    like post:adt_codseq_nro
+	local aux_proc_codi  like giros:codigo_procesamiento
+	local aux_serie      like giros:Serie_fld
+	local aux_nrogiro    like giros:NroGiro_fld
+	local aux_digito     like giros:digito_fld
+	local varl_mensaje   like common:csr_string_171
+	
+	//resguardo los valores del giro para poder atualizar la RecepChk
+	aux_serie = giros:Serie_fld
+	aux_nrogiro = giros:NroGiro_fld
+
+	CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONses_lg WHERE \
+	giros:operator_lg == FLD:op:op_operator_id && \
+	giros:estado_lg == "I" && \
+	giros:lg_status > HOST_REJECTED sort "primary"
+
+	CDS FINDFIRST DSC:CONses_lg  NOLOCK
+	lib:err_retval = CDSRETVAL
+	if (lib:err_retval != 0 )
+		CDS ENDSELECT DSC:CONses_lg
+		return 0
+	end if
+
+	DO
+		CDS EXTRACT DSC:CONses_lg  \
+		giros:operator_lg    INTO giros:jnl_lg_operador \
+		giros:nro_sesion_lg    INTO giros:jnl_lg_sesion \
+		giros:tipo_giro_fld    INTO giros:jnl_lg_tipo \
+		giros:flia_giro_fld    INTO giros:jnl_lg_flia \
+		giros:nro_trx_lg       INTO giros:jnl_lg_nro_trx \
+		giros:lg_status        INTO aux_status
+
+		CDS EXTRACT DSC:CONses_lg  \
+		giros:hora_viaje    INTO aux_hora_viaje \
+		giros:dia_viaje     INTO aux_dia_viaje \
+		post:adt_codseq_nro INTO aux_cod_seq \
+		giros:codigo_procesamiento INTO aux_proc_codi \
+		giros:Serie_fld \
+		giros:NroGiro_fld \
+		giros:digito_fld  INTO aux_digito
+
+	
+		cds select from dsc:giros:jnl_caidas_lg_tbl becomes dsc:giros:jnl_caidas_lg_ctx
+		cds clearbuffer DSC:giros:jnl_caidas_lg_ctx
+
+		cds append DSC:giros:jnl_caidas_lg_ctx \
+			giros:jnl_lg_operador \
+			giros:jnl_lg_sesion \
+			giros:jnl_lg_tipo \
+			giros:jnl_lg_flia \
+			giros:jnl_lg_nro_trx \
+			aux_status AS giros:lg_status \
+			aux_hora_viaje AS giros:hora_viaje \
+			aux_dia_viaje  AS giros:dia_viaje \
+			aux_cod_seq    AS post:adt_codseq_nro \
+			aux_proc_codi  AS giros:codigo_procesamiento \
+			giros:Serie_fld \
+			giros:NroGiro_fld \
+			aux_digito     AS giros:digito_fld 
+
+		cds insert DSC:giros:jnl_caidas_lg_ctx lock
+		cds endselect DSC:giros:jnl_caidas_lg_ctx
+
+		IF (giros:jnl_lg_tipo == "P") 
+			//anulo el cheuqe en la RecepChk
+			CALL giros:CDSavanza_cheq("AN")
+			//Solicito al usuario que pida la anulacion del cheque por si la sucursal tiene marca de giro correlativo.
+			fprint varl_mensaje,"%s : %s-%s-%s %s","DEBIDO A LA CAIDA DEL SISTEMA COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",\
+			giros:Serie_fld,giros:NroGiro_fld,aux_digito,"\nDESTRUYA EL CHEQUE MANUALMENTE."		
+			msgbox varl_mensaje,OFB_OK,"Atencion"	
+		END IF
+		
+		CDS FINDNEXT DSC:CONses_lg LOCK
+		lib:err_retval = CDSRETVAL
+
+		if (lib:err_retval != 0 )
+			break
+		end if
+	loop
+
+	CDS ENDSELECT DSC:CONses_lg
+	
+	//restauro los valores del giro
+	giros:Serie_fld = aux_serie 
+	giros:NroGiro_fld = aux_nrogiro
+
+END SUB
+
+/*******/
+
+

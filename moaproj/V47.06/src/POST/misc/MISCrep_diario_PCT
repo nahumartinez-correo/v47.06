@@ -1,0 +1,255 @@
+/****o* SiMon/OFB:post:MISCrep_diario_PCT
+* NOMBRE
+*   OFB:post:MISCrep_diario_PCT
+* DESCRIPCION
+*   Impresion del Reporte Diario PCT - Totales de Pago por Cuenta y Orden por Pantalla.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* REFERENCIADO POR
+*   post:TOTSrep_diario_PCT
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrep_diario_PCT
+    LOCAL Lstring           LIKE common:csr_string_200
+    LOCAL cli_operativo     LIKE common:csr_string
+    LOCAL cli_operativo_ant LIKE common:csr_string
+    LOCAL Lcliente_ant      LIKE post:adt_benTmp_cli
+    LOCAL Lcliente_desc_ant LIKE post:adt_benTmp_cli_desc
+    LOCAL Loperativo_ant    LIKE post:adt_benTmp_operativo
+    LOCAL Lcliente          LIKE post:adt_benTmp_cli
+    LOCAL Lcliente_desc     LIKE post:adt_benTmp_cli_desc
+    LOCAL Loperativo        LIKE post:adt_benTmp_operativo
+    LOCAL Loper_pag         LIKE post:asign_falloBe_NomPag
+    LOCAL Lcomprobante      LIKE post:adt_benTmp_benef
+    LOCAL Limporte          LIKE siaf:importe
+    LOCAL Lfecha_pago       LIKE common:system_date
+    LOCAL Lcodigo_siaf      LIKE siaf:codigo_siaf
+    LOCAL LOnSite           LIKE post:SiNo
+    LOCAL l_post_horiz      LIKE post:etiq_ref_horiz
+
+    LOCAL total_importe     LIKE siaf:importe
+    LOCAL cant_cupon        LIKE siaf:i
+    LOCAL total_cupon       LIKE siaf:i
+    LOCAL total_general     LIKE siaf:importe
+    LOCAL idx               LIKE siaf:i
+    LOCAL desc_cupon        LIKE common:csr_string
+    LOCAL l_operativo       LIKE post:adt_benTmp_operativo
+
+    /* cgw: Impresion Reporte Diario PCT - Totales de Pago por Cuenta y Orden, por pantalla.*/
+
+    //limpia variables de control del corte de control.
+    CLEARFIELD cli_operativo_ant //control de corte control.
+    CLEARFIELD Lcliente_ant
+    CLEARFIELD Lcliente_desc_ant
+    CLEARFIELD Loperativo_ant
+
+    //limpia totalizadores corte control
+    CLEARFIELD total_importe
+    CLEARFIELD cant_cupon
+    //limpia totalizadores generales.
+    CLEARFIELD total_general
+    CLEARFIELD total_cupon
+
+    //Encabezado Reporte Diario PCT por Pantalla.
+    CALL post:MISCenc_RepDiarioPCT
+
+    idx = 0x8000
+    DO
+
+        CLEARFIELD cli_operativo //control de corte control.
+        CLEARFIELD Lcliente
+        CLEARFIELD Lcliente_desc
+        CLEARFIELD Loperativo
+        CLEARFIELD Loper_pag
+        CLEARFIELD Lcomprobante
+        CLEARFIELD Limporte
+        CLEARFIELD Lfecha_pago
+        CLEARFIELD Lcodigo_siaf
+
+        CALL csr:myPickcontrol("rep_diarioPCT",Lstring,idx)
+        IF (RETVAL < 0) THEN
+	        BREAK
+    	END IF 
+
+    	/*Extrae campos del picklist y los coloca en variables*/
+        cli_operativo = SUBSTR(Lstring,41,31) //corte control
+        Lcliente = SUBSTR(Lstring,41,10)
+        Lcliente_desc = SUBSTR(Lstring,0,40)
+        Loperativo = SUBSTR(Lstring,52,20)
+        Loper_pag = SUBSTR(Lstring,73,41)
+        Lcomprobante = SUBSTR(Lstring,115,20)
+        Lfecha_pago = SUBSTR(Lstring,136,8)
+        Limporte = SUBSTR(Lstring,145,16)
+        Lcodigo_siaf = SUBSTR(Lstring,162,5)
+        CALL csr:trimfield Lcomprobante
+
+        IF (cli_operativo != cli_operativo_ant) THEN
+
+            //Corte control Cliente - Operativo.            
+            IF (cli_operativo_ant.numchars > 0) THEN
+
+                //Imprime totales del corte control Cliente - Operativo.
+                IF (post:TipoRepPCT == "D") THEN
+                    CLEARFIELD common:csr_string
+                    FPRINT common:csr_string "-------------------------------------------------------------------------------------------------"
+                    CALL post:MISCwrite_repdPCT
+                END IF
+
+                CLEARFIELD desc_cupon
+                IF (cant_cupon == 1) THEN
+                    desc_cupon = "CUPON"
+                ELSE
+                    desc_cupon = "CUPONES"
+                END IF
+                CLEARFIELD common:csr_string
+                FPRINT common:csr_string "TOTAL         %-20.20s         %5.5s %-7.7s       %16.16e", \
+                       Loperativo_ant, cant_cupon, desc_cupon, total_importe
+                CALL post:MISCwrite_repdPCT
+
+                //Imprime una linea en blanco
+                CLEARFIELD common:csr_string
+                common:csr_string = " "
+                CALL post:MISCwrite_repdPCT
+
+                //Imprime primer codigo de barras (cadena caracteres).
+                ;Arma operativo de hata 20 caracteres, completando con ceros a izquierda.
+                l_operativo = Loperativo_ant
+                CALL csr:trimfield l_operativo
+                FPRINT l_operativo, "%020.20s" l_operativo
+                CLEARFIELD common:csr_string
+                FPRINT common:csr_string,"%s%s%20s",common:sucursal_activa,tlr:set_bus_date,l_operativo                
+                CALL post:MISCwrite_repdPCT
+
+                //Imprime segundo codigo de barras (cadena caracteres).
+                ;Variables utilizadas para el segundo codigo de barra.
+                l_cant_cupon = cant_cupon
+                Total_Importe_PCT = total_importe * 100
+                CLEARFIELD common:csr_string
+                FPRINT common:csr_string,"%s%s%04.4s%012.12s",common:sucursal_activa,tlr:set_bus_date,l_cant_cupon,Total_Importe_PCT
+                CALL post:MISCwrite_repdPCT
+
+                //Imprime una linea en blanco
+                CLEARFIELD common:csr_string
+                common:csr_string = " "
+                CALL post:MISCwrite_repdPCT
+            END IF
+
+            //Reserva variables de control de corte operativo.
+            cli_operativo_ant = cli_operativo
+            Lcliente_ant = Lcliente
+            Lcliente_desc_ant = Lcliente_desc
+            Loperativo_ant = Loperativo
+
+            //limpia totalizadores corte control
+            CLEARFIELD total_importe
+            CLEARFIELD cant_cupon
+
+            //Imprime Titulos del Cliente - Operativo.
+            CLEARFIELD common:csr_string
+            FPRINT common:csr_string "-------------------------------------------------------------------------------------------------"
+            CALL post:MISCwrite_repdPCT
+            CLEARFIELD common:csr_string
+            FPRINT common:csr_string "Cliente: %-10.10s - %-40.40s   Operativo: %-20.20s", \
+                   Lcliente, Lcliente_desc, Loperativo
+            CALL post:MISCwrite_repdPCT
+            CLEARFIELD common:csr_string
+            common:csr_string = "Oper/Pag                                       Nro.Comprobante          Importe  Fec.Pago OnSite"
+            CALL post:MISCwrite_repdPCT
+            CLEARFIELD common:csr_string
+            FPRINT common:csr_string "-------------------------------------------------------------------------------------------------"
+            CALL post:MISCwrite_repdPCT
+        END IF
+
+        IF (post:TipoRepPCT == "D") THEN
+           CLEARFIELD LOnSite
+           IF (Lcodigo_siaf == 6630) THEN
+               //OnSite
+               LOnSite = "S"
+           END IF
+           CLEARFIELD common:csr_string
+           FPRINT common:csr_string "%-41.41s %20.20s %16.16e %10.10e   %s", \
+                  Loper_pag, Lcomprobante, Limporte, Lfecha_pago, LOnSite
+           CALL post:MISCwrite_repdPCT
+        END IF
+
+        //Contadores de Totales por corte control.
+        total_importe = total_importe + Limporte
+        cant_cupon = cant_cupon + 1
+        //Contadores de Totales Generales.
+        total_general = total_general + Limporte
+        total_cupon = total_cupon + 1
+
+        idx = idx + 1
+    LOOP
+
+    //Imprime totales del corte control Cliente - Operativo.
+    IF (post:TipoRepPCT == "D") THEN
+        CLEARFIELD common:csr_string
+        FPRINT common:csr_string "-------------------------------------------------------------------------------------------------"
+        CALL post:MISCwrite_repdPCT
+    END IF
+
+    CLEARFIELD desc_cupon
+    IF (cant_cupon == 1) THEN
+        desc_cupon = "CUPON"
+    ELSE
+        desc_cupon = "CUPONES"
+    END IF
+
+    CLEARFIELD common:csr_string
+    FPRINT common:csr_string "TOTAL         %-20.20s         %5.5s %-7.7s       %16.16e", \
+           Loperativo_ant, cant_cupon, desc_cupon, total_importe
+    CALL post:MISCwrite_repdPCT
+
+    //Imprime una linea en blanco
+    CLEARFIELD common:csr_string
+    common:csr_string = " "
+    CALL post:MISCwrite_repdPCT
+
+    //Imprime primer codigo de barras (cadena caracteres).
+    ;Arma operativo de hata 20 caracteres, completando con ceros a izquierda.
+    l_operativo = Loperativo_ant
+    CALL csr:trimfield l_operativo
+    FPRINT l_operativo, "%020.20s" l_operativo
+    CLEARFIELD common:csr_string    
+    FPRINT common:csr_string,"%s%s%20s",common:sucursal_activa,tlr:set_bus_date,l_operativo                
+
+    CALL post:MISCwrite_repdPCT
+
+    //Imprime segundo codigo de barras (cadena caracteres).
+    ;Variables utilizadas para el segundo codigo de barra.
+    l_cant_cupon = cant_cupon
+    Total_Importe_PCT = total_importe * 100
+    CLEARFIELD common:csr_string
+    FPRINT common:csr_string,"%s%s%04.4s%012.12s",common:sucursal_activa,tlr:set_bus_date,l_cant_cupon,Total_Importe_PCT
+    CALL post:MISCwrite_repdPCT
+
+    CLEARFIELD common:csr_string
+    FPRINT common:csr_string " "
+    CALL post:MISCwrite_repdPCT
+
+    //Imprime Totales Generales.
+    CLEARFIELD common:csr_string
+    FPRINT common:csr_string "-------------------------------------------------------------------------------------------------"
+    CALL post:MISCwrite_repdPCT
+
+    CLEARFIELD desc_cupon
+    IF (total_cupon == 1) THEN
+        desc_cupon = "CUPON"
+    ELSE
+        desc_cupon = "CUPONES"
+    END IF
+    CLEARFIELD common:csr_string
+    FPRINT common:csr_string,"TOTAL GENERAL ABONADO POR LA SUCURSAL      %5.5s %-7.7s       %16.16e", \
+           total_cupon,desc_cupon,total_general
+    CALL post:MISCwrite_repdPCT
+
+END SUB
+
+/*******/

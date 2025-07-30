@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcontrola_bolsa
+* NOMBRE
+*   OFB:tes:MISCcontrola_bolsa
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   TES:PBentregar_bolsa,TES:PBno_sale_bolsa,TES:SVALentrega_bolsas
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2354
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcontrola_bolsa
+local idx         like siaf:i
+local l_importe   like siaf:importe
+local l_imp_ori   like siaf:importe
+local marca_bolsa like tes:rend_marca_cierre
+local l_bolsa     like tes:adt_depbuzon_bolsa
+local varl_msgstr like common:csr_string
+local l_cod_esp    like tes:adt_depbuzon_cod
+local l_subcod_esp like tes:adt_depbuzon_subcod
+	
+	idx = PL_GETITEM
+	
+	do
+		marca_bolsa = "S"
+		call csr:myPickcontrol(dsc:bolsas_caja,common:csr_string,idx)
+		if (retval < 0)
+			break
+		end if
+		
+		l_bolsa = substr(common:csr_string,1,8)
+		if (substr(common:csr_string,0,1) != "E") then
+			//l_importe = substr(common:csr_string,41,13)
+			l_importe = substr(common:csr_string,39,13)
+		else
+			l_importe = substr(common:csr_string,49,13)
+			l_cod_esp = substr(common:csr_string,9,20)
+			l_subcod_esp = substr(common:csr_string,29,20)
+		end if
+		
+		if (substr(common:csr_string,0,1) != "E") then
+			CDS SELECT FROM dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx WHERE \
+    			tes:adt_depbuzon_suc == common:sucursal_activa && \
+    			tes:adt_depbuzon_caja == buzon && \
+    			tes:adt_depbuzon_bolsa == l_bolsa
+    		else
+    			CDS SELECT FROM dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx WHERE \
+    			tes:adt_depbuzon_suc == common:sucursal_activa && \
+    			tes:adt_depbuzon_caja == buzon && \
+    			tes:adt_depbuzon_bolsa == l_bolsa && \
+    			tes:adt_depbuzon_cod == l_cod_esp && \
+			tes:adt_depbuzon_subcod == l_subcod_esp
+	        endif
+	
+    		
+    		CDS FINDFIRST dsc:DepBuzon_ctx NOLOCK
+		if ( CDSRETVAL  < 0 )
+			msgbox "NO EXISTEN BOLSAS ASOCIADAS A LA CAJA.",\
+			OFB_OK,"Error"
+    			CDS ENDSELECT DSC:DepBuzon_ctx
+			return -2
+		endif
+		clearfield l_imp_ori
+		
+		CDS EXTRACT DSC:DepBuzon_ctx adt_depbuzon_impori into l_imp_ori
+		
+		if (l_imp_ori != l_importe)
+			fprint varl_msgstr "BOLSA NRO: %-8.8s CON DIFERENCIAS." \
+       			l_bolsa
+			fprint varl_msgstr "%s\DESEA CONTINUAR?" varl_msgstr
+			msgbox FLD:varl_msgstr,OFB_YESNO2,"Confirmacion"
+            		IF (RETVAL == 6) THEN
+                		/* La Bolsa se queda porque tiene diferencias */
+                		marca_bolsa = "X"
+            		else
+                		drv:button = 2
+                		call drv:but_up_enable
+                		return (-2)
+            		end if
+            	endif
+            	CDS ENDSELECT DSC:DepBuzon_ctx
+            	if (substr(common:csr_string,0,1) != "E") then
+            		call CDSupdate_bolsa("T",buzon,l_bolsa,l_importe,marca_bolsa,"","")
+            	else
+            		call CDSupdate_bolsa("E",buzon,l_bolsa,l_importe,marca_bolsa,l_cod_esp,l_subcod_esp)
+            	endif
+       	
+		idx = idx + 1
+	loop
+	
+END SUB
+
+/*******/

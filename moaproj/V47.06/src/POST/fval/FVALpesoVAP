@@ -1,0 +1,148 @@
+/****o* Registro VAP/OFB:post:FVALpesoVAP
+* NOMBRE
+*   OFB:post:FVALpesoVAP
+* DESCRIPCION
+*   Validación del campo peso en la tx de Registro VAP. Tarifa el servicio VAP segun el peso ingresado
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   
+* REFERENCIADO POR
+*   SCR:post:SCRNregistroVAP
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpesoVAP
+	LOCAL x LIKE post:cantidad
+	LOCAL peso_limi LIKE peso_en_grs
+	LOCAL peso_hasta LIKE post:adt_tarif_hasta
+	LOCAL peso_desde LIKE post:adt_tarif_desde
+	LET peso_desde = 0.001
+
+
+    IF (post:adt_serv_usa_caja == "S") THEN
+        IF (post:tipo_caja.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL TIPO DE CAJA.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+        IF (post:destino.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL DESTINO.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+    END IF
+
+	
+	/*IF (peso_en_kgs.numchars == 0) 
+		MSGBOX "DEBE PESAR EL ENVIO",0x00,"ERROR"
+		RETURN (-2)
+	END IF*/
+	IF ((adt_serv_umstd == "KGS" && peso_en_kgs.numchars == 0) || \
+		(adt_serv_umstd == "GMS" && peso_en_grs.numchars == 0)) 
+		MSGBOX "DEBE PESAR EL ENVIO",0x00,"ERROR"
+		RETURN (-2)
+	END IF
+
+	LET post:adt_serv_tole = 0
+	CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx WHERE \
+		post:adt_serv_serv == adt_serv_serv
+	CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+	LET lib:err_retval = CDSRETVAL
+	IF (CDSRETVAL == 0)
+		CDS EXTRACT DSC:Servicio_ctx post:adt_serv_tole
+	END IF
+	CDS ENDSELECT DSC:Servicio_ctx
+	IF (adt_serv_req_ad == "S" && common:br_aduana == "N") THEN
+		peso_limi = post:adt_serv_max_serv * 1000
+	ELSE
+		peso_limi = post:adt_serv_limite * 1000
+	ENDIF
+
+	/* Calculo tolerancia - Maricel 6/7/2000 */
+	peso_limi = peso_limi + ((peso_limi * adt_serv_tole) / 100)
+	IF (post:adt_serv_umstd == "KGS" || post:adt_serv_umstd == "CMS" || \
+		post:adt_serv_umstd == "UNI") THEN
+		/* Si la Unidad de Medida del Servicio es Kilos     */
+		/* paso el peso de la pieza a Gramos.           */
+		post:peso_en_grs = post:peso_en_kgs * 1000
+	END IF
+	
+	IF (post:adt_serv_calc_rv == "S" && adt_servcaja_peso > 0)    
+		CALL post:MISCrest_peso_cprop(peso_en_kgs)
+		if (retval < 0)
+			CLEARFIELD peso_en_grs
+			CLEARFIELD peso_en_kgs
+			//REFRESH peso_en_grs
+			REFRESH peso_en_kgs
+			return -2
+		end if
+	ELSE
+		IF (post:peso_en_grs > peso_limi) THEN
+			MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+			/* Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009*/
+			CLEARFIELD peso_en_grs
+			CLEARFIELD peso_en_kgs
+			REFRESH peso_en_grs
+			REFRESH peso_en_kgs             
+			RETURN (-2)
+		END IF
+	END IF	
+
+
+	IF (post:adt_serv_umstd == "GMS") THEN
+	    post:adt_tarif_desde = post:peso_en_grs
+	    clearfield peso_en_kgs
+	    refresh peso_en_kgs
+    ELSE
+        post:adt_tarif_desde = post:peso_en_kgs
+        clearfield peso_en_grs
+        refresh peso_en_grs
+    END IF	
+
+   	// Calculo la tarifa solo si es cliente medio con adelanto o modalidad
+	IF (cli_tipo == CLIMED && (post:ConsumoAnticipo || post:modalidad_CM != "S"))    
+	    call post:MISCcalc_tarif_VAP
+	    if (retval < 0) then
+	        ; Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009
+	        CLEARFIELD peso_en_grs
+	        CLEARFIELD peso_en_kgs
+	        REFRESH peso_en_grs
+	        REFRESH peso_en_kgs
+	        return -2
+	    end if
+
+        //Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+        if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+            post:bonificaCM = "S"
+        endif
+	
+        If (bonificaCM == "S") Then
+            CALL MISCtratCM_vap //MISCTratamientoCM
+            if (retval < 0) then
+                return -2
+            end if
+        else
+            clearfield post:Dcto_CliMed
+            refresh  post:Dcto_CliMed
+        endif
+	ELSE
+		//Verfico en el CDSbasico que los datos cargados puedan ser tarifados.
+		CALL post:CDSbasico(post:adt_serv_serv,post:adt_tarif_desde,post:adt_serv_umstd,post:destino)
+        IF (RETVAL < 0)
+            CALL MISCParamDefect(post:adt_serv_serv,post:destino,post:adt_serv_umstd)
+            setvaldone adt_serv_serv
+            RETURN (-2)
+        END IF	    	
+	END IF    
+    Let promo_aplica = "N"
+    setvaldone post:peso_en_kgs
+    setvaldone post:peso_en_grs
+    RETURN (0)
+
+END SUB
+
+/*******/

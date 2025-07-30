@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:SVALvta_combos
+* NOMBRE
+*   OFB:post:SVALvta_combos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALvta_combos
+
+/*OBJETIVO:
+    Esta rutina guarda en la presudet un registro por cada producto del combo seleccionado
+    En combo_seleccion se tiene en las tres primeras posiciones el codigo y luego la descripcion*/
+    
+LOCAL l_PreDNroTrn	like post:PreDNroTrn
+LOCAL l_fecha		like post:fecha
+LOCAL l_operator	like post:op_operator_id
+LOCAL l_INDtrn		like tlr:INDtran_name
+LOCAL l_PrePEst		like post:PrePEst
+LOCAL l_PreDEst		like post:PreDEst
+LOCAL l_NroCompPag	like post:NroCompPago
+LOCAL l_modif_op	like post:modif_operator
+LOCAL l_moneda		like siaf:moneda
+LOCAL l_mpag_des	like post:medio_pago_desc
+LOCAL l_codigo_siaf like siaf:codigo_siaf
+
+FYIMSG common:fyimsg_list,"Preparando datos para el combo..."
+        
+/*Limpio las variables a guardar en la PresuDet*/
+CALL CSR:proc_list (F_CLEAR, LST:post:LISTPresu_combo )
+
+/*Guardo el codigo del combo y la cantidad para posteriores procesos*/
+LET post:tmp_concb_cod = SUBSTR(FLD:post:combo_seleccion,0,5)
+LET post:tmp_concb_cantidad = post:cantidad     
+LET l_fecha			= common:system_date
+LET l_operator		= op:op_operator_id
+LET l_PrePEst		= 1
+LET l_PreDEst		= 9
+LET l_NroCompPag	= 0
+LET l_modif_op		= 0
+LET l_moneda		= 99
+LET l_mpag_des		= " "
+
+/*Incremento el secuenciador de combos*/
+CALL post:CDSobtiene_secuen("COMBO")
+post:combo_nro = post:adt_codseq_nro
+
+/*Abro el contexto para le Presudet. Guardo el registro gral del combo*/
+CALL post:CDSguardoComboGral
+
+CDS SELECT FROM DSC:post:ContCombo_tbl BECOMES DSC:post:Combos_ctx \
+WHERE post:adt_concb_cod  == tmp_concb_cod	
+
+IF (CDSRETVAL == 0) then
+                           		
+		CDS FINDFIRST DSC:post:Combos_ctx NOLOCK
+
+		/*Por cada producto del combo guardo un registro en la PresuDet*/
+		WHILE ( CDSRETVAL == 0 ) 
+		
+		        CALL post:CDSIncSecSesion(post:PresNro,"TRN",1,post:enAnulacion)
+                LET l_PreDNroTrn = RETVAL
+		
+                CDS EXTRACT DSC:post:Combos_ctx \
+                	    post:adt_concb_cod \
+	    	            post:adt_concb_interno \
+						post:adt_concb_tipo \
+                        post:adt_concb_principal \
+			            post:adt_concb_colecta \
+			            post:adt_concb_usa_tarif \
+			            post:adt_concb_usa_opc \
+			            post:adt_concb_cantidad \
+			            post:adt_concb_jerarquia
+						    
+                /*Determino tlr:INDtran_name segun el caso. Busco info cobre la tx*/
+                CALL post:MISCpresu_cb (l_INDtrn,l_codigo_siaf)
+                IF ( RETVAL != 0 )
+	                FYIMSG common:fyimsg_list,""
+	                CDS ENDSELECT DSC:post:Combos_ctx	
+                    RETURN (-2)                    
+                ENDIF              
+                
+                IF (RETVAL == 0) then
+                    
+	                CDS CLEARBUFFER DSC:post:CONPresuDeta
+	                CDS APPEND DSC:post:CONPresuDeta \
+	                    l_fecha                 AS post:fecha \
+			            l_operator			    AS post:op_operator_id \
+    			        post:PresNro \
+	    		        siaf:adt_jer_pres_tmp	AS siaf:adt_tran_jer_pres \
+		    	        l_PreDNroTrn			AS post:PreDNroTrn  \
+			            l_INDtrn				AS tlr:INDtran_name \
+			            l_PreDEst				AS post:PreDEst \
+			            l_codigo_siaf           AS siaf:codigo_siaf \
+    			        siaf:adt_tran_af_ef_tmp AS siaf:adt_tran_afec_efvo  \
+	    		        siaf:adt_fliatran_tmp  	AS siaf:adt_tran_fliatran \
+		    	        l_PrePEst				AS post:PrePEst \
+			            l_moneda				AS siaf:moneda  \
+			            l_mpag_des				AS post:medio_pago_desc \
+			            post:cantidad
+			        
+			        CALL post:CDSguardo_contcombo
+			            
+	                CDS INSERT DSC:post:CONPresuDeta LOCK
+	                
+	                IF (CDSRETVAL != 0 )
+	                    FYIMSG common:fyimsg_list,""
+	                    CDS ENDSELECT DSC:post:Combos_ctx	
+	                    ERRMSG common:errmsg_list,"Error en la preparacion de datos para el combo..."
+                        RETURN (-2)
+	                ENDIF
+	                
+                END IF
+                
+				CDS FINDNEXT DSC:post:Combos_ctx NOLOCK
+				
+		END WHILE
+		
+ENDIF
+
+CDS ENDSELECT DSC:post:Combos_ctx
+FYIMSG common:fyimsg_list,""
+		
+END SUB
+
+/*******/

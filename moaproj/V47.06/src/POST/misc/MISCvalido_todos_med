@@ -1,0 +1,119 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalido_todos_med
+* NOMBRE
+*   OFB:post:MISCvalido_todos_med
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalido_todos_med
+	LOCAL ind LIKE siaf:i
+	LOCAL Total_comp_fiscal like siaf:importe
+	Local Importe_fiscal_med like siaf:importe
+	Local Total like siaf:suma_total_bol
+	Local Minimo like post:importe_sesion
+	Local Maximo like post:importe_sesion
+	local esInclusion LIKE siaf:i
+
+	ind = 0
+	Call CDStotal_comp_fiscal
+	Total_comp_fiscal = post:adt_importe
+	Importe_fiscal_med = 0
+	While (ind <= 5)
+		If (MonedaMedioPago[ind].numchars != 0 && ImporteMedioPago[ind] != 0) THEN
+			siaf:importe = ImporteMedioPago[ind]
+			siaf:moneda =  MonedaMedioPago[ind]
+			common:csr_string = MedPDesMedioPago[ind]
+			Minimo = 0
+			Maximo = 0
+			Call CDSmonto_MedioHab
+			if ( siaf:suma_total_bol < 0  )
+				Minimo = Minimo + siaf:suma_total_bol
+			Else
+				Maximo = Maximo + siaf:suma_total_bol
+			EndIf
+			Call CDSmonto_PresuPag
+			Minimo = Minimo + PrePImp
+			Maximo = Maximo + PrePImp
+			//Levanto los datos del medio de pago
+			post:adt_mp_cod = siaf:moneda
+			Call CDSadt_MedPago_load
+			If ((Minimo > siaf:importe) || ( siaf:importe > Maximo))
+				fprint common:csr_string "El importe para %s no esta entre el minimo y el maximo permitido para esta sesion (%e - %e)" adt_mp_desc_corta,Minimo,Maximo
+				MSGBOX common:csr_string OFB_OK "ERROR"
+				Return -2
+			End If
+			//Me fijo que el importe este entre el maximo y minimo
+			If ((siaf:importe < adt_mp_min || siaf:importe > adt_mp_max)  && siaf:importe > 0)
+				Minimo = adt_mp_min
+				Maximo = adt_mp_max
+				fprint common:csr_string "El importe no esta entre el minimo y el maximo permitido para %s (%e - %e)" adt_mp_desc_corta,Minimo,Maximo
+				MSGBOX common:csr_string OFB_OK "ERROR"
+				Return -2
+			Endif
+			If (post:adt_mp_rest == "S")
+				FLD:adt_medpag_cod = siaf:moneda
+				Call post:CDShay_res_comp_fis
+				If (Retval == 0)
+					// El campo acumFormuIncXxx tiene como valor:
+					// EN CASO DE INCLUSION: tiene el importe perteneciente a aquellos
+					// motivos sin comprobante fiscal pero que estan incluidos en la Rmot.
+					// EN CASO DE EXCLUSION: tiene el importe perteneciente a aquellos
+					// motivos con comprobante fiscal que se excluyen. (esto es porque
+					// la rutina CDStotal_comp_fiscal acumula todo aquello que tenga
+					// comprobante fiscal sin tener en cuenta si fue excluido o no)
+
+					call post:CDSleeFormuInc(FLD:adt_medpag_cod)
+					if (adt_rmedpag_mot == "S" || adt_rmedpag_tran == "S")
+						Total = Total_comp_fiscal - Importe_fiscal_med
+						if (adt_rmedpag_mot == "S")
+							Total = Total + acumFormuIncMot
+						endif
+						if (adt_rmedpag_tran == "S")
+							Total = Total + acumFormuIncTrn
+						endif
+					else
+						Total = Total_comp_fiscal - Importe_fiscal_med
+					endif
+
+					if (siaf:importe >= 0)
+						If (siaf:importe > Total)
+							MSGBOX "La sumatoria de los importes supera el total permitido para medios con restriccion de comprobante fiscal" OFB_OK "ERROR"
+							return -2
+						End If
+					else
+						If (siaf:importe < Total)
+							MSGBOX "La sumatoria de los importes supera el total permitido para medios con restriccion de comprobante fiscal" OFB_OK "ERROR"
+							return -2
+						End If
+					endif
+
+					call MISCsumaImpFiscUsado(acumFormuIncMot, adt_rmedpag_mot, adt_rmedpag_tmot)
+					if (retval == 0)
+						call MISCsumaImpFiscUsado(acumFormuIncTrn, adt_rmedpag_tran, adt_rmedpag_ttipo)
+						if (retval == 0)
+							importeSuma = acumFormuIncTrn + acumFormuIncMot
+							call MISCsumaImpFiscUsado(importeSuma, adt_rmedpag_tran, adt_rmedpag_ttipo)
+						endif
+					endif
+					Importe_fiscal_med = Importe_fiscal_med + importeSuma
+					dprint "usa %e\n", Importe_fiscal_med
+				End If
+			End If
+		End If
+		ind = ind + 1
+	End While
+End Sub
+
+/*******/

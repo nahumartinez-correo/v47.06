@@ -1,0 +1,134 @@
+/****o*Clientes_Medios/OFB:post:MISCconsumo_anticipo
+*NOMBRE
+*OFB:post:MISCconsumo_anticipo
+*DESCRIPCION
+*MFM-Esta rutina controla el adelanto disponible del cliente para pagar la sesión.
+*SOLAMENTE en el caso de una cobranza,si el adelanto que tiene no fuese suficiente,
+*puede pagar lo que resta con otro medio de pago.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+*REFERENCIADO POR
+*OFB:plataf:presu_adicionales
+*DOCUMENTACION
+*http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=550814&
+* https://jirats.atos.net.ar/jira/browse/AUT-2330
+* CRQ26108: Desactivar la Modalidad de Facturacion Diferida cuando el cliente usa el Adelanto para la imposicion, para que se emita Factura y no Remito.
+*SOURCE
+*/
+
+#include "postmisc.h"
+
+SUB post:MISCconsumo_anticipo
+
+LOCAL l_importe LIKE post:Total_importe
+LOCAL l_retval LIKE lib:err_retval
+LOCAL l_mensaje LIKE common:csr_string
+
+//Si no tiene asociado un convenio no puede usar el adelanto
+/*if (post:cli_tipo == CLIMED && post:ConsumoAnticipo && post:Total_importe > 0 && \
+	post:consulta_excepcionCM != "S" && !post:OperacionCob && \
+	!post:OperacionInt && !post:OperacionAut && (post:ConvenioSesion || post:ConvenioProducto)) then*/
+
+if (post:cli_tipo == CLIMED && post:ConsumoAnticipo && post:Total_importe > 0 && \
+	post:consulta_excepcionCM != "S" && \
+	!post:OperacionInt && !post:OperacionAut && (post:ConvenioSesion || post:ConvenioProducto || post:OperacionCob)) then
+	
+	//MFM - CRQ26108 (GC50550) Desactivar la Modalidad de Facturacion Diferida cuando el cliente usa el Adelanto para la imposicion, para que se emita Factura y no Remito.
+
+	IF ((!post:OperacionCob && !post:OperacionAut && !post:OperacionInt) && post:ConsumoAnticipo) THEN
+				post:ModalidadCC = FALSE
+				post:modalidad_CM = "S" //campo que toma la interfaz
+	ENDIF
+	
+	l_importe = post:Total_importe
+	CALL post:CDSadelantoDisponib(l_importe)
+	l_retval = RETVAL 
+	
+	if (saldoAnticipo_CM < post:Total_importe || l_retval == -2 )
+		if (!OperacionCob) then
+			if (saldoAnticipo_CM < post:Total_importe)
+				FPRINT l_mensaje "El monto de la compra supera su importe de Adelanto."
+				ERRMSG LST:common:errmsg_list, FLD:l_mensaje
+			else
+				FPRINT l_mensaje "El monto de la compra no puede superar los $ %s \n de los primeros 14 adelantos.\n Solo puede utilizar 14 adelantos por factura.", l_importe 
+				ERRMSG LST:common:errmsg_list, FLD:l_mensaje
+			end if
+			//tengo que volver atrás el descuento por sesion!!
+			if (post:ConvenioSesionV) then
+				CALL post:CDSDelete_99300
+			endif
+			//Regenero la grilla
+			call post:MISCgrilla_sesion
+			refresh post:Total_importe
+			clearfield post:consulta_presu //habilita para presionar F12
+			RETURN -2
+		else
+			if (post:Total_importe > 0) then
+				if (l_retval == -2 )
+					siaf:importe = l_importe
+				else
+					siaf:importe = saldoAnticipo_CM 
+				end if
+				//Grabo la tx de consumo de anticipo en la PresuDet
+    			call post:MISCagregTrnAntCM
+    	   		call post:CDSpresu_imp_consumo
+    	   		post:ImpCC_Min = "N"
+    	   		call post:MISCSeteo_ImpCC
+    	   		//Regenero la grilla
+				call post:MISCgrilla_sesion
+				refresh post:Total_importe
+    	   	endif
+		endif
+	else
+		if (post:Total_importe > 0) then
+			//Grabo la tx de consumo de anticipo en la PresuDet
+    		IF (OperacionCob) then
+    			siaf:importe = post:Total_importe
+    		ENDIF
+    		
+    		//AUT-2330 PS 10447
+			if (!OperacionCob && post:ModalidadCC)
+				call post:MISCcm_ctrl_items
+			    if (retval < 0 )
+					//tengo que volver atrás el descuento por sesion!!
+					if (post:ConvenioSesionV) then
+						CALL post:CDSDelete_99300
+					endif
+					//Regenero la grilla
+					call post:MISCgrilla_sesion
+					refresh post:Total_importe
+					clearfield post:consulta_presu //habilita para presionar F12
+					return -2
+				end if
+			endif
+			//Grabo la tx de consumo de anticipo en la PresuDet
+    		call post:MISCagregTrnAntCM
+    		call post:CDSpresu_imp_consumo
+			//Si tiene modalidad facturacion diferida no emito factura
+			if (post:ModalidadCC && !OperacionCob) then
+				siaf:importe = 0
+				call post:CDSagregTrnCC
+				//FLAG para NINA
+				post:ImpCC_Min = "S"
+			else
+				post:ImpCC_Min = "N"
+			endif
+		end if
+		call post:MISCSeteo_ImpCC
+		//MFM-Si estoy en una venta Modalidad FACT DIF hay que borrar la AuxIva y la 
+		//AuxIngBr para que funcione igual que mod CC sin adelanto.
+		if (post:ModalidadCC && post:ImpCC_Min == "S") then
+	    		//Borro la AuxIva
+	    		call post:CDSdelete_AuxIva	
+	    		//Borro la AuxIngBr
+	    		call post:CDSdelAll_AuxIngBr
+		endif
+	end if
+endif
+END SUB
+
+/*******/

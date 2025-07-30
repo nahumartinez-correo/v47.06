@@ -1,0 +1,121 @@
+/****o* Pendientes de agrupación/OFB:post:MISCagregDctoOpc
+* NOMBRE
+*   OFB:post:MISCagregDctoOpc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCagregDctoOpc(familia,alicuota,imp_aux,indice)
+	/*MFM - Esta rutina graba en la PresuDet la transacción de descuento del 
+	opcional y actualiza la IngBr, AuxIva, PresuPag*/
+	LOCAL tran_cod_aux LIKE siaf:codigo_siaf
+	LOCAL familia_aux LIKE siaf:adt_tran_fliatran
+	LOCAL ImporteConIva_ant LIKE siaf:ImporteConIva
+	LOCAL ImporteSinIva_ant LIKE siaf:ImporteSinIva
+	LOCAL PreDNroTrn_aux LIKE post:PreDNroTrn 
+
+	post:AliTrnCM = alicuota
+	familia_aux = familia
+	
+	/*Resguardo el codigo_siaf de la transacció original*/
+	tran_cod_aux = siaf:codigo_siaf
+
+	//gpb:Original
+	//siaf:codigo_siaf = 99300
+	
+	//gbp:NI50479
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && Dcto_CliMed > 0) THEN
+		siaf:codigo_siaf = 30300
+	ELSE
+		siaf:codigo_siaf = 99300
+	END IF
+	
+	siaf:moneda = "99"
+	LET siaf:adt_tran_codigo = siaf:codigo_siaf
+	CALL siaf:CDSadt_tran_load
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	
+	/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+	//SC 50170
+	CALL MISCdesglosaIva(imp_aux,alicuota, 1,0)
+		
+	/*Guardo en este campo el importe con IVA*/
+	post:ImporteConIva = imp_aux
+  
+  /*Si es una modificación voy a buscar el valor anterior*/
+	CLEARFIELD ImporteSinIva_ant
+	CLEARFIELD ImporteConIva_ant
+	IF (post:estado_presu == 3)
+		CALL CDSTrnOpcCMAnt (indice)
+		ImporteSinIva_ant = siaf:ImporteSinIva
+		ImporteConIva_ant = siaf:ImporteConIva
+	END IF
+		
+	/*MFM - Acumula a los totales de la sesion los datos de la transacción, pero con la familia de la transacción que le dio origen*/
+	CALL CDSAcumImpSes(ImporteConIva_ant,ImporteSinIva_ant,post:ImporteConIva,post:ImporteSinIva,familia_aux,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+
+	/*Acumulo Medios de Pago - Se actualiza la PresuPag*/
+	//estos dos campos se setean aquí para que no queden con valores erroneos de
+	//procesos anteriores
+	post:imp_d = ImporteConIva_ant
+	monedaNC = siaf:moneda
+	CALL MISCActMedPago
+
+	IF (!ConvenioSesionV) THEN
+		//grabo/modifico/borro una transacción de descuento por cada producto con descuento
+		
+		//gpb:Original
+		//CALL CDSagregTrnDctoOpcCM (indice)
+		
+		//gbp:NI50479
+		IF ((TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && Dcto_CliMed > 0) || (TESTFLAG(post:sesion_ped_flags,genera_fac_ped) && TESTFLAG(post:sesion_ped_flags,cm_sin_mod_ped) && Dcto_CliMed > 0)) THEN
+			CALL post:CDSagregTxDctoOpcPed (indice)
+		ELSE
+			CALL post:CDSagregTrnDctoOpcCM (indice)
+		END IF
+	ELSE
+		RETVAL = 0
+	END IF
+	
+	IF (RETVAL == 0) THEN
+		CALL MISCgenerarIva
+	END IF
+	
+	Total_importe = Total_importe - imp_aux
+	REFRESH Total_importe
+
+	//Actualizo el Total_importe en la PresuAct
+  CALL post:CDSadt_presuact_save
+    
+	//restauro los datos de la transacción "madre", por las dudas....
+	siaf:codigo_siaf = tran_cod_aux
+	LET siaf:adt_tran_codigo = siaf:codigo_siaf
+	CALL siaf:CDSadt_tran_load
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	
+	IF (!ConvenioSesionV) THEN
+		//restauro los datos de la transacción "madre", por las dudas....
+		/*siaf:codigo_siaf = tran_cod_aux
+		let siaf:adt_tran_codigo = siaf:codigo_siaf
+		call siaf:CDSadt_tran_load
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo*/
+	ELSE
+		/*MFM - Se deben recalcular los impuestos!!!*/
+		CALL PCOLconfirma_presu
+	END IF
+
+END SUB
+
+/*******/

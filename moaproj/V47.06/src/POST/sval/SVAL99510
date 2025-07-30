@@ -1,0 +1,127 @@
+/****o* Notas de Credito CM/OFB:post:SVAL99510
+* NOMBRE
+*   OFB:post:SVAL99510
+* DESCRIPCION
+*    Rutina de confirmacion de la TX de Emision de NC por Incumplimeinto
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:TRAN99510
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99510
+local cant_fact like post:cantidad
+local varl_importe like common:csr_string
+
+//VERIFICAR QUE SOLO SE HAYA SELECCIONADO UNA FACTURA INCUMPLIDA
+    if (post:estado_presu != 4)
+    	CDS SELECT FROM DSC:post:Fact_Incumplida_tbl BECOMES DSC:post:Fact_Incumplida_ctx WHERE \
+    	post:op_operator_id == op:op_operator_id && \
+    	post:adt_oc_nro == FLD:post:adt_oc_nro && \
+    	post:marca_remito == "*"   	
+    
+    	CDS AGGREGATE DSC:post:Fact_Incumplida_ctx COUNT post:marca_remito
+    	IF (CDSRETVAL == 0) THEN
+    		CDS EXTRACT DSC:Fact_Incumplida_ctx post:marca_remito into cant_fact
+    		if (cant_fact > 1) then
+    			CDS ENDSELECT DSC:post:Fact_Incumplida_ctx
+    			MSGBOX "SOLO PUEDE SELECCIONAR UNA UNICA FACTURA PARA EMITIR LA NOTA DE CREDITO.",0X00,"AVISO"
+    			RETURN -2
+    		endif
+    	ELSE
+    		CDS ENDSELECT DSC:post:Fact_Incumplida_ctx
+    		MSGBOX "DEBE SELECCIONAR UNA FACTURA PARA EMITIR LA NOTA DE CREDITO.",0X00,"AVISO"
+    		RETURN -2
+    	ENDIF 
+    	CDS EXTRACT DSC:post:Fact_Incumplida_ctx post:fact_fec_emis  post:fact_id // para hacer el select de los productos incumplidos_
+    	CDS ENDSELECT DSC:post:Fact_Incumplida_ctx
+   	end if
+     
+   	 //Flag para saber si confirmamos desde la transaccion o si hubo alguna caida y se confirma por fuera.
+	post:TrxOpeCob = 1
+    
+	if (!testflag(tlr:tran_flags,correction) && post:estado_presu != 4) then
+		clearfield siaf:importe	
+		post:OperacionCob = FALSE
+		post:ConvenioSesion = FALSE
+		post:ConvenioProducto = FALSE
+		//Seteo una marca de inicio para la Presupuestacion (se graba en la Presu)
+		post:AuxPresupuestacion = TRUE
+		post:ImprimeAcuseRec = FALSE
+		//BUG detectado por Correo en testeo. Cuando en el inicio de sesion se selecciona usar el credito
+		//en vez de imprimir NOTA DE CREDITO imprime FACTURA
+		post:ModalidadCC = FALSE
+		post:ModalidadCD = FALSE
+		//fin bug
+		call post:CDSpresu_modalidadCM
+		call csr:cleararray(vec_remitos)
+		//Calcular el credito a aplicar en base a los productos incumplidos de la factura seleccionada.
+		CALL MISCProd_Incumplido(SESION)
+		if (retval == 1) /* Hay que generar una NC, Llamo al secuenciador interno de facturas que preciasa Susana */
+			call post:MISCobtSeqIdentFact 
+		end if
+		//Reseteo la marca en la Presu
+		Call post:CDSgrabo_marcaCob
+
+		post:INDPresuD_Dat = OFB:CDSappend_99510
+	
+		//Controlar si admite cheque diferido
+   		call post:MISCRestFlia
+	endif	
+	
+	//NO SE DEBEN GENERAR IMPUESTOS EN ESTA TX ?? PROBAR SACARLO!!
+   	//Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola
+	//	call MISCTotalTransac(siaf:codigo_siaf) 
+	//	call post:MISCAcumTotalesSes
+   	
+	if (post:estado_presu != 4 )
+   		post:PreDForFis = "NCFA"
+   		Call post:MISCGrabaDetalleTrn 
+   		//grabar el nro de factura en la Presu para luego journalizarlo en 99511/99513
+   		CALL CDSgrabo_nrof_Presu
+	end if
+   	 
+	
+		
+   //VIAJE DE INGRESO DE NOTA DE CREDITO EMITIDA
+   if (estado_presu == 4) //ante ultima transaccion de presupuesto
+  
+    	giros:codigo_procesamiento = 997040
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+
+		call post:CDSpresu_climed_load
+
+		//varl_importe = post:total_cobranza  * 100
+		varl_importe = 0  * 100
+		fprint post:financiado_operacion,"%s%012.12s",CLIMED_RESTA,varl_importe
+
+		//varl_importe = CobAnticipo_CM * 100
+		varl_importe = 0  * 100
+		fprint post:consumo_operacion,"%s",CLIMED_RESTA
+	
+		call post:MISCclimed_ingr_fact(siaf:codigo_siaf)
+		if (retval < 0 )
+			return -2
+		end if
+        
+        // Journaliza con otra pantalla 
+        drv:INDscr = SCR:post:SCRNnc_journal
+	end if
+
+  	RETURN (RETVAL)
+   
+   
+   
+END SUB
+
+/*******/

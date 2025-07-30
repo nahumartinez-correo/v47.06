@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:post:FVALmed_pago_imp
+* NOMBRE
+*   OFB:post:FVALmed_pago_imp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALmed_pago_imp
+	Local Total like siaf:suma_total_bol
+	Local Minimo like siaf:suma_total_bol
+	Local Maximo like siaf:suma_total_bol
+	Local entero    like siaf:nro_comprobante
+
+	;MFM Enganche de Reversa Automatica por "Abrazo Mortal"
+	If (!rechazoDiferido) Then
+			//return 0
+		//End if
+		If (hayCotizacion != "S")
+			call csr:getrowcol ImporteMedioPago
+			col = Retval
+		End If
+
+		siaf:moneda = MonedaMedioPago[col]
+		Call csr:trimfield(siaf:moneda)
+		If (siaf:moneda.numchars == 0 && (ImporteMedioPago[col] + 0) != 0)
+			MSGBOX "Debe seleccionar un Medio de Pago" OFB_OK "ERROR"
+			Return -2
+		Endif
+		if ((ImporteMedioPago[col] + 0) == 0)
+			clearfield ImporteMedioPago[col]
+			refresh ImporteMedioPago[col]
+		endif
+
+		If (hayCotizacion != "S")
+			CotizacionMedioPago[col] = ImporteMedioPago[col]
+		End If
+
+		If (siaf:moneda.numchars == 0 && ImporteMedioPago[col] == 0)
+			Call post:MISCrecalculo_pesos
+			Refresh CotizacionMedioPago[col]
+			Return
+		End If
+
+		siaf:importe = ImporteMedioPago[col]
+		Minimo = 0
+		Maximo = 0
+		Call CDSmonto_MedioHab
+		if (siaf:suma_total_bol < 0)
+			Minimo = Minimo + siaf:suma_total_bol
+		Else
+			Maximo = Maximo + siaf:suma_total_bol
+		EndIf
+
+		Call CDSmonto_PresuPag
+		Minimo = Minimo + PrePImp
+		Maximo = Maximo + PrePImp
+		if (post:ImporteNeto < 0 && Minimo < post:ImporteNeto)
+			Minimo = post:ImporteNeto
+		endif
+		if (post:ImporteNeto > 0 && Maximo > post:ImporteNeto)
+			Maximo = post:ImporteNeto
+		endif
+		If (Minimo > siaf:importe || siaf:importe > Maximo)
+			MSGBOX "El importe de este medio de pago no está entre el mínimo y el máximo permitido para esta sesión" OFB_OK "ERROR"
+			//MFM - Paleativo para el "ABRAZO MORTAL"
+			Call post:MISCDead_Lock
+			If (RETVAL == -2) Then//no quiere reversar automaticamente
+				Return -2
+			End If
+			If (RETVAL == -1) Then //quiere reversar automaticamente
+				Return 0
+			End if
+			//si devuelve retval = 0 ==> no es cheque diferido.No hago nada
+		End If
+
+		//Levanto los datos del medio de pago
+		post:adt_mp_cod = siaf:moneda
+		Call CDSadt_MedPago_load
+		//Me fijo que el importe este entre el maximo y minimo
+		If ((siaf:importe < adt_mp_min || siaf:importe > adt_mp_max) && siaf:importe > 0)
+			MSGBOX "El importe no esta entre el minimo y el maximo permitido para este medio pago" OFB_OK "ERROR"
+			//MFM - Paleativo para el "ABRAZO MORTAL"
+			Call post:MISCDead_Lock
+			If (RETVAL == -2) Then//no quiere reversar automaticamente
+				Return -2
+			End If
+			If (RETVAL == -1) Then //quiere reversar automaticamente
+				Return 0
+			End if
+			//si devuelve retval = 0 ==> no es cheque diferido.No hago nada
+		Endif
+
+
+	if (adt_mp_adm == "G" && adt_mp_monet == "S" && col > 0) then
+		if (CotizacionMedioPago[col] > 0 && CotizacionMedioPago[col] > MontoEntMedioPago[col])
+			MSGBOX "El monto entregado por el cliente no puede ser menor que el monto a cobrar.",0x00,"ERROR"
+			return -2
+		endif
+
+		if (CotizacionMedioPago[col] < 0 && CotizacionMedioPago[col] < MontoEntMedioPago[col])
+			MSGBOX "El monto entregado por el correo no puede ser menor que el monto a pagar.",0x00,"ERROR"
+			return -2
+		endif
+	endif
+
+		refresh CotizacionMedioPago[col]
+		Call post:MISCrecalculo_pesos
+		Call post:MISCvalido_todos_med
+		If ( Retval != 0  )
+			Return -2
+		End If
+		/*MFM - (25.03.2002) Valido importe de cheque diferido*/
+		Call post:MISCvalido_cheqdif
+		If (RETVAL < 0) Then
+			RETURN -2
+		End If
+	Else
+		UNGETKEY RT_SEND
+	End if
+End Sub
+
+/*******/

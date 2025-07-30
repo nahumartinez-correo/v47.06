@@ -1,0 +1,244 @@
+/****o* Servicios Telegráficos/OFB:tele:JNLtele_gral
+* NOMBRE
+*   OFB:tele:JNLtele_gral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telejnl.h"
+
+SUB tele:JNLtele_gral
+    LOCAL idx like post:cant_opc
+    LOCAL x LIKE post:cantidad
+
+
+	idx = 0
+
+	Cds Append DSC:tlr:CONjnl_write  \
+	tele_cantidad \
+	tele:texto_pantalla
+
+	Cds Append DSC:tlr:CONjnl_write  \
+	siaf:moneda post:medio_pago_desc \
+	post:destino \
+	post:adt_dest_nemonic_sap \
+	post:cantidad
+
+	Cds Append DSC:tlr:CONjnl_write \
+	tele_tipo_serv \
+	post:tipo_produc post:prod_cli \
+	post:tarifa post:sobretasa \
+    post:costo_opc post:tipo_descto post:descuento \
+	siaf:importe post:adt_serv_umstd post:adt_serv_nemonico \
+	post:adt_serv_aliciva \
+	tele:importe_tot_serv_tel
+
+	Cds Append DSC:tlr:CONjnl_write  \
+	post:nro_ctrol \
+	post:jnl_descto_aliciva post:adt_serv_medidas \
+	tele_cant_palabras tele_nro_telegrama \
+	tarif_rta_paga
+
+	/* Campos Necesarios Para el reverso de operaciones */
+	CDS APPEND DSC:tlr:CONjnl_write \
+    FLD:post:ImporteConIvaNeto \
+    FLD:post:ImporteSinIvaNeto
+
+    /*CSZ - Vectores que acumulan la flia y los importes con y sin Iva de los
+    opcionales y el servicio*/
+    CDS APPEND DSC:tlr:CONjnl_write \
+    array FLD:post:fliatran_vec \
+    array FLD:post:impciva_vec \
+    array FLD:post:impsiva_vec
+
+    Cds Append DSC:tlr:CONjnl_write post:cant_opc
+
+	if (post:cant_opc > 0)
+		idx = 0
+		do
+			Cds Append DSC:tlr:CONjnl_write  \
+			post:cod_opc[idx] post:cos_opc[idx] post:cor_opc[idx] post:vec_opc2[idx] \
+			post:ali_opc[idx] post:inf_opc[idx] post:siniva_opc[idx] post:comb_opc[idx] \
+            post:flia_opc[idx] post:dif_opc[idx] post:jnl_dif_opc[idx]
+             //ACP SC50170 - Propuesta superadora, se agrega campo dif_opc[]  
+            
+			if (idx == (post:cant_opc - 1))
+				break
+			else
+				idx = idx + 1
+			end if
+		loop
+	end if
+
+	/*Journalizo la visualización de los Opcionales en la Pantalla para que se vean
+	en la consulta del Journal - Gabriel Falciola*/
+	Cds Append DSC:tlr:CONjnl_write \
+	OpcInd_vec[0][0] OpcInd_vec[1][0] OpcInd_vec[2][0] OpcInd_vec[3][0] \
+	OpcInd_vec[4][0] OpcInd_vec[5][0] OpcInd_vec[6][0] OpcInd_vec[7][0]
+
+	/* nemonicos sap opcionales */
+	Cds Append DSC:tlr:CONjnl_write \
+	nemonic_sap_opc[0] nemonic_sap_opc[1] nemonic_sap_opc[2] nemonic_sap_opc[3] \
+	nemonic_sap_opc[4] nemonic_sap_opc[5] nemonic_sap_opc[6] nemonic_sap_opc[7]
+
+
+	//Cds Append DSC:tlr:CONjnl_write OpcInd_check
+
+    /*Se agrega para la anulacion de transacciones - Gabriel Falciola*/
+	CALL post:CDSobtiene_secuen("CABEC")
+    post:cod_agrupacion = post:adt_codseq_nro
+    post:ver_anulacion = "S"
+	Cds Append DSC:tlr:CONjnl_write \
+	post:ver_anulacion post:cod_agrupacion
+
+	/*Se agregan campos para el cálculo de Ingresos Brutos - Gabriel Falciola*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:ImporteConIva post:ImporteSinIva
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:adt_tarif_desde \
+	post:adt_tarif_hasta \
+	post:adt_tarif_um \
+	post:adt_tarif_um_eq \
+	post:adt_tarif_hasta_eq
+
+	// FGB 19.07.2003: paso el calculo del servicio neto a
+	//                 la rutina post:JNLjnl_tele
+	//
+	//Calculo importes del servicio
+	//imp_serv_tele = post:tarifa
+	//INIT 22,1
+	//imp_siniva_serv = post:tarifa - (post:tarifa / ( 1 + post:adt_serv_aliciva / 100 )) * ( post:adt_serv_aliciva / 100 )
+	//INIT 22,0
+	// fin
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+	imp_serv_tele \
+	imp_siniva_serv
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+    FLD:post:cant_bloq \
+    FLD:post:imp_bloques \
+    FLD:post:adt_bloque_descor \
+    FLD:post:imp_bloques_siva
+
+	/*adt_cattel_cod = tele_tipo_serv
+	adt_cattel_serv = post:tipo_produc
+	adt_cattel_cativa = post:IvaCod
+	Call tele:CDScatteleg_load */
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+	tele:adt_cattel_nemonico \
+	post:PreDForFis
+
+    /*CSZ - pedido para le Calculo de Ventas UP*/
+    CDS APPEND DSC:tlr:CONjnl_write \
+        post:ImpServUP \
+        post:AliServUP \
+        post:remito_nro
+
+	// PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+	Call post:JNLcamp_nota_credito
+
+	//Si estoy reversando seteo el importe campo
+	//en 0 y limpio la descripcion de la moneda, lo hago aca porque
+	//cuando realice la reversa de Destinatarios puedo arrastrar el importe
+	//Gabriel Falciola
+/*	if (testflag(tlr:tran_flags,correction))
+		siaf:importe = 0
+		siaf:moneda = 0
+		clearfield post:medio_pago_desc
+	end if*/
+
+	/* JOURNALIZA PROMOCION MDG */
+	IF (post:promo_tot_Serv == 0 ) then	// ESTO ES PARA SABER SI LA PROMOCION
+		post:promo_aplica = "N"			// SE APLICA O NO MDG
+		post:promo_desc = ""
+	ELSE
+		post:promo_aplica = "S"
+	END IF
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+	FLD:post:promo_desc \
+	FLD:post:promo_cod \
+	FLD:post:promo_inhibeUpServ AS post:promo_inhibeUp \
+	FLD:post:promo_imp_srv_tot \
+	FLD:post:promo_imp_blq_tot \
+	FLD:post:promo_srv_bon AS post:promo_bon\
+	FLD:post:promo_blq_bon \
+	FLD:post:promo_aplica \
+	FLD:post:promoSrvTipoBon AS post:promoTipoBon \
+	FLD:post:promoBlqTipoBon \
+	FLD:post:promo_imp_tot_ind \
+	FLD:post:promo_tot_Serv AS post:fld_promo_imp \
+	FLD:post:promo_tot_Serv
+	x = 0
+	while (x < post:cant_opc)
+       CDS APPEND DSC:tlr:CONjnl_write \
+       FLD:post:promo_imp_opc_tot[x] \
+       FLD:post:promo_imp_opc_ind[x] \
+       FLD:post:promoOpcTipoBon[x] \
+       FLD:post:promo_opc_bon[x]
+       x = x + 1
+    end while
+	
+	/* MLD Standarizo el campo de los bloques adicionales */
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:imp_bloques_siva as post:BloqueSinIva_serv
+
+	if ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.numchars != 0 && \
+	post:bonificaCM == "S") then
+		CDS APPEND DSC:tlr:CONjnl_write \
+		post:Dcto_CMPres as post:Dcto_CliMed 
+	else
+		CDS APPEND DSC:tlr:CONjnl_write \
+		post:Dcto_CliMed 
+	end if	
+	CDS APPEND DSC:tlr:CONjnl_write \
+	 post:bonificaCM	
+		
+	/* EL Precio unitario debe quedar sin el IVA */
+		/* MLD Las simples journalizan con cantidad por eso desgloso el IVA*/
+	call post:MISCdesglosa_puni(post:adt_tarif_precio, post:AliServUP,1)
+	
+	//cgw:tele:imp_siniva_serv se utiliza comp parametro en carpetas comerciales.
+	//call post:MISCcampos_reporte(post:ImpSinIvaAux,post:cantidad,imp_siniva_serv,post:adt_tarif_modo)
+	//SC 50170 el campo post:adt_dump_siniva tiene que tener el mismo valor que el campo tele:imp_siniva_serv (que 
+	//a esta altura ya tiene las diferencias aplicadas.
+	call post:MISCcampos_reporte(tele:imp_siniva_serv,post:cantidad,tele:imp_siniva_serv,post:adt_tarif_modo)
+	
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:post:LISTreporte,0)	
+	
+	//ORDEN DE COMPRA
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:adt_oc_nro
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:headOrBodyTele \
+	post:cant_aux \
+	post:cont_jnl
+	
+	; SC50170 - Propuesta superadora
+	CDS APPEND DSC:tlr:CONjnl_write \
+	post:dif_calculada \
+	post:cod_dif_aplicada \
+        post:jnl_dif_serv \
+        post:jnl_dif_blq
+        
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:NIS_Imposicion			
+	 
+END SUB
+
+/*******/

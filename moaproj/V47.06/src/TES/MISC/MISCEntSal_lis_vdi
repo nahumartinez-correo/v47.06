@@ -1,0 +1,196 @@
+/****o* Reportes/OFB:tes:MISCEntSal_lis_vdi
+* NOMBRE
+*   OFB:tes:MISCEntSal_lis_vdi
+* DESCRIPCION
+*	Recorre Picklist con las trx's de Entrada o Salida VDI (segun parametro) para imprimir en el Reporte Detalle Valor Declarado.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No existen movimientos.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCgenerar_lis_vdi
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCEntSal_lis_vdi
+    LOCAL LRetval      LIKE lib:err_retval
+    LOCAL Lstring      LIKE common:csr_string
+    LOCAL Lcodigo      LIKE siaf:codigo_siaf
+    LOCAL Lcodigo_ant  LIKE siaf:codigo_siaf
+    LOCAL Lcodigo_desc LIKE siaf:adt_tran_desc
+    LOCAL Loperator    LIKE op:op_operator_id
+    LOCAL Limporte     LIKE common:csr_string
+    LOCAL Ltrack_trace LIKE post:track_trace
+    LOCAL LNis         LIKE tes:teso_branch
+    LOCAL importe_tot  LIKE siaf:importe
+    LOCAL importe_tot_gral  LIKE siaf:importe
+    LOCAL cantidad_tot LIKE tes:cant_tot
+    LOCAL cant_entrada LIKE tes:cant_tot
+    LOCAL L_PIC        LIKE common:csr_string
+    LOCAL L_PIC_PROXIMO LIKE common:csr_string
+    LOCAL L_TITULO LIKE common:csr_string
+    LOCAL IMPRIME_TITULO LIKE siaf:i
+    LOCAL HAY_MOVIMIENTOS LIKE siaf:i
+    LOCAL LNro_cheque  LIKE siaf:nro_cheque
+    LOCAL L_DESC LIKE common:csr_string
+    LOCAL L_DESC_TOTAL_GRAL LIKE common:csr_string
+    //cgw: Recorre Picklist con trx's VDI de Entrada o Salida Segun arametro, para generar reporte.
+    
+    L_PIC = "pic_vdi_ent"
+    L_PIC_PROXIMO = "pic_vdi_ent"
+    IMPRIME_TITULO = 1
+
+    HAY_MOVIMIENTOS = 0
+    while (L_PIC_PROXIMO.numchars)
+        //totalizadores.
+        importe_tot = 0
+        cantidad_tot = 0
+        LET tes:idx = 0
+	    LET tes:i_idx = PL_GETITEM + 0
+        select (L_PIC_PROXIMO)
+            case "pic_vdi_ent"
+                L_TITULO = "Entradas"
+                L_DESC = "ENTRADAS EFECTIVO"
+                L_DESC_TOTAL_GRAL = "TOTAL DE ENTRADAS EFECTIVO/CHEQUES"
+                L_PIC = "pic_vdi_ent"
+                L_PIC_PROXIMO = "pic_vdi_ent_chq"
+                break
+            case "pic_vdi_ent_chq"
+                L_DESC = "ENTRADAS CHEQUES"
+                L_PIC = "pic_vdi_ent_chq"
+                L_PIC_PROXIMO = "pic_vdi_sal"
+                break
+            case "pic_vdi_sal"
+                L_TITULO = "Salidas"
+                L_DESC = "SALIDAS EFECTIVO"
+                L_DESC_TOTAL_GRAL = "TOTAL DE SALIDAS EFECTIVO/CHEQUES"
+                clearfield importe_tot_gral
+                IMPRIME_TITULO = 1
+                L_PIC = "pic_vdi_sal"
+                L_PIC_PROXIMO = "pic_vdi_sal_chq"
+                break
+            case "pic_vdi_sal_chq"
+                L_DESC = "SALIDAS CHEQUES"
+                L_PIC = "pic_vdi_sal_chq"
+                L_PIC_PROXIMO = ""
+        end select
+        CALL csr:myPickcontrol L_PIC Lstring tes:i_idx
+        LRetval = RETVAL
+        if (LRetval == 0) then
+            HAY_MOVIMIENTOS = 1
+            if (IMPRIME_TITULO) then
+                ;IMPRIMO TITULO
+                IMPRIME_TITULO = 0
+                FPRINT common:csr_string "<st>1</st><st>4</st>%s<st>0</st>" L_TITULO
+                clearfield importe_tot_gral
+                CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            end if
+        elseif (L_PIC_PROXIMO.numchars)
+            if (importe_tot_gral > 0) then
+                select (L_PIC_PROXIMO)
+                    case "pic_vdi_sal"
+                    FPRINT common:csr_string "        <st>1</st>%-54s%16.16e", L_DESC_TOTAL_GRAL, importe_tot_gral
+                    CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+                end select
+            end if
+            continue
+        elseif (!HAY_MOVIMIENTOS)
+            common:csr_string = "VDI-Valor Declarado Sin Movimiento"
+            CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            RETURN (-2) //No tiene movimientos.
+        end if
+        
+        if (LRetval == 0) then
+            select (L_PIC)
+                case "pic_vdi_ent"
+                case "pic_vdi_sal"
+                common:csr_string = "  <st>1</st><st>4</st>Efectivo<st>0</st>"
+                break
+                case "pic_vdi_ent_chq"
+                case "pic_vdi_sal_chq"
+                common:csr_string = "  <st>1</st><st>4</st>Cheques<st>0</st>"
+            end select
+            CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            Lcodigo = SUBSTR(Lstring,0,5)
+        end if
+        WHILE (LRetval == 0)        
+            Lcodigo_ant = Lcodigo
+            //imprime codigo de trx.
+            CLEARFIELD Lcodigo_desc
+   	        CALL siaf:CDSget_tran_descrip(Lcodigo, Lcodigo_desc)
+   	        CLEARFIELD common:csr_string
+            FPRINT common:csr_string,"  %5.5s - %-40.40s", Lcodigo, Lcodigo_desc
+            CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            
+            WHILE (LRetval == 0 && Lcodigo == Lcodigo_ant)
+                //imprime linea de detalle.
+                CLEARFIELD Limporte
+                Lcodigo = SUBSTR(Lstring,0,5)
+                Loperator = SUBSTR(Lstring,26,5)
+                LNis = SUBSTR(Lstring,6,5)
+                Ltrack_trace = SUBSTR(Lstring,12,13)
+                Limporte = SUBSTR(Lstring,32,16)
+                CLEARFIELD common:csr_string
+                
+                select (L_PIC)
+                    case "pic_vdi_ent"
+                        FPRINT common:csr_string "        Operador: %5.5s  Origen:  %5.5s  %13.13s               %16.16e", \
+                        Loperator, LNis, Ltrack_trace, Limporte
+                    break
+                    case "pic_vdi_sal"
+                        FPRINT common:csr_string "        Operador: %5.5s  Destino: %5.5s  %13.13s               %16.16e", \
+                        Loperator, LNis, Ltrack_trace, Limporte
+                    break
+                    case "pic_vdi_ent_chq"
+                        LNro_cheque = SUBSTR(Lstring,49,16)
+                        FPRINT common:csr_string "        Operador: %5.5s  Origen:  %5.5s  %13.13s  CH:%8.8s  %16.16e", \
+                        Loperator, LNis, Ltrack_trace, LNro_cheque, Limporte
+                    break
+                    case "pic_vdi_sal_chq"
+                        LNro_cheque = SUBSTR(Lstring,49,16)
+                        FPRINT common:csr_string "        Operador: %5.5s  Destino: %5.5s  %13.13s  CH:%8.8s  %16.16e", \
+                        Loperator, LNis, Ltrack_trace, LNro_cheque, Limporte
+                end select
+                
+                
+                CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+                importe_tot = importe_tot + Limporte
+                cantidad_tot = cantidad_tot + 1
+                tes:idx = tes:idx + 1
+                tes:i_idx = PL_GETITEM + tes:idx
+                
+	            CALL csr:myPickcontrol L_PIC Lstring tes:i_idx
+                
+                LRetval = RETVAL
+                IF (LRetval == 0) THEN
+                    Lcodigo = SUBSTR(Lstring,0,5)
+                END IF
+            END WHILE
+        END WHILE
+        
+        if (cantidad_tot > 0) then
+            CALL tes:MISCwrite_file2(5," ")
+            FPRINT common:csr_string "        CANTIDAD %-59s%9.9e", L_DESC, cantidad_tot
+            CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            FPRINT common:csr_string "        <st>1</st>TOTAL DE %-45s%16.16e", L_DESC, importe_tot
+            CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            CALL tes:MISCwrite_file2(5," ")
+            importe_tot_gral = importe_tot_gral + importe_tot
+        end if
+        if (importe_tot_gral > 0) then
+            select (L_PIC_PROXIMO)
+                case "pic_vdi_sal"
+                case ""
+                FPRINT common:csr_string "        <st>1</st>%-54s%16.16e", L_DESC_TOTAL_GRAL, importe_tot_gral
+                CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+            end select
+        end if
+    END WHILE
+END SUB
+
+/*******/

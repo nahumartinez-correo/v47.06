@@ -1,0 +1,109 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSgenTrnDesctoReemb
+* NOMBRE
+*   OFB:giros:CDSgenTrnDesctoReemb
+* DESCRIPCION
+*   Genera la transacción de descuento de contrareembolso
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCdestoContrareemb
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+SUB giros:CDSgenTrnDesctoReemb(total_importe_bon, pTrnOrigen)
+	;Esta rutina genera la tx de compensación de crem ** MDG
+	local afec_aux like siaf:afecta_efectivo
+	local l_prodvs_aliciva like post:adt_prodvs_aliciva
+	local l_ImporteSinIva like post:ImporteSinIva 
+	local l_ImporteIva like post:ImporteIva
+	local l_imp like siaf:importe
+	local l_afec_efvo like siaf:adt_tran_afec_efvo
+	siaf:adt_tran_fliatran = "PCL"
+	siaf:codigo_siaf = 99130
+	afec_aux = siaf:afecta_efectivo
+
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta2 \
+			WHERE post:fecha == FLD:post:fecha && \
+			post:op_operator_id == FLD:post:op_operator_id && \
+			post:PresNro == post:PresNro && siaf:codigo_siaf == 99130 && \
+			post:trnOrigen == pTrnOrigen
+
+	CDS FINDFIRST DSC:post:CONPresuDeta2 LOCK
+	if (cdsretval == 0)
+		
+		l_ImporteSinIva = post:ImporteSinIva      
+		l_ImporteIva = post:ImporteIva            
+		
+		CDS EXTRACT DSC:post:CONPresuDeta2 siaf:importe into l_imp
+	    CDS EXTRACT DSC:post:CONPresuDeta2 post:ImporteSinIva post:ImporteIva \
+	    	post:adt_prodvs_aliciva
+	    CDS DELETE DSC:post:CONPresuDeta2
+	    l_afec_efvo = siaf:adt_tran_afec_efvo
+	    siaf:adt_tran_afec_efvo = "-"
+	    ;call post:MISCborrarIva
+		call post:CDSadt_PresuPag_save(99,99,0,l_imp)
+		siaf:adt_tran_afec_efvo = l_afec_efvo
+		post:ImporteSinIva = l_ImporteSinIva      
+		post:ImporteIva = l_ImporteIva
+		
+		siaf:adt_tran_afec_efvo = l_afec_efvo
+	end if
+
+	/*Si estoy en Nota de Crédito fuerzo el medio de pago a efectivo*/
+	siaf:moneda = 99
+	clearfield post:medio_pago_desc
+	clearfield post:MedPTipMon
+	call post:CDSIncSecSesion(post:PresNro,"TRN",1, post:enAnulacion)
+    post:PreDNroTrn = retval
+    siaf:importe = total_importe_bon
+	post:trnOrigen = pTrnOrigen
+    LET tlr:INDtran_name     = LST:giros:TRANDesctoReemb
+    post:PrePEst             = 1
+    post:PreDEst             = 1
+    post:NroCompPago         = 0
+    post:modif_operator      = 0
+
+    let siaf:adt_tran_codigo = siaf:codigo_siaf
+    call siaf:CDSadt_tran_load
+
+    CDS CLEARBUFFER DSC:post:CONPresuDeta2
+
+    post:captura_mp = "N"
+
+    CDS APPEND DSC:post:CONPresuDeta2 post:fecha post:op_operator_id \
+             post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn \
+             post:MedPAdmIte tlr:INDtran_name post:PreDEst \
+             post:PrePNroPag siaf:codigo_siaf post:MedPMon post:MedPTipMon \
+             post:PreDForFis siaf:importe post:trnOrigen
+
+	CDS APPEND DSC:post:CONPresuDeta2 siaf:adt_tran_afec_efvo \
+             siaf:adt_tran_desc siaf:adt_tran_fliatran post:PrePEst siaf:moneda \
+             post:medio_pago_desc post:NroCompPago \
+             post:modif_operator post:cantidad \
+             array post:docfis_tasa_por \
+             array post:docfis_importe array post:docfis_imp_siva \
+             post:AdmiteMP post:captura_mp \
+             post:ImporteSinIva post:ImporteIva \
+             post:cod_agrupacion
+    
+    CDS APPEND DSC:post:CONPresuDeta2 \
+   	        Serie_fld \
+	        NroGiro_fld  \
+	        digito_fld \
+   	        array FLD:post:track \
+   	        array FLD:post:importe_crem
+   	
+    CDS INSERT DSC:post:CONPresuDeta2 LOCK
+    CDS UNLOCK DSC:post:CONPresuDeta2
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	;call post:MISCgenerarIva
+	call post:CDSadt_PresuPag_save(99,99,siaf:importe,0)
+END SUB
+
+/*******/

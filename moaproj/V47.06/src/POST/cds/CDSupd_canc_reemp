@@ -1,0 +1,110 @@
+/****o* Tratamiento de Cheque/OFB:post:CDSupd_canc_reemp
+* NOMBRE
+*   OFB:post:CDSupd_canc_reemp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:RCVErecep_reemp_Chk,OFB:post:MISCcaida_sist_up
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSupd_canc_reemp
+    local varl_tcliente   like post:Recep_CliTipo
+    local varl_ncliente   like post:climed_numero
+    local es_reemp_chqrob like post:estado_cheque
+
+    varl_tcliente = substr(post:cliente,0,1)
+    varl_ncliente = substr(post:cliente,1,11)
+
+    IF (varl_tcliente == 1) THEN //cliente UP.
+        varl_tcliente = 4
+    ELSE
+        IF (varl_tcliente == 3) THEN //cliente cuentacorrentista.
+            varl_tcliente = 1
+        END IF    
+    END IF
+
+    CLEARFIELD es_reemp_chqrob
+    //cgw:verifico si en la sesion existe un Reemplazo de Cheque Robado.
+    CALL post:MISCver_ReempChqRob
+    IF (RETVAL == 0) THEN
+    	//cgw:Existe un Reemplazo de Cheque Robado.
+    	es_reemp_chqrob = "S"
+     ELSE	
+    	//cgw:No existe un Reemplazo de Cheque Robado.
+    	es_reemp_chqrob = "N"
+        CDS SELECT FROM DSC:CheqRech_tbl BECOMES DSC:CheqRech_ctx \
+	    WHERE post:Recep_CliTipo == varl_tcliente && \
+	    post:climed_numero == varl_ncliente && \
+	    tes:banco_codigo == tes:banco_codigo && \
+	    siaf:cheqcuenta == siaf:cheqcuenta && siaf:nro_cheque == siaf:nro_cheque
+        CDS FINDFIRST DSC:CheqRech_ctx LOCK
+        lib:err_retval = CDSRETVAL
+        IF (lib:err_retval < 0)
+	   	 	IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+				MSGBOX "El registro seleccionado no existe",0x00,"Atencion"
+	    	END IF
+	    	CDS UNLOCK DSC:CheqRech_ctx
+	    	CDS ENDSELECT DSC:CheqRech_ctx
+	    	RETURN (-2)
+		ELSE
+			IF (siaf:codigo_siaf == 99205 && varl_tcliente == 5) then
+				cds extract dsc:CheqRech_ctx post:cheq_adel_nro
+			ENDIF
+		END IF
+		CDS CLEARBUFFER DSC:CheqRech_ctx
+    END IF
+
+    IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+	    IF (siaf:codigo_siaf == 99200)
+	        // Directa para Reemplazo
+	        post:fecha_reemp = common:system_date
+	    ELSEIF (siaf:codigo_siaf == 99190 || \
+	    	siaf:codigo_siaf == 99205 || \
+	    	siaf:codigo_siaf == 99170 || \
+	    	siaf:codigo_siaf == 99175)
+	    	// Directa para Recepcion y Cancelacion Reemplazo
+	    	post:fecha_reemp = "99999999"
+        
+	    	//cgw:Al reversar por busqueda de journal el Reemplazo de Cheque Robado,
+	    	//    ejecuta la cancelacion del Reemplazo sin comprobante.
+	    	//    Debe borrarse el cheque robado.
+	    	IF (siaf:codigo_siaf == 99175 && es_reemp_chqrob == "S") THEN
+	    	    CALL CDSdelCheqRob
+	    	END IF
+	    	if (post:anula_reemp == "S") then
+	    	    call tes:MISCsal_cheq_tes_caj("O",post:cheqrech_moneda,tes:banco_codigo,siaf:cheqcuenta,siaf:nro_cheque)
+	    	end if
+	    	
+	    END IF
+    ELSE
+	    IF (siaf:codigo_siaf == 99200)
+	        // Reversa para Reemplazo
+	        post:fecha_reemp = "99999999"
+	    ELSEIF (siaf:codigo_siaf == 99205 || \
+	    	siaf:codigo_siaf == 99170 || \
+	    	siaf:codigo_siaf == 99175)
+	    	// Reversa para Cancelacion de Reemplazo
+	    	post:fecha_reemp = common:system_date
+	    END IF	
+    END IF
+
+    IF (es_reemp_chqrob == "N") THEN //No es un Reemplazo de Cheque Robado.
+        CDS APPEND DSC:CheqRech_ctx \
+	    fecha_reemp
+        CDS UPDATE DSC:CheqRech_ctx LOCK
+        CDS UNLOCK DSC:CheqRech_ctx
+        CDS ENDSELECT DSC:CheqRech_ctx
+    END IF
+END SUB
+
+/*******/

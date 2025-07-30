@@ -1,0 +1,121 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgenerapick_concb
+* NOMBRE
+*   OFB:post:MISCgenerapick_concb
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenerapick_concb
+    LOCAL LineaPick  LIKE common:csr_string_200
+    LOCAL LineaPick2 LIKE common:csr_string
+    LOCAL LIndice    LIKE siaf:i
+    LOCAL Ljerarquia LIKE post:adt_concb_jerarquia
+    
+    //Arma Picklist con la composicion del combo
+    LIndice = 0
+
+    ;Destruyo PickList que pudiera haber quedado
+    CALL post:MISCdestrupick_concb
+
+    ;Genero El PickList
+    CALL CSR:f_sanewpl DSC:PickCAux_concb PIC:PickCAux_concb 700 300
+    CALL CSR:f_sanewpl DSC:PickComp_concb PIC:PickComp_concb 585 380
+
+    //Agrega Productos que componen el combo
+    CDS SELECT FROM DSC:ContCombo_tbl BECOMES DSC:ContCombo_ctx \
+    WHERE adt_concb_cod == FLD:adt_concb_cod
+    CDS FINDFIRST DSC:ContCombo_ctx LOCK
+    WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:ContCombo_ctx ALL
+		//Obtiene descripcion del producto segun el tipo del servicio,    
+        CALL post:MISCconcb_descprod		
+		CLEARFIELD LineaPick
+        FPRINT FLD:LineaPick "    %2.2s %-20.20s %-2.2s %s %s" \
+        adt_concb_jerarquia,adt_concb_producto, \
+        adt_concb_tipo,adt_concb_principal,adt_concb_colecta
+        FPRINT FLD:LineaPick "%s %s %s %-2.2s %-20.20s" \
+        LineaPick,adt_concb_usa_tarif,adt_concb_usa_opc, \
+        adt_concb_cantidad,adt_concb_interno
+
+        IF (adt_concb_usa_tarif == "S") THEN
+            CALL post:MISCbuscar_rpdcb
+            IF (RETVAL == 0 && adt_rpdcb_destino.numchars == 0) THEN
+            	adt_rpdcb_destino = "TODOS LOS DESTINOS"
+            END IF            	
+        ELSE
+        	CALL post:ABMrpdcb_clear
+        END IF
+                
+        FPRINT FLD:LineaPick "%s %-20.20s %-13.13s %-13.13s %-3.3s" \
+        LineaPick,adt_rpdcb_destino,adt_rpdcb_desde, \
+        adt_rpdcb_hasta,adt_rpdcb_uni_med
+
+        IF (adt_concb_usa_opc == "S") THEN
+            CALL post:MISCbuscar_opscb
+        ELSE
+        	CALL post:ABMopscb_clear
+        	//completo linea picklist con blancos hasta llegar a cubrir los 6 opcionales
+        	FPRINT common:csr_string " %-4.4s %-4.4s %-4.4s %-4.4s %-4.4s %-4.4s " \
+            adt_opscb_opci,adt_opscb_opci,adt_opscb_opci,adt_opscb_opci,adt_opscb_opci,adt_opscb_opci
+        END IF
+        FPRINT FLD:LineaPick "%s%s" LineaPick,common:csr_string
+        
+        //cgw agrego descripcion del producto
+        FPRINT FLD:LineaPick "%s%-40.40s" LineaPick,adt_concb_descprod
+
+        CLEARFIELD LineaPick2        
+        FPRINT FLD:LineaPick2 "%-20.20s %2.2s    %s     %-2.2s     %s      %s     %s     %2.2s  %-40.40s" \
+        adt_concb_producto,adt_concb_jerarquia,adt_concb_principal, \
+        adt_concb_tipo,adt_concb_colecta,adt_concb_usa_tarif,\
+        adt_concb_usa_opc,adt_concb_cantidad,adt_concb_descprod
+
+        ;Agrego en el PickList
+        CALL CSR:f_saaddpl DSC:PickCAux_concb FLD:LineaPick
+        CALL CSR:f_saaddpl DSC:PickComp_concb FLD:LineaPick2
+
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:ContCombo_ctx NOLOCK
+	END WHILE
+	CDS UNLOCK DSC:ContCombo_ctx
+    CDS ENDSELECT DSC:ContCombo_ctx
+
+    IF (LIndice > 0) THEN
+    	Ljerarquia = adt_concb_jerarquia + 1
+    ELSE
+    	Ljerarquia = 1
+    END IF    
+    //Se asegura que luego de cargar Picklist no arrastre valores
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTContCombo_flds2)
+    CLEARFIELD adt_concb_tipo
+    CLEARFIELD adt_concb_cantidad
+    CLEARFIELD adt_concb_interno
+    CLEARFIELD aux_concb_producto
+    CLEARFIELD aux_concb_tipo
+    CALL post:ABMrpdcb_clear
+    CALL post:ABMopscb_clear
+
+    adt_concb_jerarquia = Ljerarquia  //recupero ultima jerarquia
+    nue_concb_jerarquia =  adt_concb_jerarquia  //nueva jerarquia
+    adt_concb_principal = "N" //el producto nunca es principal
+    
+    CALL post:ABMContCombo_refresh  //refresca valores preparados para alta
+    
+    //cgw:si no tiene composicion recuerda que los productos monetarios deben tener jeraquia 1.
+    IF (adt_concb_jerarquia == 1 && post:aux_concb_cod != post:adt_concb_cod) THEN
+    	MSGBOX "RECUERDE QUE EL PRODUCTO MONETARIO DEBE TENER JERARQUIA 1" ,0x00,"AVISO"
+    END IF
+END SUB
+
+/*******/

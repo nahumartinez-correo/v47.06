@@ -1,0 +1,195 @@
+/****o* Pendientes de agrupación/OFB:post:MISCtotal_medio_perm
+* NOMBRE
+*   OFB:post:MISCtotal_medio_perm
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCtotal_medio_perm(Codigo, Tipo, Tabla, Supervisor, TipoOpe)
+	Local Importe like siaf:importe
+	Local Longitud like siaf:i
+	Local HayIngresos like siaf:i
+	Local HayEgresos like siaf:idx
+	Local HayQueAcumular like siaf:i
+	Local TieneFormu like siaf:i
+	local acumularFormuInc like siaf:i
+
+	//Transacciones
+	If (TipoOpe == "T")
+		If (Tipo == "E")
+			Call CDStotal_transacc
+			siaf:suma_total_bol = adt_importe
+		Else
+			siaf:suma_total_bol = 0
+		End If
+	End If
+
+	HayEgresos = 0
+	HayIngresos = 0
+	HayQueAcumular = 0
+	TieneFormu = 0
+
+	If (TipoOpe == "M")
+		siaf:suma_total_bol = 0
+		Call post:CDShay_ingresos(Codigo)
+		If (Retval == 0)
+			HayIngresos = 1
+		EndIf
+		Call post:CDShay_egresos(Codigo)
+		If (Retval == 0)
+			HayEgresos = 1
+		End If
+		// Si por exclusion solo saco el total de ingresos si no existe restriccion de la 6800
+		If (Tipo == "E" && HayIngresos == 0)
+			Call post:CDStotal_ingresos
+			siaf:suma_total_bol = siaf:suma_total_bol + adt_importe
+		End If
+		If (Tipo == "E" && HayEgresos == 0)
+			Call post:CDStotal_egresos
+			siaf:suma_total_bol = siaf:suma_total_bol + adt_importe
+		End If
+	End If
+
+	// Motivos
+	// Exclusion  Todos menos los que estan
+	If (TipoOpe == "T")
+		Cds Select from Tabla becomes "Contexto" where adt_rprod_mpa_cod == FLD:Codigo
+	Else
+		Cds Select from Tabla becomes "Contexto" where adt_restmot_mpago == FLD:Codigo
+	End If
+	Cds FindFirst "Contexto" nolock
+	While (CdsRetval == 0)
+		clearfield adt_rprod_tImpGiro
+		Cds Extract "Contexto" all
+		Clearfield common:csr_string_171
+		If (TipoOpe == "T")
+			call MISCtratamientoGir
+		Else
+			Fprint common:csr_string_171 "%s%s%s" adt_restmot_mot, adt_restmot_mod, adt_restmot_sub
+			Fprint common:csr_string_171 "%-40.40s" common:csr_string_171
+		EndIf
+		call csr:PickOp 3 dsc:pic_acumulador common:csr_string_171
+/*		if (retval == 0)
+			singlestep on
+		endif*/
+
+		//Tipo
+		Longitud = common:csr_string_171.numchars - 2
+		common:csr_string = substr(common:csr_string_171, Longitud, 1)
+
+		//Formulario
+		; En esta parte se hizo una modificacion sustancial:
+		; si las restricciones son por comprobante fiscal e inclusion,
+		; lo que se necesite realizar es una UNION entre aquellos motivos
+		; incluidos y todos aquellos que tengan comprobante fiscal
+		; (NO ES UNA SUMA, ES UNA UNION, ya que hay motivos incluidos que
+		; tienen comprobante fiscal y no se los quiere sumar dos veces)
+		; lo que se hizo fue primero sumar todos aquellos motivos incluidos que
+		; NO TIENEN comprobante fiscal, y luego, se le agregaron a estos TODOS
+		; los motivos que tienen comprobante fiscal que intervinieron en la sesion
+		; (MISCsumaMotExclCF)
+		; Con esto se soluciona la union. (SOLO CUANDO ES INCLUSION!)
+
+		TieneFormu  = 1
+		acumularFormuInc = 0
+		Longitud = common:csr_string_171.numchars - 1
+		common:csr_string_130 = Substr(common:csr_string_171, Longitud, 1)
+		If (adt_rmedpag_cfiscal == "S" && Tipo != "E")
+			If  (common:csr_string_130 != "S")
+				//dprint "TipoOpe = %s, Tipo = %s\n", TipoOpe, Tipo
+				If  (Tipo != "I")
+			    	TieneFormu  = 0
+				else
+					acumularFormuInc = 1
+				endif
+			else
+				// si tiene form fisc despues lo sumo!!
+				if (Tipo != "E")
+					TieneFormu  = 0
+				endif
+			End If
+		End If
+
+		// Si se trata de exclusion, SIEMPRE hay que acumular
+		// mientras no tenga formulario fiscal.
+		// ademas, en caso de que tenga formulario fiscal,
+		// hay que tener en cuenta ese importe ya que la rutina
+		// CDStotal_comp_fiscal suma todos aquellos que tenian
+		// formulario fiscal, pero sin darse cuenta si se excluyo o
+		// no, por ese motivo se guarda ese importe en acumFormuIncXXX.
+
+		If (adt_rmedpag_cfiscal == "S" && Tipo == "E")
+			If  (common:csr_string_130 != "S")
+			    TieneFormu  = 0
+			else
+				Longitud = common:csr_string_171.numchars - 2 - 40
+				Importe = substr(common:csr_string_171, 40, Longitud)
+				if (TipoOpe == "T")
+					acumFormuIncTrn = acumFormuIncTrn + (Importe * -1)
+				else
+					acumFormuIncMot = acumFormuIncMot + (Importe * -1)
+				endif
+			endif
+		endif
+
+		If  (TieneFormu == 1 && ((TipoOpe == "T" || \
+			(TipoOpe == "M" && HayIngresos == 0 && common:csr_string == "I") || \
+			(TipoOpe == "M" && HayEgresos  == 0 && common:csr_string == "E"))))
+			HayQueAcumular = 1
+		Else
+			HayQueAcumular = 0
+		End If
+
+		//Exclusion
+		If (Retval >= 0 && Tipo == "E")
+			Longitud = common:csr_string_171.numchars - 2 - 40
+			Importe = substr(common:csr_string_171, 40, Longitud)
+			If (HayQueAcumular)
+				siaf:suma_total_bol = siaf:suma_total_bol - Importe
+				Call post:MISCcheck_SupMedPago(Supervisor)
+			EndIf
+		Endif
+
+		//Inclusion
+		If (Retval >= 0 && Tipo == "I")
+			Longitud = common:csr_string_171.numchars - 2 - 40
+			Importe = substr(common:csr_string_171, 40, Longitud)
+			If (HayQueAcumular)
+				if (acumularFormuInc)
+					// Esto se hace porque hay que aumentar el limite permitido
+					// para pagos con comp fisc (cuando hay restriccion)
+					// este campo se graba en la MedioPagoHab por medio de pago
+					// y se levanta en la MISCvalido_todos_med.
+					if (TipoOpe == "T")
+						acumFormuIncTrn = acumFormuIncTrn + Importe
+					else
+						acumFormuIncMot = acumFormuIncMot + Importe
+					endif
+				endif
+				siaf:suma_total_bol = siaf:suma_total_bol + Importe
+				Call post:MISCcheck_SupMedPago(Supervisor)
+			End If
+		End If
+		Cds FindNExt "Contexto" nolock
+	End While
+	Cds EndSelect "Contexto"
+
+	// Necesito agregar tambien aquellos Motivos que no estan excluidos y tienen
+	// comprobante fiscal.
+
+	call post:MISCsumaMotExclCF(TipoOpe, Tipo, HayIngresos)
+End Sub
+
+/*******/

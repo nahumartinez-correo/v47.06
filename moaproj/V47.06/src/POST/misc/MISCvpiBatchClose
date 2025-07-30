@@ -1,0 +1,151 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvpiBatchClose
+* NOMBRE
+*   OFB:post:MISCvpiBatchClose
+* DESCRIPCION
+*   Realiza el Cierre de Lote de las Tarjetas
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   
+* DOCUMENTACION
+*   NI50525 POS Integrado
+* SOURCE
+*/
+#include "postmisc.h"
+#include "moa2vpipc.h"
+
+SUB post:MISCvpiBatchClose
+	LOCAL l_retval_BC LIKE lib:err_retval
+	LOCAL l_retval_BD LIKE lib:err_retval
+	LOCAL l_vpi_response LIKE post:adt_rvpi_codigo
+
+	//Inicializo el contador
+	LET post:adt_lcie_cant_reg = 0
+	//Limpio campo de respuesta de error
+	CLEARFIELD post:adt_vpi_status
+	
+	//Fuerzo el cierre del puerto!!!
+	CALL post:MISCvpiClosePort
+
+	//Abro el puerto de comunicacion
+	CALL post:MISCvpiOpenPort
+	IF (RETVAL != 0) THEN
+		RETURN -2
+	END IF
+
+	DPRINT "<<<*************[BatchClose]*******************\n"
+	
+	CLEARFIELD post:vpi_hostRespCode	
+	CLEARFIELD post:vpi_date						
+	CLEARFIELD post:vpi_time						
+	CLEARFIELD post:vpi_terminalID      
+	post:vpi_timeout = common:adt_vpi_timeout             // Tiempo de espera de respuesta en segundos
+	
+	DPRINT "[post:vpi_timeout][%s]\n" post:vpi_timeout
+	
+	FYIMSG drv:fyimsg_list,"Realizando Cierre de Lote del dispositivo POS, aguarde..."
+	
+	CALL CSR:Moa2VpiBatchClose(LST:post:LISTvpiBatchCloseOut,post:vpi_timeout)
+	LET l_retval_BC = RETVAL
+	
+	DPRINT "[RETVAL][%s]\n" l_retval_BC
+	
+	//gpb:PS10932 - Log LoteCIE
+	LET post:log_lcie_fecha =	common:system_date
+	LET post:log_lcie_hora = common:time_of_day
+	//Obtengo el secuenciador
+	CALL post:CDSobtiene_secuen("VPILC")
+	LET post:log_lcie_codseq_nro = post:adt_codseq_nro
+	DPRINT "[post:log_lcie_codseq_nro][%s]\n" post:log_lcie_codseq_nro
+	
+	//Si no devuelve OK, busco mensaje de error
+	IF (l_retval_BC != VPI_OK) THEN
+		//Si hubo un error al ejecutar el comando al POS
+		FPRINT l_vpi_response "%s" l_retval_BC
+		CALL post:MISCvpiGralResponse("VPI",l_vpi_response)
+		IF (post:adt_vpi_status == "ERR") THEN	
+			RETURN -2
+		END IF
+	ELSE	
+		//Si no hubo error, grabo el header en la tabla de log
+		CALL post:MISCsaveLoteCIE_LOG("HEADER",l_retval_BC)
+		
+		DPRINT "****************[BatchClose]****************>>>\n"
+	END IF
+	
+	NAP 2000
+	FYIMSG CLEAR
+	
+	//Busco el detalle del cierre del lote
+	l_retval_BD = VPI_MORE_REC
+	post:vpi_index = 0
+	
+	DPRINT "<<<*************[GetBatchCloseData]************\n"
+	
+	FYIMSG drv:fyimsg_list,"Obteniendo detalle del Cierre de Lote del dispositivo POS, aguarde..."
+
+	WHILE (l_retval_BD == VPI_MORE_REC)
+	
+		CALL CSR:Moa2VpiGetBatchCData(post:vpi_index,LST:post:LISTvpiBCloseDataOut)
+		l_retval_BD = RETVAL
+	
+		//Arreglo porque hay veces que viene con espacios...
+		post:vpi_index = post:vpi_index * 1 
+		
+		DPRINT "[RETVAL][%s]\n" l_retval_BD
+		DPRINT "[post:vpi_index][%s]\n" post:vpi_index
+		DPRINT "[post:vpi_acquirerCode][%s]\n" post:vpi_acquirerCode
+		DPRINT "[post:vpi_batchNumber][%s]\n" post:vpi_batchNumber
+		DPRINT "[post:vpi_issuerCode][%s]\n" post:vpi_issuerCode
+		DPRINT "[post:vpi_purchaseCount][%s]\n" post:vpi_purchaseCount
+		DPRINT "[post:vpi_purchaseAmount][%s]\n" post:vpi_purchaseAmount
+		DPRINT "[post:vpi_voidCount][%s]\n" post:vpi_voidCount
+		DPRINT "[post:vpi_voidAmount][%s]\n" post:vpi_voidAmount
+		DPRINT "[post:vpi_refundCount][%s]\n" post:vpi_refundCount
+		DPRINT "[post:vpi_refundAmount][%s]\n" post:vpi_refundAmount
+		DPRINT "[post:vpi_refvoidCount][%s]\n" post:vpi_refvoidCount
+		DPRINT "[post:vpi_refvoidAmount][%s]\n" post:vpi_refvoidAmount	
+		DPRINT "[post:vpi_date][%s]\n" post:vpi_date
+		DPRINT "[post:vpi_time][%s]\n" post:vpi_time
+		DPRINT "[post:vpi_terminalID][%s]\n" post:vpi_terminalID		
+		
+		//gpb:PS10932 - Log LoteCIE
+		CALL post:MISCsaveLoteCIE_LOG("DATA",l_retval_BD)
+		
+		//Guarda un registro en la tabla LoteCIE
+		CALL post:MISCsaveCierreLote
+		
+		//Actualizo la marca de cierre de lote en la tabla OperacionesVPI
+		CALL post:MISCmarcaBatchClose
+		
+		post:vpi_index = post:vpi_index + 1
+	END WHILE
+
+	DPRINT "****************[GetBatchCloseData]*********>>>\n"
+	
+	FYIMSG drv:fyimsg_list,"Cerrando comunicacion con el dispositivo POS, aguarde..."
+	CALL post:MISCvpiClosePort
+	IF (RETVAL != VPI_OK) THEN
+		FYIMSG drv:fyimsg_list,"Falla al cerrar comunicacion con el dispositivo POS, aguarde..."
+	END IF
+	
+	NAP 2000
+	FYIMSG CLEAR
+	
+	//Si no impacto ningun registro en LoteCIE, busco mensaje de error
+	IF (post:adt_lcie_cant_reg == 0  && l_retval_BC != VPI_OK) THEN
+		//Si hubo un error al ejecutar el comando al POS
+		FPRINT l_vpi_response "%s" l_retval_BC
+		CALL post:MISCvpiGralResponse("VPI",VPI_EMPTY_BATCH)
+		IF (post:adt_vpi_status == "ERR") THEN	
+			RETURN -2
+		END IF
+	END IF
+
+END SUB
+
+/*******/

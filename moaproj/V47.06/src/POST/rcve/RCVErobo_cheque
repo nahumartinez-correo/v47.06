@@ -1,0 +1,53 @@
+/****o* Tratamiento de Cheque/OFB:post:RCVErobo_cheque
+* NOMBRE
+*   OFB:post:RCVErobo_cheque
+* DESCRIPCION
+*   Rutina de Receive del viaje de Robo de Cheque ().Si vuelve codigo de respuesta 03 (Aceptado) entonces
+*	se graba en la nueva tabla jnl_AdelantoChq el consumo de Adelanto que deberá realizarse por RT BATCH
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99280
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postRCVE.h"
+
+SUB post:RCVErobo_cheque
+
+	local del_retval like lib:err_retval
+	
+	call post:RCVEhdr_climedio
+	if (hcomm:tran_status == HOST_ACCEPTED )
+		call post:RCVEgral_climedio
+		if ( retval < 0 )
+			return -2
+		end if
+		
+		
+		IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+			//si es cancelacion controlo que la jnl_AdelantoChq no haya impactado en el host
+			//si aun no impacto, borro la directa. Si ya impacto genero un nuevo reg para cancelar
+			//la directa en el host
+			del_retval = 1
+			IF (testflag(tlr:tran_flags,correction))
+				CALL post:CDSAdelantoChq_del(siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,siaf:moneda)
+				del_retval = retval //si retval = 0 entonces no impacto y borro el registro, caso contrario retval = 1
+			END IF
+			//Si es cheque certificado en plazo grabar la tabla para el rtbatch
+			IF (chq_en_plazo == "S" && del_retval == 1)
+				post:op_adel_mon = "D"
+				CALL CDSAdelChq_save(siaf:importe,tes:teso_cheq_adel_nro,siaf:moneda,siaf:cod_banco)
+			END IF
+		END IF
+	else
+		return -2
+	end if
+END SUB
+
+/*******/

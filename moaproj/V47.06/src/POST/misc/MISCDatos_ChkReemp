@@ -1,0 +1,149 @@
+/****o* Tratamiento de Cheque/OFB:post:MISCDatos_ChkReemp
+* NOMBRE
+*   OFB:post:MISCDatos_ChkReemp
+* DESCRIPCION
+*   Extrae los datos del journal de la 99200 y los datos correspondientes de la CheqRech
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:MISCdatChkReempJnl
+* REFERENCIADO POR
+*   OFB:post:MISCanula_Reemp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCDatos_ChkReemp
+	//Extrae los datos del journal de la 99200 y los datos correspondientes de la CheqRech
+	local cod_aux like siaf:codigo_siaf
+    local mon like tes:teso_cheq_moneda
+    local bco like tes:teso_cheq_banco
+    local nro like tes:teso_cheq_nro
+    local cta like tes:teso_cheq_cuenta
+
+	CLEARFIELD siaf:nro_cheque
+	CLEARFIELD siaf:f_emision
+	CLEARFIELD siaf:f_vencimiento
+	CLEARFIELD tes:banco_codigo
+	CLEARFIELD siaf:cheqcuenta
+	CLEARFIELD cod_banco
+	CLEARFIELD cuenta
+	CLEARFIELD nro_cheque
+	
+	CALL CSR:cleararray (ValorPago)
+	CALL CSR:cleararray (NumCuenta)
+	CALL CSR:cleararray (Emision_Fecha)
+	CALL CSR:cleararray (BancoPago)
+	CALL CSR:cleararray (Bco_Cuenta)
+	CALL CSR:cleararray (Valor_Fecha)
+	CALL CSR:cleararray (chq_clearing)
+	
+
+	CDS EXTRACT DSC:tlr:jnl_context \
+		post:CliUP \
+		tes:banco_codigo \
+		siaf:cheqcuenta \
+		siaf:nro_cheque \
+		adt_codseq_nro into CodSeqNro \
+		cant_valores \
+		cliente	\
+		cheqrech_moneda \
+		siaf:codigo_siaf into cod_aux
+
+	siaf:i = 0
+	WHILE (siaf:i < cant_valores)
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+		ValorPago[siaf:i] \
+		NumCuenta[siaf:i] \
+		Emision_Fecha[siaf:i] \
+		BancoPago[siaf:i] \
+		Bco_Cuenta[siaf:i] \
+		Valor_Fecha[siaf:i] \
+		ImporteBanco[siaf:i] \
+		Emision_Fecha[siaf:i] into fec_e \
+		Valor_Fecha[siaf:i] into fec_d \
+		ValorPago[siaf:i] into siaf:moneda \
+		ImporteBase[siaf:i] into post:Total_importe \
+		chq_clearing[siaf:i] into tes:clearing
+		
+		siaf:i = siaf:i + 1 
+	END WHILE
+	
+	CALL post:CDSmedPag_cheq(post:cheqrech_moneda) // FGB 17.11.2005: Trat Chq
+	post:DescripMedPag = post:adt_mp_desc
+	siaf:moneda = post:adt_mp_cod
+	
+	IF (cod_aux == 99200)
+		//50295
+		CDS EXTRACT DSC:tlr:jnl_context \
+			tes:banco_codigo \
+			siaf:cheqcuenta \
+			siaf:nro_cheque \
+			post:imp_adel_mon \
+			post:op_adel_mon
+	
+		CALL CDSsel_CheqRech
+		IF (Retval < 0)
+			MSGBOX "No se pueden obtener los datos de la CheqRech",0x00,"Error"
+			RETURN (-2)
+		END IF
+		cod_banco = tes:banco_codigo
+		cuenta = siaf:cheqcuenta
+		nro_cheque = siaf:nro_cheque
+		Total_importe = imp_aux
+		fec_e = siaf:f_emision
+		fec_d = siaf:f_vencimiento
+	ELSE
+		IF (cod_aux == 99240 || cod_aux == 99242)
+		CDS EXTRACT DSC:tlr:jnl_context \
+			cod_banco \
+			cuenta \
+			nro_cheque \
+			post:imp_adel_mon \
+			post:op_adel_mon
+			
+		CALL CDSsel_CheqRob
+			IF (Retval < 0)
+				MSGBOX "No se pueden obtener los datos de la CheqRob",0x00,"Error"
+				RETURN (-2)
+			END IF
+		tes:banco_codigo = cod_banco
+		siaf:cheqcuenta = cuenta
+		siaf:nro_cheque = nro_cheque
+		Total_importe = imp_aux			
+		END IF
+	ENDIF
+	
+	//Verifico que el cheque que reemplaza al rechazado se encuentre en poder del operador
+	//para poder realizar la reversa
+	siaf:i = 0		
+	do	
+		if (ValorPago[siaf:i].numchars == 0) then
+			break
+		end if
+		let post:adt_mp_cod = post:ValorPago[siaf:i]
+        call post:CDSadt_MedPago_load
+        if (post:adt_mp_adm == "I") then
+            mon = post:ValorPago[siaf:i]
+            bco  = post:BancoPago[siaf:i]
+            nro    = post:NumCuenta[siaf:i]
+            cta = post:Bco_Cuenta[siaf:i]
+	        call post:MISCcargo_valor(mon,bco,cta,nro,cta,nro)
+            call tes:MISCbusco_cheque_rev
+            if (retval < 0) then
+                fyimsg clear
+                return (-2)
+            end if
+        end if
+        siaf:i = siaf:i + 1
+    loop	
+	
+
+END SUB
+
+/*******/

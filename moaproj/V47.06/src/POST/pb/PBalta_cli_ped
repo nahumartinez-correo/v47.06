@@ -1,0 +1,191 @@
+/****o* Pago en Destino/OFB:post:PBalta_cli_ped
+* NOMBRE
+*   OFB:post:PBalta_cli_ped
+* DESCRIPCION
+*   Alta de Clientes Minoristas PED
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:BUTDtrioManualPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBalta_cli_ped
+	LOCAL prov_aux LIKE post:CloProvin
+	
+	LET drv:button = drv:last_button
+	CALL OFB:drv:but_up_enable
+	
+	//Verifico que los campos esten cargados
+	IF (post:es_juridica == "S") THEN
+		CALL csr:trimfield(CliRazon)	
+		IF (post:CliRazon.NUMCHARS == 0) THEN
+			MSGBOX "Debe Ingresar una Razon Social",0x00,"Error"
+			CALL csr:set_currentfield post:CliRazon
+			NEXTFIELD CliRazon
+			RETURN -2 
+		END IF
+	ELSE
+		CALL csr:trimfield(CliNombre)
+		IF (post:CliNombre.NUMCHARS == 0) THEN
+			MSGBOX "Debe Ingresar Nombre",0x00,"Error"
+			CALL csr:set_currentfield post:CliNombre
+			NEXTFIELD CliNombre
+			RETURN -2 
+		END IF
+		CALL csr:trimfield(CliApellido)
+		IF (post:CliApellido.NUMCHARS == 0) THEN
+			MSGBOX "Debe Ingresar Apellido",0x00,"Error"
+			CALL csr:set_currentfield post:CliApellido
+			NEXTFIELD CliApellido
+			RETURN -2 
+		END IF		
+	END IF
+
+	CALL csr:set_currentfield post:IvaCod
+	IF (post:IvaCod.NUMCHARS == 0) THEN
+		MSGBOX " Debe Ingresar Categoria de Iva",OFB_OK,""
+		NEXTFIELD IvaCod
+		RETURN (-2)
+	ELSE
+		CALL FVALIvaCod_crem
+	END IF
+	
+	CloTipDoc = adt_TipoDoc_tipo
+	CALL csr:set_currentfield post:adt_TipoDoc_tipo
+	IF (post:adt_TipoDoc_tipo.NUMCHARS == 0) THEN
+		MSGBOX "Debe Ingresar Tipo de Documento",OFB_OK,""
+		NEXTFIELD adt_TipoDoc_tipo
+		RETURN (-2)
+	END IF	
+
+	CALL csr:set_currentfield post:CloCuit
+	IF (post:CloCuit.NUMCHARS == 0)
+		MSGBOX "Debe Ingresar Nro de Documento",OFB_OK,""
+		NEXTFIELD post:CloCuit
+		RETURN (-2)
+	END IF
+
+	CALL post:MISCverifico_clioca //cgw:verifica si cargo ingresos brutos
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	//SC 50260
+	//Correccion AUT-518 - NAM 
+	CALL post:MISCvalidaCliMinor(siaf:codigo_siaf)
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	CALL post:CDSTipoDocu_load
+	IF (post:adt_TipoDoc_ver2dig == "S") THEN
+		post:CloTipDoc = post:adt_TipoDoc_tipo
+		CALL post:CDSTipoDocu_existe
+		lib:err_retval = RETVAL
+		IF (lib:err_retval != 0)
+			CALL post:FVALcuit2dig(post:CloCuit)
+			IF (RETVAL < 0) THEN
+				CLEARFIELD post:CloCuit
+				REFRESH post:CloCuit
+				RETURN (-1)
+			END IF
+		END IF
+	END IF
+
+	CALL post:CDSTipoDocu_load
+	IF (post:adt_TipoDoc_digver == "S") THEN
+		CALL csr:set_currentfield post:CloCuit
+		CALL post:FVALcuit_digi_veri
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+	END IF
+
+;	CALL CDSExiste_CliOca
+;	IF (RETVAL < 0) THEN
+;		MSGBOX "Cliente Minorista Existente",OFB_OK,"ERROR"
+;		RETURN -2
+;	END IF
+
+	post:adt_climay_nrodoc  = post:CloCuit
+	post:adt_climay_tipodoc = post:adt_TipoDoc_tipo        
+	CALL CDSExiste_CliMay
+	IF (RETVAL < 0) THEN
+		MSGBOX "El cliente que quiere dar de alta ya existe como mayorista",OFB_OK,"ERROR"
+		RETURN -2
+	END IF
+	
+	CALL MISCflds_crem_req
+	IF (RETVAL < 0) THEN
+		MSGBOX "Debe cargar los datos del domicilio del cliente mediante el boton PROXIMO.",OFB_OK,"ERROR"
+		RETURN (-2)
+	ENDIF
+
+
+	/************************************************/
+	CALL CDS_RG3337_load
+	IF (RETVAL == 0) THEN
+		POPUP post:SCRNrg3337,-,PCOLrg3337,SVALrg3337
+		IF (LASTKEY == RT_ESC) THEN
+			RETURN -2
+		END IF
+	ELSE
+		PROTFIELD esExentoRG3337
+		LET esExentoRG3337 = "N"
+		CLEARFIELD porcExentoRG3337
+	END IF
+	/*****************************************/
+	
+	CALL post:CDSped_clioca_save
+	IF (RETVAL == 0) THEN
+		IF (CloInscripto == "S") THEN
+			prov_aux = CloProvin
+			idx = PL_GETITEM
+			DO
+				CALL csr:myPickcontrol(DSC:PICInscIngBr,common:csr_string,idx)
+				IF (RETVAL < 0) THEN
+					BREAK
+				END IF
+				CloProvin = SUBSTR(common:csr_string,0,1)
+				CALL csr:trimfield CloProvin
+				IngBCod = substr(common:csr_string,2,3)
+				CALL csr:trimfield IngBCod
+				CloCoefPartProv = SUBSTR(common:csr_string,6,9)
+				CALL csr:trimfield CloCoefPartProv
+				CloExento = SUBSTR(common:csr_string,16,1)
+				CALL csr:trimfield CloExento
+				CALL CDSadt_CliIngBr_save   /*por provincia*/
+				IF (RETVAL < 0) THEN             /* cliente existente en CliOca */
+					MSGBOX "  Cliente Minorista Existente  ",OFB_OK,"ERROR"
+				END IF
+				CLEARFIELD CloProvin
+				CLEARFIELD IngBCod
+				CLEARFIELD CloCoefPartProv
+				CLEARFIELD CloExento
+				idx = idx + 1
+			LOOP
+			CALL csr:f_sadroppl DSC:PICInscIngBr
+			CALL CSR:f_sanewpl DSC:PICInscIngBr PIC:PICInscIngBr
+			itemcheck = 0
+			TotPartIngBr = 0
+			CloInscripto = "S"
+			CLEARFIELD CloCoefPartProv
+			CLEARFIELD InscIngBr_string
+			CloProvin = prov_aux
+		END IF
+		REFRESH CloInscripto
+		SETVALDONE CloInscripto
+		PROTFIELD CloInscripto
+	END IF
+
+END SUB
+
+/*******/

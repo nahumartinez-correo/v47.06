@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSmoti_con_mov
+* NOMBRE
+*   OFB:tes:CDSmoti_con_mov
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSmoti_con_mov
+LOCAL mot        LIKE siaf:motivo
+LOCAL cant_items LIKE siaf:cant
+LOCAL moti1      LIKE common:csr_string
+LOCAL motiAnt      LIKE common:csr_string
+LOCAL moti2      LIKE common:csr_string
+LOCAL moti3      LIKE common:csr_string
+LOCAL msg2       LIKE common:csr_string
+LOCAL msg3       LIKE siaf:motivo
+LOCAL oper1      LIKE common:csr_string
+LOCAL operAnt      LIKE common:csr_string
+LOCAL EOF like lib:err_retval    
+    
+    LET suma_mot = 0
+    CALL csr:f_sadroppl dsc:analitico
+    CALL csr:f_sanewpl dsc:analitico pic:analitico
+    
+    ; Se agrego al select la pregunta por la reversa - Maricel 14/7/2000
+    ; Se pregunta por la fecha del proceso, en lugar de common:system_date para que al cierre forzado liste los mov
+    CDS SELECT FROM "journal" BECOMES "jnl" WHERE  \
+    (((siaf:codigo_siaf == 6600) || (siaf:codigo_siaf == 6800)) && \
+    (tlr:jnl_branch == op:op_branch_id) && (tlr:jnl_date == siaf:fecha_proceso) && \
+    (tlr:jnl_sequence_corr == 0)) 
+    CDS FINDFIRST "jnl" LOCK
+    lib:err_retval = CDSRETVAL
+    IF (lib:err_retval != -801)
+        CDS EXTRACT "jnl" ALL           
+    ELSE
+    	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+        	MSGBOX "NO SE ENCONTRARON MOVIMIENTOS DE MOTIVOS",OFB_OK,"Error"
+        END IF
+        RETURN (-2)
+    ENDIF
+    
+    WHILE (lib:err_retval != -801)
+        mot = siaf:motivo
+        WHILE ((mot == siaf:motivo) && (lib:err_retval == 0)) 
+            ;MFM Enero 2001 - Verifico que el motivo deba imprimirse
+            CALL MISCverif_imp(mot)
+            IF (RETVAL == 0) THEN  
+                FPRINT common:csr_string,"%5.5s %14.14s",tlr:jnl_operator,tlr:jnl_op_login_id
+                FPRINT common:csr_string,"%20.20s %-5.5s %-30.30s %8.8s %-5.5s %13.13e %-5.5s %-30.30s %-1.1s",\
+                common:csr_string,siaf:motivo,siaf:adt_mot_desc_tmp,siaf:nro_impre,siaf:Nis_Destino,siaf:importe,siaf:codigo_siaf,siaf:observaciones,post:adt_intext
+                CALL csr:f_saaddpl dsc:analitico common:csr_string
+                LET cant_items = cant_items + 1
+            END IF
+            CDS FINDNEXT "jnl" LOCK
+            LET lib:err_retval = CDSRETVAL
+            IF (lib:err_retval == 0) THEN
+                CDS EXTRACT "jnl" ALL
+            END IF
+        END WHILE
+    END WHILE
+            
+    ;Esta funcion C se encarga de ordenar el contenido del picklist. Diego Priore 08/03/2000
+    CALL csr:PickOp 4 dsc:analitico "21,5" "0,5" "58,8" "67,5"
+    
+    ;Cuento la cantidad de items por codigo / ahora hay que hacerlo por motivo
+    CALL MISCcant_item_codigo
+        
+	  ;Imprimo encabezado
+		LET FLD:tes:INDsheet_header = OFB:MISCenc_analitico
+		CALL MISCenc_analitico
+	        
+    LET i_idx = PL_GETITEM + 0
+    LET idx = 0
+    LET common:csr_string = ""
+    CALL csr:myPickcontrol dsc:analitico common:csr_string i_idx
+    EOF = retval
+    LET moti1 = substr(common:csr_string,21,5)
+    LET oper1 = substr(common:csr_string,0,5)
+    
+    while (EOF >= 0)
+    	suma_mot = 0            
+        FPRINT moti3 ,"%-5.5s    %-5.5s     %-30.30s",substr(common:csr_string,87,5) substr(common:csr_string,21,5) substr(common:csr_string,27,30)
+        CALL MISCwrite_file1(5,moti3)
+    	motiAnt = moti1
+    	operAnt = ""
+    	while (EOF >= 0 && motiAnt == moti1)
+    		IF (oper1 != operAnt) THEN                    
+            	FPRINT moti3 ,"OPERADOR : %-5.5s   %14.14s",substr(common:csr_string,0,5) substr(common:csr_string,6,14)
+            	CALL MISCwrite_file1(5,moti3)
+            	operAnt =  oper1   
+        	END IF
+    		msg3 = substr(common:csr_string,124,1)
+        	IF (msg3 == "E") THEN           
+            	FPRINT moti2,"%-30.30s                                 %8.8s    %-5.5s  %13.13s", substr(common:csr_string,93,30) substr(common:csr_string,58,8) substr(common:csr_string,67,5) substr(common:csr_string,73,13)
+        	ELSE            
+            	FPRINT moti2,"%-30.30s                        %8.8s             %-5.5s  %13.13s", substr(common:csr_string,93,30) substr(common:csr_string,58,8) substr(common:csr_string,67,5) substr(common:csr_string,73,13)
+        	END IF
+        	CALL MISCwrite_file1(5,moti2)
+        	suma_mot = suma_mot + substr(common:csr_string,73,13)
+            
+        	LET idx = idx + 1
+        	LET i_idx = PL_GETITEM + idx
+        	LET common:csr_string = ""
+        	CALL csr:myPickcontrol dsc:analitico common:csr_string i_idx
+        	
+        	EOF = retval
+        	LET moti1 = substr(common:csr_string,21,5)
+        	LET oper1 = substr(common:csr_string,0,5)
+        end while
+        CALL MISCwrite_file1(5," ")          
+        FPRINT moti3, "TOTAL                                                                             %13.13e",suma_mot
+        dprint "TOTAL: %13.13e",suma_mot
+        CALL MISCwrite_file1(5,moti3)
+        if (EOF >= 0) then
+        	; Salto de pagina
+        	siaf:lineas_cl = 60
+            CALL MISCwrite_file1(5,"<FORMFEED>")
+		end if
+	end while		            
+    CDS UNLOCK "jnl"
+    CDS ENDSELECT "jnl"  
+END SUB
+
+/*******/

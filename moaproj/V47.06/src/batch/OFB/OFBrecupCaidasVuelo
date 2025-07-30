@@ -1,0 +1,190 @@
+/****o* RT BATCH/OFB:batch:OFBrecupCaidasVuelo
+* NOMBRE
+*   OFB:batch:OFBrecupCaidasVuelo
+* DESCRIPCION
+*   Rutina para ejecutar procesos de mensajeria al switch desde el Rt_batch
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:batch:batch_rt
+* DOCUMENTACION
+*   
+* SOURCE
+*/
+#include "batchofb.h"
+
+/*Esta rutina es llamada desde el proceso batch para la recuperación de caídas en vuelo*/
+SUB batch:OFBrecupCaidasVuelo
+	LOCAL fecha LIKE giros:cons_fecha_emi
+	LOCAL hora LIKE post:hor_a
+	LOCAL stand_by LIKE giros:clve_fld
+    
+	CALL csr:BlowFishInit()
+	CALL MISCgeneraLog("\n<<< LOG DEL PROCESO RT PARA RECUPERACION DE CAIDAS EN VUEL0 (modo: BATCH) >>>\n","INFO","N")
+	CALL MISCgeneraLog("\n<<< LOG DE ERRORES DEL PROCESO DE RECUPERACION DE CAIDAS EN VUEL0 (modo: BATCH) >>>\n","ERROR","N")
+	fecha = common:system_date
+	FPRINT common:csr_string,"<< CORRESPONDIENTE AL DIA: %e >>\n",fecha
+	CALL MISCgeneraLog(common:csr_string,"AMBOS","N")
+	tlr:bus_date = common:system_date
+    
+	DO 
+		hora = common:time_of_day
+		//gpb:PS10724
+		FPRINT common:csr_string,"\n<< Inicio Proceso de Recuperaci\xF3n Parcial de Caidas en Vuelo. Fecha: %e Hora: %e  >>\n",fecha,hora
+    
+		CALL MISCgeneraLog(common:csr_string,"INFO","N")
+		//gpb:PS10724
+		FPRINT common:csr_string,"\n(%e %e)Conexion con CDServer",fecha,hora
+		CALL MISCgeneraLog(common:csr_string,"INFO","N")
+    
+		//Inicio el CDserver
+		CALL CDSinit_main
+		CALL CDSinit_gene
+		/*Obtengo la sucursal activa*/
+		CALL giros:MISCobt_suc_act
+		IF (RETVAL < 0) THEN
+			hora = common:time_of_day
+			//gpb:PS10724
+			FPRINT common:csr_string_130,"\n\nNo se pudo obtener la Sucursal Activa. Fecha: %e Hora: %e ",fecha,hora
+			RETURN (-2)
+		END IF 
+		IF ((post:adt_sucur_dia_dump == common:system_date && siaf:adt_sucur_cierre_dia == "S") || \
+			tlr:bus_date != common:system_date || \
+			((post:adt_sucur_dia_dump == common:system_date) && common:time_of_day > 230000)) THEN
+			/*Cerró la sucursal ==> termina el proceso batch en forma Normal*/
+			///*Y si no cerro tambien termina el proceso a las 23:00:00
+			hora = common:time_of_day
+			//gpb:PS10724
+			FPRINT common:csr_string "\n\nFinaliza el proceso por Cierre de Día o Fecha no Correspondiente. Fecha: %e Hora: %e",fecha,hora
+			CALL MISCgeneraLog(common:csr_string,"AMBOS","N")
+			BREAK
+		END IF 
+		CALL giros:CDSdatgralsuc_imp
+		IF (RETVAL == 0) THEN
+			IF (giros:adt_dgralsuc_tout.NUMCHARS == 0 || giros:adt_dgralsuc_tout == 0)
+				hcomm:timeout = 5
+			ELSE
+				hcomm:timeout = giros:adt_dgralsuc_tout
+			END IF
+			IF (giros:adt_dgralsuc_caidas > 0) THEN
+				//Transformo los minutos de la tabla en milisegundos
+				//stand_by = (giros:adt_dgralsuc_caidas * 60) * 1000
+				//gpb:PS10720 Transformo los minutos de la tabla en segundos
+				stand_by = giros:adt_dgralsuc_caidas * 60
+			ELSE 
+				hora = common:time_of_day
+				//gpb:PS10724
+				FPRINT common:csr_string_130,"\nNO se encontro el parametro de stand by en la Tabla de Datos Generales. Fecha: %e Hora: %e ",fecha,hora
+				RETURN (-2)
+			END IF 
+		ELSE 
+			hora = common:time_of_day
+			//gpb:PS10724
+			FPRINT common:csr_string_130,"\nNO se encontro la Sucursal en la Tabla de Datos Grales. Fecha: %e Hora: %e ",fecha,hora
+			RETURN (-2)
+		END IF 
+		
+		;PROCESO DE RECUPERACION DE CAIDAS EN VUELO
+		CALL OFBbatch_CaidasVuelo(fecha)
+		
+		;PROCESO ENVIO DE CHEQUES
+		hora = common:time_of_day
+		CALL OFBbatch_EnvioCheq(fecha,hora)
+        
+		;PROCESO DE CANCELACION DE GIROS CONTRAREEMBOLSO
+		hora = common:time_of_day
+		CALL OFBbatch_GiroCREM(fecha,hora)
+        
+    /*50596 - PROCESO ACTUALIZACION  PIEZAS CON CAPTURA DE IMAGEN
+		//crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+				CALL siaf:MISCSuc_CapImagen  
+    		//crq32349-NI50606  - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+    		//siempre y cuando la sucursal esta habilitada para capturar imagen
+   			//Aunque no este asignando DESTINO se realiza igual esta consulta para que no se acumulen piezas con estado F.
+			 if (RETVAL != -2) THEN // SI no se pudo realizar la consulta anteriormente o dio un error nuevo no se continua con el proceso.
+ 		 			CALL post:CDSConsulta_Imagen("T")
+  		ENDIF*/
+    
+		//50295 - PROCESO ACTUALIZACION ADELANTO MONETARIO
+		hora = common:time_of_day
+		CALL OFBbatch_AdelMon(fecha,hora)
+        
+		//50295 - PROCESO ACTUALIZACION FACTURA DE EMISION DE LISTA DE GIRO CLIENTE MEDIO
+		hora = common:time_of_day
+		CALL OFBbatch_FactLGiro(fecha,hora)
+            
+		//50361 - PROCESO INGRESO/CANCELACION DE CUPON (CCT)
+		hora = common:time_of_day
+		CALL OFBbatch_CCT(fecha,hora)
+        
+        //50479 - PROCESO CAMBIO DE ESTADO DE PIEZAS PED
+        hora = common:time_of_day
+        CALL OFBbatch_estadoPED(fecha,hora)
+        
+        //50479 - PROCESO REGISTRO COMPROBANTES DE NOTA DE CREDITO Y FACTURA PED
+        hora = common:time_of_day
+        CALL OFBbatch_CompPED(fecha,hora)
+        
+        //gpb:Actualiza el status = 001 para aquellos registros 
+        //    de la tabla estadoPED cuyo estado = EEO  y el status = 100
+        //    y que posean registro en la tabla CompPED cuyo estado = FSO y el status = 003
+        //    Para que en la proxima iteracion del RTBatch impacte la entrega
+        CALL post:OFBcontrol_estadoPED
+        
+        /**********************************************************************
+		DEJAR SIEMPRE EL PROCESO DE SIMON AL FINAL PORQUE POR ALGUNA RAZON MAXI 
+		ESTA SETEANDO Y RESETEANDO EL FLAG DE RT_BATCH
+		**********************************************************************/
+		;PROCESO ENVIO SIMON
+		//gpb:PS10724
+		hora = common:time_of_day
+		FPRINT common:csr_string,"\n\n<<Inicio proceso de rendición masiva de operativos Fecha: %e Hora: %e >>",fecha,hora
+		CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+		CALL batch:MISCgeneraLog("\n----------------------------------------------------","INFO","N")
+		CALL post:OFBproc_batch_simon
+		//gpb:PS10724
+		FPRINT common:csr_string,"\n\n<<Fin Proceso de rendición masiva de operativos. Fecha: %e Hora: %e >>\n",fecha,hora
+		CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+		CALL MISCgeneraLog("\n*****************************************************************\n","INFO","N")
+		;FIN PROCESO ENVIO SIMON
+        
+		CDS DISCONNECT "main"
+		CDS DISCONNECT "gene"
+
+		IF (lib:err_retval == -1)
+			//Sale del loop y luego del rt por problemas en la act. de tablas
+			BREAK
+		END IF 
+
+		//Pongo a dormir el rt de acuerdo a los minutos ingresados por parámetro
+		//gpb:PS10724
+		FPRINT common:csr_string,"\n\n(%e %e) - RTbatch durmiendo...",fecha,hora
+		CALL MISCgeneraLog(common:csr_string,"INFO","N")
+      
+		//gpb:PS10720 Hago un WHILE con el NAP porque
+		//por algun motivo se cuelga y lo ultimo que queda registrado
+		//en el log es "RTbatch durmiendo..."
+		WHILE (stand_by > 0)
+			NAP 1000
+			stand_by = stand_by - 1
+		END WHILE
+		hora = common:time_of_day
+		//gpb:PS10724
+		FPRINT common:csr_string,"\n\n<< Fin Proceso de Recuperacion Parcial de Caidas en Vuelo. Fecha: %e Hora: %e >>\n",fecha,hora
+		CALL MISCgeneraLog(common:csr_string,"INFO","N")
+		CALL MISCgeneraLog("\n*****************************************************************\n","INFO","N")
+    LOOP
+    CALL MISCgeneraLog("\n\n<<< FIN LOG DEL PROCESO RT PARA RECUPERACION DE CAIDAS EN VUEL0 (modo: BATCH) >>>","INFO","N")
+    CALL MISCgeneraLog("\n\n<<< FIN LOG DE ERRORS DEL PROCESO DE RECUPERACION DE CAIDAS EN VUEL0 (modo: BATCH) >>>","ERROR","N")
+    fecha = common:system_date
+    hora = common:time_of_day
+    FPRINT common:csr_string "\n<< DIA: %e  HORA: %e >>\n",fecha,hora
+    CALL MISCgeneraLog(common:csr_string,"AMBOS","N")
+    CALL MISCgeneraLog("#############################################################################\n","AMBOS","N")
+END SUB 
+
+/*******/

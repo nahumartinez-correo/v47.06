@@ -1,0 +1,155 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBtrx_rep_giros
+* NOMBRE
+*   OFB:giros:OFBtrx_rep_giros
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBtrx_rep_giros(LCodigo,LTipoReporte)
+    local varl_codigo 	     like siaf:codigo_siaf
+    local varl_Apellido      like giros:ApellidoEmis_inter
+    local varl_Nombre  	     like giros:NombreEmi_inter
+    local varl_ImporteGiro   like giros:ImporteNeto
+    local varl_ImporteCargos like giros:ImporteNeto
+    local varl_Usuario	     like tlr:jnl_op_login_id
+    local varl_giro 	     like common:csr_string
+    local varl_tipo          like giros:Serie_fld
+    local varl_estado        like common:csr_string
+    local varl_visual	     like giros:Serie_fld
+    local varl_tipogiro      like giros:tipo_giro_fld
+    local varl_observacion   like common:csr_string
+
+    clearfield siaf:nota_1
+
+    // TIPO REPORTE
+    fprint varl_tipo,"%s",LTipoReporte
+
+    // CODIGO TRANSACCION
+    fprint varl_codigo,"%s",LCodigo
+
+    // ESTADO TRANSACCION
+    if (tlr:jnl_sequence_corr == 0)
+	    varl_estado = "ACEP"
+    else
+	    varl_estado = "TRXR"
+    end if
+
+    if (giros:EstadoGiro_fld == "CA")
+	    varl_estado = "TXRE"
+    end if
+
+    if (tlr:jnl_status == HOST_REJECTED)
+	    varl_estado = "TXRE"
+    end if
+
+    // USUARIO MOSAIC
+    fprint varl_Usuario,"%s",tlr:jnl_op_login_id
+
+    // TIPO DE GIRO
+    fprint varl_tipogiro,"%s",giros:tipo_giro_fld
+
+    // CONTROL POR ULTIMO ESTADO
+    varl_visual = "N"
+
+    // ID. GIROS/TRANSFERENCIA -- EMISOR
+    if (giros:flia_giro_fld == "I")
+	    fprint varl_giro,"%s",giros:cons_nro_ctrol
+	    if (varl_tipo == DSC_EMI)
+		    fprint varl_Apellido,"%s",giros:ApellidoEmis_inter
+		    fprint varl_Nombre,"%s",giros:NombreEmi_inter
+	    else
+		    fprint varl_Apellido,"%s",giros:ApellidoBenef_inter
+		    fprint varl_Nombre,"%s",giros:NombreBenef_inter
+	    end if
+	    varl_ImporteGiro = giros:ImporteNeto
+    else
+	    if (varl_tipo == DSC_EMI)
+		    fprint varl_Apellido,"%s",giros:ApellidoEmis_fld
+		    fprint varl_Nombre,"%s",giros:NombreEmi_fld	
+	    else
+		    fprint varl_Apellido,"%s",giros:ApellidoBenef_fld
+		    fprint varl_Nombre,"%s",giros:NombreBenef_fld
+	    end if
+
+	    varl_ImporteGiro = giros:ImporteNeto
+
+	    if (NroGiro_fld.numchars != 0)
+		    fprint giros:NroGiro_fld,"%06.6s",giros:NroGiro_fld
+	    end if
+
+	    if (giros:flia_giro_fld == "P" || giros:flia_giro_fld == "T")
+		    fprint varl_giro,"%1.1s-%6.6s-%1.1s",\
+		    giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld
+	    else
+		    if (varl_tipo == DSC_EMI)
+			    fprint varl_giro,"%s",giros:clave_hdr_giros
+		    else
+			    fprint varl_giro,"%s",giros:cons_nro_ctrol
+		    end if
+	    end if
+    end if
+
+    // TOTAL A COBRAR 
+    if (varl_tipo == DSC_EMI)
+        if (LCodigo == 70140 || LCodigo == 70141)
+            //cgw: emision giros duplicados
+            varl_ImporteCargos = giros:imp_servicio_fld
+        else
+	        varl_ImporteCargos = giros:ImporteTotal_fld - varl_ImporteGiro
+ 	    end if    
+    else
+	    // Visual : N. Luego verificar ultimo estado por numero de giro.
+	    clearfield varl_ImporteCargos 
+    end if
+
+    giros:Importe_fld = varl_ImporteCargos
+	if (varl_Nombre == ".") then
+		clearfield varl_Nombre
+	end if
+    fprint siaf:nota_1,\
+    "%5.5s %4.4s%1s%-55.55s %-25.25s %12.12s",\
+    varl_codigo,varl_estado,varl_visual,varl_Apellido,varl_Nombre,varl_giro 
+
+    fprint siaf:nota_1,\
+    "%s  %12.12s %12e%14.14s %e %e %e %e",siaf:nota_1,\
+    varl_ImporteGiro,giros:Importe_fld,\
+    varl_Usuario,tlr:jnl_date,tlr:jnl_time,giros:dia_viaje,giros:hora_viaje
+
+    if (varl_tipo == DSC_PAG)
+	    fprint siaf:nota_1,"%s %1.1s",siaf:nota_1,varl_tipogiro
+    end if
+
+    //cgw: Se agrega observacion al picklist que tendra el nro.giro duplicado,
+    //     o por el que sera duplicado en caso de corresponder.
+    if (varl_tipo == DSC_EMI)
+        fprint siaf:nota_1,"%s %25.25s",siaf:nota_1,giros:observ_dupli_gir
+    else    
+        clearfield giros:observ_dupli_gir
+    end if
+        
+    if (varl_estado != "TRXR")
+	    // No incluir transacciones reversadas.
+	    call CSR:f_saaddpl(DSC:giros:pick_listado,siaf:nota_1)
+    end if
+
+    clearfield giros:EstadoGiro_fld
+    clearfield varl_visual
+    clearfield giros:dia_viaje
+    clearfield giros:hora_viaje
+    clearfield varl_tipogiro
+
+END SUB
+
+/*******/

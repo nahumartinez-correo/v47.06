@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:hcomm:RCVEheaderV105
+* NOMBRE
+*   OFB:hcomm:RCVEheaderV105
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "ONACOMMRCV.OFB.h"
+
+SUB hcomm:RCVEheaderV105
+	local l_MessageId like hcomm:MessageId
+	local l_jnl_date like tlr:jnl_date
+	local l_jnl_time like tlr:jnl_time
+	local l_jnl_sequence like tlr:jnl_sequence
+
+	let msg = msgbegin + 0
+	/* Message Id */
+	comm get l_MessageId from msg type ASCII length 1
+	if (siaf:codigo_siaf == 6820) then 
+/*		fgb: comento xq me parece que todos tienen que leer este encabezado...
+		select  (post:adt_tran_sf1_codigo)
+		 	case 6660 
+		 	case 6680
+		 	case 6700
+		 	case 6870
+*/
+				/* Terminal */
+				let msg = msg + 6
+				/* Cajero */
+				let msg = msg + 6
+				/* Fecha directa */
+				comm get l_jnl_date from msg type ASCII length 8
+				/* Hora Directa */
+				comm get l_jnl_time from msg type ASCII length 6
+			    /* Secuencia Directa */
+				comm get l_jnl_sequence from msg type ASCII length 4
+				/* Marca */
+				let msg = msg + 4
+				/* Algoritmo */
+				let msg = msg + 1
+				/* Version */
+				let msg = msg + 1
+/*				break
+			case else
+		end select 
+*/
+	endif
+	
+    /* Result Code */
+	comm get hcomm:ResultCode from msg type ASCII length 4
+	/* Nivel de gravedad */
+	comm get hcomm:Gravedad from msg type ASCII length 2
+
+	if ((l_MessageId != hcomm:MessageId) || \
+	(l_jnl_date != hcomm:send_date) || \
+	(l_jnl_time != hcomm:send_time) || \
+	(l_jnl_sequence != hcomm:send_sequence)) then
+		hcomm:tran_status = 112
+		move dsc:hcomm:host_rej to lib:stat_message
+		refresh lib:stat_message
+	else
+		if (l_MessageId == "S") then
+			// La raspuesta la manda el TB, entonces se rechaza cuando es un problema que no tiene solución (ej: 105)
+			select (hcomm:ResultCode)
+				case 105 ; Mensaje no pudo ser ruteado correctamente al Autorizador 
+		      	         ;Trx rechazada status 100
+		       		hcomm:tran_status = HOST_REJECTED
+					break
+				case else ; Problemas de com. entre TB y autorizador (timeout, autorizador caido, etc)
+						  ; Trx Cancelada por TB, no por Autorizador.
+					hcomm:tran_status = SESSION_LOST
+					break
+			end select
+			move dsc:hcomm:host_rej to lib:stat_message						
+		else
+			if (Gravedad != 0) then	/* Transaccion rechazada	*/
+				hcomm:tran_status = HOST_REJECTED
+				move dsc:hcomm:host_rej to lib:stat_message
+				refresh lib:stat_message
+				/*CALL post:MISCborro_transac ?????*/
+			else							/* Transaccion aceptada		*/
+				hcomm:tran_status = HOST_ACCEPTED
+			endif
+		endif
+	endif
+	if (ResultCode != 0 && Gravedad != 0)
+		call hcomm:CDSerrorComm(ResultCode)
+	endif
+	if (hcomm:tran_status != HOST_ACCEPTED) && (post:adt_tran_sf1_codigo != 6680) then
+		call post:MISCrechazo_transac
+	endif
+
+END SUB
+
+/*******/

@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:siaf:PRES_6600
+* NOMBRE
+*   OFB:siaf:PRES_6600
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafPRES.h"
+
+SUB siaf:PRES_6600
+    nombre_transac.HIGHLITE = 0
+
+/* MLD 16/07/1998 por problemas cuando se trabaja en modo presupuesto
+hago una lista aparte de transacciones de ingresos y egresos varios.
+Si la transacción se hace desde cajas y se confirma la sesión desde
+merchandising journaliza mal el código_siaf */
+
+;    IF (drv:dt_app == 2) THEN
+      codigo_siaf = 6600
+;    ELSE
+;      IF (drv:dt_app == 3) THEN
+;        codigo_siaf = 6610
+;        drv:INDspc_rtn[0] = LST:TOTS6610
+;      END IF
+;    END IF
+    restr_otra_casa = "N"
+    linea_validacion = "S"
+    exhibe_pantalla = "S"
+    imprime_comprobante = "D"
+
+    /*MFM - Borro de memoria los datos del picklist*/
+    CALL csr:f_sadroppl "MOTIVOS HAB"
+    
+    /*MFM - Genero picklist dinámico con motivos habilitados*/
+    ;CALL MISCMotivos_Hab(6600)
+    INDhost_snd_fv = drv:INDspc_rtn[6]
+
+   /* El importe se va a ingresar en el campo importe2, luego se calculará
+      la sobretasa de iva y se incrementará en importe.
+      Por eso el campo queda protegido */
+
+    /* MLD 21/12/1998 Se saca el calculo de la sobretasa de iva
+    protfield post:SobreTasaIva
+    protfield importe
+    clearfield post:SobreTasaIva */
+    /* */
+    CALL PRESfecha_hora
+    IF (RETVAL < 0) THEN
+      RETURN (-1)
+    END IF
+    
+    /*MLD: Armo el picklist acá porque ya tengo el tipo de cliente*/
+    if (!testflag(tlr:tran_flags,correction))
+    	CALL MISCMotivos_Hab(6600)
+    end if
+
+    ;MOVE "EGRESOS VARIOS" TO DAUtitulo1
+    MOVE siaf:nombre_transac TO DAUtitulo1
+
+    post:INDPresuD_Dat = OFB:CDSTRAN6600_append
+    CALL post:MISCLeo_PresDet
+
+   	/*Limpio el campo que contiene el Grupo de IVA del cliente, ya que se saca de la PresuAct
+	y si no hay una Sesión debe estar vacío - Gabriel Falciola*/
+	if (post:estado_presu == 1)
+		clearfield post:PresGrupoIva
+	end if
+	
+	DISABLECONTROL drv:PBcb3 
+	
+    CALL post:MISCprotege(LST:fld6600protege,LST:fld6600desprotege)
+    call post:MISCTranCap_MP
+
+    IF (post:estado_presu == 3 && adt_mot_cotiza == "S")
+    	UNPROTFIELD coti_moneda
+    	UNPROTFIELD imp_a_cotizar
+    	ENABLECONTROL drv:PBcb4    	
+    	PROTFIELD ImporteSinSello
+    ELSE 
+		PROTFIELD coti_moneda
+    	PROTFIELD imp_a_cotizar
+    	DISABLECONTROL drv:PBcb4
+    END IF
+
+    RETURN (RETVAL)
+END SUB
+
+/*******/

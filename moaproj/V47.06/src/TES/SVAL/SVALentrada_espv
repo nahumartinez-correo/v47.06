@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALentrada_espv
+* NOMBRE
+*   OFB:tes:SVALentrada_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrada_espv
+local superviso like tes:rend_sup
+local idx like siaf:i
+    
+    if (!testflag(tlr:tran_flags,correction))
+    	if (tes:adt_espv_orig.numchars == 0 || espv_vcod[0].numchars == 0)
+    		let common:csr_string = "FALTAN INGRESAR DATOS"
+    		errmsg common:errmsg_list,fld:common:csr_string
+    		return (-2)
+		end if
+	end if
+	
+    if (testflag(tlr:tran_flags,correction))
+	    call tes:CDSTesEspVMov_lock	
+        /* Esta lockeado */
+        if (retval < 0)
+            return (-2)
+        end if 
+    end if
+    
+    if (!testflag(tlr:tran_flags,correction))
+		popup tes:SCRNconfirma  
+		if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+	    	return (-2)
+		end if
+	end if
+	
+    call siaf:SVALnivel_sup
+    if (retval < 0)
+       return (-2)
+    end if
+	 // Guardo si fue supervisada para marcar las otras
+    superviso = rend_sup
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+		let rend_sup = "S"
+    else
+		let rend_sup = "N"
+    end if
+
+    if (!(testflag(tlr:tran_flags,correction))) THEN		
+		
+		//Me fijo si alguno no tiene la marca de aceptado.
+	    PasesRech_cant = 0
+	    idx = PL_GETITEM
+    	do
+        	call csr:myPickcontrol(dsc:PICPasesRech,common:csr_string,idx)
+        	if (retval < 0)
+	        	break
+	        end if
+
+			// Si se quiere rechazar
+			// verifico que el operador origen del pase no haya cerrado su caja
+    	    call tes:CDSchk_open_caj(tes:adt_espv_suc,tes:adt_espv_op_orig)
+            /* la caja esta cerrada o no se pudo leer el registro de rend.*/
+	        if (retval < 1 && (tes:adt_espv_codtran == 8860||tes:adt_espv_codtran == 8870 )) then
+	            let common:csr_string = "(L) IMPOSIBLE RECHAZAR EL PASE. OPERADOR ORIGEN CERRO CAJA"
+	            errmsg common:errmsg_list,fld:common:csr_string
+	            return (-2)
+	        end if
+	        idx = idx + 1
+	        PasesRech_cant = PasesRech_cant + 1
+		loop
+
+		if (PasesRech_cant != 0) //Hay algun pase que NO esta aceptado
+			//Grabo todos los que No esten aceptados
+			Call MISCgrabo_espv_rech
+		end if
+		//A partir de aca me quedan todos los pases que estan aceptados		
+		Call MISCgrabo_espv_acep        
+        
+        //let drv:INDspc_rtn[2] = ofb:TRANprint_cheques
+        clearfield drv:INDjnl_rtn
+		        
+    else  
+    	// (reversa)     
+        call tes:MISCmsg_entrada(adt_espv_marca_ing,adt_espv_es_rechazo)
+        if (retval < 0)
+            return (-2)
+        end if
+   	
+	    call MISCreverso_sesion
+	    if (retval < 0) then
+	        return (-2)
+	    end if
+        call MISCsend_msg_dest(tes:tmov_login_orig,"REVERSO SU PASE DE VALORES")
+    end if
+    
+    rend_sup = superviso
+    call post:MISCflecha_restore
+END SUB
+
+/*******/

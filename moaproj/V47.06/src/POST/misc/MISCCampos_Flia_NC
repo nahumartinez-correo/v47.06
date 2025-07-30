@@ -1,0 +1,574 @@
+/****o* Notas de Credito CM/OFB:post:MISCCampos_Flia_NC
+* NOMBRE
+*   OFB:post:MISCCampos_Flia_NC
+* DESCRIPCION
+*   Esta rutina calcula el importe sin iva de los productos que se están facturando en la sesion de Cliente Medio
+*   y setea los campos indirectos con las rutinas correspondientes segun la flia de Tx. 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCArmo_PresuDetNC
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCCampos_Flia_NC(FliaTran,tipo_presu)
+    /*Usar campos*/
+    local imp_aux like siaf:importe
+    
+    /*  Vienen informados */
+    ;post:bonificaCM = post:bonificaCM
+    ;post:Dcto_CliMed = post:Dcto_CliMed
+    
+    post:NIS_Imposicion = post:item_nis_impos
+
+    select (FliaTran)    
+    case "TES"
+	    //PS 9608 - Cuando se factura un telegrama con bloques adicionales y a continuacion
+	    //se factura una especie valoriza la auxiva queda mal grabada debido a que el campo
+	    //post:imp_bloques queda sucio. Lo que no sé es porque dicho campo se está usando
+	    // para el calculo del desglose del iva de la especie.....
+	    clearfield post:imp_bloques
+	    tes:adt_evaux_suc = op:op_branch_id
+	    if (drv:dt_app == 4) then  //Por tesoro    	        
+	        let tes:adt_evaux_op = op:op_tesoro_id
+	       	let tes:adt_evaux_tesoro = "S"
+	    else                
+	        let tes:adt_evaux_op = op:op_operator_id
+	        let tes:adt_evaux_tesoro = "N"
+	    endif            
+		
+		tes:espv_cod = post:item_especie
+		tes:espv_subcod = post:item_subespecie
+		siaf:cantidad = post:item_cantidad
+		
+	    tes:adt_evaux_prestran = 0
+	    tes:adt_evaux_envio    = "N"
+	    tes:adt_evaux_es_venta = "S"	                
+		tes:adt_evaux_codigo = tes:espv_cod
+
+	    /*Para traer la subespecie*/
+	    tes:adt_espv_cod    = tes:espv_cod        	    
+	    tes:adt_evaux_subcod   = tes:espv_subcod                
+	    tes:adt_espv_subcod   = tes:espv_subcod   
+	      	
+		clearfield tes:adt_espv_bonifCM
+	    CALL tes:CDSadt_esp_load
+	    if (retval < 0) then
+	    	ErrorPresu = TRUE
+	    end if
+	    tes:adt_evaux_cantidad = siaf:cantidad
+	    tes:adt_evaux_importe  = tes:adt_evaux_cantidad * tes:adt_espv_valor
+	    /*Cargo los campos para Ventas UP*/
+	    post:ImpServUP  = tes:adt_evaux_importe
+	    post:AliServUP  = tes:adt_espv_aliciva
+	    post:PreDForFis = tes:adt_espv_formfiscal
+	    siaf:adt_tran_fliatran = "TES"
+	    if (tipo_presu != PROFORMA)	
+			call tes:CDSauxesp_save_vta
+		end if
+
+	    siaf:importe     = tes:adt_evaux_importe
+	    tes:SimporteCM = siaf:importe
+	    siaf:cantidad    = tes:adt_evaux_cantidad
+	    post:PreDForFis = tes:adt_espv_formfiscal
+	    TasaIva = tes:adt_espv_aliciva
+	    CALL siaf:CDSadt_tran_load                                
+	   /* post:INDPresuD_Dat = OFB:tes:CDSTES99512_append                
+		tlr:INDtran_name   = LST:post:TRAN99512
+	    drv:INDcur_list    = LST:post:TRAN99512
+	    
+	    if (post:estado_presu == 1) then
+	    	//let drv:INDscr = SCR:SCRN99512
+	    	//drv:INDjnl_rtn = OFB:post:JNL99512
+    		drv:INDcur_tran    = LST:post:TRAN99512
+
+		end if*/
+		
+		/* Para cliente Interno dejo estos campos en blanco como
+		lo hacen las transacciones postales */
+	    //SC 50170
+	    CALL post:MISCdesglosaIva(siaf:importe,TasaIva,siaf:cantidad,0)
+	    if (!TESTFLAG(uso_int_flag,uso_interno)) then
+        	siaf:ImporteConIva = tes:adt_evaux_importe
+        	post:ImporteConIva = tes:adt_evaux_importe
+        end if
+        siaf:ImporteSinIva = post:ImporteSinIva
+        /* Para TR el campo post:TotalSinIva guarda el acumulado sin iva*/
+        if (post:estado_presu != 1) then
+        	post:TotalSinIva   = post:ImporteSinIva
+        end if
+        /* Para calcular el dto CM */
+        post:tarifa = ImpServUP
+	break
+	
+	case "CME"
+		post:cantidad = post:item_cantidad
+	    adt_prodvs_cod = post:item_prodvs_cod
+	    
+    	post:cantidad2 = post:cantidad
+        CALL post:CDSprodvs_load
+        if (retval < 0 ) then
+        	ErrorPresu = TRUE
+        end if
+ 
+		siaf:cantidad = post:cantidad2
+	    imp_aux = adt_prodvs_tarifa * post:cantidad2
+		siaf:importe = imp_aux
+
+	    siaf:adt_tran_codigo = siaf:codigo_siaf                              
+
+	    post:PreDForFis = post:adt_prodvs_formfisca
+	    TasaIva = post:adt_prodvs_aliciva
+	    // Obtengo El Numero de la Transaccion en el Presupuesto
+	    ;CALL CDSprox_PreDNroTrn                
+	   /* post:INDPresuD_Dat = OFB:post:CDSCME99512_append                
+	    tlr:INDtran_name   = LST:post:TRAN99512
+	    drv:INDcur_list    = LST:post:TRAN99512
+	    
+	    	    
+	    if (post:estado_presu == 1) then
+	    	//let drv:INDscr = SCR:SCRN99512
+	    	//drv:INDjnl_rtn = OFB:post:JNL99512
+    		//drv:INDspc_rtn[0] = LST:siaf:TOTS40002
+    		drv:INDcur_tran    = LST:post:TRAN99512
+		end if*/
+	    //SC 50170
+	    CALL post:MISCdesglosaIva(siaf:importe,TasaIva,siaf:cantidad,0)
+	   	siaf:ImporteConIva = imp_aux
+	    post:ImporteConIva = imp_aux
+        siaf:ImporteSinIva = post:ImporteSinIva
+        /* MLD En teclas rapidas post:TotalSinIva va acumulando el valor, por las
+        caidas*/
+        if (post:estado_presu != 1) then
+        	post:TotalSinIva   = post:ImporteSinIva
+        end if
+        post:ImpServUP  = siaf:importe
+        post:AliServUP  = post:adt_prodvs_aliciva
+        post:tran_original = "S"
+        /* Para calcular el dto CM */
+        post:tarifa = ImpServUP
+
+	break
+	case "CSV"
+
+		siaf:motivo = post:item_motivo
+		siaf:adt_mot_modulo = post:item_mod_motivo
+		siaf:adt_mot_submodulo = post:item_submod_motivo
+		siaf:importe = post:item_importe
+		siaf:nro_impre = post:item_comprob_motivo
+		
+		siaf:adt_mot_codigo = siaf:motivo
+		
+		call siaf:CDSadt_motiv_load
+		if (retval < 0 ) then
+			ErrorPresu = TRUE
+		end if
+			
+
+		if (siaf:adt_mot_serv.numchars != 0 || siaf:adt_mot_serv != "") then
+        	if (siaf:adt_mot_nis_dest == "N") then
+            	clearfield siaf:Nis_Destino
+	        else
+	        	/* Viene Informado */
+    			siaf:Nis_Destino = post:item_nis
+    		end if
+    	else
+    		clearfield siaf:Nis_Destino
+        end if
+		siaf:motivo_desc = siaf:adt_mot_desc
+		siaf:adt_mot_desc_tmp = siaf:adt_mot_desc
+		/* El importe sin sello es el importe de la transaccion */
+		siaf:ImporteSinSello = siaf:importe
+	    
+	    call siaf:MISCmotivo_sellados(siaf:ImporteSello,siaf:ImporteSinSello,siaf:Nis_Destino)
+  
+    	siaf:importe2 = siaf:ImporteSinSello
+    
+
+		;post:nro_impre = post:nro_impre   			
+		siaf:ImporteConIva = siaf:ImporteSinSello
+		post:ImporteConIva = siaf:ImporteSinSello
+		//PS9863
+		//siaf:ImporteSinIva = post:ImporteSinIva
+		post:PreDForFis = siaf:adt_mot_formfiscal
+
+		/* Calculo de Ventas UP */
+		post:AliServUP = siaf:adt_mot_aliciva  // Alicuota de IVA
+		post:ImpServUP = siaf:ImporteSinSello
+
+        //clearfield post:bonificaCM
+		//clearfield post:Dcto_CliMed
+		;post:bonificaCM = siaf:adt_mot_bonifCM
+	    
+	    ;siaf:codigo_siaf = cod
+	    siaf:adt_tran_codigo = siaf:codigo_siaf                              
+
+	    TasaIva = siaf:adt_mot_aliciva
+	    //SC 50170
+		CALL post:MISCdesglosaIva(siaf:ImporteSinSello,TasaIva,1,0)
+		//PS9863
+		siaf:ImporteSinIva = post:ImporteSinIva
+        /* MLD En teclas rapidas post:TotalSinIva va acumulando el valor, por las
+        caidas*/
+        if (post:estado_presu != 1) then
+        	post:TotalSinIva   = post:ImporteSinIva
+        end if
+        post:ImpServUP  = siaf:importe
+        post:AliServUP  = post:adt_prodvs_aliciva
+
+	   /* post:INDPresuD_Dat = OFB:siaf:CDSCSV99512_append  
+	    tlr:INDtran_name   = LST:post:TRAN99512
+	    drv:INDcur_list    = LST:post:TRAN99512    */
+	          
+	    /*select (siaf:codigo_siaf)
+	    	case 6800
+	    		tlr:INDtran_name   = LST:siaf:TRAN6800
+	    		drv:INDcur_list    = LST:siaf:TRAN6800
+	    	break
+	    	case 6600
+	    		tlr:INDtran_name   = LST:siaf:TRAN6600
+	    		drv:INDcur_list    = LST:siaf:TRAN6600
+	    	break
+	    	case 6810
+	    		tlr:INDtran_name   = LST:siaf:TRAN6810
+	    		drv:INDcur_list    = LST:siaf:TRAN6810
+	    	break
+	    	case 6610
+	    		tlr:INDtran_name   = LST:siaf:TRAN6610
+	    		drv:INDcur_list    = LST:siaf:TRAN6610
+	    	break
+		end select	*/
+        /* Para calcular el dto CM */
+        post:tarifa = ImpServUP
+		break
+	case "CSP"
+	case "CSE"
+		post:cantidad = post:item_cantidad
+		post:adt_serv_serv = siaf:codigo_siaf
+		post:tipo_produc = siaf:adt_tran_codprod
+		
+		/* Limpio los campos de las tx postales */
+		call post:MISCclr_fld_postales
+		
+		/* Carga los datos del servicio y de la tabla Corte op */
+		call post:PRESserv_gral
+		if (retval < 0) then
+			ErrorPresu = TRUE
+		end if
+
+		/* Cargo la apertura */
+		call post:PRESapert_gral
+		
+		/* Lo cargo con "E" */
+		post:cant_aux = post:cantidad
+	
+   		/* Limpio los bienes de Cambio */
+		clearfield cant_caja_prev
+		clearfield cant_cinta_prev
+		clearfield prod_serv
+		clearfield codesp_serv
+		clearfield subcod_serv
+		clearfield codesp_prod 
+		clearfield subcod_prod
+		clearfield cant_caja_desc
+		clearfield cant_cinta_desc
+		
+    	/*********************************************************/
+   		/* Por default asigno a Producto-CLiente el valor en 0.   */
+   		/*********************************************************/
+        post:prod_cli = "0000000000"
+        
+        IF (post:estado_presu == 1 || post:estado_presu == 2)
+    		PreDForFis = adt_serv_formfiscal
+    	END IF
+    	
+    	CALL MISCgru_corteop
+		/* MLD */
+	    /********************************************************/
+	    /* Si el Cliente no es Mayorista, le asigno al campo    */
+	    /* tarifa la tarifa básica para ese Servicio, siempre   */
+	    /* y cuando sea un Servicio Postal con alcance Nacional */
+	    /* ya que en los Postales Internacionales y Encomiendas */
+	    /* debo saber el destino para tarifar.		    */
+	    /********************************************************/
+		IF ((post:adt_serv_tipo == "PO" && post:adt_serv_alcance == "N") || \
+	        tipo_produc == 11251 || tipo_produc == 12511) THEN
+	        IF (tipo_produc != 11203) THEN
+		        IF (post:adt_serv_umstd != "PAG") THEN
+			        post:adt_tarif_desde = 0.001
+		        ELSE
+			        post:adt_tarif_desde = 1
+		        END IF
+		    end if
+		end if    	
+
+    	call post:CDScalc_tarif_trx
+    
+    	if (retval < 0) then
+    		ErrorPresu = TRUE
+    	end if
+    	
+	    IF (estado_presu != 4)
+	     	SELECT (post:adt_serv_umstd)
+	    	CASE "PAG"
+	        	post:hasta_fac = post:cantidad
+	            BREAK
+	        CASE "GMS"
+	            post:hasta_fac = post:peso_en_grs
+	            BREAK
+	        CASE "KGS"
+	        	post:hasta_fac = post:peso_en_kgs
+	            BREAK	
+	        END SELECT
+	        post:unidad_fac = unidad_fac_aux
+	    END IF
+
+		//Por si las transacciones postales tienen iva
+		CALL MISCsinIva_serv    
+    
+		/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+		call post:MISCSinIva_CSP
+
+		/*Calculo el importe del Iva*/
+		ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+
+		/*Cargo los vectores correspondientes para calcular Ingresos Brutos*/
+		CALL MISCgen_vec_iva
+    
+    	//alicuota del servicio
+    	AliServUP = adt_serv_aliciva 
+    	//importe con iva del servicio menos los opcionales(porque tienen iva propio)
+    	ImpServUP = tarifa + imp_bloques - descuento 
+    	
+    	post:cod_agrupacion = 0
+    	
+    	call post:SVALgral_formuCalc
+		post:cod_agrupacion = 0
+
+		
+		/*post:INDPresuD_Dat = OFB:CDSgral_append
+		tlr:INDtran_name   = LST:post:TRANgral
+	    drv:INDcur_list    = LST:post:TRANgral*/
+		
+		/*post:INDPresuD_Dat = OFB:CDSPOST99512_append
+		tlr:INDtran_name   = LST:post:TRAN99512
+	    drv:INDcur_list    = LST:post:TRAN99512
+    
+       	if (post:estado_presu == 1) then
+	    	//let drv:INDscr = SCR:post:SCRNgral
+	    	//drv:INDjnl_rtn = OFB:post:JNLgral
+    		//drv:INDspc_rtn[0] = LST:post:TOTS_GRAL
+    		//drv:INDcur_tran    = LST:post:TRANgral
+    		drv:INDcur_tran    = LST:post:TRAN99512
+		end if*/
+
+		break
+	case "CST"		
+		
+
+		/* Limpio los campos de las tx postales */
+		call post:MISCclr_fld_postales
+
+		clearfield tele:tele_tipo_serv
+		tele:tele_cantidad = "CANT. TELEGRAMAS:"
+	    tele:texto_pantalla = "CANT. PALABRAS:"		
+		call tele:MISClimpia_importes
+		
+		CALL CSR:cleararray tele:OpcInd_vec
+
+		post:cantidad = post:item_cantidad
+		post:adt_serv_serv = post:item_servicio
+		;post:tipo_produc = siaf:adt_tran_codprod
+
+		tele:tele_cant_palabras = post:item_cant_pal
+		;tele:tele_nro_telegrama = post:item_nro_tele
+		
+		/* Carga los datos del servicio y de la tabla Corte op */
+		;call post:PRESserv_gral
+    	cds select from dsc:post:adt_serv_table becomes dsc:post:adt_serv_context \
+      	where post:adt_serv_serv == post:adt_serv_serv 
+      	cds findfirst dsc:post:adt_serv_context NOLOCK
+      	if (cdsretval == 0)
+        	cds extract dsc:post:adt_serv_context ALL
+        else
+        	ErrorPresu = TRUE		
+		end if
+		cds endselect post:adt_serv_context
+		
+		tele:tele_tipo_serv = post:item_categoria
+		call tele:CDStipo_serv_load
+
+		/* Cargo la apertura */
+		call post:PRESapert_gral
+		
+		/* Lo cargo con "E" */
+		post:cant_aux = post:cantidad
+			
+    	/*********************************************************/
+   		/* Por default asigno a Producto-CLiente el valor en 0.   */
+   		/*********************************************************/
+        post:prod_cli = "0000000000"
+        ;tipo_produc2 = tipo_produc
+        
+    	PreDForFis = adt_serv_formfiscal
+    	
+    	;CALL MISCgru_corteop
+
+		//Call tele:MISCnemonic_sap
+		;siaf:importe_tot_serv = siaf:importe
+		
+		/* MLD */
+	    /********************************************************/
+	    /* Si el Cliente no es Mayorista, le asigno al campo    */
+	    /* tarifa la tarifa básica para ese Servicio, siempre   */
+	    /* y cuando sea un Servicio Postal con alcance Nacional */
+	    /* ya que en los Postales Internacionales y Encomiendas */
+	    /* debo saber el destino para tarifar.		    */
+	    /********************************************************/
+		IF ((post:adt_serv_tipo == "PO" && post:adt_serv_alcance == "N") || \
+	        tipo_produc == 11251 || tipo_produc == 12511) THEN
+	        IF (tipo_produc != 11203) THEN
+		        IF (post:adt_serv_umstd != "PAG") THEN
+			        post:adt_tarif_desde = 0.001
+		        ELSE
+			        post:adt_tarif_desde = 1
+		        END IF
+		    end if
+		end if
+    	call post:CDScalc_tarif_trx
+    	/* Si no pudo tarifar devuelve error */
+    	if (retval < 0 ) then
+    		ErrorPresu = TRUE
+    	end if
+    	
+    	Call tele:MISCnemonic_sap
+    	
+	    IF (estado_presu != 4)
+	     	SELECT (post:adt_serv_umstd)
+	    		CASE "PAG"
+	    		CASE "PAL"
+	        		post:hasta_fac = post:cantidad
+	            	BREAK
+	        	CASE "GMS"
+	            	post:hasta_fac = post:peso_en_grs
+	            	BREAK
+	        	CASE "KGS"
+	        		post:hasta_fac = post:peso_en_kgs
+	            	BREAK	
+	        END SELECT
+	        post:unidad_fac = post:unidad_fac_aux
+	    END IF
+		
+		//Por si las transacciones postales tienen iva
+		;CALL MISCsinIva_serv    
+    
+		/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+		call post:MISCSinIva_CSP
+
+		/*Calculo el importe del Iva*/
+		ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+
+		/*Cargo los vectores correspondientes para calcular Ingresos Brutos*/
+		;CALL post:MISCgen_vec_iva
+		call tele:MISCgen_vec_iva_tele
+    
+    	//alicuota del servicio
+    	post:AliServUP = post:adt_serv_aliciva 
+    	//importe con iva del servicio menos los opcionales(porque tienen iva propio)
+    	post:ImpServUP = post:tarifa + post:imp_bloques - post:descuento 
+
+		call post:SVALgral_formuCalc
+
+		/*post:INDPresuD_Dat = OFB:tele:CDSgral_append_tele
+		tlr:INDtran_name   = LST:tele:TRAN_PNTSIM
+	    drv:INDcur_list    = LST:tele:TRAN_PNTSIM*/
+		/*post:INDPresuD_Dat = OFB:tele:CDSCST99512_append
+		tlr:INDtran_name   = LST:post:TRAN99512
+	    drv:INDcur_list    = LST:post:TRAN99512
+    
+       	if (post:estado_presu == 1) then
+	    	//let drv:INDscr = SCR:tele:SCRNtele_gral
+	    	//drv:INDjnl_rtn = OFB:tele:JNLtele_gral
+    		//drv:INDspc_rtn[0] = LST:tele:TOTS_tele
+    		//drv:INDcur_tran    = LST:tele:TRAN_PNTSIM
+    		drv:INDcur_tran    = LST:post:TRAN99512
+    		
+		end if*/
+
+		break
+	case "VAP"
+		post:cantidad = post:item_cantidad
+		post:adt_serv_serv = siaf:codigo_siaf
+		post:tipo_produc = siaf:codigo_siaf
+		
+		//limpio campos
+		clearfield siaf:importe
+		clearfield post:tarifa
+		clearfield post:peso_en_kgs
+		CALL CSR:cleararray(fliatran_vec)
+		CALL CSR:cleararray(impciva_vec)
+		CALL CSR:cleararray(impsiva_vec)
+		
+    	//obtengo datos del servicio
+    	CDS SELECT FROM SERV_TAB BECOMES SERV_CTX WHERE \
+        	post:adt_serv_serv == post:tipo_produc
+    	CDS FINDFIRST SERV_CTX NOLOCK
+    	IF (CDSRETVAL == -801) THEN
+        	ErrorPresu = TRUE
+    	ELSE
+	     	CDS EXTRACT SERV_CTX ALL
+    	END IF
+    	CDS ENDSELECT SERV_CTX		
+		
+		
+		PreDForFis = adt_serv_formfiscal
+		
+		
+		//Calculo tarifa
+		post:tipo_produc = item_codigo_trx
+ 		post:tipo_produc2 = item_codigo_trx
+ 		post:cantidad = item_cantidad
+ 		post:destino = item_destino
+ 		post:aforo = item_aforo1 + item_aforo2 + item_aforo3
+		post:aforo1 = item_aforo1
+		post:aforo2 = item_aforo2
+		post:aforo3 = item_aforo3
+		post:adt_tarif_dest = post:destino
+		post:adt_tarif_desde = item_peso
+		IF (post:adt_serv_umstd == "KGS")
+			post:peso_en_kgs = item_peso
+		ELSE
+			post:peso_en_grs = item_peso * 1000
+		END IF
+		post:tipo_caja = item_tipo_caja
+		
+		CALL MISCtarif_VAP_CM
+    	if (retval < 0) then
+    		ErrorPresu = TRUE
+    	end if
+    	
+    	ImpSinIva_serv = ImporteSinIva
+		siaf:ImporteSinIva = ImporteSinIva
+		siaf:ImporteConIva = siaf:importe
+		ImporteIva = siaf:ImporteConIva - siaf:ImporteSinIva
+		post:AliServUP = post:adt_serv_aliciva
+		/* Campos Necesarios Para el reverso de operaciones */
+		post:ImporteConIvaNeto = siaf:ImporteConIva
+		post:ImporteSinIvaNeto = siaf:ImporteSinIva    	
+    	AliServUP = adt_serv_aliciva 
+   	   	
+		/*post:INDPresuD_Dat = OFB:CDS99008_append
+		tlr:INDtran_name   = LST:post:TRANservicioVAP
+	    drv:INDcur_list    = LST:post:TRANservicioVAP*/
+	    break	
+	end select
+END SUB
+
+/*******/

@@ -1,0 +1,84 @@
+/****o* Pago en Destino/OFB:post:PBagreg_30060
+* NOMBRE
+*   OFB:post:PBagreg_30060
+* DESCRIPCION
+*   Rutina que se ejecuta cuando se presiona el botón de Agregar de la pantalla de la TX
+*   de Entrega PED en Contingencia.
+*   Agrega los datos de la Pieza (los de pantalla) en un picklist, previa validacion de los mismos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRN30060
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBagreg_30060
+	LOCAL fecha LIKE entregaCont_date
+	
+	CALL csr:trimfield(Pieza)	
+	IF (Pieza.NUMCHARS == 0) THEN
+		UNPROTFIELD Pieza
+		MSGBOX "DEBE INGRESAR UNA PIEZA",0X00,"ERROR"
+		RETURN -2
+	END IF
+   
+	//PS 9937
+	CALL post:MISCes_TT(Pieza)
+	IF (RETVAL == 0) THEN
+		CALL MISCcant_digitos_tt(Pieza,"8")
+	END IF
+   
+	//Verifico si la pieza existe en el picklist
+	common:csr_string = post:Pieza
+	CALL csr:PickOp PICKOP_SEARCH DSC:aux_pic_total common:csr_string //Buscar en el picklist
+	IF (RETVAL < 0) THEN //Si No existe en el picklist busco si existe en la stockp
+		//controlo STOCKP
+		CALL post:CDSentrega_cont_ped
+		IF (RETVAL < 0)
+			MSGBOX "Pieza Inexistente en stockp.",0x00,"Error"
+			CALL post:PBnew_30060
+			RETURN (-2)
+		END IF
+    	
+		//Se valida la fecha de entrega antes de agragarla
+		CALL post:FVALentrContDate_ped
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+		
+		//Datos locales validos,tengo validar los datos del HOST
+		CALL OFBcons_piezaPED
+		IF (RETVAL < 0 || \
+			(post:estado_pieza_ped != "EED" && \
+			post:estado_pieza_ped != "PER" && \
+			post:estado_pieza_ped != "RHD" && \
+			post:estado_pieza_ped != "RHO")) THEN
+			MSGBOX "LA PIEZA NO ESTA EN CONDICIONES DE SER ENTREGADA.",0X00,"ERROR"
+			RETURN -2
+		END IF
+    	
+	  //Grabo la pieza en el picklist
+		FPRINT common:csr_string,"%-32.32s %-12.12s %e   %-8.8s %-8.8s %-10.10s", \
+			post:Pieza,post:CRimp_cobrado,entregaCont_date,stockp_fecha,entregaCont_date,stockp_ctaOM
+		
+		CALL csr:trimfield(common:csr_string)
+		CALL csr:f_saaddpl DSC:aux_pic_total common:csr_string			
+	ELSE
+		MSGBOX "LA PIEZA HA SIDO INGRESADA PREVIAMENTE.",0X00,"ERROR"
+	ENDIF
+
+	fecha = entregaCont_date
+	CALL post:PBnew_30060
+	entregaCont_date = fecha
+	REFRESH entregaCont_date
+	    
+END SUB
+
+/*******/

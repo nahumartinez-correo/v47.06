@@ -1,0 +1,117 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBcheckRT_Batch
+* NOMBRE
+*   OFB:post:OFBcheckRT_Batch
+* DESCRIPCION
+* Confronta la fecha en que se grabaron los cupones contra la fecha actual mas la ventana de tiempo del RT-Batch
+* de esta forma si existen cupones con tlr:jnl_status = 001 y tlr:jnl_date + tlr:jnl_time < system_date + time_of_day + ventana RT-Batch
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:OFBmonitoreo_cupon	
+* DOCUMENTACION
+*		https://jirats.atos.net.ar/jira/browse/AUT-2291
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBcheckRT_Batch
+	LOCAL l_cdsretval  LIKE lib:err_retval
+	LOCAL cant_reg LIKE tlr:jnl_branch
+	LOCAL l_last_batch LIKE common:csr_string
+	LOCAL l_tbatch LIKE giros:adt_dgralsuc_tbatch
+	LOCAL caracter LIKE common:csr_string
+	LOCAL caracter2 LIKE common:csr_string
+	LOCAL l_directorio LIKE common:csr_string
+	LOCAL l_cadena LIKE common:csr_string
+	LOCAL l_hora LIKE common:csr_string
+	LOCAL l_minuto LIKE common:csr_string
+	LOCAL l_segundo LIKE common:csr_string
+	LOCAL l_target LIKE lib:err_retval
+	
+	FPRINT l_directorio ,"%s%s", fld:common:dirTemporal,"Cupones.log"
+	FPRINT caracter "%s", "\\"
+	FPRINT caracter2 "%s", "/"
+	CALL post:MISCremplazaCaracter(l_directorio,caracter2,caracter)
+	
+	/******************************************************************/
+	/**** Obtengo la fecha y hora de la ultima corrida el RT-Batch ****/
+	/******************************************************************/
+	CDS ENDSELECT "DGralSuc_ctx"
+	
+	CDS SELECT giros:adt_dgralsuc_tbatch FROM "DGralSuc" BECOMES "DGralSuc_ctx" \
+		WHERE giros:adt_dgralsuc_cod == common:sucursal_activa
+
+	CDS FINDFIRST "DGralSuc_ctx" NOLOCK
+	LET l_cdsretval = CDSRETVAL
+	
+	IF (l_cdsretval != 0) THEN
+		CDS ENDSELECT "DGralSuc_ctx"
+		
+		CDS SELECT giros:adt_dgralsuc_tbatch FROM "DGralSuc" BECOMES "DGralSuc_ctx" \
+			WHERE giros:adt_dgralsuc_cod == "99999"
+			
+		CDS FINDFIRST "DGralSuc_ctx" NOLOCK
+		LET l_cdsretval = CDSRETVAL
+  END IF  
+  
+	IF (l_cdsretval == 0) THEN
+		CDS EXTRACT "DGralSuc_ctx" giros:adt_dgralsuc_tbatch INTO l_tbatch
+	END IF  
+	
+	//Paso la hora a segundos
+	l_hora = SUBSTR(common:time_of_day,0,2)
+	l_minuto = SUBSTR(common:time_of_day,2,2)
+	l_segundo = SUBSTR(common:time_of_day,4,2)
+	CALL CSR:f_hhmmss2seconds (l_hora,l_minuto, l_segundo,l_target)
+
+	//Le resto los segundos en que cicla el RT-Batch
+	//y vuelvo al formato hora
+	l_target = l_target - (l_tbatch * 60)
+	CALL CSR:f_seconds2hhmmss (l_target,l_hora,l_minuto,l_segundo)
+	FPRINT l_last_batch ,"%s%s%s",l_hora,l_minuto,l_segundo
+
+	CDS ENDSELECT "DGralSuc_ctx" 
+	
+	/********************************************************************************/
+	/**** Obtengo la cantidad de cupones disponibles no llevados por el RT-Batch ****/
+	/********************************************************************************/
+	CDS ENDSELECT DSC:post:cupon_ctx
+
+	CDS SELECT FROM DSC:post:cupon_table BECOMES DSC:post:cupon_ctx WHERE  \
+		tlr:jnl_branch == common:sucursal_activa && \
+		tlr:jnl_status == "001" && \
+		(tlr:jnl_date < common:system_date || tlr:jnl_date == common:system_date && tlr:jnl_time < l_last_batch) \
+		SORT "primary"
+
+	/* Si encontró al menos uno, me fijo cuántos son*/
+	cant_reg = 0
+	CDS AGGREGATE DSC:post:cupon_ctx COUNT tlr:jnl_branch AS cant_reg
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:post:cupon_ctx cant_reg
+	END IF	
+		
+	CDS FINDFIRST DSC:post:cupon_ctx LOCK
+	l_cdsretval = CDSRETVAL
+
+	//No esta fuencionando el RT-Batch
+	IF (l_cdsretval == 0) THEN		
+		CALL CSR:file_open(7,l_directorio,"a")
+		CALL CSR:file_putline(7,"-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+		FPRINT l_cadena,"Sucursal:%s Fecha:%e Hora:%e",common:sucursal_activa,common:system_date,common:time_of_day
+		CALL CSR:file_putline(7,l_cadena)
+		CALL CSR:file_putline(7,"-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------")
+	
+		FPRINT l_cadena,"RT-Batch no esta funcionando - Cupones Pendientes: %s",cant_reg
+		CALL CSR:file_putline(7,l_cadena)
+		CALL CSR:file_close(7)
+	END IF
+
+	CDS ENDSELECT DSC:post:cupon_ctx
+
+END SUB
+
+/*******/

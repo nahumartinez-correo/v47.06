@@ -1,0 +1,260 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCpasa_rchr_a_str
+* NOMBRE
+*   OFB:tes:MISCpasa_rchr_a_str
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCpasa_rchr_a_str
+    LOCAL idx           LIKE siaf:i
+    LOCAL lidx          LIKE siaf:i
+    LOCAL posicion      LIKE post:checkeo
+    LOCAL Lstring       LIKE common:csr_string_aux
+    LOCAL Lstring_reemp LIKE common:csr_string
+    LOCAL Lstring2      LIKE common:csr_string
+    LOCAL operador_ant  LIKE tes:teso_cheq_id
+    LOCAL operador      LIKE tes:teso_cheq_id
+    LOCAL fecha_reemp   LIKE siaf:f_emision
+    LOCAL moneda        LIKE post:cheqrech_moneda
+    LOCAL cuenta        LIKE post:cuenta
+    LOCAL banco         LIKE post:cod_banco
+    LOCAL nro_cheque    LIKE post:nro_cheque
+    LOCAL fecha_emision LIKE siaf:f_emision
+    LOCAL fecha_vto     LIKE siaf:f_emision
+    LOCAL importe       LIKE siaf:importe
+    LOCAL cant_val      LIKE post:cant_valores
+    LOCAL total_op      LIKE siaf:importe
+    LOCAL total_suc     LIKE siaf:importe
+    LOCAL cant_op       LIKE siaf:i
+    LOCAL l_seq         LIKE tlr:jnl_sequence
+    LOCAL login_id_ant  LIKE op:adt_login_id
+    LOCAL l_PresNro     LIKE post:PresNro
+    //cgw: Arma picklist con los Cheques Robados Reemplazados journalizados.
+    CALL tes:MISCarma_pic_rchr
+    IF (RETVAL < 0) THEN
+    	let siaf:indica_calcu = 0 // inicializa cant. de hojas
+    	siaf:lineas_cl = 0 // inicializo el conteo de lineas
+        CALL tes:MISCencab_cons_rchr
+        FPRINT common:csr_string "  "
+        call post:MISCwrt_general("H",0,"D")
+        common:csr_string = "NO HAY CHEQUES ROBADOS REEMPLAZADOS."
+        call post:MISCwrt_general("H",0,"D")
+        CALL CSR:f_sadroppl ("reemp_chqrob") //destruye picklist
+    	RETURN (-8)
+    END IF
+
+    let siaf:indica_calcu = 0 // inicializa cant. de hojas
+    siaf:i = 1 // inicializo el conteo de lineas
+    FLD:siaf:INDencab_lis = ofb:tes:MISCencab_cons_rchr
+    CALL tes:MISCencab_cons_rchr
+
+    total_op = 0 //totalizador importe de cheques reemplazados por operador.
+    total_suc = 0 //totalizador importe de cheques reemplazados en la sucursal.
+    cant_op = 0 //cantidad de operadores
+    CLEARFIELD operador_ant
+    CLEARFIELD login_id_ant
+    CLEARFIELD common:csr_string
+    idx = 0x8000
+    DO       
+       call csr:myPickcontrol("reemp_chqrob",Lstring,idx)
+       IF (RETVAL < 0) THEN
+	       BREAK
+       END IF
+       operador = substr(Lstring,0,5)
+       fecha_reemp = substr(Lstring,6,8)
+       l_seq = substr(Lstring,86,4)
+       l_PresNro = substr(Lstring,91,8)
+       moneda = substr(Lstring,15,2)
+       banco = substr(Lstring,18,3)
+       cuenta = substr(Lstring,22,20)
+       nro_cheque = substr(Lstring,43,8)
+       ; VERIFICO QUE EL REEMPLAZO NO HAYA SIDO CANCELADO
+       CDS ENDSELECT DSC:post:jnl_cheques_ctx
+       CDS SELECT FROM DSC:tlr:TABjnl becomes DSC:post:jnl_cheques_ctx WHERE \
+                    tlr:jnl_branch == common:sucursal_activa && \
+                    tlr:jnl_bus_date == fecha_reemp && \
+                    tlr:jnl_operator == operador && \
+                    tlr:jnl_sequence > l_seq && \
+                    tlr:jnl_status < 100 && \
+                    tlr:jnl_sequence_corr == "" && \
+                    siaf:codigo_siaf == 99245 && \
+                    post:cheqrech_moneda == moneda && \
+                    post:cod_banco == banco && \
+                    post:cuenta == cuenta && \
+                    post:nro_cheque == nro_cheque 
+                    
+       CDS FINDFIRST DSC:post:jnl_cheques_ctx NOLOCK
+       IF (CDSRETVAL != 0) THEN
+            IF (fecha_reemp == 0) THEN
+       	        CLEARFIELD fecha_reemp
+            END IF
+            fecha_emision = substr(Lstring,52,8)
+            IF (fecha_emision == 0) THEN
+            	   CLEARFIELD fecha_emision
+            END IF
+            fecha_vto = substr(Lstring,61,8)
+            IF (fecha_vto == 0) THEN
+            	   CLEARFIELD fecha_vto
+            END IF
+            importe = substr(Lstring,70,12)
+            cant_val = substr(Lstring,83,2)
+            
+            IF (operador != operador_ant) THEN
+            	IF (total_op > 0) THEN
+                    FPRINT common:csr_string "        ---------------------------------------------------------------------------------------------------------------------------------------------"
+                    call post:MISCwrt_general("H",0,"D")
+                    FPRINT common:csr_string "%s)",login_id_ant
+                    FPRINT common:csr_string "        TOTAL (Operador: %5s-%-14.14s                  %12.12e",operador_ant,common:csr_string,total_op
+                    call post:MISCwrt_general("H",0,"D")
+                    total_op = 0 //totalizador importe de cheques reemplazados por operador.
+                END IF       	   
+            	cant_op = cant_op + 1 //acumula cantidad operadores de la sucursal que realizaron reemplazo.
+            	operador_ant = operador
+            	
+                op:adt_operator_id = operador
+                op:adt_branch_id = common:sucursal_activa
+                CALL op:CDSadt_op_opids_load
+                IF (RETVAL < 0) THEN
+	                op:adt_operator_id = "DESCONOCIDO"
+                    CLEARFIELD login_id_ant
+                ELSE
+                login_id_ant = op:adt_login_id
+                END IF
+                
+                FPRINT common:csr_string " "
+	            call post:MISCwrt_general("H",0,"D")
+                FPRINT common:csr_string "Operador: %5s-%-s",operador,op:adt_login_id
+                call post:MISCwrt_general("H",0,"D")
+            END IF
+            
+            //Busco en la tabla MedPago para ver si se trata de un cheque.
+            CLEARFIELD post:adt_mp_adm
+            CLEARFIELD post:adt_mp_admban
+            post:adt_mp_cod = moneda
+            CALL post:CDSadt_MedPago_load
+            IF (RETVAL == 0) THEN
+                CDS ENDSELECT DSC:post:MEDIOS_CTX
+            END IF
+            IF (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") THEN /*es cheque*/
+                FPRINT common:csr_string " "
+	            call post:MISCwrt_general("H",0,"D")
+	            clearfield teso_cheq_tipo_doc
+	            clearfield teso_cheq_Cuit
+	            clearfield teso_cheq_rsoc
+	            clearfield teso_cheq_NisUP
+	            clearfield teso_cheq_tipo
+	            
+	            CALL tes:CDStesocheq_load(moneda,banco,cuenta,nro_cheque)
+                IF (RETVAL == -2) THEN
+                    CALL tes:CDSrsocCheqJnlLoad(l_PresNro)
+                END IF
+                
+                FPRINT common:csr_string " "
+	            call post:MISCwrt_general("H",0,"D")
+                FPRINT common:csr_string "EN FECHA %10.10e EL CHEQUE :",fecha_reemp
+                call post:MISCwrt_general("H",0,"D")
+                select (teso_cheq_tipo)
+                    case 1
+                        fprint Lstring2 "%-4.4s %-2.2s %-11.11s  %-50.50s", \
+                        "CORP",teso_cheq_tipo_doc,teso_cheq_Cuit,teso_cheq_rsoc
+                        break
+                    case 2
+                        fprint Lstring2 "%-4.4s %-2.2s %-11.11s  %-50.50s", \
+                        "EVEN",teso_cheq_tipo_doc,teso_cheq_Cuit,teso_cheq_rsoc
+                        break
+                    case 4
+                        fprint Lstring2 "%-4.4s    %-5.5s      %-50.50s", \
+                        "UP  ",teso_cheq_NisUP,teso_cheq_rsoc
+                        break
+                    case 5
+                        fprint Lstring2 "%-4.4s %-2.2s %-11.11s  %-50.50s", \
+                        "MEDI",teso_cheq_tipo_doc,teso_cheq_Cuit,teso_cheq_rsoc
+                        break
+                end select
+                
+	            FPRINT common:csr_string "%2s %3s %20.20s %8s %10.10e %10.10e %16.16e %71.71s",\
+	                   moneda,banco,cuenta,nro_cheque,fecha_emision,fecha_vto,importe,Lstring2
+	            call post:MISCwrt_general("H",0,"D")
+	            total_op = total_op + importe //acumula importe de cheques reemplazados por operador.
+	            total_suc = total_suc + importe //acumula importe de cheques reemplazados en la sucursal.
+                common:csr_string = "FUE REEMPLAZO POR:"
+                call post:MISCwrt_general("H",0,"D")
+            
+                //Reemplazo del cheque
+                posicion = 100 //posicion donde comienza reemplazo.
+                lidx = 0
+                WHILE (lidx < cant_val)
+                       Lstring_reemp = substr(Lstring,posicion,75)
+                       moneda = substr(Lstring_reemp,0,2)
+                       banco = substr(Lstring_reemp,3,3)
+                       cuenta = substr(Lstring_reemp,7,20)
+                       nro_cheque = substr(Lstring_reemp,28,8)
+                       fecha_emision = substr(Lstring_reemp,37,8)
+                       IF (fecha_emision == 0) THEN
+            	              CLEARFIELD fecha_emision
+                       END IF
+                       fecha_vto = substr(Lstring_reemp,46,8)
+                       IF (fecha_vto == 0) THEN
+            	              CLEARFIELD fecha_vto
+                       END IF
+                       importe = substr(Lstring_reemp,55,12)
+                       
+                       //Busco en la tabla MedPago para ver si se trata de un cheque.
+                       CLEARFIELD post:adt_mp_adm
+                       CLEARFIELD post:adt_mp_admban
+                       CLEARFIELD post:adt_mp_desc
+                       post:adt_mp_cod = moneda
+                       CALL post:CDSadt_MedPago_load
+                       IF (RETVAL == 0) THEN
+                           CDS ENDSELECT DSC:post:MEDIOS_CTX
+                       END IF
+                       IF (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") THEN /*es cheque*/
+                           FPRINT common:csr_string "%2s %3s %20.20s %8s %10.10e %10.10e %16.16e",\
+	                          moneda,banco,cuenta,nro_cheque,fecha_emision,fecha_vto,importe
+	                   ELSE
+	                       FPRINT common:csr_string "%2s %-30.30s                              %12.12e",\
+	                       moneda,post:adt_mp_desc,importe
+	                   END IF           
+	                   call post:MISCwrt_general("H",0,"D")
+            
+                       posicion = posicion + 68 //proxima posicion donde comienza reemplazo.
+                       lidx = lidx + 1
+                END WHILE
+            END IF
+       END IF
+       CDS ENDSELECT DSC:post:jnl_cheques_ctx
+       idx = idx + 1
+    LOOP
+
+    IF (total_op > 0) THEN
+        FPRINT common:csr_string "        ---------------------------------------------------------------------------------------------------------------------------------------------"
+        call post:MISCwrt_general("H",0,"D")
+        FPRINT common:csr_string "%s)",login_id_ant
+        FPRINT common:csr_string "        TOTAL (Operador: %5s-%-14.14s                  %12.12e",operador_ant,common:csr_string,total_op
+        call post:MISCwrt_general("H",0,"D")
+        IF (cant_op > 1) THEN
+            FPRINT common:csr_string "  "
+            call post:MISCwrt_general("H",0,"D")
+            FPRINT common:csr_string "        TOTAL SUCURSAL                                           %12.12e",total_suc
+            call post:MISCwrt_general("H",0,"D")
+        ELSE
+        END IF
+    END IF
+
+    CALL CSR:f_sadroppl ("reemp_chqrob") //destruye picklist
+    
+END SUB
+
+/*******/

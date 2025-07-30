@@ -1,0 +1,78 @@
+/****o* Adelantos/OFB:post:MISCagregTrnAntCM
+* NOMBRE
+*   OFB:post:MISCagregTrnAntCM
+* DESCRIPCION
+*   Esta rutina graba en la PresuDet la transacción de consumo de adelanto y
+*   actualiza SOLO la PresuPag.
+*   Actualiza lo consumido de los adelantos utilizados para luego enviarlos al switch (tabla AdelCM)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCconsumo_anticipo, OFB:post:MISCRemito_Item
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+/*SOLICITUD 50105*/
+SUB post:MISCagregTrnAntCM
+/*MFM - Esta rutina graba en la PresuDet la transacción de consumo de adelanto y
+actualiza SOLO la PresuPag*/
+	if (!post:OperacionAut && !post:OperacionCob)
+		siaf:importe = post:Total_importe
+	end if
+	siaf:codigo_siaf = 99450
+	siaf:moneda = "99"
+	let siaf:adt_tran_codigo = siaf:codigo_siaf
+	call siaf:CDSadt_tran_load
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	
+	post:imp_d = 0
+	monedaNC = siaf:moneda
+	call MISCActMedPago
+	
+	if (!post:OperacionAut && !post:OperacionCob) then	
+		Total_importe = 0 //Total_importe - imp_aux
+		Refresh Total_importe
+	end if
+	//Actualizo el Total_importe en la PresuAct
+    //call post:CDSadt_presuact_save
+    call plataf:CDSpreact_upd_Timp(post:Total_importe)	
+	
+	call post:CDSagregTrnAntCM
+	
+	; Actualizo lo consumido de los adelantos utilizados para luego enviarlos al switch
+	if (!post:OperacionAut && !post:OperacionCob) then
+		call post:CDSabmAdelCM("M", siaf:importe, 0, CM_CSIM)
+	endif
+	;Solo se puede usar el adelanto cuando estoy en operacion de cobranza. cuando estoy
+	;en facturacion de comprobantes pendientes no se puede usar el adelanto.
+	if (post:OperacionCob) then
+		;en la cobranza de facturas solas, el campo anticipo_CM está vacío.
+		if (post:anticipo_CM.numchars == 0) then
+			post:anticipo_CM = siaf:importe
+		endif
+		if (AnticipoRemito) then
+			post:anticipo_CM = post:anticipo_CM - post:anticipo_rem_CM
+			clearfield post:anticipo_rem_CM
+			call post:CDSpresu_imp_remito
+		endif
+		
+		if (ConsumoAnticipo && post:anticipo_CM > 0) then
+			call post:CDSabmAdelCM("M", post:anticipo_CM, 0, CM_CSIM)
+		endif
+	endif
+	
+	if (!post:OperacionAut && !post:OperacionCob) then
+		//Actualizo en la Presu el saldo que queda de anticipo	
+		saldoAnticipo_aux = saldoAnticipo_CM - siaf:importe
+		CALL post:CDSpresu_modalidadCM
+	end if	
+END SUB
+
+/*******/

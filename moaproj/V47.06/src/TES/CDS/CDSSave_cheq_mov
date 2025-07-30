@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSSave_cheq_mov
+* NOMBRE
+*   OFB:tes:CDSSave_cheq_mov
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSSave_cheq_mov
+	LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+    LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+    LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+    LOCAL mone          LIKE siaf:cant
+    LOCAL loc_scr       LIKE drv:INDscr
+
+    loc_jnl_rtn   = drv:INDjnl_rtn
+    loc_tran_name = tlr:jnl_tran_name
+    loc_mnemonic  = tlr:tran_mnemonic
+    loc_nom_tran  = siaf:nombre_transac
+    loc_scr       = drv:INDscr    
+ 
+    if (drv:dt_app == 4)
+        siaf:codigo_siaf = 8906  /*entrada cheque a tesoro*/
+    else
+        siaf:codigo_siaf = 8926  /*entrada cheque a caja*/
+    end if
+   
+    call siaf:PRESfecha_hora
+
+    
+    if (drv:dt_app == 4)
+    	/* Grabo los Cheques acreditados */
+    	CDS select from dsc:CheqMov_tbl becomes dsc:CheqMov_ctx where \
+    	tes:chmov_suc_id       == common:sucursal_activa && \
+    	tes:chmov_fecha        != common:system_date     && \
+    	tes:chmov_pase_tesoro == "S"					 && \
+    	((tes:chmov_op_id_orig   == op:op_operator_id      && \
+    	(tes:chmov_marca_ing == "" || tes:chmov_marca_ing == "E")) || \
+		(tes:chmov_login_dest == op:op_login_id && tes:chmov_marca_ing == "S"))
+		
+    	
+    else
+        if (op:op_tesoro == "S")
+    	    // Si soy tesorero, reingreso todos los pases hechos desde el tesoro
+        	CDS select from dsc:CheqMov_tbl becomes dsc:CheqMov_ctx where \
+        	tes:chmov_suc_id       == common:sucursal_activa && \
+        	tes:chmov_fecha        != common:system_date     && \
+        	tes:chmov_pase_tesoro == "N" && \
+        	((tes:chmov_op_id_orig   == op:op_operator_id      && \
+        	(tes:chmov_marca_ing   == "" || tes:chmov_marca_ing == "E")) || \
+        	(tes:chmov_login_dest == op:op_login_id && tes:chmov_marca_ing == "S"))
+        else
+    	    // Si no soy tesorero, reingreso todos los pases hechos o no desde caja
+        	CDS select from dsc:CheqMov_tbl becomes dsc:CheqMov_ctx where \
+        	tes:chmov_suc_id       == common:sucursal_activa && \
+        	tes:chmov_fecha        != common:system_date     && \
+        	((tes:chmov_op_id_orig   == op:op_operator_id      && \
+        	(tes:chmov_marca_ing   == "" || tes:chmov_marca_ing == "E")) || \
+        	(tes:chmov_login_dest == op:op_login_id && tes:chmov_marca_ing == "S"))
+        end if
+    end if        	
+	    
+	    
+	cds findfirst dsc:CheqMov_ctx nolock
+	let lib:err_retval = cdsretval
+	do
+		if (lib:err_retval < 0)
+			break
+		end if
+		cds extract dsc:CheqMov_ctx all
+        
+        post:importe_origen = chmov_importe
+        
+        let post:adt_mp_cod = tes:chmov_moneda
+        let siaf:moneda = tes:chmov_moneda
+        let tes:es_tesoro = "S"
+        let siaf:continua_transaccion = "S"
+        call post:CDSadt_MedPago_load
+        let post:medio_pago_desc = post:adt_mp_desc    
+        call post:MISCconvierto_coti(post:importe_origen)
+		
+		clearfield siaf:cod_banco
+		clearfield siaf:cheqcuenta
+		clearfield siaf:nro_cupcheq
+		clearfield post:codigo_interno
+		
+	    //let drv:INDscr = SCR:tes:SCRNentrada
+        let drv:INDscr = scr:tes:SCRNrev_ent_cheq
+        let siaf:cod_banco = tes:chmov_banco
+        let siaf:nro_cupcheq = tes:chmov_nro_cheque
+        
+        if (post:adt_mp_admban == "S")
+            let siaf:cheqcuenta = tes:chmov_cuenta
+        end if
+        if (post:adt_mp_int == "S")
+            let post:codigo_interno = tes:chmov_cuenta
+        end if
+	    
+	    let siaf:tiene_reverso = "N"
+	    drv:INDjnl_rtn = ofb:JNLentrada_cheques
+        if (drv:dt_app != 4)
+            drv:INDspc_rtn[0]  = LST:siaf:TOTS8820
+            tlr:INDtots_append = LST:siaf:TOTS8820
+        end if
+
+		
+		if (tes:chmov_nro_cheque == 0) /* Header del movimiento */
+    		cds findagain dsc:CheqMov_ctx lock
+	    	tes:chmov_marca_ing = "I"
+    		cds append dsc:CheqMov_ctx tes:chmov_marca_ing
+    		cds update dsc:CheqMov_ctx lock
+    		cds unlock dsc:CheqMov_ctx
+        else
+    		UNGETKEY 0x191
+    		call tlr:JNLtran
+		end if
+		cds findnext dsc:CheqMov_ctx nolock
+		let lib:err_retval = cdsretval
+	loop
+	cds endselect dsc:CheqMov_ctx
+	drv:INDjnl_rtn      = loc_jnl_rtn
+    tlr:jnl_tran_name   = loc_tran_name
+    tlr:tran_mnemonic   = loc_mnemonic
+    siaf:nombre_transac = loc_nom_tran
+    drv:INDscr          = loc_scr
+
+END SUB
+
+/*******/

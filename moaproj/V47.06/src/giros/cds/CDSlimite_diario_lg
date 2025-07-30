@@ -1,0 +1,70 @@
+/****o* Lista de Giros/OFB:giros:CDSlimite_diario_lg
+* NOMBRE
+*   OFB:giros:CDSlimite_diario_lg
+* DESCRIPCION
+*   En esta rutina se valida que los giros seleccionados no superen el limite diario de emision correspondiente.
+* ENTRADAS
+*   tipo_giro = "P" (postal) "T" (telegrafico)
+*	sesion_lg = nro de lista de giro seleccionada para la emisión.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:OFBproceso_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSlimite_diario_lg(tipo_giro,sesion_lg)
+
+	local varl_tipo      like giros:tipo_giro_fld
+	local varl_sesion_lg like giros:nro_sesion_lg
+	LOCAL l_total_imp_neto	LIKE giros:ImporteNeto
+	LOCAL l_limite LIKE giros:adt_glimite_max
+	
+	
+	fprint varl_tipo,"%s",tipo_giro
+	fprint varl_sesion_lg,"%s",sesion_lg
+
+	CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONses_lg WHERE \
+	giros:nro_sesion_lg == varl_sesion_lg && \
+	giros:tipo_giro_fld == varl_tipo && \
+	giros:estado_lg == "I" && \
+	giros:a_emitir == "S" 
+
+		CDS AGGREGATE DSC:CONses_lg SUM giros:ImporteNeto
+
+		if ( CDSRETVAL == 0 )
+	    	CDS EXTRACT DSC:CONses_lg \
+	    	giros:ImporteNeto INTO l_total_imp_neto
+		end if
+		
+	CDS UNLOCK DSC:CONses_lg
+   	CDS ENDSELECT DSC:CONses_lg
+	
+	//recuperar el limite diario para el tipo de giro de la nueva tabla
+	CDS SELECT FROM DSC:Giros_Limites_tab BECOMES DSC:Giros_Limites_ctx \
+	WHERE giros:adt_glimite_fecha == common:system_date && \
+	giros:adt_glimite_tipo == varl_tipo
+	CDS FINDFIRST DSC:Giros_Limites_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:Giros_Limites_ctx giros:adt_glimite_max  giros:adt_glimite_consumo
+		l_limite = giros:adt_glimite_max - giros:adt_glimite_consumo
+		IF (l_total_imp_neto > l_limite )
+			MSGBOX "Excede el límite diario de operación de la sucursal.Comuníquese al 011-43163400 para solicitar ampliación.",OFB_OK,"ATENCION"
+			RETURN -2
+		ENDIF
+	ELSE
+		MSGBOX "No se encuentran definidos los limites diarios de emisión. Deberá salir de la emisión y volver a ingresar para realizar dicha consulta.",OFB_OK,"ATENCION"
+		RETURN -2
+	ENDIF
+
+
+END SUB
+
+
+/*******/
+

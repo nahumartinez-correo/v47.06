@@ -1,0 +1,89 @@
+/****o* Lista de Giros/OFB:giros:MISCgenera_GirosLim
+* NOMBRE
+*   OFB:giros:MISCgenera_GirosLim
+* DESCRIPCION
+*   Graba o Actualiza el limite diario en la tabla de Limites diarios de giros (Giros_Limites)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): Error en la grabación de la tabla de Limites Diarios de Giros.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:OFBconsulta_lim_Emi
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCgenera_GirosLim
+    LOCAL posicion LIKE siaf:i
+    LOCAL contador like siaf:i
+    LOCAL Lstring  LIKE common:csr_string
+
+    //cgw:NI50295 - Leo del Picklist con los datos obtenidos de la Mensajeria de Limite diarios de giro,
+    //para ser grabados en la tabla Giros_Limites.
+    contador = 0
+	posicion = PL_GETITEM
+	CALL giros:MISCcl_lim_Emi_comm
+	
+	DO
+	    Call csr:myPickcontrol (DSC:consulta_lim_emi,Lstring,posicion)
+		
+		IF (RETVAL < 0 || Lstring.numchars == 0) then 
+			BREAK
+		END IF
+
+		giros:flia_giro_comm = substr(Lstring,0,1)
+		giros:LimDiaEmi_comm = substr(Lstring,2,14)
+        giros:LimDiaEmiAuto_comm = substr(Lstring,17,14)
+        giros:LimDiaPago_comm = substr(Lstring,32,14)
+        giros:LimDiaPagoAuto_comm = substr(Lstring,47,14)
+        giros:TotDiaEmi_comm = substr(Lstring,62,14)
+        giros:TotDiaPago_comm = substr(Lstring,77,14)
+
+		CDS SELECT FROM DSC:Giros_Limites_tab BECOMES Giros_Limites_ctx WHERE \
+		giros:adt_glimite_fecha == common:system_date && \
+		giros:adt_glimite_tipo == giros:flia_giro_comm
+		CDS FINDFIRST Giros_Limites_ctx LOCK
+		IF (CDSRETVAL < 0) THEN
+		    giros:adt_glimite_tipo = giros:flia_giro_comm
+		    giros:adt_glimite_max = (giros:LimDiaEmi_comm + giros:LimDiaEmiAuto_comm) - giros:TotDiaEmi_comm
+		    CLEARFIELD giros:adt_glimite_consumo
+		    giros:adt_glimite_fecha = common:system_date
+		    CDS CLEARBUFFER DSC:Giros_Limites_ctx
+            CDS APPEND DSC:Giros_Limites_ctx \
+    	    FLD:giros:adt_glimite_fecha \
+    	    FLD:giros:adt_glimite_tipo \
+            FLD:giros:adt_glimite_max \
+            FLD:giros:adt_glimite_consumo
+                        
+            CDS INSERT DSC:Giros_Limites_ctx LOCK
+            CDS UNLOCK DSC:Giros_Limites_ctx
+            CDS ENDSELECT Giros_Limites_ctx
+            contador = contador + 1
+        ELSE
+            giros:adt_glimite_max = (giros:LimDiaEmi_comm + giros:LimDiaEmiAuto_comm) - giros:TotDiaEmi_comm
+            //AUT-995
+            //Si el registro existe se debe limpiar el campo de consumo, pues sino arrastra valores de 
+            //sesiones de lista de giros anteriores y la validacion del limite se realiza de forma incorrecta.
+            CLEARFIELD giros:adt_glimite_consumo 
+            CDS CLEARBUFFER DSC:Giros_Limites_ctx
+            CDS APPEND DSC:Giros_Limites_ctx \
+            FLD:giros:adt_glimite_max  giros:adt_glimite_consumo 
+            CDS UPDATE DSC:Giros_Limites_ctx LOCK
+            CDS UNLOCK DSC:Giros_Limites_ctx
+            CDS ENDSELECT Giros_Limites_ctx
+              contador = contador + 1
+		END IF
+		CDS ENDSELECT Giros_Limites_ctx
+		CALL giros:MISCcl_lim_Emi_comm
+		posicion = posicion + 1
+	LOOP
+    IF (contador != 2) THEN
+        RETURN (-2)
+    END IF
+END SUB
+
+/*******/

@@ -1,0 +1,172 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCconsulta_multi
+* NOMBRE
+*   OFB:giros:MISCconsulta_multi
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCconsulta_multi 
+
+	LOCAL cantidad_item LIKE siaf:cantidad 
+	while (NEXTKEY)
+		getkey
+	end while 
+
+	TodoGiros = 0
+	Lastkey = 0 
+
+	ReSetFlag tran_send_mode,consulta_simple
+	SetFlag tran_send_mode,consulta_multiple
+
+	Call giros:MISCBusca_flia(siaf:codigo_siaf)
+	if (retval < 0 || (flia_giro_fld != "P" && flia_giro_fld != "T" && \
+		flia_giro_fld != "W" && flia_giro_fld != "I"))
+		msgbox "FALTA TIPO DE GIRO EN TABLAS",OFB_OK,"Error"
+		ReSetFlag tran_send_mode,consulta_multiple
+		return -3
+	endif
+          
+	While ( LastKey != RT_ESC )
+
+		Call giros:MISCclear_cons_multi
+		unprotfield cons_nro_ctrol
+		unprotfield cons_inter_ctrol
+		
+		select ( giros:flia_giro_fld )
+	
+			case "P"
+			case "T"
+				popup SCR:SCRNconsulta_giros PRESconsulta_multi,-,FVALconsulta_multi
+				break
+
+			case "W"
+				popup SCR:SCRNconsulta_multi PRESconsulta_multi,-,FVALconsulta_multi
+				break
+
+			case "I"
+				SELECT (siaf:codigo_siaf)
+					CASE "70383"
+						return 0
+						break
+					CASE "70384" //si es pago voy a otra pantalla de consulta
+					CASE "70389" //Pago Hold
+						call drv:popup_init
+						popup SCR:SCRNcons_PagoInter PRESconsulta_inter,PCOLnada,FVALconsulta_multi
+						call drv:popup_exit
+						break
+					CASE "70388" //Envio, voy a otra pantalla para saber si es comun o hold
+						call drv:popup_init
+						popup SCR:SCRNcons_EnvioInter PREScons_EnvioInter,PCOLnada,SVALcons_EnvioInter
+						call drv:popup_exit			
+						If ( lastkey == RT_ESC )
+						//ReSetFlag tran_send_mode,consulta_multiple
+							return -2
+						ELSE		
+							//CALL SVALenvio_Hold???
+							return 0								
+						end if
+						break
+					CASE ELSE
+						drv:INDpopup_but_list = LST:giros:BUTconsulta_inter
+						call drv:popup_init
+						popup SCR:SCRNconsulta_inter PRESconsulta_inter,-,FVALconsulta_multi
+						call drv:popup_exit
+						break					
+				END SELECT
+		end select
+
+		If ( lastkey == RT_ESC )
+			ReSetFlag tran_send_mode,consulta_multiple
+			return -2
+		ElseIf (TestFlag(tran_send_mode,consulta_simple))
+			break
+		Endif
+
+		call csr:f_sadroppl DSC:consulta_multiple
+		call csr:f_sanewpl  DSC:consulta_multiple,PIC:consulta_multiple
+	
+		clearfield giros:cantidad_coi_comm 
+
+		call SVALconsulta_multi 
+		if ( retval == -2 )
+			ResetFlag tran_send_mode,consulta_multiple
+			return -3
+		end if
+		
+		if (hcomm:tran_status != HOST_ACCEPTED)
+			ResetFlag tran_send_mode,consulta_multiple
+			return -3
+		end if
+		
+		clearfield lib:stat_message 
+		refresh    lib:stat_message 
+
+		If (giros:cantidad_coi_comm == 0 ) then
+			if ( giros:flia_giro_fld == "I" && giros:cantidad_coi_comm.numchars == 0 )
+				// Si en el MSG no se informa el token 161
+				// se pasa directamente a la transaccion de pago.
+				resetflag tran_send_mode,consulta_simple
+				break
+			else
+				MsgBox "NO HAY COINCIDENCIAS",OFB_OK ,"Error"
+				continue
+			end if
+		ElseIf ( giros:cantidad_coi_comm == 1 ) then  
+			if (flia_giro_fld == "P" || flia_giro_fld == "T") then
+				MOVE Serie_comm   TO  Serie_fld
+				MOVE NroGiro_comm TO NroGiro_fld
+				MOVE digito_comm  TO  digito_fld
+			elseif (flia_giro_fld == "W" || flia_giro_fld == "I" )
+				//IF (siaf:codigo_siaf = 70388)
+				//ELSE
+					MOVE ClaveMTC_comm  TO cons_nro_ctrol
+					MOVE MoneyTKey_comm TO money_key
+				cons_inter_ctrol = ClaveMTC_comm
+				if ( giros:flia_giro_fld == "I" && money_key.numchars == 0 )
+					// No envia la transaccion de 
+					// consulta simple si el MTK es nulo
+					return -3
+				end if
+			end if
+			SetFlag tran_send_mode,consulta_simple
+			break
+		ElseIf ((flia_giro_fld == "I" && giros:cantidad_coi_comm > 9) || giros:cantidad_coi_comm > 20 ) then  
+			MsgBox "HAY MUCHAS COINCIDENCIAS PARA ESE RANGO",OFB_OK ,"Error"
+			continue
+		Endif
+
+		POPUP SCRNpick_multi PRESpick_multi,-,SENDpick_multi
+		If (lastkey == RT_ESC)
+			lastkey = 0
+		Else
+			Break	
+		EndIf
+
+	END WHILE
+
+	If (TestFlag(tran_send_mode,consulta_simple))
+		CALL SVALconsulta_multi
+		If ( Retval < 0 )
+			ResetFlag tran_send_mode,consulta_multiple
+			ResetFlag tran_send_mode,consulta_simple   //
+			return -3
+		Endif
+		ResetFlag tran_send_mode,consulta_simple    // 
+	Endif
+	ResetFlag tran_send_mode,consulta_multiple
+
+END SUB
+
+/*******/

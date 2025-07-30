@@ -1,0 +1,132 @@
+/****o* Pendientes de agrupación/OFB:post:MISCajuste_franq
+* NOMBRE
+*   OFB:post:MISCajuste_franq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCajuste_franq
+	LOCAL lnombretransac LIKE siaf:nombre_transac
+	LOCAL ltranmnemonic LIKE tlr:tran_mnemonic
+	LOCAL lscreen LIKE drv:INDscr
+	LOCAL ljournal LIKE FLD:drv:INDjnl_rtn
+	LOCAL limporte LIKE siaf:importe
+	LOCAL ltran_name LIKE tlr:INDtran_name
+	LOCAL ltotsappend LIKE tlr:INDtots_append
+	LOCAL ldocslist LIKE tlr:INDdocs_list
+	LOCAL l_presup	LIKE post:PresNro
+	
+	//Obtengo datos de la transaccion de ajuste (97071)
+	//let siaf:codigo_siaf = 97071
+    CDS SELECT FROM dsc:siaf:adt_tran_table BECOMES dsc:siaf:adt_tran_context \
+    WHERE siaf:adt_tran_codigo == 97071
+    CDS FINDFIRST dsc:siaf:adt_tran_context NOLOCK
+    IF (CDSRETVAL < 0) THEN
+    	MSGBOX "No se ha encontrado la transaccion de ajuste en la parametría",0x00,"Error"
+    //	siaf:codigo_siaf = siaf:codigo_siaf_aux
+        RETURN (-2)
+    END IF
+/*    CDS EXTRACT dsc:siaf:adt_tran_context \
+    fld:siaf:adt_tran_desc into siaf:nombre_transac \
+    fld:siaf:adt_tran_mnemonic into tlr:tran_mnemonic \
+    fld:siaf:adt_tran_fliatran into jnl_flia_tran \
+    fld:siaf:adt_tran_tiene_rev into siaf:tiene_reverso
+  */  //CDS UNLOCK dsc:siaf:adt_tran_context
+    			
+	if (siaf:login.numchars == 0)
+		siaf:login = op:op_login_id
+	end if
+	//Si esta todo bien obtengo el id del supervisor para grabarlo en la control_franq
+	CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context WHERE \
+	op:op_login_id == siaf:login && \
+	op:op_branch_id == common:sucursal_activa ASCENDING
+	CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+	IF (CDSRETVAL == -801)
+		RETURN (-2)
+	END IF
+	CDS extract dsc:op:adt_op_context op:op_operator_id into op:aux_operator_id
+	CDS ENDSELECT DSC:op:adt_op_context
+	clearfield siaf:login
+	
+	//Asigno campos para la pantalla post:SCRNajuste_contfranq
+	post:adt_franq_codigo     = post:franq_codigo
+	post:franq_cont_inic_aju  = post:franq_cont_fin
+	post:franq_cont_fin_aju   = post:cnt_franq_ImpInic
+	franq_operador_ult        = franq_operador
+	franq_PresNro_ult         = franq_PresNro
+	franq_cont_inic_ult       = franq_cont_inic
+	franq_cont_fin_ult        = franq_cont_fin
+	//Genero Ajuste
+	Call post:CDSajuste_ctrlfranq
+	IF (RETVAL != 0) THEN
+		RETURN (-2)
+	END IF
+	
+	//Resguardo valores de la transaccion actual (aun no journalizada)
+	let siaf:codigo_siaf_aux   = siaf:codigo_siaf
+	let siaf:adt_mnemonic_tmp  = tlr:tran_mnemonic
+	let siaf:adt_tiene_rev_tmp = siaf:tiene_reverso
+	let siaf:adt_fliatran_tmp  = jnl_flia_tran
+	let lscreen                = drv:INDscr
+	let ljournal               = FLD:drv:INDjnl_rtn	
+	let lnombretransac         = siaf:nombre_transac
+	let limporte			   = siaf:importe
+	let ltran_name             = drv:INDcur_tran
+	let ltotsappend            = drv:INDspc_rtn[0]
+	let ldocslist              = drv:INDspc_rtn[2]
+	let l_presup			   = post:PresNro
+	
+	let siaf:codigo_siaf = 97071
+	
+	
+	CDS EXTRACT dsc:siaf:adt_tran_context \
+    fld:siaf:adt_tran_desc into siaf:nombre_transac \
+    fld:siaf:adt_tran_mnemonic into tlr:tran_mnemonic \
+    fld:siaf:adt_tran_fliatran into jnl_flia_tran \
+    fld:siaf:adt_tran_tiene_rev into siaf:tiene_reverso
+	
+	
+	let drv:INDscr = SCR:post:SCRNajuste_contfranq
+	let FLD:drv:INDjnl_rtn = OFB:post:JNLajuste_contfranq
+	clearfield siaf:importe
+
+    clearfield drv:INDcur_tran
+    clearfield drv:INDspc_rtn[0]
+    clearfield drv:INDspc_rtn[2]
+	
+	clearfield post:PresNro // FGB: el ajuste no es parte de un presupuesto.
+
+	//Journalizo Ajuste
+	ungetkey 0x191
+	call siaf:MISClleno_modalidad
+	call tlr:JNLtran
+	
+	//Recupero datos de la transaccion
+	let post:PresNro 		= l_presup
+	let tes:es_tesoro = "S"
+	let siaf:codigo_siaf    = siaf:codigo_siaf_aux
+	let tlr:tran_mnemonic   = siaf:adt_mnemonic_tmp 
+	let siaf:tiene_reverso  = siaf:adt_tiene_rev_tmp
+	let jnl_flia_tran       = siaf:adt_fliatran_tmp
+	let siaf:nombre_transac = lnombretransac
+	let drv:INDscr          = lscreen
+	let FLD:drv:INDjnl_rtn  = ljournal
+	let siaf:importe        = limporte
+	let drv:INDcur_tran     = ltran_name
+	let drv:INDspc_rtn[0]   = ltotsappend
+	let drv:INDspc_rtn[2]   = ldocslist
+END SUB
+
+/*******/

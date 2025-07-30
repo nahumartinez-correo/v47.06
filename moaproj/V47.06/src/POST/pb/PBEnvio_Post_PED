@@ -1,0 +1,90 @@
+/****o* Pago en Destino/OFB:post:PBEnvio_Post_PED
+* NOMBRE
+*   OFB:post:PBEnvio_Post_PED
+* DESCRIPCION
+*   
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta  
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales  
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual  
+* REFERENCIADO POR
+*		post:BUT30020
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPB.h"
+
+SUB post:PBEnvio_Post_PED
+	LOCAL l_last_button LIKE drv:last_button
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_msje LIKE common:csr_string
+	
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	
+	l_retval = 0
+	
+	IF (post:adt_serv_serv.NUMCHARS == 0 || post:serv_desc_vap.NUMCHARS == 0 || post:CliRazonPED.NUMCHARS == 0) THEN			
+			l_msje = "No se ha seleccionado una pieza para imponer"
+			l_retval = -2
+			GOTO Fin
+	END IF
+
+	//gpb:tengo que controlar que el cliente minorista exista en la CliOca,
+	//se hace por si el compress ya depuro la tabla
+	CALL post:CDSped_clioca_verif
+	IF (RETVAL < 0) THEN
+		//no existe el la CliOca, lo vuelvo a dar de alta
+		CALL post:CDSped_clioca_save2("sesion_ped")
+		IF (RETVAL < 0) THEN
+			l_msje = "No se pudo actualizar la CliOca con los datos\ndel Cliente Minorista"
+			l_retval = -2
+			GOTO Fin
+		END IF
+	END IF
+
+	SETFLAG post:sesion_ped_flags,es_sesion_ped
+	
+	CDS SELECT FROM DSC:plataf:TABbrowser BECOMES DSC:plataf:CONbrowser \
+		WHERE plataf:adt_browser_codtrn == post:adt_serv_serv
+		
+	IF (CDSRETVAL == 0) THEN 
+		CDS FINDFIRST DSC:plataf:CONbrowser NOLOCK
+		IF (CDSRETVAL == 0) THEN 
+			CDS EXTRACT DSC:plataf:CONbrowser \
+				plataf:adt_browser_codtrn INTO post:cod_tx \
+				plataf:adt_browser_desc	  INTO post:desc_tx
+		END IF 
+	END IF
+	CDS ENDSELECT DSC:plataf:CONbrowser
+	
+	IF (post:cod_tx.NUMCHARS > 0 && post:desc_tx.NUMCHARS > 0) THEN
+		LASTKEY = RT_SEND
+		LET drv:INDrun_funct = LST:post:TRANidentifica_cli
+		CALL drv:do_mode
+	ELSE
+		l_msje = "No se encontro el servicio en la tabla browser"
+		l_retval = -2
+	END IF
+
+Fin:
+	IF (l_retval < 0) THEN
+		MSGBOX l_msje ,OFB_OK,"Atencion"
+		
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+	
+		RETURN l_retval
+	END IF
+	CALL drv:back_but_status
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+END SUB
+
+/*******/

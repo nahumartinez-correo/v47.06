@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcontrol_salida
+* NOMBRE
+*   OFB:tes:MISCcontrol_salida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcontrol_salida
+local lcont like tes:cont1
+local importes_mp like siaf:importe
+
+   	IF (login_dest.numchars == 0) THEN
+        move "DEBE INGRESAR EL OPERADOR DESTINO" to drv:error_msg
+        call  OFB:drv:error_msg
+		drv:button = drv:last_button
+        call drv:but_up_enable
+		return (-1)
+    end if   		
+   	
+   	post:importe_origen = 0
+   	cont1 = 0
+    DO
+      	IF (cont1 > (cant_mp - 1)) THEN
+			break
+      	end if
+      	
+      	post:importe_origen = importes_pase[cont1]
+      	importes_mp = importes_mp + post:importe_origen
+	    siaf:moneda =  mp_codigo[cont1]
+
+		post:adt_mp_cod = siaf:moneda
+		call post:CDSadt_MedPago_load
+		/* Si el medio de pago es global y monetario verififco denominaciones */
+		if (post:adt_mp_adm == "G") && (post:adt_mp_monet == "S") then
+			call post:MISCexisteDenom(siaf:moneda,post:importe_origen)
+			if (!retval) then
+				errmsg lst:common:errmsg_list "Importe Incorrecto para el Medio de Pago"
+				return (-2)
+			end if
+		end if
+		      	
+      	/*Calcula el total cargado en la tabla temporal*/
+		cds select from dsc:AuxCheq_tbl becomes dsc:AuxCheq_ctx where \
+		tes:adt_cheqaux_suc == op:op_branch_id  && \
+		tes:adt_cheqaux_op == op:op_operator_id && \
+		tes:adt_cheqaux_tesoro == tes:adt_cheqaux_tesoro && \
+		tes:login_dest != login_dest
+
+		cds findfirst dsc:AuxCheq_ctx lock
+		let lib:err_retval = CDSRETVAL
+		do
+			if (lib:err_retval != 0) then
+				break
+			end if
+   			cds extract dsc:AuxCheq_ctx array importes_pase into array tes_importes
+   			lcont = 0
+   			do
+   				if (lcont > 13)
+	   				break
+   				end if
+   				if (cont1 == lcont)
+   					post:importe_origen = post:importe_origen + tes_importes[lcont]
+   					break
+   				end if
+   				lcont = lcont + 1
+   			loop
+   			cds findnext dsc:AuxCheq_ctx lock
+   			let lib:err_retval = CDSRETVAL
+		loop
+		cds unlock dsc:AuxCheq_ctx
+		cds endselect dsc:AuxCheq_ctx
+	    
+	    siaf:moneda =  mp_codigo[cont1]
+
+		if (drv:dt_app == 4)
+		    call tes:CDSimp_sup_tes
+		    if (retval < 0)
+			    fprint drv:error_msg,"EL MEDIO DE PAGO %2.2s-%-25.25s SUPERA TESORO",mp_codigo[cont1],mp_texto[cont1]
+		        call  OFB:drv:error_msg
+		        nextfield tes:cantidad[0]
+		        return (-2)
+		   	end if            
+		else
+			/* MLD si está en un cierre Guiado la idea es que, si declara
+			de mas, se lo queda Correo y no le avisa nada */
+			if (en_cierre != "S") then
+				if (siaf:codigo_siaf == 8990) then
+					call tes:CDSimp_sup_stes
+			    	if (retval < 0)
+			    	    move "(L) EL IMPORTE SUPERA EL FONDO" to drv:error_msg
+				        call  OFB:drv:error_msg
+				        nextfield tes:cantidad[0]				        
+				        return (-2)
+				    end if
+				else     					
+				    call tes:CDSimp_sup_tot
+				    if (retval < 0)
+					    fprint drv:error_msg,"EL MEDIO DE PAGO %2.2s-%-25.25s SUPERA CAJA",mp_codigo[cont1],mp_texto[cont1]
+				        call  OFB:drv:error_msg
+				        nextfield tes:cantidad[0]
+				        return (-2)
+				    end if
+				end if           
+			end if
+		end if
+		      	
+      	cont1 = cont1 + 1
+    LOOP
+	if (importes_mp == 0) THEN
+        move "(L) IMPORTE TOTAL NO PUEDE SER 0" to drv:error_msg
+        call  OFB:drv:error_msg
+		drv:button = drv:last_button
+        call drv:but_up_enable
+		return (-1)
+    end if
+	post:importe_origen = importes_mp
+	// Convierto a moneda base.
+	call post:MISCconvierto_coti(post:importe_origen)
+END SUB
+
+/*******/

@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:post:CDSadt_cloraz_sel
+* NOMBRE
+*   OFB:post:CDSadt_cloraz_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSadt_cloraz_sel
+   	LOCAL loc_CliRaz like CliRaz
+   	
+   	
+offset_0000:
+    MOVE CliRaz TO loc_CliRaz
+    cds endselect FLD:contextoCli
+ 	if (tablaCli == DSC:post:TABCliMed)
+	    CDS SELECT FROM FLD:tablaCli BECOMES FLD:contextoCli sort "ClOxRazo"
+	    CDS MULTIDISPLAY FLD:contextoCli LISTCliMedRaz
+        IF (CDSRETVAL == 0x01FD) THEN
+   	        GOTO offset_0000
+        END IF
+        
+   	    LET lib:err_retval = CDSRETVAL
+   	    IF (lib:err_retval == 0) THEN
+   	        MOVE loc_CliRaz TO CliRaz
+   	        CALL post:ABMidentif_clear
+   	        CALL CDSadt_cloraz_load
+   	        RETURN (-2)
+   	    END IF
+   	    CALL lib:MISCcds_find_err
+   	    IF (RETVAL != 0) THEN
+   	        RETURN (-1)
+   	    END IF
+   	    CALL post:ABMidentif_clear
+   	    CDS EXTRACT FLD:contextoCli ALL
+    else
+    	clearfield post:CliRazBusq
+    	
+		call post:MISCaddPickCli(post:cli_tipo)
+		SELECT (RETVAL)
+			CASE 1
+		    	clearfield common:csr_string
+		    	if (post:cli_tipo == 4) then
+		    		CALL drv:MISCf_sacombopl ("Lista Global", common:csr_string,drv:button)
+		    		
+		    		IF (retval >= 0) THEN
+            		    clearfield post:CliRazBusq
+            		    refresh post:CliRazBusq
+            		    
+            		    if (tablaCli == DSC:post:cliocaUP_tbl)
+            		        LET post:CliRaz = substr(common:csr_string,0,50)
+            		        CALL csr:trimfield(post:CliRaz)
+            		        refresh CliRaz
+            		        LET post:CloCuit = substr(common:csr_string,51,11)
+            		        CALL csr:trimfield(post:CloCuit)
+            		        refresh CloCuit
+            		        
+            		        LET post:NisUP = substr(common:csr_string,63,5)
+            		        CALL csr:trimfield(post:NisUP)
+            		        refresh NisUP
+            		        CDS SELECT FROM FLD:tablaCli BECOMES FLD:contextoCli WHERE \
+            		        (CliUP_Nis == "" || CliUP_Nis == common:sucursal_activa) \
+            		            && post:CloRazon == FLD:post:CliRaz && post:CloCuit == FLD:post:CloCuit && \
+            		        post:NisUP == post:NisUP
+            		    else
+            		        LET post:CloCuit = substr(common:csr_string,3,11)
+            		        CloTipDoc = substr(common:csr_string,0,2)
+            		        CDS SELECT FROM DSC:clioca_tbl BECOMES fld:contextoCli \
+            		        where  CloCuit == CloCuit && \
+            		        CloTipDoc == CloTipDoc
+            		    endif
+            		    CDS FINDFIRST FLD:contextoCli NOLOCK
+            		    IF (CDSRETVAL == -801) THEN
+            		        RETURN (-2)
+            		    END IF
+            		    clearfield CloApellido
+            		    clearfield CloNombre
+            		    clearfield CloRazon
+            		    CDS EXTRACT FLD:contextoCli ALL
+            		else
+            		    call csr:f_sadroppl "Lista Global"
+            		    return -2
+            		end if
+            		call csr:f_sadroppl "Lista Global"
+        		end if
+        	BREAK
+        	CASE 2
+        	//AUT 363 - AGREGAMOS ESTE CODIGO Y EL RETURN -2 PARA QUE SALGA DE LA RUTINA - MAURO Y ALE
+        	    CALL CSR:proc_list(F_CLEAR,LST:post:LISTCliOca)
+    			CALL CSR:proc_list(F_REFRESH,LST:post:LISTCliOca)
+    			return (-2)
+        		;BREAK
+        	CASE 0
+        
+            	MSGBOX "NO HAY DATOS PARA MOSTRAR",0x00,"AVISO"
+            	return -2
+        END SELECT
+    endif
+    cds endselect FLD:contextoCli
+	refresh post:CliRazBusq
+	if (tablaCli == DSC:post:cliocaUP_tbl && common:system_date > CliUP_FechaFin)
+		MSGBOX "EL CONTRATO PARA ESTA UNIDAD POSTAL SE ENCUENTRA VENCIDO",0x00,"ERROR"
+		call post:MISCident_cli_clear
+		clearfield IvaCod
+		RETURN (-2)
+    endif
+    CliApellido = CloApellido     
+    CliNombre  = CloNombre
+    CliRazon = CloRazon
+    
+    if (CloPersonaJuridica == "N" && contextoCli == "CliOca_ctx" )
+        fprint CliRaz "%s %s", CloNombre, CloApellido
+    else
+        CloPersonaJuridica = "S"
+        let CliRaz = CloRazon
+        let CliRazon = CliRaz
+    end if
+    es_juridica = CloPersonaJuridica
+    call post:PBes_juridica
+    let adt_TipoDoc_tipo = CloTipDoc               
+    CALL FVALTipoDoc
+
+    if (post:cli_tipo == CLIMED && retval < 0)
+    	return -2
+    end if
+
+    RETURN (0)
+END SUB
+
+/*******/

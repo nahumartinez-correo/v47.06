@@ -1,0 +1,77 @@
+/****o* Pendientes de agrupación/OFB:post:SVAL_DP1_PVenNoGC
+* NOMBRE
+*   OFB:post:SVAL_DP1_PVenNoGC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL_DP1_PVenNoGC
+	/* B. Petrella - Nov. 1999              */
+	/* MFM - Modificaciones - Septiembre 2000 */
+	
+	if (!testflag(tlr:tran_flags,correction))
+		call CDSselect_DevPza1
+		if (retval < 0) then
+			errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA PIEZA"
+			return -2
+		end if
+		call csr:save_currentfield
+		move "S"  to siaf:continua_transaccion
+		popup siaf:SCRNcontinua
+		if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+			/* 0x0190 = ESC */
+			call csr:restore_currentfield
+			INIT 33,0
+			return -2
+		endif
+		LET FLD:post:adt_table = DSC:post:DevPza1
+		LET FLD:post:adt_ctx = DSC:post:DevPza1_ctx
+		/*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+		los detalles. Esto es util para la reversa*/
+		CLEARFIELD post:codseq_dev
+		CALL CDSobtiene_secuen("CABEC")
+		post:codseq_dev = post:adt_codseq_nro
+		/* Marca para terminar de procesar */
+		call CDS_DevPza1_max
+		/* Journaliza con otra pantalla */
+		drv:INDscr = SCR:post:SCRN_DP1_Hdr
+		let orden = 0
+	else
+		/* MFM - Septiembre 2000 - Verifico si tengo que reversar el encabezado */
+		CALL CDSreverso_cabecera("3")
+		post:err_retval = 0
+		IF (RETVAL == 0) THEN
+			tlr:INDdcol_scrn[0] = SCR:post:SCRN_DP1_Hdr
+			tlr:INDjnl_append = OFB:post:JNL_DP1_PVenNoGC
+			CALL MISCreversa_transac
+			post:err_retval = -5
+		END IF
+		/* MFM - Septiembre 2000 - Reverso los detalles*/
+		CALL CDSSelect_Piezas("2")
+		IF (post:err_retval != -5) THEN
+			MSGBOX "Ninguna pieza está en condiciones de reversarse.Todas han sido expedidas",0x00,"AVISO"
+		END IF
+		;Para que no journalice de más....
+		CALL post:MISCclear_campos_jou
+		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+		Resetflag tlr:tran_flags,correction
+	end if
+	
+	/*gpb:AUT-1716 Libero la transaccion para que pueda ser utilizada por otro operador */
+	CALL post:CDSTranStatUnLock("99061")
+	
+END SUB
+
+/*******/

@@ -1,0 +1,170 @@
+/****o* Modificación de Piezas/OFB:post:FVALModif_Pieza
+* NOMBRE
+*   OFB:post:FVALModif_Pieza
+* DESCRIPCION
+*   Rutina de validación del campo Pieza de la TX Modificacion de Pieza:
+*   Verifica que la pieza exista en el picklist
+*   Verifica que la pieza exista en la stockp y llama a CDSselPiezaModif para controlar
+*   que la pieza esté apta para ser modificada.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:SVALModif_Pieza 
+*		post:PBModifCliente
+* REFERENCIADO POR
+*   SCR:post:SCRNModif_Pieza
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALModif_Pieza
+	local idx like siaf:i
+	local codigos like adt_serv_ttcod
+	local l_cdsretval like lib:err_retval
+	
+	//cgw:SC50190 - default marca campo del picklist para que deshabilite boton Modif.Cliente.
+	post:stockp_modifcli = "N"
+	
+	call csr:trimfield(Pieza)	
+	IF (Pieza.numchars != 0)
+		PROTFIELD Pieza
+		if (Pieza.numchars == 11)
+			/*Verifica los dos primeros caracteres*/
+			codigos = substr(Pieza,0,2)
+			CALL MISCverif_cod_tyt(codigos)
+			IF (RETVAL == 0)
+				/*Los dos primeros caracteres no corresponden a la tabla de codigos de TT*/
+				//Controlo la cantidad de dígitos, si es des 11 le agrego "AR"
+				CALL MISCcant_digitos_tt(Pieza,"8")        	
+			END IF          
+		end if
+
+		//Verifico si la pieza ya esta ingresada en la tabla temporal ModPieza_tmp
+		CDS SELECT FROM "ModPieza_tmp" BECOMES "MPieza_tmmp_ctx" WHERE \
+     		post:stockp_operador == op:op_operator_id && \
+    		post:Pieza == post:Pieza
+    	CDS FINDFIRST "MPieza_tmmp_ctx" NOLOCK  
+		l_cdsretval = CDSRETVAL
+		IF (l_cdsretval < 0) THEN //Si No existe en el picklist busco si existe en la stockp
+			CDS ENDSELECT "MPieza_tmmp_ctx"
+			//controlo STOCKP
+			CALL CDSselPiezaModif
+			IF (RETVAL < 0)
+				if (retval == -1)
+					msgbox "Pieza Inexistente.",0x00,"Error"
+					call post:PBnew_ModifPieza
+					//cgw:SC50190 - Deshabilitar botón Modif. Cliente
+					drv:button = 8
+					CALL drv:but_disable
+					post:stockp_modifcli = "N" 
+					RETURN (-2)					
+				else
+					//retval = -2
+					//cgw:SC50190 - La pieza no puede modificarse.
+					//por las dudas deshabilito botones.
+					clearfield post:Pieza
+					refresh post:Pieza
+					UNPROTFIELD post:Pieza
+					DISABLECONTROL drv:PBcb8 //cgw:SC50190 - Deshabilito boton Modif. Cliente
+					DISABLECONTROL drv:PBcb9
+					DISABLECONTROL drv:PBcb5
+					DISABLECONTROL drv:PBcb6
+					post:stockp_modifcli = "N"
+					RETURN (-2)
+				end if
+				//por las dudas deshabilito botones.
+				clearfield post:Pieza
+				refresh post:Pieza
+				UNPROTFIELD post:Pieza
+				DISABLECONTROL drv:PBcb9
+				DISABLECONTROL drv:PBcb5
+				DISABLECONTROL drv:PBcb6                
+			ELSE
+				call MISCctrl_PiezaModif
+				DISABLECONTROL drv:PBcb5
+				DISABLECONTROL drv:PBcb6				
+				ENABLECONTROL drv:PBcb9
+				if (siaf:codigo_siaf == 99003 && stockp_crem_imp > 0 && f_entrega == "S") then
+					ENABLECONTROL drv:PBcb8
+					UNPROTFIELD stockp_crem_imp
+					PROTFIELD stockp_en_devol
+					PROTFIELD stockp_franq_inc
+					PROTFIELD stockp_vd_imp					
+				end if				
+			END IF
+			//cgw:SC50190 - La marca de Rendicion Centralizada y RCT debe estar deshabilitada.	
+			PROTFIELD stockp_rend_cent
+			PROTFIELD stockp_rct
+
+			IF (stockp_crem_imp == 0)
+				post:stockp_modifcli = "N"
+			ELSE
+				//cgw:SC50190 - Verifica si la pieza es propia de un cliente corporativo.    
+				CALL post:CDSesCliMay_crem(Pieza)
+				IF (RETVAL == 0) THEN    	 
+					//cgw:SC50190 - Marca campo del picklist para que deshabilite boton Modif.Cliente.
+					post:stockp_modifcli = "N"
+				ELSE
+					//cgw:SC50190 - Marca campo del picklist para que habilite boton Modif.Cliente.
+					post:stockp_modifcli = "S"
+				END IF
+			END IF
+
+		ELSE
+			//La pieza ya esta agregada en la tabla temporal	
+			//Verifico que la pieza exista en la stockp
+			CALL CDSpieza_en_stockp
+			if (retval == -801)
+				//cgw:SC50190 - Deshabilitar botón Modif. Cliente
+				drv:button = 8
+				CALL drv:but_disable
+				post:stockp_modifcli = "N"
+				CDS ENDSELECT "MPieza_tmmp_ctx"
+				return -2
+			end if
+			
+			//extraigo datos de la tabla temporal
+			CDS FINDAGAIN "MPieza_tmmp_ctx" NOLOCK
+			CDS EXTRACT "MPieza_tmmp_ctx" ALL
+
+			//recupero la razon social
+			CALL post:CDSobt_may_crem(stockp_ctaOM,stockp_tipo_doc,stockp_doc)
+		
+			//VALIDACIONES
+			//Si la pieza tiene crem y ya fue entregada solo permito modificar el cliente
+			call MISCctrl_PiezaModif
+			ENABLECONTROL drv:PBcb5
+			ENABLECONTROL drv:PBcb6
+			CALL CSR:proc_list(F_REFRESH,LST:LISTnew_ModifPieza)
+			if (siaf:codigo_siaf == 99003 && stockp_crem_imp > 0 && f_entrega == "S") then
+				ENABLECONTROL drv:PBcb8
+				UNPROTFIELD stockp_crem_imp
+				PROTFIELD stockp_en_devol
+				PROTFIELD stockp_franq_inc
+				PROTFIELD stockp_vd_imp
+			end if
+			CDS ENDSELECT "MPieza_tmmp_ctx"
+		END IF
+  	END IF
+    
+	IF (stockp_modifcli == "N") THEN
+		//cgw:SC50190 - Deshabilitar botón Modif. Cliente
+		drv:button = 8
+		CALL drv:but_disable
+	ELSE
+		//cgw:SC50190 - Habilitar botón Modif. Cliente
+		drv:button = 8
+		CALL drv:but_up_enable
+	END IF
+	
+	UNPROTFIELD lugar_guarda_pieza
+	
+	SETVALDONE Pieza
+
+END SUB
+
+/*******/

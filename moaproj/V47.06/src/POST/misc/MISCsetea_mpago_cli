@@ -1,0 +1,164 @@
+/****o* Pendientes de agrupación/OFB:post:MISCsetea_mpago_cli
+* NOMBRE
+*   OFB:post:MISCsetea_mpago_cli
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsetea_mpago_cli(cli_tipo)
+    /*Rutina modificada por MFM el 05/03/2004*/
+    //Habilitaciones de Medio Pago segun parametria de la tabla RestMod
+    if (drv:screen_active == 0 && !(TESTFLAG(post:IdentCli_flags,screen2))) then
+	clearfield cheque_dif
+	clearfield MPcheque
+	clearfield MPtarjeta
+
+	refresh cheque_dif
+	refresh MPcheque
+	refresh MPtarjeta
+
+	RESETFLAG MPcheque,MPpago_cheque
+	ALTERCONTROLSET post:CHK6
+	RESETFLAG MPtarjeta,MPpago_tarjeta
+	ALTERCONTROLSET TAG:post:CHK7
+	RESETFLAG cheque_dif,UPpago_dif
+	ALTERCONTROLSET TAG:post:CHK9
+    RESETFLAG cheque_dif,chq_dif_al_dia
+	ALTERCONTROLSET TAG:post:CHK2
+	
+	DISABLECONTROL TAG:post:CHK6
+	DISABLECONTROL TAG:post:CHK7
+	DISABLECONTROL TAG:post:CHK8
+	DISABLECONTROL TAG:post:CHK9
+	DISABLECONTROL TAG:post:CHK2
+	HIDEFIELD tlr:jnl_date
+	IF (cli_tipo != CTACTE) THEN
+	    CDS SELECT FROM DSC:RMOD_TAB BECOMES DSC:RMOD_CTX \
+		WHERE post:adt_restmod_mod == cli_tipo
+	    CDS FINDFIRST DSC:RMOD_CTX NOLOCK
+
+		DO
+		   IF (CDSRETVAL == 0) THEN
+		       CLEARFIELD post:adt_restmod_mpago
+		       CDS EXTRACT DSC:RMOD_CTX post:adt_restmod_mpago
+		       SELECT (post:adt_restmod_mpago)
+      			 CASE CHEQUE_DIFERIDO
+      			      //Habilito el checkbox de pago diferido
+	    		      IF (!TESTFLAG (cheque_dif, UPpago_dif)) THEN
+	    			    RESETFLAG cheque_dif,UPpago_dif
+	    			    ALTERCONTROLSET TAG:post:CHK9
+		    	        RESETFLAG cheque_dif,chq_dif_al_dia
+	    			    ALTERCONTROLSET TAG:post:CHK2
+		    	      END IF
+			      IF (consulta_excepcion != "S") THEN
+				  ENABLECONTROL TAG:post:CHK9	
+			      ELSE
+				  DISABLECONTROL TAG:post:CHK9
+				  DISABLECONTROL TAG:post:CHK2	
+			      END IF
+			      IF (consulta_excepcionCM == "S" ) THEN
+				  call post:CDSGet_DatosCM
+				  if (excepCM_pagdif == "S") then
+		   		      //Seteo checkbox de pago diferido
+				      SETFLAG cheque_dif,UPpago_dif
+				      ALTERCONTROLSET TAG:post:CHK9
+				  else
+		   		      RESETFLAG cheque_dif,UPpago_dif
+		   		      ALTERCONTROLSET TAG:post:CHK9
+		   		  end if
+			   	  //Deshabilito el checkbox de pago diferido
+				  DISABLECONTROL TAG:post:CHK9
+			      END IF
+			      IF (post:cliente_inhibido == "S" || post:cliente_pagodiferido == "N") THEN
+			      	  //cgw:Viene de una Consulta Excepcion CM. y el Host devuelve que el cliente esta
+			      	  //    inhibido o que no admite pago diferido.
+			      	  //    Deshabilito el checkbox de pago diferido.
+				  RESETFLAG cheque_dif,UPpago_dif
+		   		  ALTERCONTROLSET TAG:post:CHK9
+				  DISABLECONTROL TAG:post:CHK9
+			      RESETFLAG cheque_dif,chq_dif_al_dia
+		   		  ALTERCONTROLSET TAG:post:CHK2
+				  DISABLECONTROL TAG:post:CHK2
+			      END IF
+      			      BREAK
+      			 CASE CHEQUE_DIA
+	      		 CASE CHEQUE_CANC
+    	  		      IF (consulta_excepcion != "S") THEN
+      				  //Habilito el checkbox de pago cheque
+				  IF (!TESTFLAG (MPcheque, MPpago_cheque)) THEN
+				       RESETFLAG MPcheque,MPpago_cheque
+		    		       ALTERCONTROLSET TAG:post:CHK6
+				  END IF
+        			  ENABLECONTROL TAG:post:CHK6
+	        	      ELSE
+    	    			  DISABLECONTROL TAG:post:CHK6
+        		      END IF
+        		      IF (post:cliente_inhibido == "S") THEN
+			      	  //cgw:Viene de una Consulta Excepcion CM. y el Host devuelve que el cliente esta
+			      	  //    inhibido. Deshabilito el checkbox de cheque.
+				  RESETFLAG MPcheque,MPpago_cheque
+		    		  ALTERCONTROLSET TAG:post:CHK6
+		    		  DISABLECONTROL TAG:post:CHK6
+			      END IF
+        		      BREAK
+        		 CASE TARJETA
+	        	      IF (consulta_excepcion != "S") THEN
+    	    	        	  //Habilito el checkbox de pago tarjeta
+				  IF (!TESTFLAG (MPtarjeta, MPpago_tarjeta)) THEN
+				       RESETFLAG MPtarjeta,MPpago_tarjeta
+			    	       ALTERCONTROLSET TAG:post:CHK7
+				  END IF
+	    			  ENABLECONTROL TAG:post:CHK7
+	    		      ELSE
+		    	          DISABLECONTROL TAG:post:CHK7
+		    	      END IF
+			      BREAK
+		       END SELECT
+		   ELSE
+		       BREAK
+		   END IF
+
+		   CDS FINDNEXT DSC:RMOD_CTX NOLOCK
+		LOOP
+
+	    CDS ENDSELECT DSC:RMOD_CTX
+
+	END IF
+	
+	SELECT (cli_tipo)
+	  CASE CTACTE
+	  CASE CLIUP
+	  CASE CLIMED
+       	       //Deshabilito el checkbox de requiere factura
+       	       IF (!TESTFLAG (req_factura, Requiere_factura)) THEN
+		    RESETFLAG req_factura,Requiere_factura
+		    ALTERCONTROLSET TAG:post:CHK8
+	       END IF
+	       DISABLECONTROL TAG:post:CHK8
+	       BREAK
+      	  CASE OCASIONAL
+	       //Habilito el checkbox de requiere factura
+	       IF (!TESTFLAG (req_factura, Requiere_factura)) THEN
+		    RESETFLAG req_factura,Requiere_factura
+		    ALTERCONTROLSET TAG:post:CHK8
+	       END IF
+	       ENABLECONTROL TAG:post:CHK8
+	       BREAK
+	END SELECT
+    end if	  
+END SUB
+
+
+/*******/

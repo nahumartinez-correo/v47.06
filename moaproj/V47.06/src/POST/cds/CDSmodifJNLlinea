@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:CDSmodifJNLlinea
+* NOMBRE
+*   OFB:post:CDSmodifJNLlinea
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSmodifJNLlinea
+    /* Corte de Linea.      */
+    /* May. 1998 - B. Petrella -  */
+    
+    LOCAL guia_esp_aux LIKE jnl_guia_especial
+
+    /* Select según clave completa del Journal - Jun.'98 */
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(tlr:jnl_branch == post:jnl_branch_ori && \
+            tlr:jnl_operator == post:jnl_operator_ori && \
+		tlr:jnl_date == post:jnl_date_ori && \
+		tlr:jnl_time == post:jnl_time_ori && \
+		tlr:jnl_bus_date == post:jnl_bus_date_ori && \
+            tlr:jnl_sequence == post:jnl_sequence_ori)
+
+        CDS FINDFIRST DSC:tlr:jnl_context LOCK
+        CDS EXTRACT tlr:jnl_context tlr:jnl_branch tlr:jnl_operator \
+		 tlr:jnl_date tlr:jnl_time tlr:jnl_bus_date \
+		 tlr:jnl_sequence
+
+        Cds APPEND DSC:tlr:jnl_context      \
+             tlr:jnl_branch tlr:jnl_operator tlr:jnl_date \
+             tlr:jnl_time tlr:jnl_bus_date tlr:jnl_sequence \
+             post:adt_codseq_nro as post:jnl_guia_despacho \
+             common:system_date as post:jnl_fecha_despacho \
+             common:time_of_day as post:jnl_hora_despacho 
+             
+          
+	    /*Si el detalle de saca que estoy journalizando es simple especial
+	    debo jounalizar el codigo de la guia en caso contrario lo journalizo
+	    en blanco*/	
+		IF (jnl_simp_esp == "S")
+		    guia_esp_aux = jnl_guia_especial
+		END IF
+        CDS APPEND DSC:tlr:jnl_context \
+           	guia_esp_aux AS jnl_guia_especial             
+             
+             
+
+        Cds UPDATE DSC:tlr:jnl_context LOCK
+        
+        /*IF (siaf:jnl_codigo_siaf != 99064) THEN
+            CALL MISCgrabo_DespPend
+        ELSE
+            CALL MISCes_TT (Pieza_id)
+		    IF (RETVAL == 0) THEN
+		        CALL MISCgrabo_DespPend
+		    END IF
+		END IF*/
+		
+        IF (adt_relMod_desptipos == "TR")
+            /*MFM - Si la pieza proviene de una devolucion descentralizada se debe 
+            verificar que el track_trace sea valido para generar el scaneo.
+            Se hace dicha verificación sólo cuando es una devolución para que no se vea 
+       		afectada la performance del sistema*/
+            if (substr(Pieza_id,0,2) != "SU" && substr(Pieza_id,0,2) != "SR" && \
+    			substr(Pieza_id,0,2) != "GS" && substr(Pieza_id,0,2) != "GR") then
+            	IF (siaf:jnl_codigo_siaf != 99064) THEN            
+                	CALL MISCscaneo_KO_CL
+            	ELSE
+                	CALL MISCes_TT (Pieza_id)
+		        	IF (RETVAL == 0) THEN
+		            	CALL MISCscaneo_KO_CL
+                	END IF
+            	END IF
+            endif
+        END IF
+		/* MFM - Actualizo la linea y pongo en listo los Scaneos A(01)*/
+		CALL MISCAct_Scaneos ("L",01)
+		//si es una transferencia esto no se tiene que hacer
+		if (post:cod_transp.numchars > 0) then
+			/* MFM - Actualizo la linea y pongo en listo los Scaneos B(02)*/
+			CALL MISCAct_Scaneos ("L",02)
+			/*Actualizo los scaneos C (03) de Sacas en Transito*/
+			CALL MISCAct_Scaneos ("L",03)
+			/*Actualizo los scaneos K (11) de Sacas en Transito*/
+			CALL MISCAct_Scaneos ("L",11)
+		endif
+		
+		/* MFM - Agosto 2000 - Actualizo la linea y pongo en listo el Scaneo X(24) generado en Recepción
+		 de Sacas en Tránsito o en Devolución de Piezas
+		Desc. con lote
+		CALL MISCAct_Scaneos ("L",24)*/
+		
+		/* MFM - Agosto 2000 - Grabo la linea y pongo en listo los scaneos O(15), P(16) y 99 que actúan
+		como Filtros en la expedición */
+		CALL MISCAct_Scaneos ("F",0)
+		//si es una transferencia esto no se tiene que hacer
+		if (post:cod_transp.numchars > 0) then
+			/*Actualizo los scaneos X (24)*/
+			CALL MISCAct_ScaneoX 
+		endif 
+		
+
+END SUB
+
+/*******/

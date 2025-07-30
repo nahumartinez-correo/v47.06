@@ -1,0 +1,89 @@
+/****o* Pago por Cuenta de Terceros/OFB:post:PRESpago_terceros
+* NOMBRE
+*   OFB:post:PRESpago_terceros
+* DESCRIPCION
+*    Rutina PRES de la transacción de Pago por cuenta de terceros
+* REFERENCIADO POR
+*   post:TRANpago_cta_terc
+* DOCUMENTACION
+*   |html <a href="http://livelink/livelink/livelink.exe?func=doc.ViewDoc&nodeId=487753&vernum=1">Especificacion de Requerimientos</a>
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESpago_terceros
+    local loc_cli_tipo like post:cli_tipo
+    siaf:nombre_transac.HIGHLITE = 0
+    siaf:codigo_siaf = 6620
+    siaf:nombre_transac = "PAGO POR CUENTA DE TERCEROS"
+    siaf:adt_tran_modpresu = "S"
+    
+    //ACP-PS 9648
+    clearfield post:PreDForFis
+    clearfield post:nro_impre
+
+    IF ((!testflag(tlr:tran_flags,correction)) && \
+        (post:estado_presu == 1 || post:estado_presu == 2)) THEN
+    	 clearfield post:cod_barras_anses //indica si es un codigo de barra Anses.
+    END IF
+
+    IF (!TESTFLAG(lib:state_flags,scan_mode))
+        clearfield post:codigo_barras
+        clearfield post:ctas_terceros
+        clearfield post:ctas_terceros_desc
+        clearfield siaf:importe   
+        protfield post:ctas_terceros
+        protfield post:ctas_terceros_desc
+    END IF
+
+    CALL siaf:PRESfecha_hora 
+    IF (RETVAL < 0) THEN
+        RETURN (-2)
+    END IF
+
+    IF (post:PresNro == 0 && siaf:codigo_siaf != 99021  && siaf:codigo_siaf != 99023)
+    	Call siaf:MISCmodo_rapido     			   		
+    ENDIF
+    IF (RETVAL < 0) THEN
+        RETURN (-2)
+    END IF
+
+    IF (post:adt_Modo == "NR")
+        /* ACP-valida que el cliente sea minorista en caso de no ser 
+           teclas rápidas */
+        CALL post:CDSobt_cli_tipo
+        loc_cli_tipo = retval
+        IF (loc_cli_tipo != 2)
+            errmsg common:errmsg_list,"TRANSACCION SOLO DISPONIBLE PARA CLIENTE MINORISTA"
+	    return (-2)
+        END IF
+    END IF
+
+    post:INDPresuD_Dat = OFB:post:CDSTRAN6620_append
+    CALL post:MISCLeo_PresDet
+
+    if (!testflag(tlr:tran_flags,correction)) then
+    	//cgw:protejo importe si es codigo de barra ANSES.
+        if (post:ctas_terceros == "ANSES" && post:codigo_barras.NUMCHARS == 27) then
+            protfield siaf:importe
+        else
+            unprotfield siaf:importe
+        end if
+    	if (post:estado_presu == 1) then
+     	    post:captura_mp = "S" // siaf:adt_tran_med_pago
+     	    protfield siaf:moneda
+     	    siaf:moneda = 00
+     	    clearfield post:medio_pago_desc
+     	elseif (post:estado_presu == 2 || post:estado_presu == 3) then
+     	    	post:captura_mp = "N" // siaf:adt_tran_med_pago
+     	    	protfield siaf:moneda
+     	    	siaf:moneda = 99
+     	    	clearfield post:medio_pago_desc
+    	end if
+    end if
+
+   RETURN (RETVAL)
+
+END SUB
+
+/*******/

@@ -1,0 +1,183 @@
+/****o* Pendientes de agrupación/OFB:post:MISCwri_pagador
+* NOMBRE
+*   OFB:post:MISCwri_pagador
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCwri_pagador
+    LOCAL Total_Gral        LIKE siaf:ImporteSinIva
+    LOCAL Total_Operativo   LIKE siaf:ImporteSinIva
+    LOCAL Total_Pagador     LIKE siaf:ImporteSinIva
+    LOCAL aux_operativo     LIKE post:adt_benef_operativo
+    LOCAL aux_pagador       LIKE common:csr_string
+    LOCAL benef_pagador     LIKE common:csr_string
+    lOCAL aux_NyA           LIKE common:csr_string
+    LOCAL aux_fecha_antigua LIKE fecha
+
+    //Control Corte
+	CLEARFIELD aux_pagador
+	CLEARFIELD aux_operativo	
+	CLEARFIELD aux_fecha_antigua
+
+    //Totales
+	CLEARFIELD Total_Pagador
+	CLEARFIELD Total_Operativo
+	CLEARFIELD Total_Gral
+
+    CDS SELECT FROM "Beneficios" BECOMES "Beneficios_ctx" \
+	    WHERE adt_benef_estado == "E" && \
+              adt_benef_fecha_pag != common:system_date \
+	          sort "PagBenef"
+	CDS FINDFIRST "Beneficios_ctx" NOLOCK
+
+	lib:err_retval = CDSRETVAL
+	IF (CDSRETVAL == -801) THEN
+		CALL siaf:MISCclose_lis
+		RETURN (-2)
+	END IF
+
+    CDS EXTRACT "Beneficios_ctx" \
+		adt_benef_operativo adt_benef_importe \
+		adt_benef_pag_tipoD adt_benef_pag_NroD \
+		adt_benef_fecha_pag
+
+    //Inicializa total general
+	CLEARFIELD Total_Gral
+
+	//Recorre tabla Beneficios con sort por tipo y nro documento pagador y operativo.
+	WHILE (lib:err_retval == 0)
+
+       FPRINT benef_pagador, "%2.2s %11.11s", adt_benef_pag_tipoD, adt_benef_pag_NroD
+	   aux_pagador = benef_pagador
+       aux_operativo = adt_benef_operativo
+
+       aux_fecha_antigua = adt_benef_fecha_pag //fecha mas antigua.
+       //Inicializa totales pagador y operativo.
+       CLEARFIELD Total_Pagador
+	   CLEARFIELD Total_Operativo
+
+       //Imprimo nombre del pagador
+	   adt_pagador_tipodoc = adt_benef_pag_tipoD
+	   adt_pagador_nrodoc = adt_benef_pag_NroD
+	   CALL post:CDSpagador_sel
+	   IF (RETVAL == 0) THEN
+		   FPRINT aux_NyA, "%s %s", adt_pagador_nombre, adt_pagador_apellido
+	   END IF
+	   common:csr_string = "       "
+	   CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+	   common:csr_string = "Pagador: "
+	   FPRINT common:csr_string, "%s %-40.40e", common:csr_string, aux_NyA
+       CALL tes:MISCwrite_file1(1,fld:common:csr_string)        	
+
+       //CONTROL PAGADOR
+	   WHILE (lib:err_retval == 0 && benef_pagador == aux_pagador)
+
+	      aux_operativo = adt_benef_operativo
+          //Inicializa total operativo
+          CLEARFIELD Total_Operativo
+
+          //CONTROL PAGADOR - OPERATVO
+          WHILE (lib:err_retval == 0 && benef_pagador == aux_pagador && adt_benef_operativo == aux_operativo)
+
+             //Verifico si es mas antigua la fecha de asignacion
+			 IF (adt_benef_fecha_pag < aux_fecha_antigua) THEN
+			     aux_fecha_antigua = adt_benef_fecha_pag
+		     END IF
+
+             //Acumulo totales.
+             Total_Operativo = Total_Operativo + post:adt_benef_importe
+			 Total_Pagador = Total_Pagador + post:adt_benef_importe
+			 Total_Gral = Total_Gral + post:adt_benef_importe
+
+             CDS FINDNEXT "Beneficios_ctx" NOLOCK
+             lib:err_retval = CDSRETVAL
+             IF (CDSRETVAL == 0) THEN
+                 CDS EXTRACT "Beneficios_ctx" \
+		             adt_benef_operativo adt_benef_importe \
+		             adt_benef_pag_tipoD adt_benef_pag_NroD \
+		             adt_benef_fecha_pag	
+	                 FPRINT benef_pagador, "%2.2s %11.11s", adt_benef_pag_tipoD, adt_benef_pag_NroD	                 
+             END IF
+
+          END WHILE
+
+          IF (lib:err_retval == 0) THEN
+              //Imprimo el total del operativo
+              CLEARFIELD common:csr_string
+		      common:csr_string = "Operativo " 
+		      FPRINT common:csr_string,"%s %-20.20s", common:csr_string, aux_operativo
+		      FPRINT common:csr_string,"%s %12.12e", common:csr_string, Total_Operativo
+              CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+          END IF    
+
+       END WHILE
+
+       IF (lib:err_retval == 0) THEN
+	       //Imprimo el total del pagador
+	       common:csr_string = "TOTAL:                         "
+	       FPRINT common:csr_string "%s %12.12e", common:csr_string, Total_Pagador
+           CALL tes:MISCwrite_file1(1,fld:common:csr_string)        		
+
+          //Imprimo la fecha mas antigua de asignacion
+          common:csr_string = "Fecha más antigua de asignación: "
+          FPRINT common:csr_string,"%s %-10.10e", common:csr_string, aux_fecha_antigua
+	      CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+
+	      IF (siaf:lineas_cl <= 60) THEN
+              common:csr_string = "       "
+              CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+          END IF
+       END IF   
+
+	END WHILE
+
+	//Imprimo el total del operativo
+	common:csr_string = "Operativo "
+	FPRINT common:csr_string,"%s %-20.20s", common:csr_string, adt_benef_operativo 
+	FPRINT common:csr_string "%s %12.12e", common:csr_string, Total_Operativo
+    CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+        		
+	//Imprimo el total del pagador
+	common:csr_string = "TOTAL:                         "
+	FPRINT common:csr_string "%s %12.12e", common:csr_string, Total_Pagador
+    CALL tes:MISCwrite_file1(1,fld:common:csr_string)        		
+
+    //Imprimo la fecha mas antigua de asignacion
+    common:csr_string = "Fecha más antigua de asignación: "
+    FPRINT common:csr_string,"%s %-10.10e", common:csr_string, aux_fecha_antigua
+	CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+    IF (siaf:lineas_cl <= 60) THEN
+        common:csr_string = "       "
+        CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+    END IF
+
+	//Imprimo el total general
+	common:csr_string = "TOTAL GRAL:                    "
+	FPRINT common:csr_string "%s %12.12e", common:csr_string, Total_Gral
+    CALL tes:MISCwrite_file1(1,fld:common:csr_string)       
+
+    CDS ENDSELECT "Beneficios_ctx"
+
+	CALL siaf:MISCclose_lis
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+
+    FYIMSG CLEAR
+
+END SUB
+
+/*******/

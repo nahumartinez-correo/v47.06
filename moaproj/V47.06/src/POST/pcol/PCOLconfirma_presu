@@ -1,0 +1,151 @@
+/****o* Pendientes de agrupación/OFB:post:PCOLconfirma_presu
+* NOMBRE
+*   OFB:post:PCOLconfirma_presu
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOLconfirma_presu()
+    init 33,0
+    CLEARFIELD post:det_presu_line1
+    CLEARFIELD post:det_presu_line2
+
+    if (estado_presu == 1)
+       /* Habilitar botones */
+       call post:MISCEnabl_BloqN_Act
+
+       ungetkey RT_ESC
+       return
+    end if
+
+	enAnulacion = "N"
+
+	call CDSIncSecSesion(post:PresNro,"TRN",0, enAnulacion)
+   	PreDNroTrn = retval
+	// Rutina de Captura de Medio de Pago Pjm 
+	Call MISCagregoCapturaMed
+	/*Se agrega rutina para generar los Impuestos de Sellos - Gabriel Falciola*/
+	call CDSImpSellPresu
+	/*Se agrega calculo de Bonificaciones Postales - Gabriel Falciola*/
+	/*Debe filtrarse por el Tipo de Cliente !!!!!*/
+	if (post:cli_tipo == 4)
+		call CDSVenUP_Presu
+	endif
+	//Pjm se levante el IvaCod de la Presu dado que se perdia si se realizaba 
+	// Una secuencia mortifera
+	// Tambien se vuelve cargar los valores de post:fecha y post:op_operator_id porque se perdian
+	post:fecha = common:system_date
+	post:op_operator_id = op:op_operator_id
+	Call post:CDSPresu_load_Iva
+	/*rutina para generar los Acrecentamientos y Percepciones - Pablo Wolfus*/
+	call MISCagregTrnPrec
+	/*rutina para generar los Medios de Pago e Ingresos Brutos - Pablo Wolfus*/
+	CALL MISCobt_med_pag_pres
+
+	/*MFM (21/12/2001) Rutina para generar el Interes por financiación 
+	call MISCagregTrnInt*/
+	
+	/*rutina para generar el fin de sesión (99023) - Pablo Wolfus*/
+	CALL MISCAgregaTrnImpre(PresNro)
+
+    /*Se Actualiza el Total del Importe*/
+    call post:CDSTotSesionPag
+    INIT 22,1 //cgw:SC 50170 (Redondea al pasar campo post:importe de 4 dec a otro de 2 dec.)
+    Total_importe = post:importe
+	total_pesos = post:importe
+	INIT 22,0
+	
+	//MFM - OBS246 PUNTO 1 //cuando se cae el sistema restaura el campo de la excepcion
+    Call post:MISCexcepConsumida
+    
+    //MSG ORDEN DE COMPRA
+	call post:MISCmsg_orden_compra
+	
+    /*Dependiendo del signo del importe, seteo un título u otro - Gabriel Falciola*/
+    INIT 22,1 //cgw:SC 50170 (Redondea al pasar campo post:importe de 4 dec a otro de 2 dec.)
+    if (post:importe >= 0)
+    	post:Paga_o_Cobra = "TOTAL A COBRAR:"
+    	post:importe_display = post:importe
+    else
+    	post:Paga_o_Cobra = " TOTAL A PAGAR:"
+    	post:importe_display = post:importe * -1
+    end if
+    INIT 22,0
+
+    refresh post:importe_display
+    refresh post:Paga_o_Cobra
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; FGB 22.5.2001: esta lectura de la PresuDet era innecesaria, y se cargan datos
+; de las trx's que pueden afectar a otras.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;
+;    // PJM 10-07-1998 pedido por marcelo agregado para que pida el importe a pagar
+;    // efectivo pesos y dolares
+;    // pesos
+;    //Call post:MISCcalc_dol_pesos
+;    CALL post:CDSadt_presuact_save
+;    IF (PreDNroTrn > 0)
+;       CALL post:CDSadt_presuact_load
+;       CALL CDSpresudet_load
+;       IF (retval == 0)
+;          CALL MISCLineaPresudet
+;		   La linea permanece vacia hasta que alguien seleccione del combo una transaccion. Ped. 1514 (26-07-00)
+;       END IF
+;    END IF
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+    siaf:codigo_siaf_aux = 99022
+    let siaf:adt_tran_codigo = 99022
+    call siaf:CDSadt_tran_load
+    let tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+    let drv:descrip = siaf:adt_tran_mnemonic
+    let siaf:nombre_transac = siaf:adt_tran_desc
+
+    REFRESH post:det_presu_line1
+    REFRESH post:det_presu_line2
+    REFRESH siaf:nombre_transac
+    REFRESH siaf:codigo_siaf_aux
+
+    REFRESH post:det_presu_line1
+    REFRESH post:det_presu_line2
+    REFRESH post:importe
+//  PDM ENABLEITEM drv:menubar, ALL, 2  // [PAW] --> desactivar menúes.
+
+    /*Deshabilito los botones de Nueva,Borrar,Modificar y 
+    Cancelar la sesion para Giros Masivos*/
+
+    if (testflag(giros:giros_masivos,proc_gir_masivos)) then
+	disablecontrol drv:PBcb2
+	disablecontrol drv:PBcb5
+	let retval = FALSO
+    else
+	enablecontrol drv:PBcb2
+	enablecontrol drv:PBcb5
+	call giros:CDShayRemitos
+    end if
+
+    if (retval == VERDAD)
+	// Tengo remitos en esta sesion, permito modificarlos.
+	enablecontrol drv:PBcb6
+    else
+	// No hay remitos en esta sesion, no hay que modificar.
+	disablecontrol drv:PBcb6
+    endif
+
+    refresh total_pesos
+END SUB
+
+/*******/

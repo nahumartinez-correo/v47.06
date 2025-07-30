@@ -1,0 +1,494 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCjnl_reverso_auto
+* NOMBRE
+*   OFB:siaf:MISCjnl_reverso_auto
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCjnl_reverso_auto
+	LOCAL local_var LIKE	siaf:idx
+	LOCAL sequence_aux LIKE post:jnl_sequence_dire
+	LOCAL moneda_aux LIKE post:monedaNC
+	LOCAL moneda_desc_aux LIKE post:medio_pago_descNC
+	LOCAL nuevo_medpag_aux LIKE post:jnl_nuevo_medpag
+	LOCAL l_sequence_corr LIKE tlr:jnl_sequence_corr
+	LOCAL seq_corr LIKE tlr:jnl_sequence_corr
+	LOCAL l_hostSend LIKE hcomm:INDhost_sndrt
+	LOCAL l_hostRcve LIKE hcomm:INDhost_rcvrt
+	LOCAL l_jnlAppend LIKE tlr:INDjnl_append
+	LOCAL l_docsList LIKE tlr:INDdocs_list
+	LOCAL l_tranName LIKE tlr:INDtran_name
+	LOCAL l_jnlAmount LIKE tlr:jnl_amount_1
+	LOCAL l_medPagDesc LIKE post:medio_pago_desc
+	LOCAL l_moneda LIKE siaf:moneda
+	LOCAL l_impOri LIKE post:importe_origen
+	LOCAL l_fecFact LIKE post:fecFacturacion
+	LOCAL esPFconViaje LIKE siaf:i
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	CALL post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+	esPFconViaje = (RETVAL == 1)
+
+  ;local op_login like tlr:jnl_op_login_id
+
+	// Setear flag de Reversa Automatica. (Para que quede Journalizado)
+	// Para que en JNL se visualice REV.
+	IF (!(siaf:codigo_siaf == 6820 && post:recuperacionReversa))
+		SETFLAG tlr:jnl_tran_flags,correction
+	END IF
+
+	//Para Cancelaciones
+	IF (siaf:codigo_siaf == 70500 || siaf:codigo_siaf == 70502 || \
+		siaf:codigo_siaf == 70505 || siaf:codigo_siaf == 70510 || \
+		siaf:codigo_siaf == 70515 || siaf:codigo_siaf == 70520 || \
+		siaf:codigo_siaf == 70530 || siaf:codigo_siaf == 99170 || \
+		siaf:codigo_siaf == 70540 || siaf:codigo_siaf == 99175 || \
+		siaf:codigo_siaf == 99125 || siaf:codigo_siaf == 99415 ) THEN
+		//70500 - Cancelacion Pago Giro Postal
+		//70502 - Cancelacion Pago Giro Telegrafico
+		//70505 - Cancelacion Transferencia Nacional
+		//70510 - Cancelacion de Chequeras
+		//70515 - Cancelacion de Orden de no pagar
+		//70520 - Cancelacion de Anulaciones
+		//70530 - Cancelacion de Tx de Giros con comprobantes
+		//70540 - Cancelacion de Tx de Giros sin comprobantes
+	
+		//99170 - Cancelacion Venta UP Diferida
+	
+		//99125 - Cancelacion de Cobro de Poliza
+		//99415 - Cancelacion de Uso de Excepcion
+
+		//Asigno fld original de codigo de procesamiento
+		//a cod_proc_tran para el send de cancelacion
+		//de una caida en vuelo.
+
+		giros:cod_proc_tran = giros:codigo_procesamiento
+
+		IF (giros:flia_giro_fld == "W")
+			//Codigo de Procesamiento de Cancelacion de Tran.
+			giros:codigo_procesamiento = 995001
+		ELSE
+			IF (giros:flia_giro_fld == "P" || giros:flia_giro_fld == "T" )
+				//Codigo de Procesamiento de Cancelacion de Tran.
+				giros:codigo_procesamiento = 995002
+			END IF
+		END IF
+		IF (giros:cod_tran_canc == 70000 || giros:cod_tran_canc == 70080 || \
+		    giros:cod_tran_canc == 70130 || giros:cod_tran_canc == 70310) THEN
+		    //70000 - Recepcion de Chequeras.
+		    //70080 - Rechazo de Chequeras.
+		    //70130 - Solicitud ONP de chequeras.
+		    //70310 - Anulacion Chequera Postal No Emitida.
+		    giros:codigo_procesamiento  = 995003
+		END IF
+
+		//cgw:99097 - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+		IF (giros:cod_tran_canc == 99097 || giros:cod_tran_canc == 99098 || giros:cod_tran_canc == 99099) THEN
+			//Cod Procesamiento Cancelacion Pago Vta UP Diferida
+			giros:codigo_procesamiento = 997005
+			IF (giros:cod_proc_tran == 997026) THEN
+				giros:codigo_procesamiento = 997027
+			END IF
+		END IF
+
+		IF (giros:cod_tran_canc == 99125) THEN
+			//Cod. Procesamiento Cancelacion de Cobro de Poliza
+			giros:codigo_procesamiento = 998006
+		END IF
+	END IF
+	//Fin Cancelaciones
+
+  //Asignar Numero de Secuencia de TRAN Directa.
+	tlr:jnl_sequence_corr = tlr:jnl_sequence
+
+	//Asigno SCR de CANCELACION AUTOMATICA DE TRAN.
+	//(REVERSO AUTOMATICO)
+	IF (!(siaf:codigo_siaf == 6820 && (post:recuperacionReversa || esPFconViaje))) THEN
+		tlr:INDdcol_scrn = SCR:siaf:SCRNadt_cancel_auto
+	ELSE
+		tlr:INDdcol_scrn = SCR:post:SCRNnormalizPF
+	END IF
+	
+	//Para tener como referencia que se trata  de una
+	//cancelacion y NO de una REVERSA MANUAL.
+	IF (!(siaf:codigo_siaf == 6820 && post:recuperacionReversa)) THEN
+		IF (siaf:codigo_siaf == 6820) THEN
+			siaf:cancelacion = "REVERSA"
+		ELSE
+			siaf:cancelacion = "CANCELACION"
+		END IF
+	ELSE
+		;siaf:codigo_siaf = 6825
+		CLEARFIELD siaf:cancelacion
+	END IF
+
+	/*
+	//Buscar Operador y obtener un numero de sequencia libre.
+	CALL siaf:busco_operador
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context
+	*/
+	//Numero de Secuencia Disponible.
+
+	tlr:sequence = tlr:sequence + 1
+	IF (tlr:sequence == 0) THEN
+		tlr:sequence = 1
+	END IF
+	FPRINT tlr:jnl_sequence,"%.*d",tlr:jnl_sequence.LENGTH,tlr:sequence
+	/*
+	tlr:jnl_sequence = siaf:secuencia_dir
+	FPRINT tlr:jnl_sequence,"%.*d",tlr:jnl_sequence.length, tlr:jnl_sequence
+	*/
+
+	IF (siaf:fecha.numchars == 0 || siaf:hora.numchars == 0) THEN
+		siaf:fecha = common:system_date
+		siaf:hora  = common:time_of_day
+	END IF
+
+	tlr:jnl_dia_ult_act  = common:system_date
+	tlr:jnl_hora_ult_act = common:time_of_day
+	/*Resguardo el login del operador*/
+	;op_login = op:op_login_id
+	
+	/*Resguardo los valores de la transacción original*/
+	giros:jnl_operator_orig = tlr:jnl_operator
+	giros:jnl_time_orig = tlr:jnl_time
+	giros:jnl_date_orig = tlr:jnl_date
+
+	IF (!(siaf:codigo_siaf == 6820 && post:recuperacionReversa)) THEN
+		siaf:mensaje = "REVERSO AUTOMATICO"
+	ELSE
+		siaf:codigo_siaf = 6825
+		siaf:mensaje = "NORMALIZACION PF"
+	END IF
+    
+  tlr:jnl_branch = op:op_branch_id
+  tlr:jnl_operator = op:op_operator_id
+  ;tlr:jnl_operator_siaf = op:op_operator_id
+  tlr:jnl_operator_siaf = op:op_operator_siaf_id
+  tlr:jnl_bus_date = siaf:fecha
+  tlr:jnl_date = siaf:fecha
+  tlr:jnl_time = siaf:hora
+  tlr:jnl_dia_ult_act  = common:system_date
+  tlr:jnl_hora_ult_act = common:time_of_day
+  tlr:jnl_supervisor = ovr:ovr_sup_id
+  ;op:op_login_id = tlr:jnl_op_login_id
+
+  CLEARFIELD tlr:INDtots_append
+
+  //Asignar para que journalice como 100, luego se
+  //actualiza correctamente, esto es por si se cae mosaic
+  //en forma anormal, y no se envie cancelacion de cancelacion.
+
+  tlr:jnl_status = HOST_REJECTED
+
+  // JLA 21-2-01
+  //Esto es porque si se cae el mosaic en forma anormal no aparezca
+  //la transaccion rechazada cuando tal vez nunca viajo.
+  //La cancelacion de cancelacion no se produce.
+  //tlr:jnl_status = MEMO
+
+  IF (siaf:codigo_siaf == 6825) THEN
+		l_sequence_corr = tlr:jnl_sequence_corr
+		l_hostSend = hcomm:INDhost_sndrt
+		l_hostRcve = hcomm:INDhost_rcvrt
+		l_jnlAppend = tlr:INDjnl_append
+		l_docsList = tlr:INDdocs_list
+		l_tranName = tlr:INDtran_name
+		l_jnlAmount = tlr:jnl_amount_1
+		l_medPagDesc = post:medio_pago_desc
+		l_moneda = siaf:moneda
+		l_impOri = post:importe_origen
+		l_fecFact = post:fecFacturacion
+
+		CLEARFIELD tlr:jnl_sequence_corr
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+		CLEARFIELD tlr:INDjnl_append
+		CLEARFIELD tlr:INDdocs_list
+		CLEARFIELD tlr:INDtran_name
+		CLEARFIELD tlr:jnl_amount_1
+		CLEARFIELD post:medio_pago_desc
+		CLEARFIELD siaf:moneda
+		CLEARFIELD post:importe_origen
+		CLEARFIELD post:fecFacturacion
+		siaf:jnl_codigo_siaf = 6825
+		siaf:nombre_transac = "NORMALIZACION PF"
+   END IF
+
+  CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context
+
+  CALL CSR:proc_list,F_APPEND,DSC:tlr:aux_context,LST:tlr:DBFMheader,2
+  CALL CSR:proc_list(F_APPEND,DSC:tlr:aux_context,LST:tlr:DBFMcustom_header,2)
+  CALL CSR:proc_list(F_APPEND,DSC:tlr:aux_context,LST:tlr:DBFMcustom_append,2)
+
+	IF (siaf:codigo_siaf == 6825) THEN
+		tlr:jnl_sequence_corr = l_sequence_corr
+		hcomm:INDhost_sndrt = l_hostSend
+		hcomm:INDhost_rcvrt = l_hostRcve
+		tlr:INDjnl_append = l_jnlAppend
+		tlr:INDdocs_list = l_docsList
+		tlr:INDtran_name = l_tranName
+		tlr:jnl_amount_1 = l_jnlAmount
+		post:medio_pago_desc = l_medPagDesc
+		siaf:moneda = l_moneda
+		post:importe_origen = l_impOri
+		post:fecFacturacion = l_fecFact
+		siaf:codigo_siaf = 6820
+		jnl_codigo_siaf = 6820
+		
+		//gbp:NI50455 CORREO PAGOS
+		//siaf:nombre_transac = "RECAUDACION DE PAGO FACIL"
+		FPRINT l_descPagoFacil,"RECAUDACION DE %s",DSC:post:descPagoFacil
+		siaf:nombre_transac = l_descPagoFacil
+	END IF
+
+	IF (siaf:codigo_siaf == 6820) THEN
+		IF (post:recuperacionReversa) THEN
+			CDS APPEND DSC:tlr:aux_context  \
+				post:PresNro as post:PresNroOrig
+		ELSE
+	    CDS APPEND DSC:tlr:aux_context  \
+				siaf:importe \
+				post:sf1_serv_desc \
+				post:sf1_codbarras \
+				post:sf1_secuencia  \
+				post:sf1_id_terminal \
+				post:sf1_id_paycode  \
+				post:sf1_cta_nro     \
+				post:sf1_fec_vto     \
+				post:sf1_med_pago    \
+				post:sf1_moneda      \
+				post:sf1_firma       \
+				post:sf1_tipo_vto    \
+				post:sf1_nro_lote    \
+				post:sf1_nro_secuencia  \
+				post:sf1_tipo_ingreso   \
+				post:sf1_id_banco       \
+				post:sf1_nro_asociado
+
+	    //PAW 16.7.2003: Campos para iPlan
+	    post:PFcaidaEnVuelo = false
+	    CDS APPEND DSC:tlr:aux_context \
+				post:result_pin \
+				post:result_id \
+				post:result_id_orig \
+				hcomm:MessageId \
+				hcomm:orig_line_status \
+				post:terminal \
+				post:operador_tmpl \
+				post:ticket	\
+				post:PFcaidaEnVuelo
+
+	    //SBA 16.1.2004: Importe con el que se hace el viaje a Iplan
+	    //Utility
+	    CDS APPEND DSC:tlr:aux_context \
+				post:importe_aux \
+				post:sf1_utility
+
+	    //FGB 8.3.2001: Modificacion hecha para Movicom Prepaga
+	    CDS APPEND DSC:tlr:aux_context \
+				post:sf1_codbarras_nuevo
+
+	    post:total_pesos = siaf:importe2
+	    //MLD Restauro el importe maximo en bonos.
+	    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		 		post:sf1_imp_max_bono = post:imp_max_bono_aux
+	    END IF
+	    //FGB 7.9.2001: Modificacion hecha para pago de servicios con bonos provinciales
+	    CDS APPEND DSC:tlr:aux_context  \
+				post:sf1_imp_max_bono \
+				post:total_bonos \
+				post:total_pesos
+
+			//Agregado para saber si este registro debe ser procesado o no por la interfaz
+			CDS APPEND DSC:tlr:aux_context \
+				post:ProcesaInterfaz
+
+	    //MLD Se agregan campos
+	    LET post:sf1_version_plataf = dsc:post:VersionPlataf
+	    CDS APPEND DSC:tlr:aux_context \
+				post:sf1_version_bobs \
+				post:sf1_version_plataf \
+				post:sf1_tipo_transac \
+				post:sf1_cantidad
+
+	    //MLD agrego arrays de medios de pago
+			local_var = 0
+			DO
+				IF (local_var >= post:sf1_cantidad) THEN
+					BREAK
+				END IF
+				CDS APPEND DSC:tlr:aux_context \
+					post:sf1_med_pago_vec[local_var] \
+					post:sf1_moneda_vec[local_var] \
+				  post:sf1_importe_vec[local_var]
+
+		  	local_var = local_var + 1
+	    LOOP
+
+	    CDS APPEND DSC:tlr:aux_context  \
+				post:sf1_nro_autoriza   \
+				post:sf1_clearing       \
+				post:sf1_reimpresion    \
+				post:sf1_comprobante    \
+				post:sf1_ticket
+
+	    CDS APPEND DSC:tlr:aux_context  tes:es_tesoro \
+				post:NroCompPago \
+				post:NroCompPago2
+
+
+			/*Resguardo los campos por si acaso estoy en Anulacion, asi no pierdo los
+			valores originales de los mismos. - Gabriel Falciola*/
+			sequence_aux = post:jnl_sequence_dire
+			moneda_aux = post:monedaNC
+			moneda_desc_aux = post:medio_pago_descNC
+			nuevo_medpag_aux = post:jnl_nuevo_medpag
+			/*Este campo es necesario para numerar secuencialmente las transacciones que se van
+			generando tanto en una re-impresión o una anulación. De esta forma en caso de una
+			caída, es posible saber si una tran. ya fue journalizada o no. Básicamente esto fue
+			realizado para porder diferenciar la journalización múltiple de casos especiales como
+			templates, transacciones con TT, Venta de Especies Valorizadas y todo lo que se le
+			parezca. Se inicializa en 1 debido a que no todas las transacciones van a grabarlo y
+			es necesario saberlo mediante un valor específico - Gabriel Falciola*/
+			post:contador_directas = 1
+
+	    CLEARFIELD post:jnl_sequence_dire
+	    CLEARFIELD post:monedaNC
+	    CLEARFIELD post:medio_pago_descNC
+	    CLEARFIELD post:jnl_nuevo_medpag
+
+	    CDS APPEND DSC:tlr:aux_context  \
+				post:jnl_sequence_dire \
+				post:monedaNC \
+				post:medio_pago_descNC \
+				post:jnl_nuevo_medpag \
+				siaf:afecta_efectivo \
+				post:contador_directas
+
+	    post:jnl_sequence_dire = sequence_aux
+	    post:monedaNC = moneda_aux
+	    post:medio_pago_descNC = moneda_desc_aux
+	    post:jnl_nuevo_medpag = nuevo_medpag_aux
+
+	    //FGB 1.11.2000: Agregado para el tema de 2do codigo de barra
+	    CDS APPEND DSC:tlr:aux_context \
+				post:cant_barras \
+				post:sf1_codbarras1 \
+				post:sf1_codbarras2 \
+				post:sf1_segunda_barra \
+
+	    //MLD 14.01.2002: Agregado para el listado
+	    CDS APPEND DSC:tlr:aux_context \
+				post:totales_mp_sf1
+		END IF
+	ELSE
+		CDS APPEND DSC:tlr:aux_context \
+			FLD:giros:CodRespuesta_comm \
+			FLD:post:nro_autorizac \
+			FLD:siaf:cancelacion \
+			FLD:giros:codigo_procesamiento \
+			FLD:giros:codigo_anulacion \
+			FLD:giros:clave_hdr_giros \
+			FLD:giros:hora_viaje
+
+    	CDS APPEND DSC:tlr:aux_context \
+		    giros:jnl_operator_orig \
+		    giros:jnl_time_orig \
+		    giros:jnl_date_orig
+
+			/*IF (siaf:codigo_siaf == 99098 || siaf:codigo_siaf == 99099 || \
+			siaf:codigo_siaf == 99190 || siaf:codigo_siaf == 99195 || \
+			siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99205 || \
+			siaf:codigo_siaf == 99170 || siaf:codigo_siaf == 99175 || \
+			siaf:codigo_siaf == 99410 || siaf:codigo_siaf == 99415 || \
+			siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99245) THEN
+       */
+
+		SELECT (siaf:codigo_siaf)
+			CASE 99097 //cgw:99097 - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+			CASE 99098
+			CASE 99099		
+			CASE 99190
+			CASE 99195
+			CASE 99200
+			CASE 99205
+			CASE 99170
+			CASE 99175
+			CASE 99410
+			CASE 99415
+			CASE 99240
+			CASE 99242
+			CASE 99245
+			CASE 7616 
+			CASE 7536 
+			CASE 8950
+			CASE 8726 
+			CASE 8756 
+      //CASE 7580 ;Debito en Cuenta
+      CASE 7590 // cgw:Debito en Cuenta. Cheque depositado rechazado.
+      CASE 9346
+      CASE 9356
+      CASE 7646
+      CASE 7566
+      CASE 9326
+      CASE 9336
+      CASE 99430 //cliente medio
+      CASE 99440
+      CASE 99453
+      CASE 99454
+      CASE 99460
+      CASE 99461
+      CASE 99462
+      CASE 99470
+				CDS APPEND DSC:tlr:aux_context \
+					FLD:giros:dia_viaje
+				BREAK
+			CASE ELSE
+		END SELECT
+		SELECT (siaf:codigo_siaf)
+			CASE 8726 //SAL. DE CHEQ. DE TES A TES. PROV.
+			CASE 8756 //SAL. DE CHEQ. DE CAJA A TES. PROV.
+			CASE 8950 //ENTREGA DE BOLSAS 
+				CDS APPEND DSC:tlr:aux_context \
+					FLD:tes:fecha_valor \
+					FLD:post:RegularizaContingen \
+					FLD:siaf:mensaje
+			BREAK	
+		END SELECT
+		
+		//Poliza - (ver si va)
+		IF (siaf:codigo_siaf == 99124 || siaf:codigo_siaf == 99125) THEN
+			CDS APPEND DSC:tlr:aux_context \
+				FLD:giros:dia_viaje
+		END IF
+
+	END IF
+
+	CDS INSERT DSC:tlr:aux_context  NOLOCK
+	CDS ENDSELECT DSC:tlr:aux_context
+	CLEARFIELD siaf:mensaje
+	RESETFLAG tlr:jnl_tran_flags,correction
+	CLEARFIELD siaf:cancelacion // FGB 01.07.05 - PS9348
+	
+	/*Restauro el login del operador*/
+	;op:op_login_id = op_login
+	
+	tlr:jnl_operator = giros:jnl_operator_orig
+	tlr:jnl_time = giros:jnl_time_orig
+	tlr:jnl_date = giros:jnl_date_orig
+END SUB
+
+/*******/

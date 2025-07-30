@@ -1,0 +1,68 @@
+/****o* Pendientes de agrupación/OFB:post:MISCTrato_Pieza
+* NOMBRE
+*   OFB:post:MISCTrato_Pieza
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCTrato_Pieza
+
+	/*ACTUALIZO LA PIEZA EN STOCKP*/  
+    CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:Stockp_ctx \
+    WHERE post:adt_stockp_pieza == post:id_excepcion
+    CDS FINDFIRST DSC:Stockp_ctx LOCK
+    IF (CDSRETVAL == 0) THEN
+    	CDS CLEARBUFFER DSC:Stockp_ctx
+        adt_stockp_excepcion = "S"
+        adt_stockp_existe = existe_fisicamente
+        IF (existe_fisicamente == "N") THEN
+        	adt_stockp_Baja = "S"
+        	FPRINT post:adt_stockp_Observ,"Pieza con Marca de Excepcion, Acta:%4.4e", nro_acta
+        	CDS APPEND DSC:Stockp_ctx adt_stockp_excepcion adt_stockp_Baja \
+        	adt_stockp_Observ adt_stockp_existe
+        ELSE
+			CDS APPEND DSC:Stockp_ctx adt_stockp_excepcion adt_stockp_existe
+		END IF
+        CDS UPDATE DSC:Stockp_ctx LOCK
+        CDS UNLOCK DSC:Stockp_ctx
+        CDS ENDSELECT DSC:Stockp_ctx
+	ELSE     
+    	CDS UNLOCK DSC:Stockp_ctx
+        CDS ENDSELECT DSC:Stockp_ctx
+        /*ACTUALIZO LA PIEZA EN EL JOURNAL*/
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+        WHERE tlr:jnl_branch == op:op_branch_id && \
+        tlr:jnl_date == fecha && \
+        tlr:jnl_sequence_corr == "" && \
+        tlr:jnl_status < 100 && \
+        post:track_trace == post:id_excepcion         
+        /*tlr:jnl_date == common:system_date && \*/
+        CDS FINDFIRST DSC:journal_ctx1 LOCK
+        IF (CDSRETVAL == 0) THEN
+        	jnl_marca_excep = "S"
+        	jnl_excep_existe = existe_fisicamente
+            CDS CLEARBUFFER DSC:journal_ctx1
+            CDS APPEND DSC:journal_ctx1 jnl_marca_excep jnl_excep_existe
+            CDS UPDATE DSC:journal_ctx1 LOCK
+            CDS UNLOCK DSC:journal_ctx1
+            CDS ENDSELECT DSC:journal_ctx1
+        	/*Actualizo los scaneos O que actúan como filtros en la expedición*/
+        	CALL MISCAct_Scaneos("E",0)    
+        END IF
+    END IF
+    
+END SUB
+
+/*******/

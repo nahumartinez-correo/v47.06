@@ -1,0 +1,368 @@
+/****o* Lista de Giros/OFB:giros:MISClst_RepCliLG
+* NOMBRE
+*   OFB:giros:MISClst_RepCliLG
+* DESCRIPCION
+*   Graba en un archivo el reporte de Lista de Giros ordenado por Cliente, Lista de Giro.
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCrepListaGiro
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1252
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISClst_RepCliLG(link_num)
+
+    LOCAL l_err_cds           LIKE lib:err_retval
+	LOCAL line_csr_aux        LIKE common:csr_string_aux
+	LOCAL clave_Cli           LIKE common:csr_string_aux
+	LOCAL clave_Cli_ant       LIKE common:csr_string_aux
+	LOCAL clave_LG            LIKE common:csr_string_aux
+	LOCAL clave_LG_ant  	  LIKE common:csr_string_aux	
+	LOCAL l_NroCuitEmis_fld   LIKE giros:NroCuitEmis_fld
+	LOCAL l_climed_numero_lg  LIKE giros:climed_numero_lg
+	LOCAL l_nro_sesion_lg     LIKE giros:nro_sesion_lg
+	LOCAL l_tipo_giro_fld	  LIKE giros:tipo_giro_fld
+	LOCAL l_estadoRep_lg 	  LIKE giros:estadoRep_lg
+	LOCAL l_fechaRep_lg		  LIKE giros:fec_d
+	LOCAL l_RazonSocEmis_fld  LIKE post:CloRazon
+	LOCAL l_estado            LIKE giros:estado_giros_lg
+	LOCAL l_ImpTot      	  LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto     	  LIKE giros:ImpTotGir_lg
+    LOCAL l_cont        	  LIKE giros:cantidad_lg
+	LOCAL l_ImpTot_emi_lg     LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto_emi_lg    LIKE giros:ImpTotGir_lg
+    LOCAL l_cont_emi_lg       LIKE giros:cantidad_lg
+    LOCAL l_ImpTot_pend_lg    LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto_pend_lg   LIKE giros:ImpTotGir_lg
+    LOCAL l_cont_pend_lg      LIKE giros:cantidad_lg    
+    LOCAL l_ImpTot_emi_gral   LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto_emi_gral  LIKE giros:ImpTotGir_lg
+    LOCAL l_cont_emi_gral     LIKE giros:cantidad_lg    
+    LOCAL l_ImpTot_pend_gral  LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto_pend_gral LIKE giros:ImpTotGir_lg
+    LOCAL l_cont_pend_gral    LIKE giros:cantidad_lg
+    LOCAL l_primer_regLG      LIKE giros:tipo_giro_fld
+
+	l_ImpTot_pend_gral = 0
+	l_ImpNeto_pend_gral = 0
+	l_cont_pend_gral = 0
+	l_ImpTot_emi_gral = 0
+	l_ImpNeto_emi_gral = 0
+	l_cont_emi_gral = 0
+
+    l_ImpTot_pend_lg = 0
+	l_ImpNeto_pend_lg = 0
+	l_cont_pend_lg = 0
+	l_ImpTot_emi_lg = 0
+	l_ImpNeto_emi_lg = 0
+	l_cont_emi_lg = 0
+
+    CDS FINDFIRST "sesion_lg_ctx" NOLOCK
+    LET lib:err_retval = CDSRETVAL
+    
+    IF (lib:err_retval == -801) THEN
+        //CDS UNLOCK "sesion_lg_ctx"
+        CDS ENDSELECT "sesion_lg_ctx"
+        MSGBOX "NO HAY MOVIMIENTOS A REPORTAR",0x00,"Aviso"   
+        RETURN (-2)
+    END IF 
+
+	CDS EXTRACT "sesion_lg_ctx" \
+		giros:NroCuitEmis_fld INTO l_NroCuitEmis_fld \
+		giros:climed_numero_lg INTO l_climed_numero_lg \
+		giros:nro_sesion_lg INTO l_nro_sesion_lg \
+		giros:tipo_giro_fld INTO l_tipo_giro_fld \
+		giros:estadoRep_lg INTO l_estadoRep_lg \
+		giros:fechaRep_lg INTO l_fechaRep_lg 
+
+	CLEARFIELD clave_Cli		
+	CLEARFIELD clave_LG
+    //NRO CLI
+	FPRINT clave_Cli "%-11.11s" , l_NroCuitEmis_fld
+	//NRO CLI - SUBCUENTA - NRO LISTA
+	FPRINT clave_LG "%-11.11s%-11.11s%-9.9s", l_NroCuitEmis_fld, l_climed_numero_lg, l_nro_sesion_lg
+
+	//Reserva claves para corte de control
+    clave_Cli_ant = clave_Cli
+    clave_LG_ant = clave_LG
+    l_primer_regLG = "S" //cgw:11-08-2010  Control encabezado para imprimir 1er detalle registro LG
+    
+	WHILE (lib:err_retval == 0)
+
+		WHILE (lib:err_retval == 0 && clave_Cli == clave_Cli_ant)
+
+               WHILE (lib:err_retval == 0 && clave_LG == clave_LG_ant)
+        
+        			  //Totaliza importe neto,importe total, cantidad de giros.
+					  //para Nro cliente - Subcuenta - Nro Lista - Tipo Giro - Estado - Fecha
+        			  CDS SELECT FROM "sesion_lg" BECOMES "ReporteLG_ctx" \
+            			  WHERE giros:NroCuitEmis_fld == l_NroCuitEmis_fld && \
+            			  giros:climed_numero_lg == l_climed_numero_lg && \
+            			  giros:nro_sesion_lg == l_nro_sesion_lg && \
+            			  giros:tipo_giro_fld == l_tipo_giro_fld && \
+            			  giros:estadoRep_lg == l_estadoRep_lg && \
+            			  giros:fechaRep_lg == l_fechaRep_lg SORT "RepCliLG"
+
+        			  CDS FINDFIRST "ReporteLG_ctx" NOLOCK
+        			  LET l_err_cds = CDSRETVAL
+
+					  IF (l_err_cds < 0) THEN
+    					  CDS ENDSELECT "ReporteLG_ctx"
+    					  RETURN (-2)
+    				  END IF
+    				  
+        			  CLEARFIELD line_csr_aux
+        			  CLEARFIELD l_ImpTot
+        			  CLEARFIELD l_ImpNeto
+        			  CLEARFIELD l_cont
+
+					  CDS AGGREGATE "ReporteLG_ctx" \
+					      SUM giros:ImporteTotal_fld as l_ImpTot  \
+						  SUM giros:ImporteNeto as l_ImpNeto \
+						  COUNT giros:nro_sesion_lg as l_cont
+
+					  CDS EXTRACT "ReporteLG_ctx" l_ImpTot l_ImpNeto l_cont
+
+					  SELECT (l_estadoRep_lg)
+						CASE "E"
+		    				l_estado = "EMITIDO"
+		    				//Actualizo totales lista giros emitidos
+							l_ImpTot_emi_lg = l_ImpTot_emi_lg + l_ImpTot
+					  		l_ImpNeto_emi_lg = l_ImpNeto_emi_lg + l_ImpNeto
+					  		l_cont_emi_lg = l_cont_emi_lg + l_cont
+					  		//Actualizo totales generales emitidos
+					  		l_ImpTot_emi_gral = l_ImpTot_emi_gral + l_ImpTot
+					  		l_ImpNeto_emi_gral = l_ImpNeto_emi_gral + l_ImpNeto
+					  		l_cont_emi_gral = l_cont_emi_gral + l_cont
+					    	BREAK
+						CASE "I"
+							l_estado = "PENDIENTE"
+							//Actualizo totales lista giros pendientes
+							l_ImpTot_pend_lg = l_ImpTot_pend_lg + l_ImpTot
+					  		l_ImpNeto_pend_lg = l_ImpNeto_pend_lg + l_ImpNeto
+					  		l_cont_pend_lg = l_cont_pend_lg + l_cont
+					  		//Actualizo totales generales pendientes
+					  		l_ImpTot_pend_gral = l_ImpTot_pend_gral + l_ImpTot
+					  		l_ImpNeto_pend_gral = l_ImpNeto_pend_gral + l_ImpNeto
+					  		l_cont_pend_gral = l_cont_pend_gral + l_cont
+							BREAK
+						CASE ELSE
+							//No se puede dar, si ocurre hay un error.
+		    				CLEARFIELD l_estado
+		    				BREAK
+						END SELECT
+						call CSR:trimfield(l_estado)
+					  
+					  //cgw:11-08-2010. Tratamiento de impresion detalle.
+					  /*gpb:12-08-2010 cambio la condicion
+					  //IF (l_primer_regLG == "S" || giros:es_primer_reg_LG == "S") THEN
+					  */
+					  //gpb:12-08-2010 . Tratamiento de impresion detalle.
+					  //Solo valido si es el primer registro de la lista
+					  //Lo hago por si se da el caso en que los registros de una lista me queden en una 
+					  //hoja y necesite un salto de pagina para mostrar los registros restantes.
+					  IF (l_primer_regLG == "S") THEN    
+
+                            giros:climed_numero_lg = SUBSTR(clave_LG_ant,11,11)
+                            CALL post:MISCFtrim(giros:climed_numero_lg)
+                            
+                            //gpb:AUT-1454
+                            CALL giros:MISClst_RazSoc_LG  //obtiene la Razon Social del Cliente Medio de la cabec_lg.
+                            l_RazonSocEmis_fld = giros:RazonSocEmis_fld
+                            
+                            //CALL giros:MISClst_GirEmi_Raz //obtiene la Razon Social del Cliente Medio de la CliMed.
+                            //l_RazonSocEmis_fld = post:CloRazon
+
+							//Imprime el detalle de la lista en el primer registro del corte de la misma.
+					  	    FPRINT line_csr_aux,\
+					  			"%-11.11s %-11.11s %-50.50s %-9.9s %-3.3s%-9.9s %8e", \
+					  			l_NroCuitEmis_fld, l_climed_numero_lg, l_RazonSocEmis_fld, l_nro_sesion_lg, \
+					  			l_tipo_giro_fld, l_estado, l_fechaRep_lg
+					  ELSE
+					  	    FPRINT line_csr_aux,\
+					  	    "%11.11s %11.11s %50.50s %9.9s %-3.3s%-9.9s %8e", \
+					  	    " ", " ", " ", " ", \
+					  	    l_tipo_giro_fld, l_estado, l_fechaRep_lg
+					  END IF
+					  l_primer_regLG = " " //Limpia marca para que no imprima el detalle de LG.
+					  giros:es_primer_reg_LG = " " //Limpia marca de control de imprimir detalle de LG luego de encabezado corte pagina.
+					  FPRINT line_csr_aux, "%s  %6.6s %16.16e %16.16e", \
+						line_csr_aux, l_cont, l_ImpNeto, l_ImpTot
+                        
+					  	//graba linea detalle en archivo.
+					  	CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+
+					  	//CDS UNLOCK "ReporteLG_ctx
+					  	CDS ENDSELECT "ReporteLG_ctx"
+
+					  	CDS FINDNEXT "sesion_lg_ctx" NOLOCK
+					  	lib:err_retval = CDSRETVAL
+						IF (lib:err_retval == 0) THEN
+					  	    CDS EXTRACT "sesion_lg_ctx" \
+								giros:NroCuitEmis_fld INTO l_NroCuitEmis_fld \
+								giros:climed_numero_lg INTO l_climed_numero_lg \
+								giros:nro_sesion_lg INTO l_nro_sesion_lg \
+								giros:tipo_giro_fld INTO l_tipo_giro_fld \
+								giros:estadoRep_lg INTO l_estadoRep_lg \
+								giros:fechaRep_lg INTO l_fechaRep_lg 
+
+							CLEARFIELD clave_Cli		
+							CLEARFIELD clave_LG
+        					//NRO CLI
+							FPRINT clave_Cli "%-11.11s" , l_NroCuitEmis_fld
+							//NRO CLI - SUBCUENTA - NRO LISTA
+							FPRINT clave_LG "%-11.11s%-11.11s%-9.9s", \
+							l_NroCuitEmis_fld, l_climed_numero_lg, l_nro_sesion_lg
+						END IF
+			   END WHILE
+			   IF (lib:err_retval == 0) THEN
+			   	   //Corte Lista de Giro
+			   	   clave_LG_ant = clave_LG //Reserva clave LG para corte de control
+			   	   l_primer_regLG = "S"
+			   	   //Imprimir totales Lista de Giros.
+				   CLEARFIELD line_csr_aux
+				   IF (siaf:pantalla_impreso == "I") THEN
+				   	   FPRINT line_csr_aux,\
+				   	   "<st>1</st>                                                                                               TOTAL EMITIDO LISTA     %6.6s  %16.16e  %16.16e" \
+				   	   l_cont_emi_lg, l_ImpNeto_emi_lg, l_ImpTot_emi_lg
+				   ELSE
+				   	   fprint line_csr_aux,\
+				   	   "                                                                                        TOTAL EMITIDO LISTA   %6.6s %16.16e %16.16e" \
+				   	   l_cont_emi_lg, l_ImpNeto_emi_lg, l_ImpTot_emi_lg
+				   END IF
+
+				   //gpb-19-08-2010
+				   //imprimo totales Lista de Giros cuyas cantidades sean mayor a cero
+				   IF (l_cont_emi_lg > 0) THEN
+				       CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+				   END IF
+				   
+				   CLEARFIELD line_csr_aux
+				   IF (siaf:pantalla_impreso == "I") THEN
+                   	   FPRINT line_csr_aux,\
+				   	   "<st>1</st>                                                                                               TOTAL PENDIENTE LISTA   %6.6s  %16.16e  %16.16e" \
+				   	   l_cont_pend_lg, l_ImpNeto_pend_lg, l_ImpTot_pend_lg
+				   ELSE
+				   	   FPRINT line_csr_aux,\
+				   	   "                                                                                        TOTAL PENDIENTE LISTA %6.6s %16.16e %16.16e" \
+				   	   l_cont_pend_lg, l_ImpNeto_pend_lg, l_ImpTot_pend_lg
+				   END IF
+				   
+				   	//gpb-19-08-2010
+				   //imprimo totales Lista de Giros cuyas cantidades sean mayor a cero
+				   IF (l_cont_pend_lg > 0) THEN
+				       CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+                   END IF 
+                    
+				   //gpb:12-08-2010 INICI0
+        		   //Imprime linea en blanco de separacion
+        		   CLEARFIELD line_csr_aux
+        		   FPRINT line_csr_aux, " "
+        		   CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+			       //gpb:12-08-2010 FIN
+				   
+			   	   //Inicializa totales Lista de Giros.
+			   	   l_ImpTot_pend_lg = 0
+				   l_ImpNeto_pend_lg = 0
+				   l_cont_pend_lg = 0
+				   l_ImpTot_emi_lg = 0
+				   l_ImpNeto_emi_lg = 0
+				   l_cont_emi_lg = 0
+			   END IF
+	    END WHILE
+	    IF (lib:err_retval == 0) THEN
+			//Corte Cliente
+			clave_Cli_ant = clave_Cli //Reserva clave Cliente para corte de control
+			
+			/*gpb:12-08-2010 Esto lo tengo que hacer cuando imprimo la linea "Total Pendiente Lista" dentro del WHILE
+			//Imprime linea en blanco de separacion
+			CLEARFIELD line_csr_aux
+			FPRINT line_csr_aux, " "
+			CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+			*/
+		END IF
+	END WHILE
+	
+	//Imprimir totales Lista de Giros.
+	CLEARFIELD line_csr_aux
+	IF (siaf:pantalla_impreso == "I") THEN
+		FPRINT line_csr_aux,\
+		"<st>1</st>                                                                                               TOTAL EMITIDO LISTA     %6.6s  %16.16e  %16.16e" \
+		l_cont_emi_lg, l_ImpNeto_emi_lg, l_ImpTot_emi_lg
+	ELSE
+		fprint line_csr_aux,\
+		"                                                                                        TOTAL EMITIDO LISTA   %6.6s %16.16e %16.16e" \
+		l_cont_emi_lg, l_ImpNeto_emi_lg, l_ImpTot_emi_lg
+	END IF	
+
+	//gpb-AUT-1249
+	IF (l_cont_emi_lg > 0) THEN   
+	    CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+	END IF
+	
+	CLEARFIELD line_csr_aux
+	IF (siaf:pantalla_impreso == "I") THEN
+        FPRINT line_csr_aux,\
+		"<st>1</st>                                                                                               TOTAL PENDIENTE LISTA   %6.6s  %16.16e  %16.16e" \
+		l_cont_pend_lg, l_ImpNeto_pend_lg, l_ImpTot_pend_lg
+	ELSE
+		FPRINT line_csr_aux,\
+		"                                                                                        TOTAL PENDIENTE LISTA %6.6s %16.16e %16.16e" \
+		l_cont_pend_lg, l_ImpNeto_pend_lg, l_ImpTot_pend_lg
+	END IF
+
+	//gpb-AUT-1249
+	IF (l_cont_pend_lg > 0) THEN 
+	    CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+    END IF
+
+	//Imprimir totales generales.
+	CLEARFIELD line_csr_aux
+	FPRINT line_csr_aux, " "
+	CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+	CLEARFIELD line_csr_aux
+	IF (siaf:pantalla_impreso == "I") THEN
+		FPRINT line_csr_aux,\
+		"<st>1</st>                                                                                               TOTAL EMITIDO           %6.6s  %16.16e  %16.16e" \
+		l_cont_emi_gral, l_ImpNeto_emi_gral, l_ImpTot_emi_gral
+	ELSE
+		FPRINT line_csr_aux,\
+		"                                                                                        TOTAL EMITIDO         %6.6s %16.16e %16.16e" \
+		l_cont_emi_gral, l_ImpNeto_emi_gral, l_ImpTot_emi_gral
+	END IF
+
+    //gpb:AUT-1460
+    IF (l_cont_emi_gral > 0) THEN	
+	    CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+	END  IF
+	
+	CLEARFIELD line_csr_aux
+	IF (siaf:pantalla_impreso == "I") THEN
+		FPRINT line_csr_aux,\
+		"<st>1</st>                                                                                               TOTAL PENDIENTE         %6.6s  %16.16e  %16.16e" \
+		l_cont_pend_gral, l_ImpNeto_pend_gral, l_ImpTot_pend_gral
+	ELSE
+		FPRINT line_csr_aux,\
+		"                                                                                        TOTAL PENDIENTE       %6.6s %16.16e %16.16e" \
+		l_cont_pend_gral, l_ImpNeto_pend_gral, l_ImpTot_pend_gral
+	END IF
+    
+    //gpb:AUT-1460
+    IF (l_cont_pend_gral > 0) THEN
+    	//graba linea totales lista en archivo.
+    	CALL giros:MISCwrite_file_ipa2(link_num,line_csr_aux)
+    END IF
+
+	CDS UNLOCK "sesion_lg_ctx"
+	CDS ENDSELECT "sesion_lg_ctx"
+
+END SUB
+
+/*******/

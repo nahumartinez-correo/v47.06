@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:post:MISCpic_estCM_cli
+* NOMBRE
+*   OFB:post:MISCpic_estCM_cli
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCpic_estCM_cli
+    LOCAL idx_item  LIKE siaf:i
+    LOCAL factnro   LIKE factura_nro
+    LOCAL factimp   LIKE importe_factura
+    LOCAL factinte  LIKE factura_intereses
+    LOCAL factfecha LIKE common:csr_string
+    LOCAL rem_ffact LIKE post:remito_fec_emis
+    LOCAL factvarl  LIKE siaf:importe_aux  ;Destino_aux
+    LOCAL fact_cons LIKE post:importe_consumo
+
+    CLEARFIELD common:csr_string
+  
+	//Adelantos
+	if (post:anticipo_CM > 0) then
+		post:fecha_vencimiento = post:fecha_aux
+		fprint common:csr_string,\
+		    "%11.11s %11.11s   %40.40s  %20.20s %16.16e  %10.10e", \
+			post:CloCuit,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM,post:anticipo_CM,post:fecha_vencimiento
+		call csr:f_saaddpl(DSC:adelantos,common:csr_string)
+	end if
+	
+	//Bloqueos
+	if (bloqueo_CM == "S") then
+    	fprint common:csr_string,\
+		    "%11.11s %11.11s   %50.50s %30.30s ", \
+			post:CloCuit,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM
+		call csr:f_saaddpl(DSC:bloqueos,common:csr_string)
+	endif
+	
+    //Facturas
+    if (post:modalidad_CM != "S") then
+	    idx_item = PL_GETITEM
+    	DO
+        	/*Leer picklist de facturas*/
+	        //call csr:myPickcontrol(DSC:facturas_cliente,common:csr_string,idx_item)
+	        call csr:myPickcontrol(DSC:facturas_cliente,post:csr_string_250,idx_item)
+    	    if (retval < 0)
+        	    break
+        	end if
+           
+	        factnro     = substr(post:csr_string_250,1,15)
+    	    factimp     = substr(post:csr_string_250,17,16)
+        	factinte    = substr(post:csr_string_250,86,16)
+	        factvarl    = substr(post:csr_string_250,137,15)
+    	    factfecha   = substr(post:csr_string_250,34,10)
+    	    fact_cons   = substr(post:csr_string_250,171,16)
+        	        	
+            fprint common:csr_string,\
+		    "%11.11s %11.11s %26.26s %16.16s %15.15s %10.10e%16.16s%16.16s", \
+			post:CloCuit,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM,factnro,factfecha,factimp,fact_cons
+			call csr:f_saaddpl(DSC:facturas,common:csr_string)
+		
+			//Intereses a Facturar //Faltaria obtener la fecha en que se calcularon!!
+        	if (factinte > 0 && factvarl == 0) then
+	            fprint common:csr_string,\
+			    "%11.11s %11.11s   %50.50s %30.30s %16.16s", \
+				post:CloCuit,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM,factinte
+				call csr:f_saaddpl(DSC:intereses,common:csr_string)	
+        	end if
+         
+        	idx_item = idx_item + 1
+        
+    	LOOP
+    endif
+    
+    //Remitos
+    CDS SELECT FROM DSC:TABremitos BECOMES DSC:CONremitos
+   	
+   	CDS FINDFIRST DSC:CONremitos NOLOCK
+   	let lib:err_retval = cdsretval
+    
+    WHILE (lib:err_retval == 0)    
+	    CDS EXTRACT DSC:CONremitos post:remito_nro,post:remito_fec_emis
+	    
+	    if (inicio_facturacion.numchars != 0 && facturacion_CM.numchars != 0) then
+	    	;calcular fecha de facturacion	    
+	    	CALL post:MISCprox_dia_fact(inicio_facturacion,facturacion_CM,remito_fec_emis,rem_ffact)
+	    	//call csr:date_add(common:system_date,facturacion_CM,"d",rem_ffact)
+	    else
+	    	clearfield rem_ffact
+    	end if
+    	//Remitos
+        fprint common:csr_string,\
+		    "%11.11s %11.11s %40.40s %23.23s  %15.15s    %10.10e", \
+			post:CloCuit,post:climed_numero,post:CliRaz,post:subcuentaDesc_CM,post:remito_nro,rem_ffact
+		call csr:f_saaddpl(DSC:remitos,common:csr_string)
+   	
+   	    CDS FINDNEXT DSC:CONremitos NOLOCK
+   	    let lib:err_retval = cdsretval        
+    END WHILE
+    CDS ENDSELECT DSC:CONremitos 
+   
+      
+END SUB
+
+/*******/

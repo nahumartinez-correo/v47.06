@@ -1,0 +1,119 @@
+/****o* Pendientes de agrupación/OFB:post:CDSsel_cod_transp
+* NOMBRE
+*   OFB:post:CDSsel_cod_transp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsel_cod_transp
+
+local varl_dia like common:system_date
+local identificador like adt_corteop_codtip
+    
+    
+    call  csr:day_of_week (common:system_date)
+    varl_dia = retval
+    
+    if (varl_dia == 0) then
+		MSGBOX "FECHA DEL DIA INVALIDA. NO SE PUEDEN MOSTRAR LOS TRANSPORTES.",0x00,"Error"
+	   	RETURN (-2)
+	endif
+    varl_dia = retval - 1
+    
+    IF (siaf:codigo_siaf != 99001) THEN
+    	CDS SELECT FROM DSC:adt_transporte_tbl BECOMES DSC:Transp_ctx \
+    	WHERE adt_transp_origen == common:br_ctpTT
+    ELSE
+        ;para la tx de llegada de transporte no se modifica nada.
+        CDS SELECT FROM DSC:adt_transporte_tbl BECOMES DSC:Transp_ctx \
+    	WHERE adt_transp_origen == common:br_ctpTT || \
+    	adt_transp_destino == common:br_ctpTT
+    END IF
+
+    CDS FINDFIRST DSC:Transp_ctx NOLOCK
+    
+    LET lib:err_retval = CDSRETVAL
+    IF (lib:err_retval < 0)
+	    MSGBOX "NO EXISTEN CODIGOS DE TRANSPORTES HABILITADOS PARA LA SUCURSAL.",0x00,"Error"
+    	CDS ENDSELECT DSC:post:Transp_ctx
+	    RETURN (-2)
+    ENDIF
+
+    //Generar un picklist con los transportes habilitados segun el día de la semana.
+    call csr:f_sanewpl "transp_hab" PIC:post:PICtransp_hab
+    do
+    
+	   	IF (lib:err_retval < 0)
+    		CDS ENDSELECT DSC:post:Transp_ctx
+	    	break
+    	ENDIF
+    
+    	call csr:cleararray (adt_transp_dias)
+    	clearfield adt_transp_modecode
+    	clearfield adt_transp_identif
+    	clearfield adt_transp_desc
+    	clearfield adt_transp_origen
+    	clearfield adt_transp_destino
+    	clearfield adt_transp_hell
+    	clearfield adt_transp_hes
+    	
+    	CDS EXTRACT DSC:post:Transp_ctx all 
+    
+    	if (post:adt_transp_dias[varl_dia] == "S") then
+    		//guardo el registro en el picklist
+    		 fprint identificador "%-1.1e%-5.5e",adt_transp_modecode,adt_transp_identif
+    		 fprint common:csr_string,"%-6.6s %25.25s %3.3s %3.3s %6.6s %6.6s", \
+    		 identificador,adt_transp_desc,adt_transp_origen,\
+    		 adt_transp_destino,adt_transp_hell,adt_transp_hes
+    		 CALL csr:f_saaddpl "transp_hab" common:csr_string
+
+    	endif
+        
+        CDS FINDNEXT DSC:post:Transp_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+        
+    loop
+    
+    
+    /*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+    SETFLAG drv:mode_flags,picklist_mode
+    /*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl "transp_hab" common:csr_string
+	LET lib:err_retval = RETVAL
+
+    /*Reseteo de flags de modo picklist*/
+    RESETFLAG drv:mode_flags,picklist_mode
+	
+    
+    clearfield post:cod_transp
+    clearfield post:adt_transp_hes
+    clearfield post:adt_transp_hell
+
+    IF (lib:err_retval >= 0) THEN
+	    post:cod_transp		 = substr (common:csr_string,0,6)
+    	post:adt_transp_hell = substr (common:csr_string,41,6)
+    	post:adt_transp_hes  = substr (common:csr_string,48,6)
+    
+    	REFRESH cod_transp
+    	IF (siaf:codigo_siaf != 99001) THEN
+    		CALL MISCHora_ScaneoJ
+    	ENDIF
+    ENDIF
+    
+	CALL csr:f_sadroppl "transp_hab"    
+
+END SUB
+
+/*******/

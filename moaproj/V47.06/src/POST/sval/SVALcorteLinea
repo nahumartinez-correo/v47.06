@@ -1,0 +1,267 @@
+/****o* Expedicion/OFB:post:SVALcorteLinea
+* NOMBRE
+*   OFB:post:SVALcorteLinea
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   29668_CRQ Expedicion desvinculada del cierre administrativo
+*   NI50580 - Corte de Linea Agil
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcorteLinea
+	/* Cte. Op. - Corte Linea       */
+	/* B. Petrella - May. 1998          */
+	/* verifica que se haya seleccionado por lo menos una   */
+	/* Saca para el corte actual.                   */
+	/* Lee DetTmp */
+	LOCAL Lind LIKE drv:INDlast_menu
+	
+//50580 - Corte de Linea Agil
+	IF (adt_desptipos_cod != "TR" && post:cod_transp == "") THEN
+			MSGBOX "DEBE SELECCIONAR UN TRANSPORTE.",0x00,"AVISO"
+			RETURN -2
+	END if
+	
+//50580 - Corte de Linea Agil
+	call CDScargaDetCteLin
+  if (retval >= 0)
+     	if (post:ColectarCant != true) 
+	     	INIT 33,0
+				CALL MISCprotCteLinea
+				let drv:button = 2 /* Combo asoc al cpo. DetalleContenido */
+				call drv:but_up_enable
+				let drv:button = 5 /* Marca - Desmarca */
+				call drv:but_up_enable
+				Let orden = 1
+				unprotfield Pieza2
+				//NI 50580
+				ENABLECONTROL TAG:op:CHK2 /*desasignar T&T/Cont/Saca*/
+				let drv:button = 9 /* Todos */
+				call drv:but_up_enable
+				call MISCrefCteLinea
+			ENDIF
+	  else
+				let common:csr_string = "No existen Sacas del Despacho Ingresado."
+				errmsg common:errmsg_list,FLD:common:csr_string
+				call MISCunprotCteL
+				call MISCrefCteLinea
+				return (-2)
+	  end if
+	
+	
+	if (!testflag(tlr:tran_flags,correction))
+		call CDSselect_DetTmp
+		if (retval < 0) then
+		// Mejora para que no salga el mensaje de alerta,ya que no es necesario, cuando está en modo "marcar todas" TRUE
+			if (post:ColectarCant == true) 
+				return -2
+			else
+				errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA SACA".
+				//mejora 50580-que el cursor quede en el campo asigna T&T/CONT/SACAS
+				NEXTFIELD post:Pieza2
+				return -2
+			endif
+		endif
+			
+		/* Si existen piezas, contenedores o sacas pendientes */
+		/* del corte de linea que se esta procesando se informa */
+		/* en la SCRNinfPendientes - Jul´98 - B. Petrella */
+	
+		/*MFM - Observación 295*/
+		CALL post:MISCincluye_simples
+		DO
+			IF (RETVAL == -1) THEN
+				CALL MISCincluye_simples
+			ELSE
+				IF (RETVAL == -3) THEN
+					CALL MISCincluye_simples2
+				ELSE
+					BREAK
+				END IF
+			END IF
+		LOOP
+		
+		IF (RETVAL == -2) THEN
+			RETURN -2
+		END IF
+		/*MFM - Fin Observación 295*/
+		
+		/*CSZ - Llama rutina que verifica si hay piezas simple especial seleccionadas para
+		ser enviadas y cuantas son*/
+		CALL CDShay_simp_esp("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1)
+		
+		/*MFM - Esta rutina verifica si hay piezas reencaminadas seleccionadas para
+		ser enviadas y cuantas son*/
+		CALL CDShay_piezas_reenc("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1) 
+	     	
+		/*move "S"  to siaf:continua_transaccion
+		popup siaf:SCRNcontinua
+		if (siaf:continua_transaccion == "N" || siaf:continua_transaccion == "" || LASTKEY == 0x0190 )
+			//0x0190 = ESC
+			return -2
+		endif*/
+			
+		clearfield siaf:continua_transaccion
+		popup tes:SCRNconfirma
+		if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+			return (-2)
+		END IF
+		clearfield siaf:continua_transaccion
+		popup tes:SCRNseguro
+		if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+			return (-2)
+		END IF
+			
+		/*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+		los detalles. Esto es util para la reversa*/
+		CLEARFIELD post:codseq_dev
+		CALL CDSobtiene_secuen("CABEC")
+		post:codseq_dev = post:adt_codseq_nro
+		
+		let post:adt_formu_cod = "GUIAD"
+		call CDSbuscoCodSeq
+		let orden = 0
+			
+	end if
+	
+	/* Observaci¢n 189 - Obtengo CTP y Descripci¢n para journalizarlos */
+	CLEARFIELD post:jnl_CTP_Guia
+	CLEARFIELD post:jnl_CTP_Desc
+	IF (post:adt_desptipos_cod != "TR") THEN
+		CALL post:MISCcargoCTP
+		CALL post:CDScargoDescUneg
+		LET post:jnl_CTP_Guia = post:CTP_Guia
+		LET post:jnl_CTP_Desc = post:adt_uneg_nombre
+	
+		IF (adt_desptipos_req == "S")
+			clearfield CTP_Guia
+		ELSE
+			CALL MISCcargoCTP /* Cargo el CTP_Guia */
+			CALL CDScargoDescUneg
+		END IF
+		CALL CDSobtengoTrans
+	ELSE
+	
+		LET post:jnl_CTP_Guia = post:adt_sectores_cod
+		LET post:jnl_CTP_Desc = post:adt_sectores_desc
+		
+		CALL MISCcargoCTP /* Cargo el CTP_Guia */
+		CALL CDScargoDescUneg
+	END IF
+	
+	/* DESDE AHORA ESTA TRANSACCION NO TIENE MAS REVERSA
+	MFM - Nuevo Tratamiento de Reversa 
+	IF (testflag(tlr:tran_flags,correction)) THEN
+		// MFM - Octubre 2000 - Verifico si tengo que reversar el encabezado
+		SWAPDUP post:retirado_transp
+		IF (post:retirado_transp == "S") THEN
+			MSGBOX "El Corte de Línea no puede reversarse pues ya se ha hecho el Retiro correspondiente",0x00,"ERROR"
+		ELSE
+			Borrar todos los registros que tengan ese corte de linea de la DespPend
+			CALL CDSBorro_DespPend
+			//Reverso el encabezado 
+			tlr:INDdcol_scrn[0] = SCR:post:SCRNcteLineaHdr
+			tlr:INDjnl_append = OFB:post:JNLcteLineaHdr
+			CALL MISCreversa_transac
+			// MFM - Octubre 2000 - Reverso los detalles
+			CALL CDSSelect_Piezas("3")
+		END IF
+		SWAPDUP post:retirado_transp
+		;Para que no journalice de más....
+		CALL post:MISCclear_campos_jou
+		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+		Resetflag tlr:tran_flags,correction
+	ELSE*/
+	  		
+		CALL MISCjnl_DetCteL
+		
+		//Inicio agrego German  
+		//Imprime el Reporte de Corte de Operativo 
+		MSGBOX "Se generará Reporte de Corte Operativo. Presione Enter para continuar.",0x00,"Aviso"
+		
+		LET drv:screen_active = 1
+		REFRESH drv:screen_active
+		  
+		LET post:reporte_fec_desde = common:system_date
+		LET post:codigo_aux = post:adt_codseq_nro
+		LET op:adt_login_id = op:op_login_id
+		LET op:adt_operator_id = op:op_operator_id
+		
+		CALL post:SVALcorte_op
+	  		
+		CLEARFIELD post:reporte_fec_desde
+		CLEARFIELD post:codigo_aux
+		CLEARFIELD op:adt_login_id
+		CLEARFIELD op:adt_operator_id
+		
+		REFRESH post:reporte_fec_desde
+		REFRESH post:codigo_aux
+		REFRESH op:adt_login_id
+		REFRESH op:adt_operator_id
+	  		
+		LET drv:screen_active = 0
+		REFRESH drv:screen_active
+		//Fin agrego German
+
+	  		  
+		//Chequear que ya no se hayan enviado J con el transporte seleccionado ese dia*/
+		if (post:cod_transp.numchars > 0) then
+			CALL CDSControl_ScaneoJ
+			IF (RETVAL == 0) THEN
+				/*Graba el scaneo J con salida_llegada A*/
+				if (post:h_llegada_trans.numchars > 0) then
+					CALL MISCscaneos_J(f_llegada_trans,h_llegada_trans,"A")
+				end if
+				CALL post:CDSControl_ExcepJ
+				IF (RETVAL < 0) THEN
+					/*Graba el scaneo J con salida_llegada D*/
+					if (post:h_retiro_trans.numchars > 0) then
+						CALL MISCscaneos_J(f_retiro_trans,h_retiro_trans,"D")
+					end if
+				ENDIF
+			END IF
+		end if
+			
+		//Marco como enviadas las tx de Devolucion de Piezas Centralizadas
+		CALL post:CDSlinea_enviada
+		
+		//gpb:AUT-2033 Transmision de Novedades de IPS
+		CALL post:MISCenv_NovIPS
+		//para que no se superponga con el Envio de Novedades T&T, sino no se transmiten 
+		//las piezas.
+		NAP 5000 
+		//Transmision de Novedades de T&T
+		CALL MISC_Header_NovTT
+		CALL MISCenv_NovTT("RetiroPiezas")
+	
+	//END IF
+	
+	/* GPB - 10/2009 Libero la transaccion para que pueda ser utilizada por otro operador */
+	CALL post:CDSTranStatUnLock("99050")
+			
+	//MFM-29668_CRQ - Saco tilde cuando se llama desde Servicios y Restauro el listmenu
+	if (drv:dt_app == 46)
+		CALL drv:MISCsaca_tildes
+	//	call ofb:admin:ESCsup_func
+		Lind = LST:post:MENUserv_expedicion //(Asignar menu que te interesa)
+		IF (drv:INDlast_menu == Lind) THEN
+			CALL giros:MISCjoinDesktopTool
+		END IF
+	endif
+	// NI50580 - Agrego pues quedan en memoria los campos de guias y se graban al generar imposiciones.
+  CALL post:MISCBorra_flds_NovTT
+  	
+END SUB
+
+/*******/
+

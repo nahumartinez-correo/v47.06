@@ -1,0 +1,7 @@
+#include "ofbdefs.h"
+#include "csr.h"
+#include "pickdrv.h"
+#include "hcommstd.h"
+#include "hcomm.h"
+#include "giros.h"
+#include "descuento.h"

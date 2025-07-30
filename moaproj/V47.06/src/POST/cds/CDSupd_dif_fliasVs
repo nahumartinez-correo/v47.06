@@ -1,0 +1,116 @@
+/****o* Facturación/OFB:post:CDSupd_dif_fliasVs
+* NOMBRE
+*   OFB:post:CDSupd_dif_fliasVs
+* DESCRIPCION
+*   Actualiza la diferencia por redondeo en el registro de la 
+*	PresuDet (para postales, telegramas, producotos varios servicios varios)
+*	correspondiente al registro de la DifFact
+* ENTRADAS
+*   tabla: nombre de la tabla sobre la cual se hará el barrido (PresuDet o PresuDetOC)
+*   contexto: nombre del contexto sobre el cual se trabajará
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSupd_dif_PresuDet
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postcds.h"
+
+SUB post:CDSupd_dif_fliasVs(tabla, contexto)
+	//Flias involucradas = CSP, CSE, CME, CST, SVC
+	local x like siaf:i
+	CDS SELECT FROM tabla BECOMES contexto WHERE \
+		post:fecha == post:adt_diffact_fecha && \
+	    post:op_operator_id == adt_diffact_op && \
+	    post:PresNro == post:adt_diffact_presn && \
+	    post:PreDNroTrn == post:adt_diffact_trann			    
+	CDS FINDFIRST contexto LOCK
+	IF (CDSRETVAL == 0)
+		CDS CLEARBUFFER contexto
+		clearfield dif_calculada
+		SELECT (adt_diffact_codigo)
+			CASE "OPC"
+				CDS EXTRACT contexto cant_opc
+				x = 0
+				//recorro el vector de opcionales para extraer el valor correspondiente
+				//y aplicar la diferencia al campo siniva_opc[]
+				//no es necesario aplicar la diferencia al opcional porque en el journal se hace
+				//un tratamiento especial y en la impretmp se vuelve a desglosar teniendo
+				//en cuenta la diferencia.
+				WHILE (x < cant_opc)
+					CDS EXTRACT contexto \
+						post:cod_opc[x] /*\
+						post:siniva_opc[x]*/
+					IF (post:cod_opc[x] == adt_diffact_opc)
+						//post:siniva_opc[x] = post:siniva_opc[x] - adt_diffact_dif_calc
+						post:dif_opc[x] = adt_diffact_dif_calc
+						CDS APPEND contexto \
+						post:dif_opc[x]					
+						//	post:siniva_opc[x]
+					END IF
+					x = x + 1
+				END WHILE
+				BREAK
+			CASE "BLQ"
+				/*//no es necesario actualizarlo en la presudet porque en el journal se hace
+				un tratamiento especial y en la impretmp se vuelve a desglosar teniendo
+				en cuenta la diferencia.
+				if (post:adt_diffact_flia == "CSE" || post:adt_diffact_flia == "CSP") then
+					CDS EXTRACT contexto BloqueSinIva_serv
+					BloqueSinIva_serv = BloqueSinIva_serv - adt_diffact_dif_calc
+					CDS APPEND contexto \
+					BloqueSinIva_serv \
+					adt_diffact_dif_calc as dif_calculada \
+					post:adt_diffact_codigo as cod_dif_aplicada
+				else
+					CDS EXTRACT contexto imp_bloques_siva
+					imp_bloques_siva = imp_bloques_siva - adt_diffact_dif_calc
+					CDS APPEND contexto \
+					imp_bloques_siva \
+					adt_diffact_dif_calc as dif_calculada \
+					post:adt_diffact_codigo as cod_dif_aplicada
+				endif*/
+				CDS APPEND contexto \
+					adt_diffact_dif_calc as dif_calculada \
+					post:adt_diffact_codigo as cod_dif_aplicada
+				BREAK
+			CASE ELSE //tx propiamente dicha
+				cod_dif_aplicada = "SERV"
+				IF (adt_diffact_flia == "CST" || adt_diffact_flia == "SVC")
+					//no se actualizan importes porque se desglosa en la journalizacion
+					CDS APPEND contexto \
+						adt_diffact_dif_calc as dif_calculada \
+						cod_dif_aplicada
+				ELSE
+					if (post:adt_diffact_flia == "CSE" || post:adt_diffact_flia == "CSP" || post:adt_diffact_flia == "VAP") then
+						CDS EXTRACT contexto post:ImpSinIva_serv
+						ImpSinIva_serv = ImpSinIva_serv - adt_diffact_dif_calc
+						CDS APPEND contexto ImpSinIva_serv \
+						adt_diffact_dif_calc as dif_calculada \
+						cod_dif_aplicada
+					else
+						CDS EXTRACT contexto post:ImporteSinIva post:ImporteIva
+						ImporteSinIva = ImporteSinIva - adt_diffact_dif_calc
+						ImporteIva = ImporteIva + adt_diffact_dif_calc
+						CDS APPEND contexto \
+						ImporteSinIva \
+						ImporteIva \
+						adt_diffact_dif_calc as dif_calculada \
+						cod_dif_aplicada
+					endif
+				END IF														
+				BREAK
+		END SELECT
+		CDS UPDATE contexto LOCK
+	END IF
+	CDS UNLOCK contexto
+	CDS ENDSELECT contexto
+END SUB
+
+/*******/
+

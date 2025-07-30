@@ -1,0 +1,146 @@
+/****o* Pendientes de agrupación/OFB:post:SENDrestProductos
+* NOMBRE
+*   OFB:post:SENDrestProductos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDrestProductos
+	local l_cant_total like siaf:i
+	local l_retval like lib:err_retval
+	IF (TESTFLAG(admin:mode_flags,update) || TESTFLAG(admin:mode_flags,delete)) then
+        if (post:estado_presu != 1) then
+            ERRMSG LST:common:errmsg_list,"MODIFICACIONES DE TABLAS NO DISPONIBLES DENTRO DE UNA SESION."
+            return (-2)
+        end if
+	end if
+
+    IF (TESTFLAG(admin:mode_flags,update) || TESTFLAG(admin:mode_flags,delete)) THEN
+	    if (TESTFLAG(admin:mode_flags,update))
+		    MSGBOX "ESTA USTED SEGURO QUE DESEA ACTUALIZAR LA INFORMACION INGRESADA?",OFB_YESNO,"Grabar Restricción"
+		    l_retval = RETVAL
+		else
+		    if (TESTFLAG(admin:mode_flags,delete))
+			    MSGBOX "ESTA USTED SEGURO QUE DESEA ELIMINAR LA RESTRICCION INGRESADA? (Esto eliminara la restricción completa junto con su detalle)",OFB_YESNO,"Eliminar Restricción"
+			    l_retval = RETVAL
+			endif
+		endif
+		call post:MISCsolapaRest
+ 		if (l_retval == OFB_IDYES)
+			; Cursor busy.
+			init 52,2
+
+			; Atomizo la actualizacion.
+			CDS BEGINWORK
+
+			; Grabo cabecera de la promoción.
+		    if (TESTFLAG(admin:mode_flags,update)) THEN
+				; Barra de progreso.
+				call post:MISCinicProgressBar("GRABANDO CABECERA    - ", l_cant_total)
+		    	call post:CDSrestCabe_save
+		    	l_retval = retval
+			else
+				clearfield adt_rest_cantRest
+				call csr:f_sadroppl dsc:pic_restCabe
+				call csr:f_sanewpl dsc:post:pic_restCabe, PIC:PICrestCabe
+		    	call post:CDSrestCabDelete
+		    	l_retval = retval
+		    endif
+			if (l_retval >= 0)
+				; Grabo regiones asociadas a la restriccion.
+				post:adt_rest_tipo_Rest = "REG"
+		    	call post:CDSrest_save(REST_REG, adt_rest_cantRegSel)
+		    	l_retval = retval
+	    	endif
+			if (l_retval >= 0)
+				; Grabo provincias asociadas a la restriccion.
+				post:adt_rest_tipo_Rest = "PRV"
+		    	call post:CDSrest_save(REST_PRV, adt_rest_cantPrvSel)
+		    	l_retval = retval
+	    	endif
+			if (l_retval >= 0)
+				; Grabo sucursales asociadas a la restriccion.
+				post:adt_rest_tipo_Rest = "SUC"
+		    	call post:CDSrest_save(REST_SUC, adt_rest_cantSucSel)
+		    	l_retval = retval
+	    	endif
+			if (l_retval >= 0)
+				; Grabo clientes asociados a la restriccion.
+				post:adt_rest_tipo_Rest = "CLI"
+		    	call post:CDSrest_save(REST_CLI, adt_rest_cantCliSel)
+		    	l_retval = retval
+	    	endif
+			if (l_retval >= 0)
+				; Grabo sucursales asociadas a la restriccion.
+				post:adt_rest_tipo_Rest = "UP"
+		    	call post:CDSrest_save(REST_UP, adt_rest_cantUpSel)
+		    	l_retval = retval
+	    	endif
+	    	if (l_retval < 0)
+				CDS ROLLBACKWORK
+			    if (TESTFLAG(admin:mode_flags,update)) THEN
+					errmsg LST:common:errmsg_list,"LA GRABACION HA FALLADO!!!"
+				else
+					errmsg LST:common:errmsg_list,"LA ELIMINACION HA FALLADO!!!"
+				endif
+			else
+			    CDS COMMITWORK
+	    	endif
+			; Barra de progreso.
+			call post:MISCfinProgressBar
+			FYIMSG LST:common:fyimsg_list, ""
+
+			; Cursor normal.
+			init 53,3
+			;journalizo la cabecera con el fin de tener registrado que
+			;se hizo una modificacion de restricciones. *** MDG
+			call post:MISCSeteoTablasIND("RestProdu")
+			call post:MISCJournalTablas
+			call post:ABMrestClavesClear
+			call post:ABMrestClavesRefresh
+			call post:ABMrestAuxClear
+        	call post:ABMrestTituloClear
+        	call post:ABMrestTituloRefresh
+
+			; Luego de grabar vuelvo a la primer solapa.
+			drv:next_screen = 1
+			drv:next_tab = 0
+			drv:index = 1
+			drv:skip_seq_scr = 1
+			RESETFLAG admin:mode_flags,update
+			RESETFLAG admin:mode_flags,delete
+			CALL post:MISCset_sidebar(0, 0, 0, 0)
+			; Actualizo el picklist de restricciones
+			CALL post:MISCArmo_PickCabe
+		else
+			RESETFLAG admin:mode_flags,update
+			RESETFLAG admin:mode_flags,delete
+			return -2
+		endif
+	else
+		IF (TESTFLAG(admin:mode_flags,imprimir)) THEN
+			RESETFLAG admin:mode_flags,imprimir
+			admin:tabla = "RestProdu"
+			CALL post:MISCdumptable
+			CALL post:CDSdumptable
+			admin:tabla = "RestDetalle"
+			CALL post:MISCdumptable
+			CALL post:CDSdumptable
+			RETURN (-2)
+		END IF
+    ENDIF
+END SUB
+
+/*******/

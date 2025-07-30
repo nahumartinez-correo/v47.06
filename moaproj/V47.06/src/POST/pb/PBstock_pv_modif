@@ -1,0 +1,190 @@
+/****o* Pendientes de agrupación/OFB:post:PBstock_pv_modif
+* NOMBRE
+*   OFB:post:PBstock_pv_modif
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   BUTstock_prodvs
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBstock_pv_modif
+    drv:button = drv:last_button
+    call drv:but_disable
+    
+     if (adt_prodvs_cod.numchars == 0) then
+    	move "INGRESE EL CODIGO DE PRODUCTO" to drv:error_msg
+        call OFB:drv:error_msg
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)
+    end if
+
+    call post:CDSprodvs_load
+    if (retval < 0) then
+    	errmsg lst:common:errmsg_list, "Producto Inexistente"
+    	drv:button = drv:last_button
+        call drv:but_up_enable    	
+    	return (-2)
+    end if
+
+	call post:MISCmotivo_ajuste
+	if (retval < 0) then
+		return (-2)
+	end if	
+
+	if (adt_depstock_cod.numchars == 0) then
+    	errmsg lst:common:errmsg_list, "Debe ingresar el Codigo de Deposito"
+    	drv:button = drv:last_button
+        call drv:but_up_enable    	
+    	return (-2)
+    else
+    	call post:CDSdepstock_load
+    	if (retval < 0) then
+	    	errmsg lst:common:errmsg_list, "Código de Depósito Incorrecto"
+	    	drv:button = drv:last_button
+	        call drv:but_up_enable    	
+	    	return (-2)
+	    end if    
+	end if		
+	
+    if (agrega_disc.numchars == 0) then
+        call FVALstock_pv_disc
+        if (retval < 0) then
+            drv:button = drv:last_button
+            call drv:but_up_enable
+            return (-2)
+        end if
+    end if
+    
+    /*
+   	post:adt_stock_codprod = post:adt_prodvs_cod
+	post:adt_stock_coddep = 00
+	clearfield post:adt_stock_stock
+	call post:CDSstock_load
+	*/
+    ;if (cantidad2 == 0 || cantidad2 > adt_stock_stock) then
+    	if (post:cantidad2 == 0) then
+    		
+        ;call FVALcarga_cantidad
+        ;if (retval < 0) then
+	        FPRINT common:csr_string,"LA CANTIDAD DEBE SER MAYOR A CERO"
+	        MSGBOX common:csr_string,0x00,"ERROR"        	
+            drv:button = 6
+            call drv:but_disable
+            drv:button = 7
+            call drv:but_disable
+            drv:button = drv:last_button
+            call drv:but_up_enable
+            return (-2)
+        end if
+    ;end if
+
+    //NI 50254
+	IF (cantidad2 > 99999) THEN
+		FPRINT common:csr_string,"LA CANTIDAD DEBE SER MENOR O IGUAL A 99999"
+		MSGBOX common:csr_string,0x00,"ERROR"
+	          drv:button = 6
+            call drv:but_disable
+            drv:button = 7
+            call drv:but_disable
+            drv:button = drv:last_button
+            call drv:but_up_enable
+	        RETURN (-2)
+	ENDIF
+    //BUG AUT-240
+	IF ( post:agrega_disc == "A" && ((cantidad2 + post:adt_stock_stock) > 99999)) THEN
+		FPRINT common:csr_string,"LA CANTIDAD INGRESADA MAS LA CANTIDAD EN STOCK NO DEBE SUPERAR A 99999"
+		MSGBOX common:csr_string,0x00,"ERROR"
+	          drv:button = 6
+            call drv:but_disable
+            drv:button = 7
+            call drv:but_disable
+            drv:button = drv:last_button
+            call drv:but_up_enable
+	        RETURN (-2)
+	ENDIF
+
+	/*
+    if (adt_motpv_motivo.numchars == 0) then
+        call FVALstock_pv_motivo
+        if (retval < 0) then
+            drv:button = drv:last_button
+            call drv:but_up_enable
+            return (-2)
+        end if
+    end if
+    */
+
+	adt_stock_codprod = adt_prodvs_cod
+	adt_stock_coddep =	adt_depstock_cod
+    
+    call CDSstock_load
+    /*
+    if (adt_stock_coddep == "00") && (estado_presu == 2) then
+    	call CDSstock_venta
+    end if
+    */
+    if (retval == 0) then
+        prim_stock_stock = adt_stock_stock
+        select (agrega_disc)
+        case "A"        
+			adt_stock_stock = (adt_stock_stock - adt_stock_reserva) + cantidad2
+			break
+        case "D"
+			IF (cantidad2 > (adt_stock_stock - adt_stock_reserva))THEN
+			    ERRMSG LST:common:errmsg_list,ERRstock_pv_cant            
+				drv:button = drv:last_button
+				call drv:but_up_enable
+				drv:button = drv:last_button
+				call drv:but_disable
+				RETURN (-2)
+			end if
+        
+			adt_stock_stock = (adt_stock_stock - adt_stock_reserva) - cantidad2
+			break
+        end select
+    else
+    	if (agrega_disc == "D") then
+	        ERRMSG LST:common:errmsg_list,ERRstock_pv_cant            
+	    	drv:button = drv:last_button
+			call drv:but_up_enable
+			drv:button = drv:last_button
+			call drv:but_disable
+			RETURN (-2)
+		end if    		
+    
+        prim_stock_stock = 0
+        adt_stock_stock = cantidad2
+    end if  
+    
+    adt_stock_fumst = common:system_date
+    adt_stock_tumst = common:time_of_day
+    refresh adt_stock_stock
+    refresh adt_stock_tumst
+    refresh adt_stock_fumst
+
+    call CDSstock_pv_save
+    CALL MISCmostrar_linea
+    call ABMprodvs_cg_clear
+    call ABMprodvs_cg_ref
+    refresh ajustes_realizados
+        
+    NEXTFIELD adt_prodvs_codbarra
+    drv:button = drv:last_button
+    call drv:but_up_enable
+    call drv:but_disable
+    drv:button = 8
+    call drv:but_disable
+END SUB
+
+/*******/

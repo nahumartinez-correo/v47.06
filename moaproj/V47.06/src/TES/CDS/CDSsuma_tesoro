@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSsuma_tesoro
+* NOMBRE
+*   OFB:tes:CDSsuma_tesoro
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSsuma_tesoro
+
+   CDS SELECT from DSC:tes:tesoro_table BECOMES DSC:tes:tesoro_context \
+        WHERE   tes:tes_moneda == siaf:moneda && \
+                tes_suc_id == op:op_branch_id && \
+                tes_tes_id == op:op_tesoro_id
+    CDS FINDFIRST DSC:tes:tesoro_context LOCK
+    let lib:err_retval = cdsretval
+    select (lib:err_retval)
+    case -801
+       call csr:cleararray(tes_importes)
+       call csr:cleararray(tes_entrada)
+       call csr:cleararray(tes_salida)
+       call csr:cleararray(tes_sdoinic)
+       call csr:cleararray(tes_arqueo)
+       
+
+       clearfield tes:tes_total
+       clearfield tes:tes_tot_entrada
+       clearfield tes:tes_tot_salida
+       clearfield tes:tes_tot_inic
+       clearfield tes:tes_marca_arqueo
+
+       CDS APPEND DSC:tes:tesoro_context \
+       common:sucursal_activa as tes:tes_suc_id \
+       op:op_tesoro_id as tes:tes_tes_id \
+       common:system_date as tes:tes_fecha \
+       siaf:moneda as tes:tes_moneda \
+       array tes:tes_salida \
+       array tes:tes_sdoinic \
+       array tes:tes_arqueo \
+       tes:tes_tot_salida \
+       tes:tes_tot_inic
+
+       /* Para la primera vez grabo el registro  también en la teso_bak */
+       call CDSgrabo_teso_bak(siaf:moneda)
+       break
+    case 0
+       CDS EXTRACT DSC:tes:tesoro_context ALL
+       break
+    case else
+       fprint common:csr_string "No Se Pudo Sumar al Tesoro \n %-s",common:Cds_error_message
+       errmsg lst:common:errmsg_list, fld:common:csr_string
+
+       /* Guardo el Log con los datos del lockeo */
+       dprint " %s %s %s\r\n",op:op_operator_id,common:time_of_day,common:Cds_error_message
+       cds endselect dsc:tesoro_context
+       return (-2)
+       break
+    end select
+    cont1 = 0
+    DO
+      IF (cont1 < 14) THEN
+         tes_importes[cont1] = tes_importes[cont1] + importes[cont1]
+         tes_entrada[cont1]  = tes_entrada[cont1] + importes[cont1]
+         cont1 = cont1 + 1
+      else
+         break
+      END IF
+    LOOP
+    let tes:tes_tot_entrada = tes:tes_tot_entrada + post:importe_origen
+    let tes:tes_total = tes:tes_total + post:importe_origen    
+
+    /* MLD Limpio la marca de Arqueo, porque supuestamente se modifica
+    el total del tesoro */
+    clearfield tes:tes_marca_arqueo
+
+    CDS APPEND DSC:tes:tesoro_context FLD:tes_importes[00] \
+        FLD:tes_importes[01] FLD:tes_importes[02] FLD:tes_importes[03]\
+        FLD:tes_importes[04] FLD:tes_importes[05] FLD:tes_importes[06]\
+        FLD:tes_importes[07] FLD:tes_importes[08] FLD:tes_importes[09]\
+        FLD:tes_importes[10] FLD:tes_importes[11] FLD:tes_importes[12]\
+        FLD:tes_importes[13]
+    CDS APPEND DSC:tes:tesoro_context FLD:tes_entrada[00]\
+        FLD:tes_entrada[01] FLD:tes_entrada[02] FLD:tes_entrada[03]\
+        FLD:tes_entrada[04] FLD:tes_entrada[05] FLD:tes_entrada[06]\
+        FLD:tes_entrada[07] FLD:tes_entrada[08] FLD:tes_entrada[09]\
+        FLD:tes_entrada[10] FLD:tes_entrada[11] FLD:tes_entrada[12]\
+        FLD:tes_entrada[13]
+    CDS APPEND DSC:tes:tesoro_context fld:tes_tot_entrada fld:tes_total
+    /* MLD Actualizo la marca de Arqueo */
+    CDS APPEND DSC:tes:tesoro_context FLD:tes_marca_arqueo
+
+    if (lib:err_retval == 0) then
+        CDS UPDATE DSC:tes:tesoro_context lock
+    else
+        cds insert dsc:tes:tesoro_context lock
+    end if
+    CDS UNLOCK DSC:tes:tesoro_context
+    CDS ENDSELECT DSC:tes:tesoro_context
+END SUB
+
+/*******/

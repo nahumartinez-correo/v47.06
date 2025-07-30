@@ -1,0 +1,214 @@
+/****o* Lista de Giros/OFB:giros:MISCsel_opc_lg
+* NOMBRE
+*   OFB:giros:giros:MISCsel_opc_lg
+* DESCRIPCION
+* 	Tratamiento de seleccion de opcionales (Lista de Giros)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2):No existe el opcional en la parametria.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:FVALsel_opc_lg, giros:PBopcionales_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+
+
+#include "girosmisc.h"
+
+SUB giros:MISCsel_opc_lg
+    LOCAL cont LIKE post:cant_opc
+	LOCAL indice LIKE post:cant_opc
+	LOCAL ya_esta LIKE post:sel_opc
+	LOCAL desc_temp LIKE post:adt_opc_desc
+	LOCAL desc_corta_temp LIKE post:adt_opc_opci
+
+    //Obtiene datos necesarios de tabla Opcional.
+    CDS SELECT FROM DSC:post:OPC_TAB BECOMES DSC:post:OPC_CTX WHERE \
+        post:adt_opc_opci == post:sel_opc
+    CDS FINDFIRST DSC:post:OPC_CTX NOLOCK
+    IF (CDSRETVAL == 0) THEN
+        CDS EXTRACT DSC:post:OPC_CTX \
+            post:adt_opc_desc INTO desc_temp  \
+            post:adt_opc_opci INTO desc_corta_temp \
+            post:adt_opc_cortepropio \
+            post:adt_opc_disccp \
+            post:adt_opc_combina
+    ELSE
+        CLEARFIELD post:sel_opc
+        NEXTFIELD post:sel_opc
+        drv:button = drv:last_button
+        CALL drv:but_up_enable
+        MSGBOX "NO EXISTE EL OPCIONAL EN LA PARAMETRIA",0x00,"Error"
+        CDS ENDSELECT DSC:post:CTXitems_lg
+        RETURN (-2)
+    END IF
+    CDS ENDSELECT DSC:post:OPC_CTX
+
+    CLEARFIELD post:valor_dec
+
+    /* EL OPCIONAL INGRESADO EXISTE COMO OPCIONAL DE ESE SERVICIO */
+    WHILE (cont < post:cant_opc)
+         IF (post:cod_opc[cont] == post:sel_opc) THEN
+        	 /* Ese Opcional ya habia sido elegido */
+        	 ya_esta = "SI"
+             /*****************************************/
+             /* Guardo el indice en el que estaba     */
+			 /* por si lo seleccionó para eliminarlo   */
+             /*****************************************/
+             indice = cont
+             BREAK
+         END IF
+         cont = cont + 1
+    END WHILE
+    IF (ya_esta != "SI") THEN
+	    /************************************************/
+        /* No había sido elegido aún ese Opcional.      */
+        /* Veo si el Opcional elegido requiere del      */
+        /* ingreso de algun valor como el de Valor      */
+        /* Declarado o Contra Rembolso.	                */
+        /************************************************/
+		IF (post:cant_opc == 6) THEN
+            MSGBOX "NO SE PUEDE INCLUIR MAS OPCIONALES",0x0190,""
+            CLEARFIELD post:sel_opc
+	        NEXTFIELD post:sel_opc
+            drv:button = drv:last_button
+            CALL drv:but_up_enable
+	        RETURN (-2)
+        END IF
+
+        /* giros */
+        FPRINT common:csr_string,"%s - %s",desc_corta_temp,desc_temp
+        giros:mnemonic_opc_wu = desc_corta_temp
+        giros:desc_opc_wu = common:csr_string
+
+	    //Obtiene tarifa del opcional asociado al producto (Lista de Giro).
+        CALL giros:CDSobtiene_opc_lg
+        IF (RETVAL < 0) THEN
+            CLEARFIELD post:sel_opc
+			NEXTFIELD post:sel_opc
+    		drv:button = drv:last_button
+    		CALL drv:but_up_enable
+			RETURN (-2)
+	 	END IF 
+
+	 	post:cod_opc[post:cant_opc] = post:adt_opclg_codopc     //codigo opcional
+        post:ali_opc[post:cant_opc] = post:adt_opclg_ivaopc     //alicuota  	
+        post:val_opc[post:cant_opc] = post:adt_opclg_impopc     //valor
+        //En otro modo de cálculo, se lo fija en modo "S" para Opcionales (Lista de Giros).
+        //Se calcula el importe del opcional en modo "S" - Suma Directamente.
+        IF (post:adt_opclg_mod_calc.numchars == 0 || post:adt_opclg_mod_calc != "S") THEN
+        	post:adt_opclg_mod_calc = "S"
+        END IF
+        post:cal_opc[post:cant_opc] = post:adt_opclg_mod_calc   //modo calculo (siempre "S")
+        post:flia_opc[post:cant_opc] = post:adt_opcserv_uneg //familia (obtenida de OpcServ)
+        post:comb_opc[post:cant_opc] = post:adt_opc_combina  //si el opcional combina con el servicio (Obtenido de tabla Opcional)
+        //FPRINT post:cor_opc[post:cant_opc], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+        	
+	    /***********************************************************/
+	    /* A partir del Req. 600 todos los opcionales influyen 	   */
+	    /* Creo que no tiene más sentido este campo salvo	       */
+	    /* que en el futuro vuelvan a existir opcionales cuyo      */
+	    /* costo no influya en el costo total de opcionales.       */
+	    /***********************************************************/
+	    post:inf_opc[post:cant_opc] = "S"
+	    post:vec_opc2[post:cant_opc] = post:valor_dec //instanciado con valor vacio.
+
+        cont = 0
+
+        REFRESH post:cod_opc[post:cant_opc]
+        REFRESH post:vec_opc2[post:cant_opc]
+
+        post:cant_opc = post:cant_opc + 1
+
+		IF (!TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+        	/*************************************************/
+            /* Actualizo el Costo Total de los Opcionales    */
+    	    /*************************************************/
+        	CALL giros:MISCactualizo_opc_lg
+        	/****************************************************************/
+            /* Actualizo el costo de cada uno de los opcionales             */
+            /* por separado. Quizás parezca sin sentido hacer esto          */
+            /* para cada opcional pero si el valor declarado actual         */
+            /* es mayor al anterior, cambia el costo de algunos de          */
+            /* los opcionales que ya estaban seleccionados.                 */
+            /****************************************************************/
+    	    CALL giros:MISCactualiz_1opc_lg
+    	END IF 	
+    ELSE
+        /*******************************************/
+        /* Ese Opcional ya habia sido elegido,  */
+        /* por lo tanto, debe querer eliminarlo 	*/
+        /*******************************************/
+        MSGBOX "ESTA SEGURO QUE DESEA ELIMINAR ESE OPCIONAL ?",0x01,""
+        IF (RETVAL == 1) THEN
+            //Quiere eliminarlo.
+            IF (post:cod_opc[indice] == "AVRB") THEN
+                /* Eliminó el Opcional Aviso de Recibo */
+                /* Limpio el Costo del Aviso de Recibo */
+                CLEARFIELD post:valor_ar
+            ELSE
+                IF (post:cod_opc[indice] == "CSAR") THEN
+                    CLEARFIELD post:valor_csar
+                END IF
+            END IF	            	
+
+            WHILE (indice < (post:cant_opc))
+                 cont = indice + 1
+                 IF (cont != 6) THEN
+                     post:cod_opc[indice] = post:cod_opc[cont]
+                     post:vec_opc2[indice] = post:vec_opc2[cont]
+                     post:ali_opc[indice] = post:ali_opc[cont]
+                     post:cos_opc[indice] = post:cos_opc[cont]
+                     post:inf_opc[indice] = post:inf_opc[cont]
+                     post:siniva_opc[indice] = post:siniva_opc[cont]
+                     post:comb_opc[indice] = post:comb_opc[cont]
+	                 post:cal_opc[indice] = post:cal_opc[cont]
+	                 post:val_opc[indice] = post:val_opc[cont]
+                     post:flia_opc[indice] = post:flia_opc[cont]
+                 ELSE
+                     CLEARFIELD post:cod_opc[indice]
+                     CLEARFIELD post:vec_opc2[indice]
+                     CLEARFIELD post:ali_opc[indice]
+                     CLEARFIELD post:cos_opc[indice]
+                     CLEARFIELD post:inf_opc[indice]
+	                 CLEARFIELD post:siniva_opc[indice]
+	                 CLEARFIELD post:comb_opc[indice]
+		             CLEARFIELD post:cal_opc[indice]
+	                 CLEARFIELD post:val_opc[indice]
+	                 CLEARFIELD post:flia_opc[indice]
+                 END IF
+                 REFRESH post:cod_opc[indice]
+                 REFRESH post:vec_opc2[indice]
+                 indice = indice + 1
+            END WHILE
+            post:cant_opc = post:cant_opc - 1
+
+            /* fin giros */
+   			IF (!TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+                /*************************************************/
+                /* Actualizo el Costo Total de los Opcionales    */
+                /*************************************************/
+                CALL giros:MISCactualizo_opc_lg
+        	    /****************************************************************/
+            	/* Actualizo el costo de cada uno de los opcionales             */
+            	/* por separado. Quizás parezca sin sentido hacer esto          */
+            	/* para cada opcional pero si el valor declarado actual         */
+            	/* es mayor al anterior, cambia el costo de algunos de          */
+            	/* los opcionales que ya estaban seleccionados.                 */
+            	/****************************************************************/
+    	    	CALL giros:MISCactualiz_1opc_lg
+            END IF
+        END IF
+    END IF
+
+    CLEARFIELD post:sel_opc
+    REFRESH post:sel_opc
+    NEXTFIELD post:sel_opc
+
+END SUB
+
+/*******/

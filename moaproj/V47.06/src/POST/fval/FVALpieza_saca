@@ -1,0 +1,105 @@
+/****o* Expedición/OFB:post:FVALpieza_saca
+* NOMBRE
+*   OFB:post:FVALpieza_saca
+* DESCRIPCION
+*	Esta rutina marca (*)/desmarca las piezas a contenerizar del campo post:DetalleContenidoGC y tabla DetTmp
+*  de la TX CIerre de Contenedor y Transferencias de Piezas.
+*  Tambien marca (*)/desmarca las piezas/contenedores a cerrar en saca del campo post:DetalleContenidoGC y tabla DetTmp
+*  de la TX CIerre de Saca.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNllenadoSaca,SCR:post:SCRNllenadoCont,SCR:post:SCRNtransfOtroCont 
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALpieza_saca
+	LOCAL cod_pieza_cont LIKE common:csr_string
+	
+	CALL CSR:trimfield (post:Pieza2)
+	
+	IF (post:Pieza2.numchars > 0) THEN
+		//PARA EL AGREGADO DE AR EN t&t VALIDOS
+		CALL MISCesTT(post:Pieza2)
+		LET cod_pieza_cont = post:Pieza2
+	
+	    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+		    WHERE (op:op_operator_id == op:op_operator_id \
+		    &&  post:Pieza_id == cod_pieza_cont)
+       
+	    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+	    IF (CDSRETVAL == -801) THEN
+	    	CDS ENDSELECT DSC:post:DetTmp_ctx
+	    	//50242 - cIERRE DE CONTENEDOR
+	    	IF (siaf:codigo_siaf != 99030 && siaf:codigo_siaf != 99080) THEN
+	    		FPRINT cod_pieza_cont "% 8.8s" post:Pieza2
+		    		
+				CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+					WHERE (op:op_operator_id == op:op_operator_id \
+					&& post:Pieza_id == cod_pieza_cont)
+			
+				CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+	    	IF (CDSRETVAL == -801) THEN
+					MSGBOX "LA PIEZA/CONTENEDOR NO EXISTE PARA EXPEDIR.",0x00,"ERROR"
+					CDS UNLOCK DSC:post:DetTmp_ctx
+					CDS ENDSELECT DSC:post:DetTmp_ctx
+					CLEARFIELD post:Pieza2 
+					REFRESH post:Pieza2
+					RETURN -2
+				END IF
+    	ELSE
+    		MSGBOX "LA PIEZA INGRESADA NO EXISTE.",0x00,"ERROR"
+				CLEARFIELD post:Pieza2 
+				REFRESH post:Pieza2
+				RETURN -2
+    	END IF
+    END IF
+				
+		CDS EXTRACT DSC:post:DetTmp_ctx ALL 
+		CDS CLEARBUFFER DSC:post:DetTmp_ctx
+		
+		CLEARFIELD DetalleContenidoGC
+		REFRESH post:DetalleContenidoGC
+		
+		IF (siaf:codigo_siaf == 99030 || siaf:codigo_siaf == 99080) THEN
+			FPRINT post:DetalleContenidoGC, "%-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+				tlr:jnl_date,\
+				post:jnl_grucorte_cod \
+				post:jnl_apertura_cod \
+				post:Pieza_id \
+				post:MarcaBorrado
+		ELSE
+			FPRINT post:DetalleContenidoGC,"%-10.10e" FLD:tlr:jnl_date
+			/*MFM (9.11.2001) PS 4445*/
+			MOVE post:Pieza_id to SUBSTR(DetalleContenidoGC,11,32)
+			MOVE post:adt_novtt_grupo to SUBSTR(DetalleContenidoGC,44,2)
+			MOVE post:jnl_stockp_reenc_cul to SUBSTR(DetalleContenidoGC,47,1)
+			MOVE post:MarcaBorrado to SUBSTR(DetalleContenidoGC,49,1)
+		END IF
+		REFRESH post:DetalleContenidoGC
+				            
+		CDS UNLOCK DSC:post:DetTmp_ctx
+		CDS ENDSELECT DSC:post:DetTmp_ctx
+		
+		IF (siaf:codigo_siaf != 99030 && siaf:codigo_siaf != 99080) THEN
+			CALL post:PBmarcaDetContSaca
+		ELSE
+			CALL post:PBmarcaDetCont
+		END IF
+		
+		CLEARFIELD post:Pieza2
+		REFRESH post:Pieza2
+	END IF
+	
+	SETVALDONE Pieza2
+	
+End Sub
+
+/*******/

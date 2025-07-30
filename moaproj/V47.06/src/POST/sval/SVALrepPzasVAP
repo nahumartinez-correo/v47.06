@@ -1,0 +1,105 @@
+/****o* Registro VAP/OFB:post:SVALrepPzasVAP
+* NOMBRE
+*   OFB:post:SVALrepPzasVAP
+* DESCRIPCION
+*   Rutina SVAL del Reporte de Piezas VAP
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No Existen Operadores con Nivel Cajero
+*   RETURN (-2): No hay filtros de seleccion para el reporte
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANRepPzasVAP
+* DOCUMENTACION
+*   NI50437
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALrepPzasVAP
+	LOCAL l_operadorVAP        LIKE post:operadorVAP
+	LOCAL l_fec_d              LIKE common:csr_string
+	LOCAL l_fec_a              LIKE common:csr_string
+	LOCAL l_registracionVAP    LIKE post:registracionVAP
+	LOCAL l_cobradoVAP         LIKE post:cobradoVAP
+  LOCAL l_entregadoVAP       LIKE post:entregadoVAP
+  LOCAL Lind                 LIKE drv:INDlast_menu
+  LOCAL l_piezaVAP           LIKE post:track_trace
+
+	LET l_operadorVAP = post:operadorVAP
+	LET l_fec_d = post:fec_d
+	LET l_fec_a = post:fec_a
+	LET l_registracionVAP = post:registracionVAP
+	LET l_cobradoVAP = post:cobradoVAP
+	LET l_entregadoVAP = post:entregadoVAP   
+	LET l_piezaVAP = post:track_trace
+
+  CALL post:MISCFtrim(l_operadorVAP)
+  CALL post:MISCFtrim(l_fec_d) 
+  CALL post:MISCFtrim(l_fec_a)
+  CALL post:MISCFtrim(l_registracionVAP)
+  CALL post:MISCFtrim(l_cobradoVAP)
+  CALL post:MISCFtrim(l_entregadoVAP)
+  CALL post:MISCFtrim(l_piezaVAP)
+
+	//si no es busqueda por track and trace
+	IF (!TESTFLAG (pieza_vap_rep, pieza_vap)) THEN
+		IF (l_fec_d.NUMCHARS == 0 && l_fec_a.NUMCHARS == 0) THEN
+			MSGBOX "Debe ingresar un rango de fechas.",0x00000000,"Error"
+			RETURN (-2)
+		END IF
+		
+		//Tratamiento filtro de Operadores. 
+		IF (l_operadorVAP == "TODOS") THEN
+			CLEARFIELD post:operador_idVAP
+		ELSE
+			//Obtiene el codigo id de operador para filtro del reporte.
+			CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+				WHERE op:op_branch_id == fld:common:sucursal_activa && \
+							op:op_login_id == l_operadorVAP
+			CDS FINDFIRST DSC:op:adt_op_context LOCK
+			IF (CDSRETVAL < 0) THEN
+				CDS UNLOCK DSC:op:adt_op_context
+				CDS ENDSELECT DSC:op:adt_op_context
+				MSGBOX "No Existen Operadores con Nivel Cajero",0x00000000,"Error"
+				RETURN (-2)
+			END IF
+			CDS EXTRACT DSC:op:adt_op_context op:op_operator_id INTO post:operador_idVAP
+			LET l_operadorVAP = post:operador_idVAP
+			CDS UNLOCK DSC:op:adt_op_context
+			CDS ENDSELECT DSC:op:adt_op_context
+		END IF
+	ELSE
+		//limpio los campos ya que solo busco por track and trace
+		CLEARFIELD l_operadorVAP
+		CLEARFIELD l_fec_d 
+		CLEARFIELD l_fec_a
+		CLEARFIELD l_registracionVAP
+		CLEARFIELD l_cobradoVAP
+		CLEARFIELD l_entregadoVAP
+	END IF
+
+	CALL post:MISCarmoRepVAP(l_operadorVAP,l_fec_d, l_fec_a,l_registracionVAP,l_cobradoVAP,l_entregadoVAP,l_piezaVAP)
+	IF (RETVAL == -2) THEN
+		RETURN (-2)
+	END IF
+
+	//libero los pick en memoria
+	CALL csr:f_sadroppl "PICregistracionVAP"
+	CALL csr:f_sadroppl "PICOperadorVAP"
+	CALL csr:f_sadroppl "PICcobradoVAP"
+	CALL csr:f_sadroppl "PICentregadoVAP"
+	
+	//Reestablezco la pantalla que contine las herramientas del escritoro
+	//calculadora-calendario-bloque de estacion-correo-wordpad-ayuda
+	Lind = LST:post:MENUrepPzasVAP //(Asignar menu que te interesa)
+	IF (drv:INDlast_menu == Lind) THEN
+		CALL giros:MISCjoinDesktopTool
+	END IF
+	
+END SUB
+
+/*******/
+

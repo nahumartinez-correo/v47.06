@@ -1,0 +1,74 @@
+/****o* Pendientes de agrupación/OFB:tes:ESCsalida_cheques
+* NOMBRE
+*   OFB:tes:ESCsalida_cheques
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesESC.h"
+
+SUB tes:ESCsalida_cheques
+
+	;tes:en_cierre = "N"
+	
+	//borrar todos los campos no autoclear de 9340 - 9350!!
+	CALL csr:proc_list(F_CLEAR,LST:tes:LISTfld_cheq_otrasuc)
+	CALL csr:proc_list(F_REFRESH,LST:tes:LISTfld_cheq_otrasuc)
+    
+	IF (drv:dt_app == 4) THEN 
+		LET adt_cheqaux_tesoro = "S"
+		LET adt_cheqaux_op = op:op_tesoro_id
+	ELSE
+		LET adt_cheqaux_tesoro = "N"
+		LET adt_cheqaux_op = op:op_operator_id
+	END IF
+  
+	CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq_ctx \
+		WHERE tes:adt_cheqaux_suc == FLD:op:op_branch_id \
+		&& tes:adt_cheqaux_tesoro == FLD:adt_cheqaux_tesoro \
+		&& tes:adt_cheqaux_op == FLD:adt_cheqaux_op
+    
+	CDS FINDFIRST DSC:AuxCheq_ctx LOCK 
+	IF (CDSRETVAL == 0) THEN
+		CALL tes:MISCcheques_verify
+		IF (RETVAL == 0) THEN    /* Elige "Salir" */
+			CDS UNLOCK DSC:AuxCheq_ctx
+			CDS ENDSELECT DSc:AuxCheq_ctx
+
+			CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq_ctx \
+				WHERE tes:adt_cheqaux_suc == FLD:op:op_branch_id \
+				&& tes:adt_cheqaux_tesoro == FLD:adt_cheqaux_tesoro \
+				&& tes:adt_cheqaux_op == FLD:adt_cheqaux_op
+
+			CDS DELETE DSC:AuxCheq_ctx ALL
+		ELSE	/* Elige "Continuar */
+			CDS UNLOCK DSC:AuxCheq_ctx
+			CDS ENDSELECT DSC:AuxCheq_ctx
+			RETURN (-1)
+		END IF
+	END IF
+	CDS ENDSELECT DSC:AuxCheq_ctx
+	CALL post:MISCactivar_buts
+    
+	IF (siaf:codigo_siaf == 8580) THEN
+		IF (flag_buzon ==  "X") THEN
+			CDS UNLOCK CheqMov_ctx
+			CDS ENDSELECT CheqMov_ctx
+		END IF
+	END IF
+	tes:en_cierre = "N"
+	CALL csr:f_sadroppl DSC:admin:PickSucursales
+    
+END SUB
+
+/*******/

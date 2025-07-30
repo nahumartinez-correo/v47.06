@@ -1,0 +1,100 @@
+/****o* Lista de CCT/OFB:post:MISCImpVisorRepCCT
+* NOMBRE
+*   OFB:post:MISCImpVisorRepCCT
+* DESCRIPCION
+*   Graba en un archivo el reporte 
+* ENTRADAS
+*   p_file = nombre del archivo
+*   link_num = canal de comunicacion del archivo
+*   p_out = tipo de salida (I = impresora, P = pantalla)
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCrepCCT
+* DOCUMENTACION
+*   50361 - https://jirats.siemens.com.ar/jira/browse/AUT-1684
+*   
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCImpVisorRepCCT(p_file,p_out,link_num)
+	LOCAL l_file LIKE common:csr_string
+	LOCAL l_out LIKE common:csr_string
+	LOCAL l_editor LIKE common:csr_string
+	LOCAL Lind LIKE drv:INDlast_menu
+	LOCAL copias_aux LIKE siaf:i //para cant. de copias del listado. 
+
+  LET l_file = p_file
+  LET l_out = p_out
+
+  FYIMSG CLEAR
+  CALL CSR:file_close(link_num)
+
+  //Si es por pantalla
+  IF (l_out == "P") THEN	
+    l_editor = "Visor"
+    CLEARFIELD common:csr_string
+    CALL csr:get_profile_string("PROG_EXT",l_editor,common:csr_string) /*Ruta del programa visor/editor de texto*/
+    IF (RETVAL < 0) THEN
+	    MOVE "No se pudo obtener la ruta de la aplicacion. Verifique la configuracion en el archivo DDproj.ini." to drv:error_msg
+	    CALL drv:error_msg
+	    FYIMSG CLEAR
+    ELSE			 			 
+      CALL csr:StrConcat(common:csr_string," ",common:csr_string)
+      CALL csr:StrConcat(common:csr_string,common:dirTemporal,common:csr_string)
+      CALL csr:StrConcat(common:csr_string,l_file,common:csr_string)	    
+    END IF
+	    
+    IF (common:csr_string.NUMCHARS > 0) THEN
+	    EXEC common:csr_string
+	    IF (RETVAL < 0) then
+        MOVE "Error al arrancar el visor externo. Verifique la ruta especificada en el archivo DDproj.ini." to drv:error_msg
+        CALL drv:error_msg
+        FYIMSG CLEAR
+        Lind = LST:tes:MENUreport_PCTCCT //(Asignar menu que te interesa)
+        IF (drv:INDlast_menu == Lind) THEN
+        	CALL giros:MISCjoinDesktopTool
+        END IF
+	    END IF
+    END IF
+    CALL giros:MISCdeleteFile(l_file) 
+  //Va por impresora
+  ELSE
+		IF (siaf:nro_copias == "") THEN
+			LET siaf:nro_copias = 1
+		END IF
+		LET copias_aux = 1
+
+		//gpb:NI50572 - Digitalizacion de Reportes
+		CALL tes:MISCflowPDF(p_file)
+		//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;	IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+		IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+			//Genero el PDF y lo imprimo
+			CALL tes:MISCcrearPDF(p_file)
+			
+;;			WHILE (copias_aux <= siaf:nro_copias)
+;;				FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, l_file
+;;				CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;				IF (RETVAL < 0) THEN
+;;					MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;					RETURN 
+;;				END IF 
+;;				PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;				IF (PRTRETVAL != 0) THEN
+;;					FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;					MSGBOX siaf:mensaje,0x00000000,"Error"
+;;				END IF 
+;;				CALL CSR:file_close(7)
+;;				LET copias_aux = copias_aux + 1
+;;			END WHILE	
+		END IF
+		CALL giros:MISCdeleteFile(l_file)  
+	END IF
+	
+END SUB
+
+/*******/

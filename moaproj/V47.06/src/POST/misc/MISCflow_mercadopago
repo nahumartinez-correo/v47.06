@@ -1,0 +1,123 @@
+/****o* Mercado Pago/OFB:post:MISCflow_mercadopago
+* NOMBRE
+*   OFB:post:MISCflow_mercadopago
+* DESCRIPCION
+*   Tratamiento de operaciones con tarjeta Mercado Pago
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:MISCsplit_flow_card
+* DOCUMENTACION
+*   NI50546 Mercado Pago 
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCflow_mercadopago
+
+	SETFLAG drv:mode_flags,popup_mode
+
+	IF (post:adt_tmp_codint_mp == "MPC" || post:adt_tmp_codint_mp == "MPD") THEN
+		//Es POINT Integrado
+		POPUP SCR:post:SCRNmpPurchase,post:PRESmpPurchase,post:PRECmpPurchase,post:SVALmpPurchase
+		RESETFLAG drv:mode_flags,popup_mode
+		IF (LASTKEY == RT_ESC || LASTKEY == RT_PAGEUP || LASTKEY == RT_BAILOUT) THEN
+			IF (post:mp_order_id > 0) THEN
+				//Verfico el estado de la Orden
+				CALL post:MISCmpGetOrderPoint
+				IF (RETVAL < 0) THEN
+					//Dio ESC sin haber generado orden de pago
+					RETURN -2
+				ELSE
+					IF (post:mp_payment_id.NUMCHARS > 0) THEN
+						//Traigo el detalle del Pago
+						CALL post:MISCmpGetPayPoint
+						IF (RETVAL < 0) THEN
+							//Actualizo la marca en la tabla OperacionesMP
+							CALL post:CDSopmp_jnlFallo("VEN")
+							
+							MSGBOX "Ha cancelado la orden de pago generada",0x00,"ATENCION"
+							RETURN -2
+						END IF
+						IF (post:mp_status_pago == "approved") THEN
+							MSGBOX "El pago ya fue realizado, si desea anularlo deberá hacerlo por Anulacion de Comprobantes",0x00,"ATENCION"
+							//Fuerzo la confirmacion porque ya se acredito el pago!!!
+							LASTKEY = RT_SEND
+						ELSE
+							RETURN -2
+						END IF
+					ELSE
+						//Si existe la Orden y no se efectuo el pago entonces cancelo la Orden 
+						CALL post:MISCmpDelOrderPoint
+						
+						//Actualizo la marca en la tabla OperacionesMP
+						CALL post:CDSopmp_jnlFallo("VEN")
+						
+						MSGBOX "Ha cancelado la orden de pago generada",0x00,"ATENCION"
+						RETURN -2
+					END IF
+				END IF
+			ELSE
+				//No se genero Orden
+				RETURN -2
+			END IF
+		END IF
+	ELSE
+		//Es QR Integrado
+		POPUP SCR:post:SCRNmpPurchaseQR,post:PRESmpPurchase,post:PRECmpPurchase,post:SVALmpPurchaseQR
+		RESETFLAG drv:mode_flags,popup_mode
+		IF (LASTKEY == RT_ESC || LASTKEY == RT_PAGEUP || LASTKEY == RT_BAILOUT) THEN
+			IF (post:mp_status.NUMCHARS > 0) THEN
+			  //Hago un Search para traer el detalle del Pago
+				CALL post:MISCmpSearchPayment
+				IF (RETVAL < 0) THEN
+					//Cancelo la ultima Orden 
+					IF (post:adt_opmp_status == "OPEN") THEN
+						CALL post:MISCmpDelOrderQR
+						
+						//Actualizo la marca en la tabla OperacionesMP
+						CALL post:CDSopmp_jnlFallo("VEN")
+					
+						MSGBOX "Ha cancelado la orden de pago generada",0x00,"ATENCION"
+					END IF
+					RETURN -2
+				ELSE
+					IF (post:mp_status_pago == "approved") THEN
+						MSGBOX "El pago ya fue realizado, si desea anularlo deberá hacerlo por Anulacion de Comprobantes",0x00,"ATENCION"
+						//Fuerzo la confirmacion porque ya se acredito el pago!!!
+						LASTKEY = RT_SEND
+					ELSE
+						RETURN -2
+					END IF
+				END IF
+			ELSE
+				//No se genero Orden
+				RETURN -2
+			END IF
+		END IF
+	END IF
+
+	//Limpio el buffer del teclado
+	INIT 33,0
+	
+	//Imprimo Ticko
+	CALL MISCticko_MP
+	
+	//Si no hubo error y no salio con ESC
+	LET post:NroCompPago2 = post:mp_payment_id 
+	LET post:Nro_Lote_Pos = post:mp_order_id     
+	LET post:NroTransac = post:mp_auth_code
+	LET post:Tipo_Operacion_Pos = "ONLINE"
+	
+	REFRESH post:NroCompPago2
+	REFRESH post:Nro_Lote_Pos
+	REFRESH post:NroTransac
+	REFRESH post:Tipo_Operacion_Pos
+	
+END SUB
+
+/*******/

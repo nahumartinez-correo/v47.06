@@ -1,0 +1,112 @@
+/****o* Lista de Giros/OFB:giros:OFBresultado_lg
+* NOMBRE
+*   OFB:giros:OFBresultado_lg
+* DESCRIPCION
+*  Selecciona los giros de la sesion_lg que esten emitidos para presupuestarlos y facturarlos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:control_pre_cierre
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBresultado_lg(sesion_nro)
+
+	local orden           like giros:pos0
+	local varl_sesion_lg  like giros:nro_sesion_lg
+	local lcodigo 		  like siaf:codigo_siaf
+	
+	fprint varl_sesion_lg,"%s",sesion_nro
+    lcodigo = siaf:codigo_siaf
+
+	CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONsesion_lg  WHERE \
+	giros:nro_sesion_lg == varl_sesion_lg && \
+	giros:estado_lg == "E" SORT "primary"
+
+	CDS FINDFIRST DSC:CONsesion_lg  LOCK
+	lib:err_retval = CDSRETVAL
+	
+	if (lib:err_retval != 0 )
+		CDS ENDSELECT DSC:CONsesion_lg 
+		if (lib:err_retval == -801)
+			return -1
+		end if
+	end if
+	
+   	DO
+ 		CALL CSR:proc_list(F_CLEAR,LST:LISTproceso_masivos)
+		CALL CSR:proc_list(F_CLEAR,LST:LISTemis_flds)
+		CALL CSR:proc_list(F_CLEAR,LST:LISTbenef_flds)
+
+		call csr:cleararray post:cod_opc
+		call csr:cleararray post:ali_opc
+		call csr:cleararray post:cos_opc
+		call csr:cleararray post:comb_opc
+		call csr:cleararray post:siniva_opc
+		call csr:cleararray post:flia_opc
+		call csr:cleararray post:texto_opc
+		call csr:cleararray post:inf_opc
+		clearfield post:costo_opc
+		 //SC 50170-FACTURACION
+		 call csr:cleararray post:siniva_opc4
+		 
+		CDS EXTRACT DSC:CONsesion_lg  ALL
+		
+		//extraigo campos NO Auto Extract
+		CDS EXTRACT DSC:CONsesion_lg  giros:clave_hdr_giros giros:firma_enviada
+
+		/*if ( post:adt_tarif_modo == "P" )
+		 	post:tarif_aux = ( ( giros:ComisionSinIva_fld + \
+			giros:IvaComision_fld ) * 100 ) / giros:ImporteNeto
+		end if*/
+
+		call giros:CDSdesc_servicio
+
+		/*// Impuestos Sellos
+		clearfield giros:Impp_pdesc_emi
+		clearfield giros:Impp_impdesc_emi
+		clearfield giros:Impp_pdesc_pag
+		clearfield giros:Impp_impdesc_pag*/
+	    
+	    //se setea el campo para control de caidas del rt
+	    giros:checkpoint_emision = ANTES_JNL
+		
+		/*se recuperan los datos de la tabla transac para el giro*/
+		let siaf:adt_tran_codigo = siaf:codigo_siaf
+		call siaf:CDSadt_tran_load
+		let  siaf:posible_off = siaf:adt_tran_posoff
+		let  siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+		let  tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+		let  drv:descrip = siaf:adt_tran_mnemonic
+		let  siaf:nombre_transac = siaf:adt_tran_desc
+		move siaf:adt_tran_afec_efvo to siaf:afecta_efectivo
+		let  post:captura_mp = siaf:adt_tran_med_pago
+		let  post:SupMedPago = "N"
+		move siaf:adt_tran_fliatran to post:tipo_transac
+		move siaf:adt_tran_fliatran to post:jnl_flia_tran
+			
+		call giros:OFBGrDet_lg(siaf:codigo_siaf)
+		
+		//Se actualiza el estado del Giro a FACTURADO (ya se encuentra grabado en la PresuDet)
+		CALL giros:CDSact_lg_pf
+		
+		CDS FINDNEXT DSC:CONsesion_lg   LOCK
+		lib:err_retval = CDSRETVAL
+		if (lib:err_retval == -801 )
+			CDS ENDSELECT DSC:CONsesion_lg 
+			break
+		end if
+	LOOP
+	
+	 siaf:codigo_siaf = lcodigo
+	
+END SUB
+
+/*******/

@@ -1,0 +1,177 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrptComer
+* NOMBRE
+*   OFB:post:MISCrptComer
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrptComer
+LOCAL l_falta_totales like post:cantidad
+LOCAL l_entro like post:cantidad
+LOCAL l_adt_raux_tx like post:adt_raux_tx
+LOCAL l_adt_raux_cod like post:adt_raux_cod
+LOCAL l_descripcion like post:adt_raux_desc
+LOCAL indice LIKE post:cantidad
+LOCAL l_raux_impre LIKE post:adt_raux_impre
+LOCAL l_adt_raux_item LIKE post:adt_raux_item
+LOCAL l_secuenciador LIKE post:cantidad
+LOCAL l_cadena1 LIKE common:csr_string
+LOCAL l_cadena2 LIKE common:csr_string
+	;EL REPORTE ESTA PENSADO CON:
+	;1 - UN CORTE DE CONTROL POR FAMILIA
+	;2 - UN CORTE DE CONTROL POR TRANSACCION Y
+	;3 - UNO DE ADICIONALES *** MDG
+	;POR FAMILIA
+	CALL post:CDSrptComLoadFliaRep
+	lineas = 0
+	l_secuenciador = 0
+	WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:FliaRep_ctx ALL
+		;EN ESTE PICKLIST SE VA A IR GUARDANDO TODAS LAS TABLAS DEL REPORTE
+		CALL csr:f_sadroppl DSC:pic_rptComer
+		CALL CSR:f_sanewpl(DSC:pic_rptComer,PIC:siaf:totales)
+		CLEARFIELD post:cantidad
+		l_falta_totales = 0
+		l_entro = 0
+		CLEARFIELD l_raux_impre
+		CLEARFIELD l_adt_raux_cod
+		CLEARFIELD l_adt_raux_tx
+		CLEARFIELD l_adt_raux_item
+		;LEO RepAux
+		CALL post:CDSrptComLoadRepAux
+		WHILE (CDSRETVAL == 0)
+			CDS EXTRACT DSC:RepAux_ctx ALL
+			l_entro = 1
+			;CUERPO DE LAS TABLAS
+			;ACA VOY IMPRIMIENDO SUBTOTALES O DETALLE SEGUN SEA NIVEL DE DETALLE O NO
+			;PARA IMPRE_ESPV *** MDG
+			CALL post:MISCrptComTitTotEspV(l_adt_raux_cod, l_raux_impre,l_adt_raux_tx)
+			IF (l_adt_raux_tx != post:adt_raux_tx || l_adt_raux_item != post:adt_raux_item) THEN
+    			IF (l_falta_totales == 1) THEN
+    				;IMPRIMO TOTALES POR TRANSACCION
+    				CALL post:MISCtotTxRptComer(l_descripcion, l_adt_raux_tx)
+    			END IF
+				;CONDICIONES POR LA QUE NO DEBA PROCESARSE LA LINEA *** MDG
+				CALL post:MISCrptComRechLinea
+				IF (RETVAL != -2) THEN
+					CALL post:MISCtitTxRptComer(post:adt_raux_tx, post:adt_raux_desc)
+					;IMPRIMO TITULO DE LA ESPECIE CUANDO post:adt_raux_impre == IMPRE_ESPV
+					;Y SI ES NIVEL DE DETALLE *** MDG
+					IF (post:adt_raux_impre == IMPRE_ESPV && post:rep_nivel_det == "S") THEN
+						CALL post:MISCtitTxRptComer(" ", post:adt_raux_cod)
+					END IF
+					;ESTA RUTINA ACUMULA LOS TOTALES POR CORTE DE CONTROL DE post:adt_raux_tx
+					CALL post:MISCrptAcumTotComTx("N", "S")
+					;GUARDO DESCRIPCIONES PARA CORTES DE CONTROL *** MDG
+					l_adt_raux_tx = post:adt_raux_tx
+					l_adt_raux_item = post:adt_raux_item
+					l_descripcion = post:adt_raux_desc
+					l_adt_raux_cod = post:adt_raux_cod
+					l_raux_impre = post:adt_raux_impre
+					l_falta_totales = 1
+					;IMPRIMO CUERPO DE LA TRANSACCION *** MDG
+					CALL post:MISCrptComCuerpo
+				ELSE
+					;SI LA LINEA FUE RECHAZADA LOS TOTALES DE ESTA NO DEBEN IMPRIMIRSE
+					l_falta_totales = 0
+				END IF
+			ELSE
+				;ESTA RUTINA ACUMULA LOS TOTALES POR CORTE DE CONTROL DE post:adt_raux_tx *** MDG
+				CALL post:MISCrptAcumTotComTx("N", "N")
+				;IMPRIMO CUERPO DE LA TRANSACCION *** MDG
+				CALL post:MISCrptComCuerpo
+			END IF
+			CDS FINDNEXT DSC:RepAux_ctx NOLOCK
+		END WHILE
+		IF (l_falta_totales > 0 && l_entro > 0) THEN
+			;IMPRIMO SUBTOTALES SI ES NIVEL DE DETALLE *** MDG
+			SELECT (post:rep_nivel_det)
+				CASE "S"
+					BREAK
+				CASE "N"
+					IF (l_raux_impre == IMPRE_ESPV) THEN
+						CALL post:MISCtotCodRptComer(l_adt_raux_cod, l_adt_raux_tx)
+						l_adt_raux_cod = post:adt_raux_cod
+					END IF
+					CALL post:MISCrptClearTotCom(2)
+					BREAK
+			END SELECT
+			;TOTALIZO ULTIMA TRANSACCION *** MDG
+			CALL post:MISCtotTxRptComer(l_descripcion, l_adt_raux_tx)
+			l_falta_totales = 0
+    	END IF
+    	;IMPRIMO EL CUERPO DE LAS TABLAS
+    	;PASO CADA REGISTRO DE LOS PICKLIST AL ARCHIVO DEL LISTADO *** MDG
+		indice = PL_GETITEM
+		if (post:cantidad > 0)
+			;CABECERA DE LAS TABLAS
+			IF (post:rep_modalidad != "B") THEN
+				CALL post:MISCrptComerCabetbl
+				IF (RETVAL == -2) THEN
+					;SI EL RETVAL ES -2 SE PRODUJO UN ERROR AL GRABAR EL ARCHIVO
+					RETURN RETVAL
+				END IF
+			END IF
+
+			CALL csr:myPickcontrol(DSC:pic_rptComer,common:csr_string,indice)
+		endif
+		WHILE ((indice - PL_GETITEM) < post:cantidad )
+			;CUERPO DE LAS TABLAS *** MDG
+			IF (siaf:pantalla_impreso == "A") THEN
+				IF (post:rep_modalidad == "B") THEN
+					l_secuenciador = l_secuenciador + 1
+					l_cadena1 = SUBSTR(common:csr_string,0,2)
+					l_cadena2 = SUBSTR(common:csr_string,2,99)
+					SELECT (l_cadena1)
+						CASE "S,"
+						CASE "T,"
+						CASE "D,"
+							FPRINT common:csr_string "%s,%s,%s,%s,%s%s,%s", common:sucursal_activa, post:reporte_fec_desde, post:reporte_fec_hasta, post:adt_fliarep_desc, l_cadena2, l_secuenciador,l_cadena1
+							BREAK
+						CASE ELSE
+							FPRINT common:csr_string "%s,%s,%s,%s,%s%s,", common:sucursal_activa, post:reporte_fec_desde, post:reporte_fec_hasta, post:adt_fliarep_desc, common:csr_string, l_secuenciador
+					END SELECT
+				END IF
+				;INICIALIZO CONTADOR PARA QUE NO SE IMPRIMA EL TITULO
+				siaf:i = 1
+				lineas = 1
+			END IF
+			CALL post:MISCwrt_lis_apai
+			IF (RETVAL == -2) THEN
+				;SI EL RETVAL ES -2 SE PRODUJO UN ERROR AL GRABAR EL ARCHIVO
+				RETURN RETVAL
+			END IF
+			lineas = lineas + 1
+			indice = indice + 1
+
+			;SI LAS LINEAS LLEGAN A 36 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+			;EN LA SIGUIENTE HOJA
+			IF (lineas == 36) THEN
+				IF ((indice - PL_GETITEM + 1) < post:cantidad ) THEN
+					lineas = 0
+					CALL post:MISCrptComerCabetbl
+				ELSE
+					lineas = 0
+				END IF
+			END IF
+			call csr:myPickcontrol(DSC:pic_rptComer,common:csr_string,indice)
+		END WHILE
+		CALL csr:f_sadroppl DSC:pic_rptComer
+		CDS ENDSELECT DSC:RepAux_ctx
+		CDS FINDNEXT DSC:FliaRep_ctx NOLOCK
+	END WHILE
+END SUB
+
+/*******/

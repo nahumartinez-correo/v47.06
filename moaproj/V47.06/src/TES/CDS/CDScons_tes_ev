@@ -1,0 +1,142 @@
+/****o* Reportes/OFB:tes:CDScons_tes_ev
+* NOMBRE
+*   OFB:tes:CDScons_tes_ev
+* DESCRIPCION
+*   Recorre las tablas Especie, TesEspV y TesEspVMov y genera el reporte de Especies Valorizadas que se encuentran
+*	en el tesoro o en la caja o en un pase
+* ENTRADAS
+*   suc: sucursal
+*	es_tes: S o N dependiendo si es o no es tesorero 
+*	ident: operador loggeado
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:TRANcons_tes_ev
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDScons_tes_ev(suc, es_tes, ident)
+	LOCAL total_imp_pase LIKE adt_espv_importe /* totaliza los pases */
+	LOCAL total_imp_fisico LIKE adt_espv_importe /* total del pase + disponible */
+	LOCAL total_subesp_fisico LIKE adt_espv_importe
+	LOCAL es_tesoro LIKE adt_espv_es_tesoro
+	LOCAL cant LIKE siaf:cantidad
+	LOCAL total_imp LIKE siaf:importe
+	LOCAL i LIKE siaf:i
+	LOCAL loc_err_retval LIKE lib:err_retval
+	LOCAL loc_retval LIKE lib:err_retval
+	LOCAL espv_cod_ant LIKE adt_espv_cod
+	
+	es_tesoro = es_tes
+	//Imprimo encabezado
+	LET siaf:indica_calcu = 0
+	LET siaf:listado_totmot = 0
+	CALL MISCtesoro_encab_ev
+	
+	CDS SELECT unique adt_espv_cod FROM Especie BECOMES "Esp1"
+	CDS FINDFIRST "Esp1" NOLOCK
+	LET loc_err_retval = CDSRETVAL
+	IF (CDSRETVAL < 0) THEN
+		RETURN
+	END IF
+	
+	CDS EXTRACT "Esp1" adt_espv_cod
+	
+	DO
+		IF (loc_err_retval < 0) THEN
+			BREAK
+		END IF
+
+		total_imp = 0
+		CDS SELECT FROM Especie BECOMES "Esp2" \
+			WHERE adt_espv_cod == adt_espv_cod
+			
+		CDS FINDFIRST "Esp2" NOLOCK
+		total_imp_fisico = 0
+		total_imp_pase = 0
+		
+		IF (CDSRETVAL == 0) THEN
+			DO
+				CDS EXTRACT "Esp2" \
+					adt_espv_subcod \
+					adt_espv_valor
+			
+				CDS SELECT FROM TesEspV BECOMES TesEspV \
+					WHERE adt_espv_suc == suc \
+					&& adt_espv_es_tesoro == es_tesoro \
+					&& adt_espv_id == ident \
+					&& adt_espv_cod == adt_espv_cod \
+					&& adt_espv_subcod == adt_espv_subcod
+			
+				adt_espv_importe = 0
+				total_subesp_pase = 0
+				total_subesp_fisico = 0
+			
+				CDS FINDFIRST TesEspV NOLOCK
+				IF (CDSRETVAL == 0) THEN
+					CDS EXTRACT \
+						TesEspV \
+						adt_espv_importe
+						
+					/* Acumula en total_subesp_pase el importe total del pase por subespecie */
+					CALL CDSpases_TesEspVMov(suc,op:adt_login_id,es_tesoro,adt_espv_cod,adt_espv_subcod,total_subesp_pase)
+					total_subesp_fisico = total_subesp_pase + adt_espv_importe
+					cant = adt_espv_importe/adt_espv_valor
+					total_subesp_fisico = total_subesp_pase + adt_espv_importe
+						
+					//Si alguna de estas columnas tiene valor entonces imprimo subencabezado y detalle
+					IF (cant != 0 || adt_espv_importe != 0 || total_subesp_pase !=0 || total_subesp_fisico != 0) THEN
+						IF (adt_espv_cod != espv_cod_ant)
+							//Imprime subencabezado (codigo de especie)
+							CALL MISCtes_subencab_ev
+							espv_cod_ant = adt_espv_cod
+						END IF
+						common:csr_string = ""
+						FPRINT common:csr_string "  %-20.20s %7.7s %13.13s %13.13s    %13.13s"  adt_espv_subcod, cant, adt_espv_importe, total_subesp_pase, total_subesp_fisico
+						CALL MISCwrite_file(5,FLD:common:csr_string)
+						total_imp = total_imp + adt_espv_importe
+						total_imp_pase = total_imp_pase + total_subesp_pase
+					END IF
+				END IF
+				CDS FINDNEXT "Esp2" NOLOCK
+				IF (CDSRETVAL < 0) THEN
+					BREAK
+				END IF
+			LOOP
+		END IF
+		cds endselect "Esp2"
+		IF (total_imp_fisico != 0 || total_imp_pase != 0 || total_imp != 0) THEN
+			total_imp_fisico = total_imp_pase + total_imp
+			fprint common:csr_string "                                _____________   _____________   _____________"
+			call MISCwrite_file(5,FLD:common:csr_string)
+			fprint common:csr_string "  TOTALES                      %13.13s %13.13s    %13.13s",total_imp, total_imp_pase, total_imp_fisico
+			call MISCwrite_file(5,FLD:common:csr_string)
+			//cgw:PS 10431 (AUT-2301) - PS10307 (AUT-2231)
+			//Controlo que si los blancos de separacion de totales superan el control de lineas impresas (59 lineas ya impresas anteriormente a esta linea) no sean impresas.
+			IF (siaf:lineas_cl < 59) THEN				
+				common:csr_string = " "
+				call MISCwrite_file(5,FLD:common:csr_string)
+				common:csr_string = " "
+				call MISCwrite_file(5,FLD:common:csr_string)
+			END IF
+		END IF
+		CDS FINDNEXT "Esp1" NOLOCK
+		LET loc_err_retval = CDSRETVAL
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT "Esp1" adt_espv_cod
+		END IF
+		total_imp_fisico = 0
+		total_imp_pase = 0
+	LOOP
+	
+	CDS ENDSELECT TesEspV
+	CDS ENDSELECT "Esp1"
+	
+end sub
+
+/*******/

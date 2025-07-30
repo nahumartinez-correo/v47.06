@@ -1,0 +1,89 @@
+/****o* Facturación/OFB:post:PRT_Sellos
+* NOMBRE
+* 	OFB:post:PRT_Sellos
+* DESCRIPCION
+* Se agrega el impuesto de Sellados para ser impresos en los distintos comprobantes fiscales.
+* ENTRADAS
+* 	INDICE: Indice que cuenta las lineas de impresion.
+* 	SUBTOTAL: Importe del sellado a imprimir en el comprobante fiscal.
+* 	Tipo_Impresion: Tipo de Comprobante (1 - Factura, Nota Credito , 3 - Ticket, Tira Auditora).
+* 	Columna: Indica posicionamiento utilizado para impresion de linea.
+* SALIDAS
+* 	RETURN (INDICE): Indice que indica el avance de linea de impresion.
+* REFERENCIADO POR
+* 	post:PRT_Factura
+* 	post:PRT_Ticket
+* 	post:PRT_Ticket_Jou
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Sellos(INDICE,SUBTOTAL,Tipo_Impresion,Columna)
+	LOCAL COLUMNA_AUX LIKE post:cantidad
+	LOCAL l_imp LIKE siaf:importe
+
+	COLUMNA_AUX = Columna - 7
+	CALL post:MISCinic_AuxImpp
+
+	DO
+		CALL post:MISCbusca_AuxImpp
+		IF ( lib:err_retval != 0 )
+			BREAK
+		END IF
+		;[PAW] -> el campo adt_auximpp_importe no tiene pattern,
+		;y por eso lo tuve que mover a otro campo. (req. 2432).
+		l_imp = adt_auximpp_importe
+		SELECT (Tipo_Impresion)
+			CASE 3    // Ticket
+				//No es Necesario un salto de Pagina
+				//gpb:PS10705
+				IF (modoPrt == LASER) THEN
+					FPRINT common:csr_string "%*.*s %-19.19s %14.14e\n",COLUMNA_AUX,COLUMNA_AUX,"SELLOS",adt_auximpp_desc,l_imp					
+				ELSE
+					//justifico a la derecha
+					FPRINT common:csr_string "\x1Ba\x32%s %-19.19s %14.14e\n",,"SELLOS",adt_auximpp_desc,l_imp	
+				END IF
+			BREAK
+			CASE ELSE
+				CALL PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA, Tipo_Impresion)
+				INDICE = RETVAL
+
+				FPRINT common:csr_string "SELLADO PCIA %s %s",adt_auximpp_desc,adt_auximpp_impdesc
+				CALL csr:trimfield(common:csr_string)
+				FPRINT common:csr_string "%s  %14.14e\n",common:csr_string, l_imp
+				//FPRINT common:csr_string "%89.89s",common:csr_string
+				FPRINT common:csr_string "%49.49s",common:csr_string
+
+				/*original
+				FPRINT common:csr_string "%s  %9.9e\n",common:csr_string, l_imp
+				FPRINT common:csr_string "%89.89s",common:csr_string
+				*/
+					
+				//gpb:PS10705
+				IF (modoPrt != LASER) THEN
+					//Quito espacios en blancos para no saturar el buffer de impresion  
+					CALL CSR:trimfield (common:csr_string)  
+					//justifico a la izquierda
+				//	FPRINT common:csr_string "\x1Ba\x30%s \n",common:csr_string	
+					//justifico a la derecha
+					FPRINT common:csr_string "\x1Ba\x32%s",common:csr_string	
+
+				END IF
+				
+		END SELECT
+		CALL post:MISCprt2laser(common:csr_string)
+		SUBTOTAL = SUBTOTAL + adt_auximpp_importe
+		INDICE = INDICE + 1
+	LOOP
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+	END IF
+	
+  CALL post:MISCclose_AuxImpp
+  siaf:importe = SUBTOTAL
+  RETURN (INDICE)
+END SUB
+/*******/

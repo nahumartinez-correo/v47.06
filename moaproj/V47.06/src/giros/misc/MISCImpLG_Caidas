@@ -1,0 +1,208 @@
+/****o* Lista de Giros/OFB:giros:MISCImpLG_Caidas
+* NOMBRE
+*   OFB:giros:MISCImpLG_Caidas
+* DESCRIPCION
+*   Rutina de inicializacion de impresion de plancha de cheque de Emision de Lista de Giros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCtrat_post_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCImpLG_Caidas
+    LOCAL line_csr_cheque LIKE common:csr_string
+    LOCAL line_csr_cheque_sel LIKE common:csr_string
+    LOCAL l_nro_sesion_lg LIKE common:csr_string
+    LOCAL l_nro_trx_lg LIKE common:csr_string
+	LOCAL l_F_Serie_fld LIKE common:csr_string
+    LOCAL l_F_NroGiro_fld LIKE common:csr_string
+    LOCAL l_F_digito_fld LIKE common:csr_string
+    LOCAL l_anulado LIKE common:csr_string
+    LOCAL l_lg_cheq LIKE common:csr_string
+    LOCAL l_ImporteNeto LIKE giros:ImporteNeto
+    LOCAL l_CodSucBenef_fld LIKE common:csr_string
+    LOCAL l_NombreBenef_fld LIKE common:csr_string
+    LOCAL l_ApellidoBenef_fld LIKE common:csr_string
+    LOCAL l_cuenta LIKE siaf:i
+    LOCAL flag_popup LIKE siaf:i
+    LOCAL l_cont LIKE siaf:i
+   
+    l_cuenta = 0
+    l_cont = 0
+    post:TranAnul_cant = 0
+    
+	CDS SELECT FROM DSC:CaidasChq_tbl BECOMES DSC:CaidasChq_ctx WHERE \
+	(post:op_operator_id == op:op_operator_id && \
+	post:fecha == common:system_date && \
+	giros:nro_sesion_lg == giros:nro_sesion_lg) SORT "primary"
+
+	CDS FINDFIRST DSC:CaidasChq_ctx  LOCK
+	lib:err_retval = CDSRETVAL
+	
+	IF (lib:err_retval == -801)
+		CDS UNLOCK DSC:CaidasChq_ctx
+		CDS ENDSELECT DSC:CaidasChq_ctx
+		RETURN (lib:err_retval)
+	ENDIF
+	
+	       
+    //Creo picklist para guardar los datos del giro a anular
+    CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+    CALL CSR:f_sanewpl dsc:post:PICanulacion_tran PIC:post:PICanulacion_tran 605,332
+    
+    //Creo picklist para guardar los datos del cheque a anular
+    CALL csr:f_sadroppl dsc:post:PICtran_sel
+    CALL CSR:f_sanewpl dsc:post:PICtran_sel PIC:post:PICtran_sel 605,332
+		    
+	WHILE (lib:err_retval == 0)
+	    CLEARFIELD line_csr_cheque
+        CLEARFIELD line_csr_cheque_sel
+        CLEARFIELD l_nro_sesion_lg
+        CLEARFIELD l_nro_trx_lg
+        CLEARFIELD l_F_Serie_fld
+        CLEARFIELD l_F_NroGiro_fld
+        CLEARFIELD l_F_digito_fld
+        l_anulado = "ANULADO"
+        CLEARFIELD l_lg_cheq
+        CLEARFIELD l_ImporteNeto
+        CLEARFIELD l_CodSucBenef_fld
+        CLEARFIELD l_NombreBenef_fld
+        CLEARFIELD l_ApellidoBenef_fld
+	
+	    post:TranAnul_cant = post:TranAnul_cant + 1
+	
+		CDS EXTRACT DSC:CaidasChq_ctx \
+            giros:nro_sesion_lg INTO l_nro_sesion_lg\
+            giros:nro_trx_lg INTO l_nro_trx_lg\
+            giros:Serie_fld INTO l_F_Serie_fld\
+            giros:NroGiro_fld INTO l_F_NroGiro_fld\
+            giros:digito_fld INTO l_F_digito_fld\
+            giros:lg_cheque INTO l_lg_cheq\
+            giros:ImporteNeto INTO l_ImporteNeto\
+            giros:CodSucBenef_fld INTO l_CodSucBenef_fld\
+            giros:NombreBenef_fld INTO l_NombreBenef_fld\
+            giros:ApellidoBenef_fld INTO l_ApellidoBenef_fld
+		
+        //Traigo los datos del cheque y lo cargo en el picklist
+        MOVE l_F_Serie_fld TO SUBSTR(line_csr_cheque,1,1)
+        CALL post:MISCFtrim(l_F_NroGiro_fld)
+        CALL post:MISCpadNmb(l_F_NroGiro_fld,6,"0")
+        MOVE l_F_NroGiro_fld TO SUBSTR(line_csr_cheque,3,6)
+        MOVE "-" TO SUBSTR(line_csr_cheque,9,1)
+        CALL post:MISCFtrim(l_F_digito_fld)
+        MOVE l_F_digito_fld TO SUBSTR(line_csr_cheque,10,1)
+        
+        MOVE SUBSTR(line_csr_cheque,1,10) TO SUBSTR(line_csr_cheque_sel,1,10)
+        
+        IF (l_lg_cheq == "AN" && l_nro_trx_lg.NUMCHARS == 0) THEN
+            MOVE l_anulado TO SUBSTR(line_csr_cheque,24,7)
+            
+            MOVE l_anulado TO SUBSTR(line_csr_cheque_sel,87,7)
+            MOVE l_nro_sesion_lg TO SUBSTR(line_csr_cheque_sel,71,9)
+        ELSE
+            MOVE "$" TO SUBSTR(line_csr_cheque,24,1)
+            MOVE l_ImporteNeto TO SUBSTR(line_csr_cheque,26,14)
+            
+            MOVE l_nro_sesion_lg TO SUBSTR(line_csr_cheque_sel,71,9)
+            MOVE l_nro_trx_lg TO SUBSTR(line_csr_cheque_sel,81,5)
+            
+            IF (l_lg_cheq == "AN") THEN
+                 MOVE l_anulado TO SUBSTR(line_csr_cheque_sel,87,7)
+            ELSE
+                MOVE  "       " TO SUBSTR(line_csr_cheque_sel,87,7)
+            END IF
+        END IF
+        
+        MOVE l_CodSucBenef_fld TO SUBSTR(line_csr_cheque,40,5)
+        MOVE l_nro_sesion_lg TO SUBSTR(line_csr_cheque,71,9)
+        MOVE l_nro_trx_lg TO SUBSTR(line_csr_cheque,81,5)
+        
+        //Aca cargo los datos del giro 
+        CALL CSR:f_saaddpl dsc:post:PICanulacion_tran line_csr_cheque
+        
+        //Aca cargo los cheques anulados
+        CALL CSR:f_saaddpl dsc:post:PICtran_sel line_csr_cheque_sel	
+        
+		CDS FINDNEXT DSC:CaidasChq_ctx LOCK
+		lib:err_retval = CDSRETVAL
+		
+		l_cuenta = l_cuenta + 1
+		l_cont = l_cont + 1
+		
+		IF (l_cont == 4 ) THEN
+		    l_cont = 0
+		END IF
+	END WHILE
+	    
+	CDS UNLOCK DSC:CaidasChq_ctx
+	CDS ENDSELECT DSC:CaidasChq_ctx
+	
+	//Valido si tengo que completar la plancha con cheques anulados
+    IF (l_cont > 0 && l_cont < 4) THEN
+        WHILE (l_cont < 4)
+            l_cont = l_cont + 1
+            
+            //Traigo los datos del cheque y lo cargo en el picklist
+            MOVE l_F_Serie_fld TO SUBSTR(line_csr_cheque,1,1)
+            
+            l_F_NroGiro_fld = l_F_NroGiro_fld + 1
+            CALL post:MISCFtrim(l_F_NroGiro_fld)
+            CALL post:MISCpadNmb(l_F_NroGiro_fld,6,"0")
+            MOVE l_F_NroGiro_fld TO SUBSTR(line_csr_cheque,3,6)
+            
+            MOVE "-" TO SUBSTR(line_csr_cheque,9,1)
+            
+            CALL giros:digito_verificador (l_F_Serie_fld,l_F_NroGiro_fld,l_F_digito_fld)
+            CALL post:MISCFtrim(l_F_digito_fld)
+            MOVE l_F_digito_fld TO SUBSTR(line_csr_cheque,10,1)
+            
+            MOVE SUBSTR(line_csr_cheque,1,10) TO SUBSTR(line_csr_cheque_sel,1,10)
+            MOVE l_anulado TO SUBSTR(line_csr_cheque,24,7)
+            MOVE l_anulado TO SUBSTR(line_csr_cheque_sel,87,7)
+            MOVE l_nro_sesion_lg TO SUBSTR(line_csr_cheque_sel,71,9)
+            
+            //Aca cargo los datos del giro 
+            CALL CSR:f_saaddpl dsc:post:PICanulacion_tran line_csr_cheque
+            
+            //Aca cargo los cheques anulados
+            CALL CSR:f_saaddpl dsc:post:PICtran_sel line_csr_cheque_sel	
+            
+             post:TranAnul_cant = post:TranAnul_cant + 1
+        END WHILE   
+    END IF
+	
+    IF (l_cuenta > 0) THEN
+        flag_popup = 0
+        WHILE (flag_popup == 0)
+            LASTKEY = RT_SEND
+        
+            POPUP giros:SCRNanulacionLG,-,PCOLanulacionLG,SVALanulacionLG
+            
+            IF (LASTKEY == RT_ESC) THEN
+                flag_popup = 0
+            ELSE
+                flag_popup = 1
+            END IF
+        END WHILE
+        
+        //Ver si lo dejo comentado o no           
+        //CALL giros:MIScicloPICtran_sel
+    END IF 
+   
+    //Elimino los picklist en memoria
+    CALL csr:f_sadroppl dsc:post:PICanulacion_tran
+    CALL csr:f_sadroppl dsc:post:PICtran_sel
+    
+    RETURN l_cuenta
+    
+END SUB
+
+/*******/

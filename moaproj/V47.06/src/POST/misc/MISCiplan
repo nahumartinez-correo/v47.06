@@ -1,0 +1,201 @@
+/****o* Pendientes de agrupación/OFB:post:MISCiplan
+* NOMBRE
+*   OFB:post:MISCiplan
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+sub post:MISCiplan
+    
+    
+    fyimsg clear
+	
+    ;SMC Checkeo el codigo de barras segun RUBRO en la tabla de Utilities 
+    ;   Si es Recarga o Solicitud de PIN
+    ;   retval = 0  Encontro Codigo de Barra definido en RUBRO en la Tabla Utilities
+    ;   retval < 0  Error
+
+    call post:CDSchk_rubro_utility("IPLAN", post:sf1_codbarras1)
+    if (retval < 0)
+            return (-2)
+    endif
+  	
+  	call post:MISCgetTranVer_SF1(utility_desc_prod)
+  	
+	SELECT (post:utility_desc_prod)
+        case "SOPIN"	    
+            ;SMC si es SOLICITUD de PIN
+        	 /*tlr:jnl_tran_name   = "IPLAN"
+            tlr:tran_mnemonic   = "IPLAN"
+            siaf:nombre_transac = "SOLICITUD PIN IPLAN" */
+            // siaf:codigo_siaf = 6680
+            let drv:INDhcomm_rtn = OFB:post:SENDiplan
+            let drv:INDspc_rtn[1] = OFB:post:RCVEiplan
+        break
+        case "RECAR"
+    	    ;SMC Si es RECARGA de PIN
+             /*tlr:jnl_tran_name   = "IPLRE"
+            tlr:tran_mnemonic   = "IPLRE"
+            siaf:nombre_transac = "RECARGA PIN IPLAN"
+            //siaf:codigo_siaf = 6700 */
+            let drv:INDhcomm_rtn = OFB:post:SENDiplanRecarga
+            let drv:INDspc_rtn[1] = OFB:post:RCVEiplanRecarga
+        break
+        case else
+            break
+    End Select
+    
+           
+    //let drv:INDjnl_rtn = OFB:post:JNLiplan
+    ; siaf:tipo_reentry = "R"
+    
+    // Busco el numero de secuencia de la transaccion de iplan 
+	if (testflag(tlr:tran_flags,correction))
+	    /*
+        call siaf:MISCbusca_tx_iplan("")
+        if (retval < 0) then 
+            ;SMC restauro los campos antes de volver
+            // Restauro los campos indirectos 
+            let hcomm:INDhost_sndrt = locINDhost_sndrt
+            let hcomm:INDhost_rcvrt = locINDhost_rcvrt
+            let siaf:codigo_siaf        = loc_cod_siaf
+            let tlr:jnl_tran_name = loc_jnl_tran_name
+            let tlr:tran_mnemonic = loc_tran_mnemonic
+            let siaf:nombre_transac = loc_nombre_transac
+            let drv:INDjnl_rtn = locINDjnl_rtn 
+            let tlr:INDtots_append = locINDtots_append
+            let siaf:tipo_reentry = loc_tipo_reentry
+            tes:es_tesoro = "S"
+            if (testflag(tlr:tran_flags,correction))
+                tlr:jnl_sequence = loc_jnl_sequence
+                tlr:sequence_corr = loc_sequence_corr
+            endif
+            
+            msgbox "Error al buscar la transaccion de Iplan", OFB_OK, "Error"
+            return -2
+        endif
+        */
+    else
+        ;Levanto el importe a enviar a Iplan del CodBarras_nuevo
+        ;Implementar cuando se instale el nuevo BOB
+        
+        ;let loc_importe_Iplan = substr(post:sf1_codbarras_nuevo,10,6)
+        ;post:importe_aux = loc_importe_Iplan / 100
+      
+    endif
+       
+	// UngetKey RT_SEND
+
+	/* call tlr:JNLtran*/ 
+	if (post:importe_aux == 0) || (post:importe_aux.numchars == 0)
+	    msgbox "Problemas en la transaccion. Eliminela de la sesion e ingresela nuevamente",OFB_OK,"Error"
+	    hcomm:tran_status = 100
+	/*else
+	    call tlr:JNLtranSinImp */
+    endif
+
+	;SMC Hago reenvio automatico if necesary....
+	// call post:MISCAutoReenvio
+    
+	/* Esto es porque la JNLtranSinImp borra este flag 
+	if (loc_es_reversa == 1) then
+	    setflag tlr:tran_flags, correction
+	endif
+	*/
+	
+/*    if (hcomm:tran_status >= 100) then
+        UngetKey RT_ESC
+        return -2
+    endif
+*/  
+
+	;SMC Se convierte Descriptor a Campo unico por codigo de transaccion
+	;    Se lee de la tabla transac el numero de version correspondiente a trx
+    ;call post:MISCgetTranVersion(hcomm:CodTran)
+    /*call post:MISCgetTranVersion(loc_Codigo_Iplan)
+    if (retval < 0)
+        let siaf:adt_tran_Version = 1    
+    endif*/
+    // let hcomm:TranVersion = siaf:adt_tran_sf1_ver
+
+/* Ahora llamo al bob para que me devuelva el ticket 
+    if (!testflag(tlr:tran_flags,correction))
+        sf1_cta_nro = result_id
+        loc_codbarras = sf1_codbarras_nuevo
+        
+        
+        call csr:trimfield result_pin
+        call csr:trimfield result_id_pin
+ 
+        ;SMC Segun Version de IPLAN...
+        select (hcomm:TranVersion)
+            case 1
+                fprint sf1_codbarras_nuevo, "%s%s", sf1_codbarras_nuevo, result_pin
+                break
+            case 2
+                ;SMC Agrego importe y Pin ID al final de la barra
+                ;loc_return_pin = result_id_pin
+                fprint sf1_codbarras_nuevo, "%s%20.20s", sf1_codbarras_nuevo, result_id_pin
+        
+                loc_codbarras_id = sf1_codbarras_nuevo
+                ;Si es Solicitud... mando el tambien el pin para el Ticket (9 CARACTERES)
+                if (loc_Codigo_Iplan == 6680) then
+                    fprint sf1_codbarras_nuevo, "%s%s", sf1_codbarras_nuevo, result_pin
+                endif
+                break        
+            case 3
+                ;SMC Agrego importe y Pin ID al final de la barra
+                ;loc_return_pin = result_id_pin
+                fprint sf1_codbarras_nuevo, "%s%20.20s", sf1_codbarras_nuevo, result_id_pin
+        
+                loc_codbarras_id = sf1_codbarras_nuevo
+                ;Si es Solicitud... mando el tambien el pin para el Ticket (20 CARACTERES)
+                if (loc_Codigo_Iplan == 6680) then
+                    fprint sf1_codbarras_nuevo, "%s%20.20s", sf1_codbarras_nuevo, result_pin
+                endif
+                break        
+            case else
+                break
+        end select
+        
+        #ifdef DEBUG_TEST
+                dprint "VERSION:%s\n" hcomm:TranVersion
+                dprint "CODBARRA:%s\n" sf1_codbarras_nuevo
+        #endif
+
+        call MISCobtiene_impreSf1
+        if (retval < 0)
+            return -2
+    	endif
+               
+        ;SMC Si es Version Vieja de IPLAN...
+        if (hcomm:TranVersion == 1)
+            if (loc_Codigo_Iplan == 6680) then
+                ;SMC si es Carga (6680) envio tambien el pin, para que aparezca en el ticket
+               	;SMC Ya solo envio PIN en carga 
+               	fprint loc_encryp_pin ,"%s%s%s%s%s",substr(result_pin,6,2),substr(result_pin,4,2),\
+               	substr(result_pin,8,1),substr(result_pin,2,2),substr(result_pin,0,2)
+               	fprint sf1_codbarras_nuevo, "%s%s" loc_codbarras, loc_encryp_pin
+            endif
+        else ;Si es Version Recarga de IPLAN o mas nueva....
+
+            sf1_codbarras_nuevo = loc_codbarras_id
+        endif
+
+    endif
+*/
+end sub
+
+/*******/

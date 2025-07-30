@@ -1,0 +1,120 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCrindo_caja
+* NOMBRE
+*   OFB:tes:MISCrindo_caja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCrindo_caja
+    
+    LOCAL status_op_orig LIKE tlr:tots_status
+    LOCAL idx_mon like siaf:idx
+ 
+    CDS SELECT FROM DSC:rend_caj_table BECOMES DSC:rend_caj_context WHERE  \
+    rend_op_id == FLD:op:op_operator_id && rend_suc_id == FLD:op:op_branch_id
+    CDS FINDFIRST DSC:rend_caj_context LOCK
+    IF (CDSRETVAL == -801) THEN
+       common:csr_string = "Error leyendo registro de rendicion"
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+ 	CDS EXTRACT DSC:rend_caj_context all
+ 
+	status_op_orig = "C"
+
+	CDS ENDSELECT DSC:tlr:CONtots_write
+   	CDS SELECT FROM "totals" BECOMES DSC:tlr:CONtots_write WHERE  \
+   	tlr:tots_branch == FLD:op:op_branch_id && tlr:tots_operator ==  \
+   	FLD:op:op_operator_id
+   	CDS CLEARBUFFER DSC:tlr:CONtots_write
+   	CDS FINDFIRST DSC:tlr:CONtots_write LOCK
+   	CALL lib:MISCcds_find_err
+   	IF (RETVAL == -2) THEN
+    	RETURN (-2)
+   	END IF
+
+   	cds extract DSC:tlr:CONtots_write array siaf:tefectivo_vec \
+   	array siaf:tefec_inic_vec
+    CDS CLEARBUFFER DSC:tlr:CONtots_write
+   	CDS APPEND DSC:tlr:CONtots_write FLD:status_op_orig AS  \
+   	FLD:tlr:tots_status
+   	CDS UPDATE DSC:tlr:CONtots_write LOCK
+   	 
+   	/*genera el picklist con las restricciones de los medios de pago*/
+   	post:tipo_rest = TODOS
+   	post:captura_mp = "S"
+   	call post:MISCrest_saldo(common:sucursal_activa,"pic:PICmedios","S","operador")
+	
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx            
+	do
+		if (retval < 0)
+	    	break
+	    end if
+     	let post:adt_mp_cod = substr(common:csr_string,0,2)
+     	call post:CDSadt_MedPago_load
+     	
+   		If (rend_marca_vec[post:adt_mp_cod] != "X") then
+	   		rend_marca_vec[post:adt_mp_cod] = "X"
+	  		let rend_importe_vec[post:adt_mp_cod] = siaf:tefectivo_vec[post:adt_mp_cod] + siaf:tefec_inic_vec[post:adt_mp_cod]
+			/*journalizo*/
+		    /*siaf:importe = rend_importe_vec[post:adt_mp_cod]*/
+		    post:importe_origen  = rend_importe_vec[post:adt_mp_cod]
+		    CALL post:MISCconvierto_coti(post:importe_origen)
+		    siaf:moneda = post:adt_mp_cod
+		    siaf:desc_moneda = substr(common:csr_string,3,30)
+		    post:medio_pago_desc = substr(common:csr_string,3,30)
+		    
+		    siaf:nombre_transac.HIGHLITE = 0
+		    siaf:nombre_transac = "RENDICION DE CAJA"
+		    tlr:tran_mnemonic = "RENDCAJ"
+		    drv:descrip = "RENDCAJ"
+		    siaf:codigo_siaf = 8510
+		    es_tesoro = "S"
+		    let drv:INDscr = SCR:tes:SCRNrendi_caja
+    		let drv:INDjnl_rtn = OFB:tes:JNLsalida
+		    UNGETKEY 0x190
+		    call tlr:JNLtran
+		end if
+		
+		let idx = idx + 1
+	    let i_idx = PL_GETITEM + idx
+	    call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx            
+    loop
+
+	rend_marca_cierre = "X"
+	rend_tipo_cierre  = "C"
+
+	CDS CLEARBUFFER DSC:rend_caj_context
+	CDS APPEND DSC:rend_caj_context array rend_importe_vec array rend_marca_vec  \
+	FLD:rend_marca_cierre FLD:rend_tipo_cierre
+
+	CDS UPDATE DSC:rend_caj_context NOLOCK
+	IF (CDSRETVAL < 0) THEN
+   		common:csr_string =  \
+   		"Error en cierre:No se puede actualizar registro rendicion"
+   		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+   		RETURN (-2)
+	endif
+    
+    CDS ENDSELECT DSC:rend_caj_context
+    	
+    /* Le asigno la fecha que estoy cerrando*/
+    tlr:set_bus_date = tes:rend_fecha
+    clearfield siaf:moneda
+END SUB
+
+/*******/

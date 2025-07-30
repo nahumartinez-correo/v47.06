@@ -1,0 +1,118 @@
+/****o* Giros/OFB:giros:MISC_CSM_IVA
+* NOMBRE
+*   OFB:giros:MISC_CSM_IVA
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:giros:MISC_CSM_IVA_BOR
+* REFERENCIADO POR
+*   OFB:post:MISCgenerarIva
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+sub giros:MISC_CSM_IVA/*nuevo*/
+    LOCAL loc_cuenta LIKE post:cantidad
+    LOCAL loc_impSinIva LIKE siaf:importe
+    LOCAL loc_importe LIKE siaf:importe
+    LOCAL loc_tasa LIKE post:adt_serv_aliciva
+    LOCAL loc_cantidad LIKE post:cantidad
+    /* LOCAL suma like siaf:importe */
+
+	/*Si la transacción es rechazada por el Host, no calculo el Iva*/
+	// FGB 27.06.2003: agrego condiciones para que no me tome las trx con caida en vuelo,
+	// si las mismas no fueron aun recuperadas.
+	if (siaf:siaf_status != HOST_ACCEPTED && siaf:siaf_status != MEMO && \
+		siaf:siaf_status != UNPOSTED) then
+			return
+	endif	
+
+	if (giros:es_emision_postal == "S" || giros:es_emision_tele == "S" || \
+		giros:es_envio_WU == "S" || giros:es_emision_inte == "S" || \
+		giros:es_emision_correohoy == "S" ) then
+		/* suma = Comision_fld + ImporteSelloEmis + ImporteSelloPag 
+		CALL post:MISCdesglosaIva(suma,post:adt_serv_aliciva,1) */
+		//SC 50170
+		CALL post:MISCdesglosaIva(Comision_fld,post:adt_serv_aliciva,1,0)
+		//SC 50170 - FACTURACION
+		//50295 - LISTA DE GIROS
+		giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis
+		IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) || TESTFLAG(giros:giros_masivos,proc_anul_masivos) || \
+			TESTFLAG(giros:giros_importacion,proc_em_lg))
+			CALL post:CDSUpdate_ImpreIva(post:adt_serv_aliciva,post:ImporteSinIva_bis,post:ImporteIva_bis,post:SobreTasaIva)
+		ELSE	
+			CALL post:CDSUpdate_ImpreIva(post:adt_serv_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva)
+		END IF
+		if (giros:es_emision_tele == "S") then
+			//SC 50170
+			CALL post:MISCdesglosaIva(post:adt_tarif_fijo,post:adt_tarif_fj_aliciva,1,0)
+			//SC 50170 - FACTURACION
+			giros:TasaSinIva4_fld = post:ImporteSinIva_bis
+			//50295 - LISTA DE GIROS
+			IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) || TESTFLAG(giros:giros_masivos,proc_anul_masivos) || \
+				TESTFLAG(giros:giros_importacion,proc_em_lg))
+				CALL post:CDSUpdate_ImpreIva(post:adt_tarif_fj_aliciva,post:ImporteSinIva_bis,post:ImporteIva_bis,post:SobreTasaIva)
+			ELSE
+				CALL post:CDSUpdate_ImpreIva(post:adt_tarif_fj_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva)
+			END IF
+		end if
+	else
+		//SC 50170
+		CALL post:MISCdesglosaIva(giros:imp_servicio_fld, post:adt_serv_aliciva,1,0)
+		//SC 50170 - FACTURACION
+		giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis //??no estoy segura!
+		//50295 - LISTA DE GIROS
+		IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) || TESTFLAG(giros:giros_masivos,proc_anul_masivos) || \
+			TESTFLAG(giros:giros_importacion,proc_em_lg))
+			CALL post:CDSUpdate_ImpreIva(post:adt_serv_aliciva,post:ImporteSinIva_bis,post:ImporteIva_bis,post:SobreTasaIva)
+		ELSE
+			CALL post:CDSUpdate_ImpreIva(post:adt_serv_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva)
+		END IF
+	end if
+	//
+	IF (post:cant_opc > 0) THEN
+		loc_cuenta = 0
+		WHILE (loc_cuenta < post:cant_opc) THEN
+			loc_importe = post:cos_opc[loc_cuenta]
+			loc_tasa = post:ali_opc[loc_cuenta]
+			loc_cantidad = 1
+			//SC 50170
+			CALL post:MISCdesglosaIva(loc_importe,loc_tasa,loc_cantidad,0)
+			//SC 50170 - FACTURACION
+			post:siniva_opc4[loc_cuenta] = post:ImporteSinIva_bis
+			//50295-LISTA DE GIROS
+			IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) || TESTFLAG(giros:giros_masivos,proc_anul_masivos) || \
+				TESTFLAG(giros:giros_importacion,proc_em_lg))
+				CALL post:CDSUpdate_ImpreIva(loc_tasa,post:ImporteSinIva_bis,post:ImporteIva_bis,post:SobreTasaIva)
+			ELSE
+				CALL post:CDSUpdate_ImpreIva(loc_tasa,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva)
+			END IF
+			loc_cuenta = loc_cuenta + 1
+		END WHILE
+	END IF 
+	/*Me fijo si corresponde revalida*/
+	if (testflag(giros:flags_back,vencido)) then
+		swapdup siaf:afecta_efectivo
+		siaf:afecta_efectivo = giros:afecta_efectivo_rev
+		//SC 50170
+		CALL post:MISCdesglosaIva(giros:imp_revalida_rev,giros:serv_aliciva_rev,1,0)
+		giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis //??no estoy segura!
+		//SC 50170 - FACTURACION
+		//50295 - LISTA DE GIROS
+		IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) || TESTFLAG(giros:giros_masivos,proc_anul_masivos) || \
+			TESTFLAG(giros:giros_importacion,proc_em_lg))
+			CALL post:CDSUpdate_ImpreIva(giros:serv_aliciva_rev,post:ImporteSinIva_bis,post:ImporteIva_bis,post:SobreTasaIva)
+		ELSE
+			CALL post:CDSUpdate_ImpreIva(giros:serv_aliciva_rev,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva)
+		END IF
+		dupfield siaf:afecta_efectivo
+	end if
+end sub
+
+/*******/

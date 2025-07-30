@@ -1,0 +1,396 @@
+/****o* Mercado Pago/OFB:post:MISCmpTipoCaida
+* NOMBRE
+*   OFB:post:MISCmpTipoCaida
+* DESCRIPCION
+*   Realiza la verificacion por caida de RT en las operaciones VPI
+* ENTRADAS
+*   p_operacion: ANV - Anulación de venta 
+*								 DEV - Devolución 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  op:TRANlogin
+* DOCUMENTACION
+*   NI50525 POS Integrado
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCmpTipoCaida(p_operacion)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_operacion LIKE common:csr_string
+	LOCAL l_Total_importe LIKE post:Total_importe
+	LOCAL l_codigo_interno LIKE post:codigo_interno
+	LOCAL l_NroCompPago2 LIKE post:NroCompPago2
+	LOCAL l_Nro_Lote_Pos LIKE post:Nro_Lote_Pos
+	LOCAL l_NroTransac LIKE post:NroTransac
+	LOCAL l_Tipo_Operacion_Pos LIKE post:Tipo_Operacion_Pos
+	LOCAL l_importe_origen LIKE post:importe_origen
+	LOCAL l_moneda LIKE siaf:moneda
+	LOCAL l_codigo_medio_pago LIKE post:codigo_medio_pago
+	LOCAL l_DescripMedPag LIKE post:DescripMedPag
+	LOCAL l_medio_pago_desc	 LIKE post:medio_pago_desc	
+	LOCAL l_PresNro LIKE post:PresNro
+	LOCAL l_mp_codseq_nro LIKE post:adt_opmp_codseq_nro
+	LOCAL l_mp_codint_mp LIKE post:adt_opmp_codint_mp
+	LOCAL l_ven_amount LIKE post:adt_opmp_amount
+	LOCAL l_ven_payment_id LIKE post:adt_opmp_payment_id
+	LOCAL l_ven_order_id LIKE post:adt_opmp_order_id
+	LOCAL l_ven_auth_code LIKE post:adt_opmp_auth_code
+	LOCAL l_ven_PresNro LIKE post:adt_opmp_PresNro
+	LOCAL l_ven_codseq_nro LIKE post:adt_opmp_codseq_nro
+	LOCAL l_ven_codint_mp LIKE post:adt_opmp_codint_mp
+	LOCAL l_codint_tarj_desc LIKE post:codint_tarj_desc
+	LOCAL l_ven_ext_ref LIKE post:adt_opmp_ext_ref
+	LOCAL l_adt_vpi_codseq_nro LIKE post:adt_vpi_codseq_nro
+
+	LET l_operacion = p_operacion
+
+	//Verifico si existe alguna operacion pendiente de journalizacion
+	CDS SELECT FROM DSC:post:OperacionesMP_tbl BECOMES DSC:post:OperacionesMP_ctx \
+		WHERE post:adt_opmp_fecha == common:system_date \
+		&& post:adt_opmp_termi_win == common:window_node \
+		&& post:adt_opmp_login_id == op:op_login_id \
+		&& post:adt_opmp_operacion == l_operacion \
+		&& post:adt_opmp_status != "CANCELLED" \
+		&& post:adt_opmp_jnlOK == "N" 	
+
+	CDS FINDFIRST DSC:post:OperacionesMP_ctx NOLOCK
+	LET l_retval = CDSRETVAL
+	IF (l_retval != 0) THEN
+		CDS ENDSELECT DSC:post:OperacionesMP_ctx
+		RETURN -2
+	END IF
+	
+	CDS EXTRACT DSC:post:OperacionesMP_ctx ALL
+	CDS ENDSELECT DSC:post:OperacionesMP_ctx
+	
+	//Cargo el codigo de la transaccion
+	SELECT (l_operacion)
+		CASE "VEN"
+			//Anulación de venta con presupuesto
+			LET siaf:codigo_siaf = 99601		
+		BREAK
+		CASE "DEV"
+			IF (post:adt_opmp_cod_siaf == 99601) THEN
+				//Anulación de venta con presupuesto
+				LET siaf:codigo_siaf = 99601	
+			ELSE
+				//Anulación de venta
+				LET siaf:codigo_siaf = 99600
+				LET giros:PresNro_canc = post:adt_opmp_PresNro
+			END IF	
+		BREAK
+	END SELECT
+	
+	//Recupero el secuenciador
+	LET post:adt_vpi_codseq_nro = post:adt_opmp_codseq_nro
+	LET post:adt_mp_codseq_nro = post:adt_opmp_codseq_nro
+	LET post:PresNro = post:adt_opmp_PresNro
+	LET post:adt_tmp_device_name = post:adt_opmp_device_name
+	LET post:adt_tmp_codint_mp = post:adt_opmp_codint_mp
+	LET post:mp_comandos = post:adt_opmp_comandos
+	LET post:mp_operacion = l_operacion
+
+	//Si es una Venta, fuerzo la Anulacion
+	IF (l_operacion == "VEN") THEN
+		//Si la Orden es QR Integrado
+		IF (post:adt_opmp_codint_mp == "QRI") THEN
+			//Resguardo la lista
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_orderQR,LST:post:LISTset_opmp_orderQR) 
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_orderID,LST:post:LISTset_opmp_orderID)
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_payment,LST:post:LISTset_opmp_payment)
+		
+			//Hago un Search para traer el detalle del Pago
+			CALL post:MISCmpSearchPayment
+			IF (RETVAL < 0) THEN
+				//Cancelo la ultima Orden que esta viva
+				CALL post:MISCmpDelOrderQR
+				
+				//Actualizo la marca en la tabla OperacionesMP
+				CALL post:CDSopmp_jnlFallo("VEN")
+				
+				RETURN 0
+			ELSE
+				//Si el pago no fue aprovado
+				IF (post:mp_status_pago != "approved") THEN
+					LET post:mp_status = "CANCELLED"
+					//Grabo en la tabla OperacionesMP
+					CALL post:MISCsaveOpeMP(post:mp_operacion,post:mp_comandos)
+					RETURN -2
+				END IF
+			END IF
+		ELSE		
+			//Resguardo la lista
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_order,LST:post:LISTset_opmp_order) 
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_payment,LST:post:LISTset_opmp_payment)
+		
+			//Verfico el estado de la Orden
+			CALL post:MISCmpGetOrderPoint
+			IF (RETVAL < 0) THEN
+				LET post:mp_status = "CANCELLED"
+				//Grabo en la tabla OperacionesMP
+				CALL post:MISCsaveOpeMP(post:mp_operacion,post:mp_comandos)
+				RETURN -2
+			ELSE
+				IF (post:mp_payment_id.NUMCHARS == 0) THEN
+					//Si existe la Orden y no se efectuo el pago entonces cancelo la Orden 
+					CALL post:MISCmpDelOrderPoint
+					
+					//Actualizo la marca en la tabla OperacionesMP
+					CALL post:CDSopmp_jnlFallo("VEN")
+						
+					RETURN 0
+				ELSE
+					//Busco el detalle del pago
+					CALL post:MISCmpGetPayPoint
+					IF (RETVAL < 0) THEN
+						//No pudo traer el detalle!!!
+						MSGBOX "QUEDO PENDIENTE UNA ANULACION AUTOMATICA DE VENTA CON TARJETA",0x00,"AVISO"	
+						RETURN -2
+					END IF
+				END IF
+			END IF
+		END IF
+		
+		//Si el pago NO fue aprobado
+		IF (post:mp_status_pago != "approved") THEN
+			//Actualizo la marca en la tabla OperacionesMP
+			CALL post:CDSopmp_jnlFallo("VEN")
+			
+			RETURN -2
+		END IF
+		
+		//Realizo la anulacion
+		CALL drv:MISCpopup(SCR:post:SCRN99600,OFB:post:PRES99601,OFB:PREC99601_mpago,OFB:post:SVAL99600_mpago,LST:post:BUT99600)
+		IF (LASTKEY == RT_ESC) THEN
+			RETURN -2
+		END IF
+
+		//Resguardo valores
+		LET l_Total_importe =	post:Total_importe
+		LET l_codint_tarj_desc = post:codint_tarj_desc
+		LET l_NroCompPago2 = post:NroCompPago2
+		LET l_Nro_Lote_Pos = post:Nro_Lote_Pos           
+		LET l_NroTransac = post:NroTransac
+		LET l_codigo_interno = post:codigo_interno
+		LET post:NroCompPago2AN = post:mp_refund_id
+		LET post:Nro_Lote_PosAN = post:mp_order_id
+		LET post:NroTransacAN = post:mp_auth_code
+		LET l_Tipo_Operacion_Pos = post:Tipo_Operacion_Pos
+		LET l_importe_origen = post:importe_origen
+		LET l_moneda = siaf:moneda
+		LET l_codigo_medio_pago =	post:codigo_medio_pago
+		LET l_DescripMedPag =	post:DescripMedPag
+		LET l_medio_pago_desc =	post:medio_pago_desc
+		LET l_PresNro =	post:adt_opmp_PresNro	
+		LET l_mp_codseq_nro = post:adt_opmp_codseq_nro
+		LET l_mp_codint_mp = post:adt_opmp_codint_mp
+		LET l_adt_vpi_codseq_nro = post:adt_vpi_codseq_nro
+	ELSE
+		IF (post:adt_opmp_codint_mp == "QRI") THEN
+			//Resguardo la lista
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_orderQR,LST:post:LISTset_opmp_orderQR) 
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_orderID,LST:post:LISTset_opmp_orderID)
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_payment,LST:post:LISTset_opmp_payment)
+		ELSE
+			//Resguardo la lista
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_order,LST:post:LISTset_opmp_order) 
+			CALL csr:proc_list(F_COPY,LST:post:LISTget_opmp_payment,LST:post:LISTset_opmp_payment)
+		END IF	
+		
+		CALL post:MISCmpGetRefund
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+		
+		//Si no se aprobo la devolucion
+		IF (post:mp_refund_id.NUMCHARS == 0 && post:mp_refund_status != "approved") THEN
+			//Actualizo la marca en la tabla OperacionesMP
+			CALL post:CDSopmp_jnlFallo("VEN")
+			
+			RETURN -2
+		END IF
+
+		//Busco los datos en el journal
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+			tlr:jnl_bus_date == common:system_date && \
+			siaf:jnl_window_node == common:window_node && \
+			siaf:codigo_siaf == 99099 && \
+			post:PresNro == post:adt_opmp_PresNro && \
+			siaf:moneda == "06" && \
+			tlr:jnl_op_login_id == op:op_login_id && \
+			post:jnl_opmp_codseq_nro == post:adt_opmp_codseq_nro
+			
+		CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+		LET l_retval = CDSRETVAL
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT DSC:tlr:jnl_context \
+				post:Total_importe \
+				post:codigo_interno \
+				post:NroCompPago2 \
+				post:Nro_Lote_Pos \
+				post:NroTransac \
+				post:Tipo_Operacion_Pos \
+				post:importe_origen \
+				siaf:moneda \
+				post:codigo_medio_pago \
+				post:DescripMedPag \
+				post:medio_pago_desc \
+				post:codint_tarj_desc \
+				post:codigo_medio_pago \
+				post:adt_vpi_codseq_nro
+		END IF		
+		CDS ENDSELECT DSC:tlr:jnl_context 
+
+		//Si no encontro los datos en el joural
+		IF (l_retval != 0) THEN
+
+			LET post:Total_importe = post:adt_opmp_amount / 100
+			LET post:codigo_interno = 130410
+			LET post:NroCompPago2 = post:mp_payment_id 
+			LET post:Nro_Lote_Pos = post:mp_order_id 
+			LET post:NroTransac = post:mp_auth_code
+			LET post:Tipo_Operacion_Pos = "ONLINE"
+			LET post:importe_origen = post:adt_opmp_amount / 100
+			LET siaf:moneda = "06"
+			LET post:codigo_medio_pago = "06"
+
+			//Busco la descripcion del medio de pago
+			CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES "MedioPago_ctx" \
+				WHERE post:adt_mp_cod == siaf:moneda
+				
+			CDS FINDFIRST "MedioPago_ctx" NOLOCK
+			IF (CDSRETVAL == 0) THEN  
+				CDS EXTRACT "MedioPago_ctx" post:adt_mp_desc INTO post:medio_pago_desc
+			END IF
+			CDS ENDSELECT "MedioPago_ctx"
+			
+			LET post:DescripMedPag = post:medio_pago_desc
+			
+			//Busco la descripcion del codigo interno de la tarjeta
+			CDS SELECT FROM DSC:post:tarj_pos_tbl BECOMES DSC:post:tarj_pos_ctx \
+				WHERE post:adt_tpos_codint_sap == post:codigo_interno \
+				&& post:adt_tpos_codint_vpi == post:adt_opmp_codint_mp \
+				&& post:adt_tpos_tipo_ope == "CO"
+
+			CDS FINDFIRST DSC:post:tarj_pos_ctx NOLOCK
+			IF (CDSRETVAL == 0) THEN
+				CDS EXTRACT DSC:post:tarj_pos_ctx post:adt_tpos_tarj_desc INTO post:codint_tarj_desc
+			END IF  
+		  CDS ENDSELECT DSC:post:tarj_pos_ctx
+
+			LET l_adt_vpi_codseq_nro = post:adt_vpi_codseq_nro
+		
+		END IF
+
+		//Resguardo valores
+		LET l_Total_importe =	post:Total_importe
+		LET l_codint_tarj_desc = post:codint_tarj_desc
+		LET l_NroCompPago2 = post:NroCompPago2
+		LET l_Nro_Lote_Pos = post:Nro_Lote_Pos           
+		LET l_NroTransac = post:NroTransac
+		LET l_codigo_interno = post:codigo_interno
+		LET post:NroCompPago2AN = post:mp_refund_id
+		LET post:Nro_Lote_PosAN = post:mp_order_id
+		LET post:NroTransacAN = post:mp_auth_code
+		LET l_Tipo_Operacion_Pos = post:Tipo_Operacion_Pos
+		LET l_importe_origen = post:importe_origen
+		LET l_moneda = siaf:moneda
+		LET l_codigo_medio_pago =	post:codigo_medio_pago
+		LET l_DescripMedPag =	post:DescripMedPag
+		LET l_medio_pago_desc =	post:medio_pago_desc
+		LET l_PresNro =	post:adt_opmp_PresNro	
+		LET l_mp_codseq_nro = post:adt_opmp_codseq_nro
+		LET l_mp_codint_mp = post:adt_opmp_codint_mp
+		LET l_adt_vpi_codseq_nro = post:adt_vpi_codseq_nro
+	END IF
+	
+	//Inicio - Tratmiento de journalizacion de la transaccion
+	CALL tlr:JNLinitialize
+
+	//Cargo el codigo de la transaccion
+	SELECT (l_operacion)
+		CASE "VEN"
+			//Anulación de venta con presupuesto
+			LET siaf:codigo_siaf = 99601		
+		BREAK
+		CASE "DEV"
+			IF (post:adt_opmp_cod_siaf == 99601) THEN
+				//Anulación de venta con presupuesto
+				LET siaf:codigo_siaf = 99601	
+			ELSE
+				//Anulación de venta
+				LET siaf:codigo_siaf = 99600	
+			END IF	
+		BREAK
+	END SELECT
+	
+	CALL siaf:PRESfecha_hora
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	//Asigno valores a la transaccion
+	LET	post:NroCompPago2AN = post:adt_opmp_ref_id
+	LET	post:Nro_Lote_PosAN = post:adt_opmp_order_id
+	LET	post:NroTransacAN = post:adt_opmp_auth_code
+	LET post:Tipo_Operacion_PosAN = "ONLINE"
+
+	//Recupero los datos
+	LET post:Total_importe = l_Total_importe
+	LET post:codigo_interno = l_codigo_interno
+	LET post:codint_tarj_desc = l_codint_tarj_desc
+	LET post:NroCompPago2 = l_NroCompPago2
+	LET post:Nro_Lote_Pos = l_Nro_Lote_Pos
+	LET post:NroTransac = l_NroTransac
+	LET post:Tipo_Operacion_Pos = l_Tipo_Operacion_Pos
+	LET post:importe_origen = l_importe_origen
+	LET siaf:moneda = l_moneda
+	LET post:codigo_medio_pago = l_codigo_medio_pago
+	LET post:DescripMedPag = l_DescripMedPag
+	LET post:medio_pago_desc = l_medio_pago_desc
+	LET giros:PresNro_canc = l_PresNro
+	LET siaf:importe =  post:Total_importe
+	LET post:adt_opmp_codseq_nro = l_mp_codseq_nro
+	LET post:adt_opmp_codint_mp = l_mp_codint_mp
+	LET post:adt_vpi_codseq_nro = l_adt_vpi_codseq_nro
+
+	//Asigno campos indirectos para la journalizacion
+	SELECT (l_operacion)
+		CASE "VEN"
+			tlr:INDdcol_scrn[0] = SCR:post:SCRN99600 //Reutilizo la pantalla de la anulacion
+			tlr:INDtran_name = LST:post:TRAN99601
+			tlr:INDjnl_append = OFB:post:JNL99601_mpago		
+		BREAK
+		CASE "DEV"
+			tlr:INDdcol_scrn[0] = SCR:post:SCRN99600
+			tlr:INDtran_name = LST:post:TRAN99600
+			tlr:INDjnl_append = OFB:post:JNL99600		
+		BREAK
+	END SELECT
+	
+	CALL post:MISCmuevo_campos_jou
+	CALL siaf:MISClleno_modalidad
+	
+	CLEARFIELD post:PresNro
+	
+	UNGETKEY RT_SEND
+	CALL tlr:JNLtran
+	UNGETKEY RT_SEND
+	
+	RESETFLAG drv:mode_flags,no_stack_list
+	//Fin - Tratmiento de journalizacion de la transaccion
+	
+	IF (siaf:codigo_siaf != 99601) THEN
+		IF (l_operacion == "DEV") THEN
+				MSGBOX "QUEDO PENDIENTE UNA ANULACION DE DOCUMENTOS",0x00,"AVISO"	
+		END IF
+	END IF
+
+	RETURN 0
+END SUB
+
+/*******/

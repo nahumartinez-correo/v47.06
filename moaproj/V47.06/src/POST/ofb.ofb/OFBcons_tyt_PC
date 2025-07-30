@@ -1,0 +1,140 @@
+/****o* Consulta TrackAndTrace/OFB:post:OFBcons_tyt_PC
+* NOMBRE
+*   OFB:post:OFBcons_tyt_PC
+* DESCRIPCION
+*   Realiza una consulta a la base TyT para obtener si la pieza ecommerce tienen palabra clave. Se devuelve el TN, la palabra clave hasheada, el shipment id
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:MISCConsultaPalClave, post:CDSstockp_temp_save, post:MISCPzas_Pal_Clave
+* DOCUMENTACION
+*   ENTREGA CON PALABRA CLAVE
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBcons_tyt_PC
+	LOCAL loc_retval LIKE lib:err_retval
+	LOCAL x like siaf:i
+	LOCAL l_msg_error LIKE common:csr_string
+		
+	//Track and trace
+	FPRINT post:tyt_ult_item, "%13.13s", post:stockp_pieza
+	
+	loc_retval = -2
+	DO
+		CALL post:OFBconsulta_tyt_PC //OFBconsulta_tyt
+		IF (RETVAL < 0) THEN
+			// esto significa que hcomm:tran_status != 003
+			loc_retval = -2 
+			BREAK
+		ELSE
+			loc_retval = 0
+		END IF
+
+		IF (giros:CodRespuesta_comm != "70") THEN
+			BREAK
+		END IF
+	LOOP
+
+	IF (loc_retval < 0) THEN
+		IF (giros:CodRespuesta_comm == "57") THEN //no hay transacciones
+			loc_retval = -3
+		ELSE
+			IF (giros:CodRespuesta_comm.NUMCHARS == 0) THEN //no se puede realizar la consulta
+				loc_retval = -2
+			END IF
+		END IF
+	END IF
+	
+	//Se hace siempre
+	CALL post:OFBclear_fldsMsg_TYT //OFBclear_fldsMsg_TYT POR AHORA NO LA CAMBIO
+	CALL csr:proc_list(F_REFRESH,LST:post:LISTmsg_tyt_pc_flds)
+	RESETFLAG giros:tran_send_mode,consulta_simple
+	RESETFLAG giros:tran_send_mode,consulta_multiple
+	CLEARFIELD post:cu_ult_item
+	
+	IF (loc_retval != 0) THEN
+		//Se limpian los campos de contingencia	
+		x = 0
+		WHILE (x < 13)	
+			CLEARFIELD post:tyt_pc_tmp_adic[x]
+			REFRESH post:tyt_pc_tmp_adic[x]
+			x = x + 1
+		END WHILE
+	ELSE
+		CALL post:OFBresp_ws_tyt_PC 
+		DPRINT "post:tyt_pc_response[%s]\n" post:tyt_pc_response
+		IF (post:tyt_pc_response == 200) THEN
+			//RESPUESTA OK - SE DEFINE SI LA PIEZA TIENE O NO PALABRA CLAVE POR EL CAMPO post:tyt_pc_code== 0 Y post:tyt_pc_hashKey != ""
+				DPRINT "post:tyt_pc_code [%s]\n" post:tyt_pc_code
+				DPRINT "post:tyt_pc_msg [%s]\n" post:tyt_pc_msg
+				DPRINT "post:tyt_pc_itemid [%s]\n" post:tyt_pc_itemid //TyT MAX 13 
+				DPRINT "post:tyt_pc_lvmitemid [%s]\n" post:tyt_img_lvmitemid //TN
+				DPRINT "post:tyt_pc_shipID [%s]\n" post:tyt_pc_shipID //SHIPPING ID
+			  DPRINT "post:tyt_pc_hashKey [%s]\n" post:tyt_pc_hashKey //palabra hasheada
+			  DPRINT "post:tyt_pc_custID [%s]\n" post:tyt_pc_custID //customer id
+			  DPRINT "post:tyt_pc_agreeID [%s]\n" post:tyt_pc_agreeID //AGREEMENT id
+				DPRINT "post:tyt_pc_pclave [%s]\n" post:tyt_pc_pclave //PALABRA CLAVE ABIERTA
+				DPRINT "post:tyt_pc_preimpoDate [%s]\n" post:tyt_pc_preimpoDate //Preimpo date
+			  DPRINT "post:tyt_pc_ttbuId [%s]\n" post:tyt_pc_ttbuId //BUI ID
+				DPRINT "post:tyt_pc_entregada [%s]\n" post:tyt_pc_entregada //PIEZA ENTREGADA POR HAND HELD
+			  //DPRINT "post:tyt_pc_havetask [%s]\n" post:tyt_pc_havetask //TIENE PALABRA CLAVE TRUE/FALSE
+					
+				LET post:stockp_ecom_tn = post:tyt_img_lvmitemid //TN
+				//esto lo  guardo en la stockp aunque no lo use
+				LET post:stockp_ecom_pclave = post:tyt_pc_hashKey //PALABRA CLAVE HASHEADA 
+				LET post:stockp_ecom_shipID = post:tyt_pc_shipID // SHIPPING ID
+				LET post:stockp_ecom_entrega = post:tyt_pc_entregada // PIEZA ENTREGADA POR HAND HELD EN SUC O CALLE ( TRUE FALSE)
+			//	loc_retval = 0
+	 	ENDIF
+	 
+				//HTTP ERROR!!!
+		if (post:tyt_pc_response == 404) THEN
+			FPRINT l_msg_error "HTTP:ERROR [%s] [%s]-[%s] [%s]", post:tyt_pc_response post:tyt_pc_code post:tyt_pc_msg post:adt_stockp_pieza 
+			MSGBOX l_msg_error,OFB_OK,"ERROR"
+			loc_retval = -2
+		ELSE
+			SELECT (post:tyt_pc_code)
+				CASE "0" 
+					if (post:tyt_pc_hashKey.numchars > 0) THEN
+						//[SI] - tiene palabra clave
+						loc_retval = 0
+					else
+						//[NO] - tiene palabra clave
+						loc_retval = 1
+					END IF
+				BREAK
+				CASE "1"
+					// "Falta la unidad de negocio"
+					loc_retval = -1
+				BREAK
+				CASE "2"
+					//Pieza no encontrada"
+					loc_retval = -3
+				BREAK
+					CASE ELSE
+					//Otro tipo de error no contemplado
+					loc_retval = 99
+				BREAK
+			END SELECT	
+		END IF
+		
+		//Refresco los campos de respuesta	
+		x = 0
+		WHILE (x < 13)	
+			REFRESH post:tyt_pc_tmp_adic[x]
+			x = x + 1
+		END WHILE	
+		
+	END IF
+	RETURN (loc_retval)
+	
+END SUB
+
+/*******/
+

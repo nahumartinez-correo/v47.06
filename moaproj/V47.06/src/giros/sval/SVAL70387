@@ -1,0 +1,258 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70387
+* NOMBRE
+*   OFB:giros:SVAL70387
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70387
+
+	If ( lastkey == RT_ESC )
+		return 0
+	Endif
+    
+   	call post:CDSobtiene_secuen("IDWUI")
+	fprint id_wui_comm "%5.5s%07.07e",common:sucursal_activa,post:adt_codseq_nro
+    
+	//limpia campos necesarios y cuenta los numchars de los datos cargados, me 
+	//devuelve la cantidad de caracteres. Si es = 0 no se ingreso nada
+	//entonces me levanta un popup para ingresar el mtcn
+	Call giros:MISClimpio_cons_mult 
+	If (Retval == 0)
+		//levanta popup para ingrear el mtcn, la sval del popup me refresca el MTCN 
+		//en la pantalla
+		CALL MISCingreso_cons
+		If (Retval < 0)
+			Return -1
+		Endif    
+	Endif
+
+	TodoGiros = 0
+
+	//limpio datos _comm de consulta
+	CALL giros:MISCclear_cons_multi
+	call csr:f_sadroppl DSC:consulta_multiple
+	call csr:f_sanewpl  DSC:consulta_multiple,PIC:consulta_multiple
+	clearfield giros:cantidad_coi_comm 	
+	
+	//Primero mando una consulta multiple porque esta me devuelve
+	// el token 119(Money Transfer Key) que necesito para consulta simple	
+	setflag tran_send_mode,consulta_multiple
+	call SVALconsulta_multi
+	if (hcomm:tran_status != HOST_ACCEPTED)
+		ResetFlag tran_send_mode,consulta_multiple
+		ResetFlag tran_send_mode,consulta_simple
+		init 33,0
+		return -3
+	End if
+
+	clearfield lib:stat_message 
+	refresh    lib:stat_message     
+
+	If (giros:cantidad_coi_comm == 0) then
+		if (giros:cantidad_coi_comm.numchars != 0)
+			//NO hay coincidencias ==> salgo de la tx   		
+			MSGBOX "NO HAY COINCIDENCIAS",0x00,"ERROR"
+			return -3
+		end if
+		MOVE ClaveMTC_comm  TO cons_nro_ctrol
+		MOVE MoneyTKey_comm TO money_key
+		cons_inter_ctrol = ClaveMTC_comm		
+		setflag tran_send_mode,consulta_simple
+	ElseIf ( giros:cantidad_coi_comm == 1 ) then  
+		//hay 1 coincidencia
+		MOVE ClaveMTC_comm  TO cons_nro_ctrol
+		MOVE MoneyTKey_comm TO money_key
+		cons_inter_ctrol = ClaveMTC_comm
+		if (money_key.numchars == 0 ) //????????????????
+			// No envia la transaccion de 
+			// consulta simple si el MTK es nulo
+			MSGBOX "NO SE PUEDE REALIZAR LA CONSULTA",0x00,"Error"
+			return -3
+		end if
+		SetFlag tran_send_mode,consulta_simple
+		//setflag tran_send_mode,consulta_multiple
+		call SVALconsulta_multi
+		if (hcomm:tran_status != HOST_ACCEPTED)
+			ResetFlag tran_send_mode,consulta_multiple
+			resetflag tran_send_mode,consulta_simple
+			init 33,0
+			return -3
+		End if
+	ElseIf (giros:cantidad_coi_comm < 10)
+		//MAS de 1 consulta
+		POPUP SCRNpick_multi PRESpick_multi,-,SENDpick_multi
+		If (lastkey == RT_ESC)
+			lastkey = 0
+			return -2
+		EndIf			
+		setflag tran_send_mode,consulta_multiple
+		//setflag tran_send_mode,consulta_multiple
+		call SVALconsulta_multi
+		if (hcomm:tran_status != HOST_ACCEPTED)
+			ResetFlag tran_send_mode,consulta_multiple
+			resetflag tran_send_mode,consulta_simple
+			init 33,0
+			return -3
+		End if	
+	ElseIf ((giros:cantidad_coi_comm > 9) || giros:cantidad_coi_comm > 20 ) then  
+		MsgBox "HAY MUCHAS COINCIDENCIAS PARA ESE RANGO",OFB_OK ,"Error"
+		return -3
+	Endif		
+
+	cons_nro_ctrol = ClaveMTC_comm
+	MoneyTKey_fld  = MoneyTKey_comm
+	CodSucEmis_fld = SucursalEmi_comm
+	// Token 67 : Importe de Emision en pais Emisor
+	siaf:importe2 = Importe_comm
+	ImporteEmis_fld = siaf:importe2 / 100
+	// Token 117 : Importe Pago en pais de pago (AR)
+	siaf:importe2 = ImportePagar_comm
+	siaf:importe = siaf:importe2 / 100
+	giros:ImporteNeto = siaf:importe
+				    
+	CodPaisBenef_fld = PaisDestino_comm
+	CALL MISCpais(CodPaisBenef_fld,LST:LISTpaisBenef)
+	
+	CodPaisEmis_fld = PaisEmis_comm
+	CALL MISCpais(CodPaisEmis_fld,LST:LISTpaisEmis)
+	
+	clearfield giros:monpas_desmonpag
+	clearfield giros:monpas_desmonwu
+	giros:monpas_codmonpag = giros:CodMoneda_comm
+	call MISCbusco_mon_inter(giros:CodMoneda_comm,PaisDestino_comm)
+	IF (RETVAL < 0) THEN
+		RETURN -1
+	END IF
+	move giros:adt_monpas_desmonwu to giros:monpas_desmonpag
+	
+	giros:monpas_codmonwu = giros:CodMonedaEmis_comm
+	
+	MOVE NombreInter_comm    TO NombreBenef_inter
+	MOVE ApellidoInter_comm  TO ApellidoBenef_inter
+	MOVE EmiTelefInter_comm  TO TelEmis_inter
+	MOVE TipoDocInter_comm   TO TipoDocBenef_fld
+	MOVE NroDocInter_comm    TO NroDocBenef_fld
+	
+	MOVE EmiNombreInter_comm TO NombreEmi_inter
+	MOVE EmiApellInter_comm  TO ApellidoEmis_inter
+	MOVE EmiTelefInter_comm  TO TelEmis_inter
+	
+	MOVE FExpBenInter_comm   TO FExpiracionBene_WI
+	MOVE CCCBenInter_comm    TO CuitCuilCdiBene_WI
+	MOVE NCuitBenInter_comm  TO NroCuitBenef_fld
+	
+	if (OcupacionBenef_comm.NUMCHARS > 0) then
+		// Verifico si la Ocupacion esta en la tabla o es Otra Actividad
+		// Le paso la B de Beneficiario para saber a que campo asignar los valores
+		call CDSverif_ocupacion(OcupacionBenef_comm,"B")
+	end if
+	MOVE CodPostInter_comm   TO CodPostBenef_inter
+	MOVE TelefonoInter_comm  TO TelBenef_inter
+	    	    
+	resetflag giros:CuitInter_flag,NoCuitBenef_inter
+	resetflag giros:opcionales_inter,opc_desc_fisica
+	resetflag giros:opcionales_inter,opc_preg_verif
+	resetflag giros:opcionales_inter,opc_avis_msg
+	resetflag giros:opcionales_inter,opc_pag_sver
+	
+	RESETFLAG opcionales_inter,chk_desc_fisica
+	RESETFLAG opcionales_inter,chk_preg_verif
+	RESETFLAG opcionales_inter,chk_avis_msg
+	
+	inter_desc_fisica = descrip_fis_comm
+	if (inter_desc_fisica.NUMCHARS != 0) then
+		setflag giros:opcionales_inter,opc_desc_fisica
+		PROTFIELD inter_desc_fisica
+		REFRESH inter_desc_fisica
+	else
+		resetflag giros:opcionales_inter,opc_desc_fisica
+	endif
+	altercontrolset op:CHK8
+	
+	inter_preg_verif = pregunta_comm
+	inter_resp_verif = respuesta_comm
+	
+	if (inter_preg_verif.NUMCHARS != 0) then
+		setflag opcionales_inter,opc_preg_verif
+		PROTFIELD inter_preg_verif
+		PROTFIELD inter_resp_verif
+		REFRESH inter_preg_verif
+		REFRESH inter_resp_verif
+	else
+		resetflag opcionales_inter,opc_preg_verif
+	endif
+	
+	altercontrolset op:CHK9
+	inter_avis_msg = mensaje_inter_comm
+	
+	if (inter_avis_msg.NUMCHARS != 0) then
+		setflag opcionales_inter,opc_avis_msg
+		PROTFIELD inter_avis_msg
+		REFRESH inter_avis_msg
+	else
+		resetflag opcionales_inter,opc_avis_msg
+	endif
+	altercontrolset op:CHK10
+	inter_pag_sver = pag_sverif_comm
+	if (inter_pag_sver == "Y" ) then
+		setflag opcionales_inter,opc_pag_sver
+	else
+		resetflag opcionales_inter,opc_pag_sver
+	endif
+	altercontrolset op:CHK11
+	TasaConversion_fld = tasa_conver_comm
+	
+	CodPaisResidBenef = CodPaisBenef_comm
+	IF (CodPaisResidBenef.NUMCHARS != 0) THEN
+		CALL MISCpais(CodPaisResidBenef,LST:LISTfldPaisResidB)
+	END IF
+	
+	CodPaisResidEmis = CodPaisEmis_comm
+	IF (CodPaisResidEmis.NUMCHARS != 0) THEN
+		CALL MISCpais(CodPaisResidEmis,LST:LISTfldPaisResidE)
+	END IF
+	
+	REFRESH CodSucEmis_fld
+	REFRESH cons_nro_ctrol
+	REFRESH ImporteNeto
+	REFRESH siaf:importe
+	REFRESH CodPaisBenef_fld
+	REFRESH CodPaisEmis_fld
+	REFRESH TasaConversion_fld
+	REFRESH TelEmis_inter
+	REFRESH ImporteEmis_fld
+	
+	
+	imp_servicio_fld = 0
+	refresh imp_servicio_fld
+	clearfield imp_revalida_fld
+	    
+	
+	POPUP SCRN70384,-,PCOL70384,
+	if (lastkey == RT_ESC) then
+		clearfield drv:last_key 
+		return (-3)
+	end if
+	
+	//refresco los datos en la pantalla de consulta
+	CALL MISCdatos_consInt
+	
+	ResetFlag tran_send_mode,consulta_simple
+	ResetFlag tran_send_mode,consulta_multiple
+
+END SUB
+
+/*******/

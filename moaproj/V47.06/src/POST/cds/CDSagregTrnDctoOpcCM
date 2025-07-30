@@ -1,0 +1,133 @@
+/****o* Clientes Medios/OFB:post:CDSagregTrnDctoOpcCM
+* NOMBRE
+*   OFB:post:CDSagregTrnDctoOpcCM
+* DESCRIPCION
+*   Agrega, modifica o borra el descuento de cliente medio sobre el opcional
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:CDSagregTrnDctoCM
+* REFERENCIADO POR
+*   OFB:post:MISCagregDctoOpc,OFB:post:MISCdctoCM_opc_del
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+sub post:CDSagregTrnDctoOpcCM(posicion)
+
+	if (post:estado_presu == 3) then
+
+		Cds SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2   \
+          WHERE (FLD:post:fecha == FLD:post:fecha ) &&  \
+               	  (Fld:post:op_operator_id == fld:post:op_operator_id )&& \
+              	  (fld:post:PresNro == fld:post:PresNro) && \
+              	   (fld:PreDNroTrnAsoc == fld:PreDNroTrnAsoc) && \
+              	   (post:prod_DescuentoCM == post:cod_opc[posicion])
+   
+    else
+    	Cds SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2   \
+           WHERE (FLD:post:fecha == FLD:post:fecha ) &&  \
+               	  (Fld:post:op_operator_id == fld:post:op_operator_id )&& \
+              	  (fld:post:PresNro == fld:post:PresNro) && \
+               	  (fld:post:PreDNroTrn == fld:post:PreDNroTrn)
+    endif
+    		
+	       
+	CDS FINDFIRST DSC:CONPresuDeta2 LOCK
+	lib:err_retval = CDSRETVAL
+   
+	IF (lib:err_retval != 0) THEN	
+		if (Dcto_CliMed > 0) Then
+			//si no lo encuentra en estado presu 3 es porque es nuevo
+			if (post:estado_presu == 3) then
+				call CDSIncSecSesion(PresNro,"TRN",1, enAnulacion)
+				PreDNroTrn = retval
+			endif
+			siaf:codigo_siaf        = 99300
+			siaf:adt_tran_fliatran  = "PCL"
+			siaf:adt_tran_afec_efvo = "-"
+			LET tlr:INDtran_name    = LST:post:TRANDescuentoCM
+			PreDEst                 = 1
+			PrePEst                 = 1
+			siaf:adt_tran_jer_pres  = 7
+			siaf:moneda = 99
+			//post:AdmiteMP = "S"
+			call post:MISCRestFlia
+			
+			CDS CLEARBUFFER DSC:CONPresuDeta2
+			CDS APPEND DSC:CONPresuDeta2 post:fecha post:op_operator_id \
+			post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn \
+			tlr:INDtran_name post:PreDEst \
+			siaf:codigo_siaf \
+			post:PreDForFis Imp_DctoCliMed AS siaf:importe siaf:adt_tran_afec_efvo \
+			siaf:adt_tran_fliatran post:PrePEst \
+			post:PresIngTas post:PresIngGra post:PresIngExe
+			CDS APPEND DSC:CONPresuDeta2 siaf:moneda post:ImporteSinIva as siaf:ImporteSinIva \
+			post:ImporteConIva as siaf:ImporteConIva
+			/*Agrego el campo tarifa (tarifa basica del por producto), el descuento aplicado (por prod o sesion) y
+			el campo TotalSesionCM (total bruto de la sesion CM)*/
+			CDS APPEND DSC:CONPresuDeta2 post:Dcto_CliMed post:TotalSesionCM \
+			prod_DescuentoCM  PreDNroTrnAsoc post:bonifCM_opc[posicion] AS post:bonificaCM post:AliTrnCM post:AdmiteMP \
+			post:cos_opc[posicion] as post:tarifa
+			//agrego campos de opcionales
+			CDS APPEND DSC:CONPresuDeta2 post:cant_opc \
+	        post:cod_opc[posicion] \
+	        post:cos_opc[posicion] \
+	        post:ali_opc[posicion] \
+	        post:siniva_opc[posicion] \
+	        post:flia_opc[posicion] \
+	        post:bonifCM_opc[posicion]
+	         /*Agrego vectores*/
+			CDS APPEND DSC:CONPresuDeta2 \
+			array docfis_tasa_por \
+			array docfis_importe \
+			array docfis_imp_siva \
+			array docfis_imp_siva4
+			CDS INSERT DSC:CONPresuDeta2 LOCK   
+		else
+			//servirá para estado presu = 3
+			CDS UNLOCK DSC:post:CONPresuDeta2
+			CDS ENDSELECT DSC:post:CONPresuDeta2
+			return -2
+		end if
+	ELSE
+		//cds extract DSC:CONPresuDeta2 post:ali_opc[posicion] into post:AliTrnCM siaf:ImporteSinIva siaf:ImporteConIva
+		//SC 50170
+		//solo borro el iva si no estoy modificando pues ya lo hice al ingresar a modificar
+		//la TX correspondiente.
+		if (estado_presu != 3) then
+			cds extract DSC:CONPresuDeta2 post:ali_opc[posicion] into post:AliTrnCM siaf:ImporteConIva
+			CALL MISCdesglosaIva(siaf:ImporteConIva, post:AliTrnCM, 1,0)
+			call MISCborrarIva
+		endif
+		if (Dcto_CliMed > 0) Then
+			cds extract DSC:CONPresuDeta2 post:ali_opc[posicion] into post:AliTrnCM
+			CALL MISCdesglosaIva(post:Imp_DctoCliMed, post:AliTrnCM, 1,0)
+			CDS CLEARBUFFER DSC:CONPresuDeta2
+			CDS APPEND DSC:CONPresuDeta2 Imp_DctoCliMed AS siaf:importe post:costo_opc post:Dcto_CliMed post:TotalSesionCM \
+			post:ImporteSinIva as siaf:ImporteSinIva post:ImporteConIva as siaf:ImporteConIva
+			/*Agrego vectores*/
+			CDS APPEND DSC:CONPresuDeta2 \
+			array docfis_tasa_por \
+			array docfis_importe \
+			array docfis_imp_siva \
+			array docfis_imp_siva4
+			CDS UPDATE DSC:CONPresuDeta2 LOCK
+		else
+			CDS DELETE DSC:CONPresuDeta2 
+			CDS UNLOCK DSC:CONPresuDeta2
+			CDS ENDSELECT DSC:CONPresuDeta2
+			return (-2)
+		end if
+	END IF
+	CDS UNLOCK DSC:CONPresuDeta2
+	CDS ENDSELECT DSC:CONPresuDeta2
+	
+
+end sub
+
+/*******/

@@ -1,0 +1,89 @@
+/****o* Reportes/OFB:post:MISCirre_todos_LG
+* NOMBRE
+*   OFB:post:MISCirre_todos_LG
+* DESCRIPCION
+*   Reporte Irregularidades - Todas Las Irregularidades.
+*   Motivo: "Listas de Giros Canceladas"
+*     Realiza el query de la tabla CancelLG segun la fecha y operador seleccionado, y ordenada por:
+*   Operador, fecha, hora, a fin de poder generar el correspondiente reporte de irregularidades
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay Listas de Giros Canceladas a reportar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCirre_todos_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirre_todos_LG /*Todas las Irregularidades Listas de Giros Canceladas*/
+    LOCAL loc_modif  LIKE post:cant_barras
+    LOCAL oper_irre  LIKE tlr:jnl_operator
+
+    //cgw:NI50276 - Se realiza el query teniendo en cuenta la clave alternativa "LG_OpFH" que ordena por:
+    //Operador, fecha, hora .
+    IF (post:opcion_irregula == "SUCURSAL") THEN
+    	//Por Sucursal
+        CDS SELECT FROM DSC:giros:CancelLG_tab BECOMES DSC:giros:CancelLG_ctx WHERE \
+        (giros:adt_cancellg_fecha >= FLD:adt_umov_fecha_ini && \
+         giros:adt_cancellg_fecha <= FLD:adt_umov_fecha_fin) ASCENDING SORT "LG_OpFH"
+    ELSE
+        //Por Operador
+	    CDS SELECT FROM DSC:giros:CancelLG_tab BECOMES DSC:giros:CancelLG_ctx WHERE \
+        (giros:adt_cancellg_op == adt_umev_op && \
+         giros:adt_cancellg_fecha >= FLD:adt_umov_fecha_ini && \
+         giros:adt_cancellg_fecha <= FLD:adt_umov_fecha_fin) ASCENDING SORT "LG_OpFH"
+    END IF 	
+    
+    CDS FINDFIRST DSC:giros:CancelLG_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+
+    IF (post:irregu_esp == "S" && lib:err_retval == 0) THEN
+        //cgw:NI50276: imprime titulo de separacion de Irregularidades especiales,
+        //si es la primera irregularidad especial a reportar. 
+        CALL post:MISCtitulo_irreg_esp
+        CLEARFIELD post:irregu_esp //limpia variable de control de titulo de irregularidades especiales.
+    END IF
+
+
+    //cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+    CDS FINDAGAIN DSC:giros:CancelLG_ctx NOLOCK
+    lib:err_retval = CDSRETVAL
+
+    oper_irre = -1 //cgw:NI50276 - Intancia variable utilizada para el corte de control por operador.
+
+    loc_modif = 0
+    WHILE (lib:err_retval == 0)    
+        CDS EXTRACT DSC:giros:CancelLG_ctx ALL
+
+        //cgw:NI50276 - Corte de Control por Operador.
+	    //El reporte de todas las irregularidades, solo imprime los operadores con irregularidades en el
+	    //rango fecha de selección, a diferecia del reporte del motivo irregularidad particular por sucursal.
+	    //que imprime todos los operadores que operaron en el rango seleccionado.
+        IF (oper_irre != giros:adt_cancellg_op) THEN
+            oper_irre = giros:adt_cancellg_op
+            //cgw:NI50276 - Imprime Operador.
+            post:operator_irre = oper_irre
+            CALL post:MISCencab_oper_irre
+        END IF
+
+        CALL post:MISCwrite_irre_lg
+	    loc_modif = 1        
+        CDS FINDNEXT DSC:giros:CancelLG_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    IF (loc_modif == 0) THEN
+    	CDS ENDSELECT DSC:giros:CancelLG_ctx    	
+	    RETURN (-2)
+	  ELSE
+		post:flag_irregularidades = "S"
+    END IF
+
+    CDS ENDSELECT DSC:giros:CancelLG_ctx
+END SUB
+
+/*******/

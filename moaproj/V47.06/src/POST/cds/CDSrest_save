@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:post:CDSrest_save
+* NOMBRE
+*   OFB:post:CDSrest_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSrest_save(listaDeRestricciones, cantRestSel)
+	LOCAL indice LIKE post:Tarif_idx
+	local varl_picstr like common:csr_string
+	SELECT (adt_rest_tipoProd)
+		CASE "SRV"
+		CASE "PRD"
+			fprint varl_picstr, "%s" adt_rest_clave1
+          	BREAK
+    	CASE "ESP"
+    		fprint varl_picstr, "%-20s %-20s" adt_rest_clave3, adt_rest_clave2
+          	BREAK
+        CASE "MOT"
+        	fprint varl_picstr, "%-5s %2s %-5s" adt_rest_clave4, adt_rest_clave5, adt_rest_clave6
+          	BREAK
+    END SELECT
+    CDS SELECT FROM DSC:adt_restDetalle_tbl BECOMES DSC:adt_restDetalle_ctx \
+    			WHERE adt_rest_tipoProd == FLD:adt_rest_tipoProd && \
+          			adt_rest_claveProdu == varl_picstr && \
+          			adt_rest_tipo_Rest == FLD:adt_rest_tipo_Rest
+    CDS FINDFIRST DSC:adt_restDetalle_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval == 0)
+	    CDS DELETE DSC:adt_restDetalle_ctx
+	    CDS FINDNEXT DSC:adt_restDetalle_ctx LOCK
+	    LET lib:err_retval = CDSRETVAL
+	END WHILE
+
+	IF (!TESTFLAG(admin:mode_flags,delete)) THEN
+		indice = PL_GETITEM
+		if (cantRestSel > 0)
+			call csr:myPickcontrol(listaDeRestricciones,common:csr_string,indice)
+		endif
+		WHILE ((indice - PL_GETITEM) < cantRestSel )
+			select (adt_rest_tipo_Rest)
+				case "REG"
+				case "PRV"
+				case "CLI"
+					post:adt_rest_claveRest = substr(common:csr_string,0,1)
+					break
+				case "SUC"
+				case "UP"
+					post:adt_rest_claveRest = substr(common:csr_string,0,5)
+					break
+			end select
+			; Barra de progreso.
+			call post:MISCactProgressBar("GRABANDO DETALLE    - ", 1, BARRAPORCENT, 1)
+		    CDS CLEARBUFFER DSC:adt_restDetalle_ctx
+		    let adt_rest_claveProdu = varl_picstr
+			CDS APPEND DSC:adt_restDetalle_ctx adt_rest_tipoProd adt_rest_claveProdu \
+	 	    									adt_rest_tipo_Rest post:adt_rest_claveRest
+		    CDS INSERT DSC:adt_restDetalle_ctx LOCK
+	    	indice = indice + 1
+			call csr:myPickcontrol(listaDeRestricciones,common:csr_string,indice)
+		END WHILE
+	 ENDIF
+	CDS UNLOCK DSC:adt_restDetalle_ctx
+    CDS ENDSELECT DSC:adt_restDetalle_ctx
+END SUB
+
+/*******/

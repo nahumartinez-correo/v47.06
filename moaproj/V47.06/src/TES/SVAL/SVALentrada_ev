@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALentrada_ev
+* NOMBRE
+*   OFB:tes:SVALentrada_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrada_ev
+
+    if (testflag(tlr:tran_flags,correction))
+	    call tes:CDSTesEspVMov_lock	
+        /* Esta lockeado */
+        if (retval < 0)
+            return (-2)
+        end if 
+    end if
+
+
+    if (!(testflag(tlr:tran_flags,correction)))
+	    
+	    tes:es_reenvio = "N"
+	
+        cds select from DSC:TesEspVMov BECOMES DSC:TesEspVMov2 where \
+        adt_espv_fecha  == common:system_date && \
+        adt_espv_suc    == op:op_branch_id    && \
+        adt_espv_dest   == op:op_login_id && \
+	    adt_espv_orig   == adt_espv_orig     && \
+	    adt_espv_hora   == tes:adt_espv_hora  && \
+	    adt_espv_cod    == espv_cod           && \
+	   (adt_espv_subcod == TOTAL_TESO || adt_espv_subcod == "**FORZADO**")
+
+	
+	    CDS FINDFIRST DSC:tes:TesEspVMov2 NOLOCK
+	    let lib:err_retval = CDSRETVAL
+	    if (lib:err_retval < 0) then
+	        errmsg lst:common:errmsg_list,\
+	        "No hay ninguna Especie cargada"
+	        return (-2)
+	    endif
+	    cds extract dsc:TesEspVMov2 all
+        cds endselect dsc:TesEspVMov2
+
+        if (tes:adt_espv_es_rechazo == "S" || tes:adt_espv_subcod == "**FORZADO**") 
+    	   //el pase fue enviado nuevamente por el op. destino al op. origen	  
+	       popup tes:SCRNconfirma  
+	       if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+	           return (-2)
+	       end if
+        else
+            select (adt_espv_marca_ing)
+	            case "I"  
+	                // Se debe continuar ingresando porque quedó cortado el pase
+            	    let siaf:continua_transaccion = "S"
+	                FYIMSG drv:fyimsg_list,"Continuando con Ingreso"
+	                break
+	            case "R"
+        	        // Se debe continuar rechazando porque quedó cortado el pase
+	                let siaf:continua_transaccion = "N"
+	                FYIMSG drv:fyimsg_list,"Continuando con Rechazo"
+	                let tes:es_reenvio = "S"
+	                break
+                case else
+    	            popup tes:SCRNrechaza
+            	    if (lastkey == RT_ESC) then
+	                    return (-2)
+	                END IF
+                    break
+            end select    
+        end if        
+        if (siaf:continua_transaccion == "N") then   //pase rechazado
+	  
+	        // verifico que el operador origen del pase no haya cerrado su caja
+    	    call tes:CDSchk_open_caj(tes:adt_espv_suc,tes:adt_espv_op_orig)
+    	   
+    	    // la caja esta cerrada o no se pudo leer el registro de rend.
+    	    if (retval < 1 && \
+    	        (tes:adt_espv_codtran == 8860||tes:adt_espv_codtran == 8870 )) then             
+    	        let common:csr_string = \
+    	        "(L) IMPOSIBLE RECHAZAR EL PASE. OPERADOR ORIGEN CERRO CAJA"
+    	        errmsg common:errmsg_list,fld:common:csr_string
+    	        return (-2)
+    	    end if
+
+    	    //enviar un mensaje al operador origen
+    	    call MISCsend_msg_dest(tes:adt_espv_orig,\
+    	    "RECHAZO SU PASE DE ESPECIES VALORIZADAS")
+            fprint siaf:nombre_transac, "RECH %s ", siaf:nombre_transac           
+             	  
+    	    tes:hora_aux = common:time_of_day          
+    	    tes:es_reenvio = "S"
+	    end if
+	    /* FLOR (termina)*/
+	
+	    call tes:MISCjournal_espv_mov
+	    if (retval < 0) then
+	        return (-2)
+	    end if
+    
+    else
+       
+        call tes:MISCmsg_entrada(adt_espv_marca_ing,adt_espv_es_rechazo)
+        if (retval < 0)
+            return (-2)
+        end if
+       
+        CALL siaf:SVALnivel_sup_ev
+        if (retval < 0)
+            return (-2)
+        end if       
+
+	    /* Cuando reverso el pase le aviso al operador origen: para reversa
+	    de entrada a tesoro de especies valorizadas o para reversa de 
+	    entrada a caja de especies valorizadas */
+	        
+        if (siaf:codigo_siaf == 8860 || siaf:codigo_siaf == 8870) then
+	        call MISCsend_msg_dest(tes:tmov_login_orig,\
+		    "REVERSO SU PASE DE ESPECIES VALORIZADAS")
+	        call MISCreverso_sesion
+	        if (retval < 0) then
+	            return (-2)
+	        end if
+        end if
+    end if
+    cds unlock TesEspVMov
+    cds endselect dsc:TesEspVMov
+END SUB
+
+/*******/

@@ -1,0 +1,264 @@
+/****o* Pendientes de agrupación/OFB:op:SEND_brn_ger
+* NOMBRE
+*   OFB:op:SEND_brn_ger
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:op:SENDabm_op_ger
+* DOCUMENTACION
+*   NI 50591-TRASLADO DE OPERADORES JEFE DE OFICINA
+* SOURCE
+*/
+#include "adtutlsend.h"
+
+SUB op:SEND_brn_ger
+//mercedes
+local aux like TipoEntero
+local es_cajero like op:adt_tlr_auth
+local LBranch_tmp like op:adt_branch_id
+local LRetVal like lib:err_retval
+  
+	;SMC Si es auditor, no puede modificar datos del operador	
+	if (op:op_audit_auth == "X") then
+		errmsg lst:common:errmsg_list, "No posee permisos para modificar Operadores"
+		return (-2)
+	endif		
+    
+	IF (op:adt_tlr_auth == "X" || op:adt_ret_auth == "X") THEN
+		LET es_cajero = "X"
+	ELSE        
+		CLEARFIELD es_cajero
+	END IF    
+    
+	IF (drv:screen_active == 1) THEN
+		;SMC Chequeo para que el operador no este siendo modificado
+		; por otro administrador
+		call op:CDSoperador_enuso("Check")
+		if (retval == 0)
+			fprint common:csr_string "EL OPERADOR ESTA SIENDO MODIFICADO POR EL ADMINISTRADOR (%s)" op:adt_enuso
+			errmsg lst:common:errmsg_list, fld:common:csr_string
+			return (-2)
+		end if
+
+		;IF (TESTFLAG(op:admin_flags,es_cajero)) THEN
+		;    RESETFLAG op:admin_flags,es_cajero
+		;    RETURN -1
+		;END IF
+
+		;Obtengo Datos de la sucursal Destino
+		LET admin:adt_br_branch = op:adt_branch_id
+		CALL  OFB:admin:CDSadt_br_load
+		IF (RETVAL != 0)
+			MOVE DSC:op:ERRno_branch TO drv:error_msg
+			CALL  OFB:drv:error_msg
+			if ( lastkey == RT_SEND )
+				LET drv:button = drv:last_button
+				CALL  OFB:drv:but_up_enable
+			end if
+			RETURN (-2)
+		END IF
+        
+		IF (TESTFLAG(op:mode_flags,delete)) THEN
+		//	FPRINT common:csr_string "¿DESEA BORRAR AL OPERADOR \"%s\" DE LA SUCURSAL \"%s\"?" \
+			//op:adt_login_id, op:adt_branch_id
+			//MSGBOX common:csr_string OFB_YESNO "Atención"
+			//IF (RETVAL == 7) THEN
+				errmsg lst:common:errmsg_list, "NO TIENE PERMITIDO BORRAR OPERADORES."
+				RESETFLAG op:mode_flags,delete
+				drv:last_button = 0
+				RETURN -1
+			//ENDIF
+			;Chequeo Perfiles de Cajero/Merch, ya que no se pueden cambiar
+			; cuando se pasa un operador de una sucural a otra.
+			call op:CDSadt_chk_cajero
+			let LRetVal = retval                
+			if (LRetVal < 0) then
+				errmsg lst:common:errmsg_list, "LOS PERFILES DE CAJERO/MERCHANDISING NO PUEDEN MODIFICARSE\nAL BORRAR AL OPERADOR. POR FAVOR, ACTUALICELO ANTES DE ELIMINARLO.\n"
+				return -1
+			endif
+		ENDIF    
+
+		;Si no es cambio de Sucursal
+		IF (!TESTFLAG(op:admin_flags,is_change)) THEN
+		;Si es sucursal Local (Administracion de Operadores)
+			IF (adt_branch_id == common:sucursal_activa) THEN
+			;SMC Si es Local                
+				CALL OFB:MISCsave_brn
+			ELSE
+			;SMC si es remoto
+				LET Dest_Server = admin:adt_br_server
+				CALL OFB:MISCconnect_job
+			END IF
+		ELSE
+			if (op:adt_users_auth == "X") then
+				errmsg lst:common:errmsg_list, "NO SE PUEDEN PASAR A LOS ADMINISTRADORES A SUCURSALES."
+				return (-2)
+			end if
+			FPRINT common:csr_string "¿DESEA PASAR AL OPERADOR \"%s\" DE LA SUCURSAL \"%s\"\n\tA LA SUCURSAL \"%s\" ?" \
+			op:adt_login_id, op:old_branch_id, op:adt_branch_id
+			MSGBOX common:csr_string OFB_YESNO "Atención"
+			IF (RETVAL == 7) THEN
+				RETURN -1
+			ELSE
+				;SMC Resguardo la sucursal del operador
+				Let LBranch_tmp = op:adt_branch_id
+				let op:adt_branch_id = op:old_branch_id
+
+				;SMC checkeo rendiciones     
+				LET Dest_Server = old_br_server
+				call OFB:op:MISCconnect
+				let LRetVal = retval                
+				if (LRetVal < 0) then
+					Let op:adt_branch_id = LBranch_tmp
+					RESETFLAG op:admin_flags,is_change                    
+					return -1
+				endif
+
+				;SMC Chekeo que la sucursal a la que me conecto, 
+				;sea la que me quiero conectar.
+				;Si la parametria esta mal cargada, puede pasar que elija
+				;una sucursal y termine conectandome a otra.
+				Call op:MISCCheckSucAct
+				IF (RETVAL < 0) THEN
+					Let op:adt_branch_id = LBranch_tmp
+					RESETFLAG op:admin_flags,is_change                    
+					CALL OFB:MISCre_connect
+					return (-2)
+				END IF
+
+				;Chequeo Perfiles de Cajero/Merch, ya que no se pueden cambiar
+				; cuando se pasa un operador de una sucural a otra.
+				call op:CDSadt_chk_cajero
+				let LRetVal = retval                
+				if (LRetVal < 0) then
+					errmsg lst:common:errmsg_list, "LOS PERFILES DE CAJERO/MERCHANDISING NO PUEDEN MODIFICARSE\nAL CAMBIAR AL OPERADOR DE SUCURSAL.\nPOR FAVOR, ACTUALICELO ANTES DE MOVERLO.\n"
+					Let op:adt_branch_id = LBranch_tmp
+					call OFB:op:MISCre_connect               
+					RESETFLAG op:admin_flags,is_change                    
+					return -1
+				endif
+
+				call op:MISCverify_rend_op                
+				let LRetVal = retval
+				Let op:adt_branch_id = LBranch_tmp
+				call OFB:op:MISCre_connect               
+				;Si no se cumplen las condiciones para dar de baja un operador
+				;Re conecto con servidor local e informo
+				IF (LRetVal < 0) THEN
+					select (LRetVal)
+					case -1
+						/*Si el operador rindió todo, le doy la posibilidad de hacer la transferencia logica - Gabriel Falciola*/
+						FPRINT common:csr_string_171 "    El Operador tiene Operaciones de este Dia, por lo tanto no puede ser trasladado fisicamente.\n¿Quiere realizar un Traslado Pendiente de Cierre del Día?."
+	    		        MSGBOX common:csr_string_171 OFB_YESNO "Atención"
+						IF (RETVAL == 7) THEN
+							RETURN (-1)
+    	        		ELSE
+    	        			setflag op:admin_flags,borrado_logico
+        	    		END IF
+        	    		break
+					case -2
+						errmsg lst:common:errmsg_list, "    Operador sin Cierre. \nDebe Realizar Rendición y Cierre de Caja."                    
+						return (-1)
+					case else
+						return (-1)
+					end select
+				endif
+
+				LET Dest_Server = admin:adt_br_server
+				SETFLAG op:mode_flags,update
+				CALL OFB:MISCconnect_job
+				let LRetVal = retval
+				RESETFLAG op:mode_flags,update
+				IF (LRetVal != 0) THEN
+					RESETFLAG op:admin_flags,is_change
+					RETURN -1
+				ELSE    
+					LET adt_branch_id = old_branch_id
+					LET Dest_Server   = old_br_server
+					SETFLAG op:mode_flags,delete
+					CALL OFB:MISCconnect_job
+					RESETFLAG op:mode_flags,delete
+					IF (RETVAL != 0) THEN
+						LET Dest_Server = admin:adt_br_server
+						LET adt_branch_id = admin:adt_br_branch
+						SETFLAG op:mode_flags,delete
+						CALL OFB:MISCconnect_job
+						RESETFLAG op:mode_flags,delete
+					END IF
+				END IF
+                
+
+				;Todo salio bien, re conecto con sucursal Local.
+				;call op:MISCre_connect
+				RESETFLAG op:admin_flags,is_change
+
+			END IF
+		END IF
+        
+		IF (op:adt_branch_id == common:sucursal_activa) THEN
+		/*Si se realizó una modificación a los operadores localmente, se pone la marca
+		de cambio de perfil en la Sucursal Activa - Gabriel Falciola*/
+			call tes:CDSCambioPerfil(common:sucursal_activa,"MARCA")
+		END IF
+
+		RESETFLAG op:admin_flags,is_change
+		RESETFLAG op:admin_flags,is_select
+    
+		MOVE common:login_id TO adt_login_id
+		MOVE lib:operator_id TO adt_operator_id 
+		MOVE lib:branch_id   TO adt_branch_id 
+		CALL  OFB:CDSadt_op_load
+		CALL  CSR:proc_list F_CLEAR LST:adt
+		CALL  CSR:proc_list F_CLEAR LST:adt_std
+		CALL  CSR:proc_list F_CLEAR LST:adt_main
+		CLEARFIELD op:op_chk_flags
+		CLEARFIELD op:cl_chk_flags
+		CALL  CSR:proc_list F_REFRESH LST:adt
+		CALL  CSR:proc_list F_REFRESH LST:adt_std
+		CALL  CSR:proc_list F_REFRESH LST:adt_main
+
+		//Limpio chks
+		CALL op:MISCdisable_chks
+
+		;SMC chequeo si es centralizado
+		call op:MISCes_serv_central
+
+		LET drv:button = drv:save_button
+		CALL  OFB:drv:but_up_enable
+
+		/* SMC Agrego para que habilite el boton del pick list de usuarios */
+		LET drv:button = CB0
+		CALL  OFB:drv:but_up_enable
+
+		/* SMC Agrego para que habilite el boton cancelar */
+		LET drv:button = CB7
+		CALL  OFB:drv:but_up_enable
+		LET drv:button = CB15
+		CALL  OFB:drv:but_disable
+		LET drv:button = CB17
+		CALL  OFB:drv:but_disable
+        
+		CALL  drv:side_bar_disable
+		INIT 33,0
+        
+		;IF (op:adt_ret_auth == "X"TESTFLAG(op:admin_flags,es_cajero)) && (drv:last_button == 27 ) then
+		;IF (es_cajero == "X" && drv:last_button == 27) then
+		;/* Si es Cajero o Merch le tengo que hacer grabar los limites */
+		;let drv:next_screen = 7
+		;call drv:PBsend
+		;return 0
+		;else
+		;SMC Libero marcas sobre operadores en uso
+		call op:CDSoperador_enuso("Borrar")
+		return -1
+		;END IF
+	END IF
+END SUB
+
+/*******/

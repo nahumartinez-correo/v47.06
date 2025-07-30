@@ -1,0 +1,132 @@
+/****o* Expedición/OFB:post:SVALllenSaca
+* NOMBRE
+*   OFB:post:SVALllenSaca
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la TX de Cierre de Saca.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANllenadoSaca
+* DOCUMENTACION
+* INICIATIVA 50571 (2019)
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALllenSaca
+    /* Cte. Op. - Llenado de Saca      */
+    /* B. Petrella - May. 1998              */
+    /* verifica que se haya seleccionado por lo menos una pieza */
+    /* para la Saca actual.                                         */
+    /* Lee DetTmp (Siempre que haya seleccionado un CteOp de ctrl)*/
+
+	if (!testflag(tlr:tran_flags,correction))
+    	
+    //50571 - CONTROLA LAS CANTIDADES SI SELECCIONO EL BOTON TODAS
+     IF (post:ColectarCant == TRUE) THEN
+    		CALL MISCTodasSaca
+    		IF (RETVAL != 0) THEN
+    			RETURN -2
+    		ENDIF
+    ENDIF
+    	
+    	call CDSsel_DetTmpSaca
+	    let lib:err_retval = retval
+    	if (retval == -2) then
+        	errmsg common:errmsg_list,"DEBE SELECCIONAR AL MENOS UN CONTENEDOR / PIEZA"
+	        return -2
+    	endif
+    	
+    	
+    	IF (peso_en_kgs.numchars == "" && PresNroSaca.numchars == "")
+    		MSGBOX "INGRESE PESO Y PRECINTO DE LA SACA",0x00,"Atención"
+    		UNPROTFIELD peso_en_kgs
+    		UNPROTFIELD PresNroSaca
+    		//setvaldone peso_en_kgs
+    		NEXTFIELD peso_en_kgs
+    		RETURN -2
+    	END IF
+    	
+    	
+	    /*CSZ - Llama rutina que verifica si hay piezas simple especial seleccionadas para
+        ser enviadas y cuantas son*/
+        CALL CDShay_simp_esp("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1)
+        
+        /*MFM - Esta rutina verifica si hay piezas reencaminadas seleccionadas para
+     	ser enviadas y cuantas son*/
+     	/*MFM (20.11.2001)*/
+     	IF (mostrar_reenc == "S") THEN
+     		hay_piezas_reenc = "S"
+     	ELSE
+     		CALL CDShay_piezas_reenc("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1) 
+     	END IF
+     	
+ 	    move "S"  to siaf:continua_transaccion
+	    popup siaf:SCRNcontinua
+    	if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+		 		 /* VERIFICA SI HAY DE CONTROL */
+		 		 CALL CDSverCTRL_DetTmp
+		 		 IF (RETVAL < 0)
+						CALL MISCunprotHdrSaca
+		  		END IF
+    	  /* 0x0190 = ESC */
+    	  SETVALDONE SacaTipoDesc
+          return -2
+      endif
+    	/* Marca para terminar de procesar */
+	    call CDSextCont_max
+    	
+    	/*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+    	los detalles. Esto es util para la reversa*/
+    	CLEARFIELD post:codseq_dev
+	    CALL CDSobtiene_secuen("CABEC")
+    	post:codseq_dev = post:adt_codseq_nro
+    	
+    	/* Journaliza con otra pantalla */
+      	drv:INDscr = SCR:post:SCRNllenSacaHdr
+	    let post:adt_formu_cod = "GUIAS"
+    	call CDSbuscoCodSeq
+    	let orden = 0
+    	CALL MISCjnl_DetCSaca
+    	/*MFM - PS 9133 - Grabar la Caratula de Saca en la tabla Caratulas*/
+    	CALL CDSsave_caratula
+    	/*MFM - Al finalizar la transacción se debe borrar la tabla Temporal SacasTmp*/
+    	CALL CDSborraSacasTmp
+    	//MFM - 50571 - Borro el campo post:ConcurrenciaSaca
+    	clearfield post:ConcurrenciaSaca
+	else
+		/* MFM - Octubre 2000 - Verifico si tengo que reversar el encabezado*/
+  		IF (post:jnl_guia_despacho > 0) THEN
+  			MSGBOX "La saca no puede reversarse pues ya se ha hecho el Corte de Línea.",0x00,"ERROR"
+  		ELSE
+  		/* Reverso el encabezado */
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRNllenSacaHdr
+	  		tlr:INDjnl_append = OFB:post:JNLllenSacaHdr
+  			CALL MISCreversa_transac
+  			/*MFM - PS 9133 - Borrar la Caratula de Saca de la tabla Caratulas*/
+    			CALL CDSborro_caratula
+  			/*MFM - Octubre 2000 - Borro los Scaneos B y X generados por el encabezado*/
+  			SWAPDUP tlr:jnl_sequence
+  			CALL CDSBorro_Scaneos ("S")
+  			
+			//Agrego German - Inicio
+			CALL post:CDSNoControlRepExp
+			//Agrego German - Fin
+  			
+  			SWAPDUP tlr:jnl_sequence
+  			/* MFM - Octubre 2000 - Reverso los detalles*/
+	  		CALL CDSSelect_Piezas("3")
+  		END IF
+	  	;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+	  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		Resetflag tlr:tran_flags,correction
+	end if
+
+END SUB
+
+/*******/

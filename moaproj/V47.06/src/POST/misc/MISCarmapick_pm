@@ -1,0 +1,91 @@
+/****o*Clientes_Mayoristas/OFB:post:MISCarmapick_pm
+*NOMBRE
+*   OFB:post:MISCarmapick_pm
+*DESCRIPCION
+*   Mensajeria Cliente Cuenta Correntista
+*   Se envia el Mensaje a SaP correspondiente a Productos Mayoristas. Si viene ok entonces
+*   se carga la tabla ProdMay desde el picklist siempre y cuando la fecha de DiaSuc sea igual
+*   a la fecha del día. Si no hay conexión entonces se carga el picklist desde la tabla ProdMay.
+* ENTRADAS
+* SALIDAS
+*   Retval: Devuelve"-2" cuando no hay conexión con SAP ni existen productos en la tabla ProdMay.
+* IMPACTOS
+* REFERENCIADO POR
+*   OFB:post:PRES_99120
+* DOCUMENTACION
+*SOURCE
+*/
+
+#include "postmisc.h"
+
+SUB post:MISCarmapick_pm
+
+    //Se agregan estas lineas para borrar y armar el picklist de prod mayorista
+    CALL CSR:f_sadroppl("prodmay_pic")
+    CALL CSR:f_sanewpl("prodmay_pic",PIC:prod_mayoristas,443,120)
+    //Se agregan estas lineas para reinicializar contador y array de prod mayorista
+    siaf:idx = 0
+    call csr:cleararray(siaf:paquete_rcv)
+    
+    fyimsg common:fyimsg_list,"Obteniendo lista de productos, un momento por favor..."
+    CALL post:OFBmore_data_sap("PRODMAY")
+    
+    IF (retval == 0) THEN
+         /* Si vino todo OK, me fijo si la fecha de actualizacion es la del
+        dia de la fecha y cargo la tabla local*/
+	    CDS SELECT   FROM DSC:tes:DiaSuc_table BECOMES DSC:tes:DiaSuc_context WHERE \
+	    tes:suc_br_id == op:op_branch_id
+	    CDS FINDFIRST DSC:tes:DiaSuc_context LOCK
+	    let lib:err_retval = cdsretval
+        if (lib:err_retval == 0)
+            // No esta lockeada, puedo actualizar
+            CDS EXTRACT DSC:tes:DiaSuc_context ALL
+            call csr:date_compare(common:system_date,tes:suc_fecha_SAP)
+            if (retval != 0)
+                // Actualizo la tabla
+                call post:MISCactualizar_tabla
+                if (retval == 0)
+                    tes:suc_fecha_SAP = common:system_date
+                    cds clearbuffer dsc:tes:DiaSuc_context
+                    cds append dsc:tes:DiaSuc_context tes:suc_fecha_SAP
+                    cds update dsc:tes:DiaSuc_context lock
+                end if
+            end if
+        end if
+        cds unlock dsc:tes:DiaSuc_context
+        cds endselect dsc:tes:DiaSuc_context
+    ELSE
+        
+	
+        //Cargar picklist desde Tabla   
+        CDS SELECT FROM DSC:post:ProdMay_tbl BECOMES DSC:post:ProdMay_ctx
+	    CDS FINDFIRST DSC:post:ProdMay_ctx NOLOCK
+	    lib:err_retval = CDSRETVAL
+        if (lib:err_retval < 0) then //error al intentar acceder a la tabla
+	        CDS ENDSELECT DSC:post:ProdMay_ctx
+		if (giros:CodigoError_comm == 02) then
+    	    	    MSGBOX "NO HAY CONEXION CON SAP.", OFB_OK, "ERROR"
+        	endif
+	        FPRINT common:csr_string "NO SE PUEDE ACCEDER A LA TABLA DE PRODUCTOS MAYORISTAS"
+		    MSGBOX common:csr_string ,OFB_OK,"Error"
+	        return (-2)
+        end if
+
+
+        CALL CSR:f_sadroppl("prodmay_pic")
+	    CALL CSR:f_sanewpl("prodmay_pic",PIC:prod_mayoristas,460,120)
+	    While (lib:err_retval == 0)
+	        CDS EXTRACT DSC:post:ProdMay_ctx ALL
+
+	        IF (cdsretval == 0) THEN	        
+    	       FPRINT common:csr_string "%-18.18s %-30.30s %3.3s    %-40.40s" \
+    	        	adt_pm_material,adt_pm_matdesc,adt_pm_um,adt_pm_clMosaic
+	   	        CALL CSR:f_saaddpl("prodmay_pic",common:csr_string)
+	        END IF
+	        
+	        CDS FINDNEXT DSC:post:ProdMay_ctx NOLOCK
+	        lib:err_retval = cdsretval
+	    EndWhile
+
+    ENDIF
+END SUB

@@ -1,0 +1,161 @@
+/****o* Notas de Credito CM/OFB:post:MISCOpc_OC_NC
+* NOMBRE
+*   OFB:post:MISCOpc_OC_NC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCDcto_OC_NC 
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCOpc_OC_NC(tipo)
+
+local cant_aux LIKE post:cantidad
+local iva_imp LIKE post:ImporteIva
+local tran_cod_aux like siaf:codigo_siaf
+local dcto_aux like Dcto_CliMed
+local imp_aux  like post:Imp_DctoCliMed
+local signo like siaf:adt_tran_afec_efvo
+local codigo like siaf:codigo_siaf
+local l_cant like post:cantidad
+local l_cont like post:cantidad
+local l_cantidad	like post:cantidad
+
+	cant_aux = 0
+	costo_opc = 0
+	imp_aux = 0
+	//resguardo el signo y el codigo de la transaccion a la que pertencen los opcionales
+	signo = siaf:adt_tran_afec_efvo
+	codigo = siaf:codigo_siaf
+	
+	while (cant_opc > cant_aux)
+		
+		//estos campos estaban quedando sucios
+		siaf:adt_tran_afec_efvo = signo
+		siaf:codigo_siaf = codigo
+		
+		INIT 22,1		
+		if (post:flia_opc[cant_aux] == "CST")
+			l_cantidad = post:cantidad
+			;PS9490
+            CALL post:MISCopcCantPart(post:cod_opc[cant_aux], post:tipo_produc, l_cantidad)
+			if (RETVAL == 1)
+				Imp_DctoCliMed_OC = post:cos_opc[cant_aux] - post:item_opc_imp_oc[cant_aux]
+			else
+				Imp_DctoCliMed_OC = (post:cos_opc[cant_aux] / post:cantidad) - post:item_opc_imp_oc[cant_aux]
+			endif
+		else
+			Imp_DctoCliMed_OC = (post:cos_opc[cant_aux] - (post:item_opc_imp_oc[cant_aux] * post:cantidad))
+		endif
+		INIT 22,0
+			
+		//Acumulo los importes de los descuentos
+		if (post:flia_opc[cant_aux] == "CST")
+			if (RETVAL == 1)
+				imp_aux = imp_aux + Imp_DctoCliMed_OC
+			else
+				imp_aux = imp_aux + (Imp_DctoCliMed_OC * post:cantidad)
+			endif
+		else
+			imp_aux = imp_aux + Imp_DctoCliMed_OC 
+		endif
+			
+		siaf:importe = Imp_DctoCliMed_OC
+			
+		select (tipo)
+			case "A"	
+				//Para interfaz de Nina: Calculo importe de vectores
+				CALL post:CDSCalcTotVentasOPC(post:ali_opc[cant_aux],Imp_DctoCliMed_OC,post:flia_opc[cant_aux],cant_aux)
+				//PS OPCIONALES
+				CALL post:MISCagregDctoOpcOCNC(post:flia_opc[cant_aux],post:ali_opc[cant_aux],Imp_DctoCliMed_OC,cant_aux)
+				break
+			case "B"
+				siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+				post:AliTrnCM = post:ali_opc[cant_aux]
+				//si no tiene formulario fiscal asociado no desglosar
+				if (PreDForFis.numchars != 0)
+					/*Se calcula el importe con iva y sin que debo sumar para la transacción, ya que
+					se vuelve atrás el descuento por sesión*/
+					//CALL MISCdesglosaIva(Imp_DctoCliMed_OC,post:ali_opc[cant_aux], 1)
+					if (post:flia_opc[cant_aux] == "CST" || post:flia_opc[cant_aux] == "CME" ) then
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed_OC,post:ali_opc[cant_aux], post:cantidad,0)
+					else
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed_OC,post:ali_opc[cant_aux], 1,0)
+					endif
+				end if
+				
+			   	/*Actualizo la PresuPag*/
+		    	CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,Imp_DctoCliMed_OC,0)
+				/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+				if (PreDForFis.numchars == 0)
+					EstadoFormu = SIN_FORM
+				else
+					EstadoFormu = CON_FORM
+				end if
+				call CDSAcumImpSes(0,0,Imp_DctoCliMed_OC,post:ImporteSinIva,post:flia_opc[cant_aux],siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+				
+				/*Configuro los datos de la transacción de Descuento para que la actualización 
+				de la AuxIva la haga en relación a esta transacción*/
+				siaf:codigo_siaf = 99513
+				siaf:adt_tran_fliatran = "PCL"
+				siaf:adt_tran_afec_efvo = "+"
+				siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+				siaf:ImporteConIva = Imp_DctoCliMed_OC
+				siaf:ImporteSinIva = post:ImporteSinIva
+				call MISCborrarIva
+				break
+			case "R" //se usa en la reversa cuando se regenera el iva
+				/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+				if (post:flia_opc[cant_aux] == "CST") then
+					l_cantidad = post:cantidad
+					CALL post:MISCopcCantPart(post:cod_opc[cant_aux], post:tipo_produc, l_cantidad)
+					if (RETVAL == 1)
+						l_cant = 1
+					else
+						l_cant = post:cantidad
+					endif
+		
+				else
+					l_cant = 1
+				endif	
+	
+				l_cont = 1	
+				
+				while (l_cant >= l_cont) then
+					//SC 50170
+					CALL MISCdesglosaIva(Imp_DctoCliMed_OC,post:ali_opc[cant_aux], 1,0)
+					post:AliTrnCM = post:ali_opc[cant_aux]
+					post:ImporteConIva = post:ImporteSinIva + ImporteIva
+					siaf:codigo_siaf = 99513
+					siaf:adt_tran_fliatran = "PCL"
+					siaf:adt_tran_afec_efvo = "+"
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					call MISCgenerarIva()
+					
+					l_cont = l_cont + 1
+					
+				end while
+				
+				break
+		end select
+
+    	cant_aux = cant_aux + 1
+    end while
+    
+    //cargo el importe total de los descuentos de los opcionales
+    post:Imp_DctoCliMed_OC = imp_aux
+    
+END SUB
+
+/*******/

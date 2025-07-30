@@ -1,0 +1,167 @@
+/****o* Pendientes de agrupación/OFB:tlr:tlr_fb0
+* NOMBRE
+*   OFB:tlr:tlr_fb0
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "mainkeys.h"
+
+SUB tlr:tlr_fb0
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == CONFIRMATION) then
+	call post:MISClogMenues("tlr:tlr_fb0")
+	;endif
+#endif
+
+    if (testflag(state_flags,tran_active) || post:estado_presu == 4) then
+    	//cgw:No ejecuta si la tx esta activa o si esta en el Fin de Sesion
+		beep
+		return
+	endif
+	
+	// FGB 14.02.05: Si estoy cerrando el presupuesto (llamando a la Captura) 
+	// no dejo que se presion el boton 
+	if (plataf:current_state == CLOSING_BUDGET) then
+		return
+	endif
+	
+	drv:last_button = TFB0
+	CALL check_enabled
+	IF (RETVAL != 0) THEN
+		RETURN
+	END IF
+	drv:button = TFB0
+	CALL drv:but_down_disable
+;* IF (CURRENTFIELD.ID == post:cp.ID) THEN 
+;******************************************
+;* Modificación realizada por JP para que *
+;* llame a la transacción de búsqueda de  *
+;* Códigos Postales si estoy en el campo  *
+;* cp y puldo la tecla F1.                *
+;******************************************
+/* post:cp_temp = post:cp
+post:codigo_temp = siaf:codigo_siaf
+post:nombre_temp = siaf:nombre_transac
+drv:INDrun_funct = LST:post:TRANhelp_cp
+CALL drv:do_mode
+ELSE   */
+;CALL winhelp:wh_select
+
+	let drv:INDtemp_list = OFB:tlr:tlr_fb0
+	
+	//////////  INICIO TRANSACCION  ///////////////////
+	call csr:dt_tran DT_TRAN_START FLD:drv:INDtemp_list
+	///////////////////////////////////////////////////
+
+	CALL post:CDSadt_presuact_load
+
+	// MFM - Hay que levantar cli_tipo y los campos de tipos de descuentos de la Presu.
+	CALL post:CDSadt_presu_load
+
+	move post:CliRaz to post:cliente_rsocial
+
+	if ( (post:estado_presu == 2 || post:estado_presu == 3 || post:estado_presu == 4 ) && \
+	     (post:cli_tipo ==  CLIMED ) && \
+ 	     (drv:dt_app == APP_TELLER || drv:dt_app == APP_NA ) )
+	
+		if (testflag(tlr:state_flags,tran_active) ||  tlr:f12button == "F12 Fin Sesion" ) 
+			msgbox \
+			"TRANSACCION ACTIVA, NO SE PUEDEN VISUALIZAR LOS PRODUCTOS/VENTAS PARA CLIENTE MEDIO.",OFB_ICONEXCLAMATION,"Atencion"
+		else
+		
+			/************************************************
+			Segun ejecucion de transaccion correspondiente al 
+			campo de la mensajeria del tipo de venta para
+			visualizacion de Helps. ( Son excluyentes).
+			************************************************/
+			
+			/*************************************************
+			Visualizacion de los productos con descuentos para
+			CLIENTE MEDIO - CONVENIO
+			*************************************************/
+			if (post:ConvenioProducto) then
+				drv:INDrun_funct = LST:post:TRANconv_productos
+			end if
+
+			/*************************************************
+			Visualizacion de los rangos de importes (ventas)
+			con descuentos para CLIENTE MEDIO - CONVENIO
+			*************************************************/
+			if (post:ConvenioSesion) then
+				drv:INDrun_funct = LST:post:TRANconv_ventas
+			end if
+	
+			/***************************************************
+			Visualizacion de los rangos de importes (ventas) con 
+			descuentos para
+			CLIENTE MEDIO - EXCEPCION
+			***************************************************/
+			if (post:ExcepDif) then
+       			drv:INDrun_funct = LST:post:TRANexcep_dif
+			end if
+			
+			/**************************************************
+			Visualizacion de los productos con descuentos para
+			CLIENTE MEDIO - EXCEPCION
+			***************************************************/
+			if (post:ExcepProducto) then
+    	   		drv:INDrun_funct = LST:post:TRANexcep_productos
+			end if
+
+			/***************************************************
+			Visualizacion de los rangos de importes (ventas) con 
+			descuentos para
+			CLIENTE MEDIO - EXCEPCION
+			***************************************************/
+			if (post:ExcepSesion) then
+       			drv:INDrun_funct = LST:post:TRANexcep_ventas
+			end if
+			
+			/***************************************************
+			Visualizacion de productos con descuentos para
+			CLIENTE MEDIO - ORDEN DE COMPRA
+			***************************************************/
+			if (post:consulta_ordenCM == "S") then
+       			drv:INDrun_funct = LST:post:TRANorden_compra
+			end if
+			
+			/*************************************************
+			Visualizacion de descuentos para CLIENTE MEDIO - 
+			CONVENIO STANDARD
+			*************************************************/
+			if (post:ExcepSinLinea) then
+				drv:INDrun_funct = LST:post:TRANventa_SinLinea
+			end if
+			
+			CALL drv:do_mode
+		end if
+	else
+		CALL winhelp:wh_select
+	end if
+
+/* END IF  */
+	drv:button = TFB0
+	CALL drv:but_up_enable
+	
+	/////////////  FIN  TRANSACCION  /////////////////
+	call post:MISCdumpCampos
+	call csr:dt_tran DT_TRAN_END FLD:drv:INDtemp_list
+	call post:MISClogCampos 
+	//////////////////////////////////////////////////
+
+
+END SUB
+
+/*******/

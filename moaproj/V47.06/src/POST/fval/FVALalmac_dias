@@ -1,0 +1,93 @@
+/****o* Entrega de Piezas/OFB:post:FVALalmac_dias
+* NOMBRE
+*   OFB:post:FVALalmac_dias
+* DESCRIPCION
+*   Validación del campo Dias de Almacenaje de la TX de Entrega de Piezas
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SCRNentrega_Pieza,post:SCRNentrega_PiezaMul
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2541
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALalmac_dias
+/*Rutina realizada por MFM - Feb 2000*/
+Local almac_dias_aux like adt_stockp_Orden //Numerico de 4
+//aut 2541
+IF (post:almac_dias > 0) THEN	
+	IF (TESTFLAG(admin:mode_flags,todos) || TESTFLAG(admin:mode_flags,grb) || TESTFLAG(admin:mode_flags,act) || post:estado_presu == 3) then
+	
+		IF (adt_stockp_destino == "DEPOSITO INTER")
+			call post:MISCventasRestGen("CSM", "28402")
+		ELSE
+			call post:MISCventasRestGen("CSM", "18401")
+		END IF
+		IF (RETVAL < 0) THEN
+			CLEARFIELD post:almac_dias
+			REFRESH post:almac_dias
+			NEXTFIELD post:almac_dias
+			call admin:ABMresetflag
+			RETURN -2
+    	END IF
+		CLEARFIELD promo_imp_almc
+		CALL post:MISCLimpioPromo("Almac.")
+		CALL post:MISCBonifEntrPieza
+    	CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+    	WHERE post:adt_stockp_pieza == post:Pieza
+    	CDS FINDFIRST DSC:stockp_ctx NOLOCK
+    	IF (CDSRETVAL == -801) THEN
+    	    CDS ENDSELECT DSC:stockp_ctx
+    	    call admin:ABMresetflag
+    	    RETURN -2
+    	END IF
+    	/*CDS EXTRACT DSC:stockp_ctx post:adt_stockp_plazoguar, post:adt_stockp_dias_alm*/
+    	CDS EXTRACT DSC:stockp_ctx post:adt_stockp_recepfech, post:adt_stockp_vtofecha, post:adt_stockp_dias_alm
+    	almac_dias_aux = almac_dias + post:adt_stockp_dias_alm
+    	CALL csr:date_subtract (post:adt_stockp_vtofecha, post:adt_stockp_recepfech)
+    	
+    	IF (almac_dias_aux > RETVAL) THEN
+    	    MSGBOX "LA CANTIDAD DE DIAS DE ALMACENAJE NO PUEDE SER MAYOR QUE LA CANTIDAD DE DIAS DE PLAZO DE GUARDA",0X00,"ERROR"
+    	    CLEARFIELD almac_dias
+    	    REFRESH almac_dias
+    	    IF (post:adt_stockp_dias_alm == 0) THEN
+    	        CLEARFIELD almac_imp
+    	        REFRESH almac_imp
+    	        CALL post:MISCimp_entrPieza //Actualizo el importe total
+    	    ELSE
+    	        /*TENGO QUE CALCULAR LA TARIFA PARA ESA PIEZA*/
+    	        CALL MISCcalc_almac_imp(adt_stockp_dias_alm)
+    	        IF (RETVAL == -2) THEN
+    	            call admin:ABMresetflag
+    	            RETURN -2
+    	        END IF
+    	    END IF
+    	
+    	    CDS ENDSELECT DSC:stockp_ctx
+    	    SETVALDONE almac_dias
+    	    call admin:ABMresetflag
+    	    RETURN -2
+    	ELSE
+    	    /*TENGO QUE CALCULAR LA TARIFA PARA ESA PIEZA TENIENDO EN CUENTA LOS DIAS INGRESADOS*/
+    	    CALL MISCcalc_almac_imp(almac_dias_aux)
+    	    IF (RETVAL == -2) THEN
+    	        call admin:ABMresetflag
+    	        RETURN -2
+    	    END IF
+    	END IF
+    	
+    	CDS ENDSELECT DSC:stockp_ctx
+    	SETVALDONE almac_dias
+	END IF
+ELSE
+    	SETVALDONE almac_dias
+ENDIF
+End Sub
+
+/*******/

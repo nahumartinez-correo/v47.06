@@ -1,0 +1,143 @@
+/****o* Registro VAP/OFB:post:CDSupd_RegVAP_tmp
+* NOMBRE
+*   OFB:post:CDSupd_RegVAP_tmp
+* DESCRIPCION
+*   Rutina que graba registros en la tabla RegVAP_tmp. Esta tabla es temporal y almacena
+*	todas las piezas VAP que se cargan para entregar dentro de una misma transaccion
+*	de Registro VAP
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCadd_RegVAP_tmp
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSupd_RegVAP_tmp
+	LOCAL loc_retval like lib:err_retval
+	CDS SELECT FROM "RegVAP_tmp" BECOMES "RegVAP_tmp_ctx" WHERE \
+		post:operator_vap == op:op_operator_id && \
+		post:PresNro_vap == post:PresNro && \
+		post:Pieza == post:Pieza
+	CDS FINDFIRST "RegVAP_tmp_ctx" LOCK
+	loc_retval = CDSRETVAL
+	
+	CDS CLEARBUFFER "RegVAP_tmp_ctx"
+	CDS APPEND "RegVAP_tmp_ctx" \
+		op:op_operator_id as post:operator_vap \
+        PresNro_vap \
+        Pieza \
+        siaf:afecta_efectivo \
+        fld:adt_serv_serv \
+        fld:serv_desc_vap \
+        medio_pago_desc \
+        FLD:post:adt_tarif_cfenix \
+        FLD:post:adt_serv_umstd \
+        FLD:post:destino \
+        FLD:post:peso_en_kgs \
+        FLD:post:peso_en_grs \
+        FLD:post:cantidad \
+        FLD:post:aforo \
+	    FLD:post:aforo1 \
+	    FLD:post:aforo2 \
+	    FLD:post:aforo3 \
+        FLD:adt_tarif_desde \
+        FLD:adt_tarif_hasta \
+        FLD:siaf:ImporteConIva \
+        FLD:siaf:ImporteSinIva \
+        FLD:post:peso_desc_VAP
+
+   CDS APPEND "RegVAP_tmp_ctx" \
+		fld:adt_serv_aliciva \
+		fld:adt_serv_tole \
+		fld:adt_serv_req_ad \
+		fld:adt_serv_max_serv \
+		fld:adt_serv_limite \
+		fld:adt_serv_nis_orig \
+		fld:adt_serv_medidas \
+		fld:adt_serv_pesable
+		
+	//datos del servicio para el calculo de la relacion volumetrica
+	CDS APPEND "RegVAP_tmp_ctx" \
+		fld:adt_serv_usa_caja \
+		fld:adt_serv_calc_rv \
+		fld:adt_serv_coef_rv
+
+	CDS APPEND  "RegVAP_tmp_ctx" \
+	    FLD:post:adt_tarif_um \
+	    FLD:post:adt_tarif_dest \
+	    FLD:post:adt_tarif_modo \
+ 	    FLD:post:adt_tarif_um_eq \
+	    FLD:post:adt_tarif_hasta_eq \
+        FLD:post:tarifa
+        
+	CDS APPEND "RegVAP_tmp_ctx" \
+    	FLD:post:Dcto_CliMed \
+    	FLD:ImpSinIva_serv \
+    	siaf:importe \
+		fld:adt_serv_formfiscal AS	PreDForFis \
+		FLD:post:NIS_Imposicion \
+		siaf:importe_tot_serv
+
+	//Para Cobranza y Facturacion
+	CDS APPEND "RegVAP_tmp_ctx" \
+    	FLD:post:remito_nro          
+    
+ 	IF (post:bonificaCM == "S") then
+    	CDS APPEND "RegVAP_tmp_ctx" \
+    		FLD:post:Dcto_CMPres
+    END IF       
+        
+	CDS APPEND "RegVAP_tmp_ctx" \
+        siaf:moneda \
+        FLD:post:adt_tarif_precio as post:adt_tarif_pr2 \
+		ImporteSinIva_bis \
+		adt_tarif_pr2 as post:precio_unitario \
+		dif_calculada \
+		cod_dif_aplicada\
+		AliServUP \
+		hasta_fac \
+		unidad_fac \
+		tipo_caja \
+		caja_propia \
+		rel_vol \
+		rel_vol_l1 \
+		rel_vol_l2 \
+		rel_vol_l3 \
+		adt_servcaja_med \
+		adt_servcaja_relac \
+		adt_servcaja_peso		
+		
+        
+
+    	//array FLD:fliatran_vec 
+    	//array FLD:impciva_vec 
+    	//array FLD:impsiva_vec 
+     	
+	IF (loc_retval == 0)
+		CDS REPLACE "RegVAP_tmp_ctx" LOCK
+	ELSE		
+		CDS INSERT "RegVAP_tmp_ctx" LOCK
+		; Se hace un update de este campo para saber que esta pieza esta siendo entregada
+    	; y no pueda reversarse en recepcion de piezas o no pueda ser entregada por otro 
+    	; operador o por el mismo en otra transaccion del mismo presupuesto
+    	CALL CDSregPieza_sel //CDSentrPieza_sel
+    	CDS FINDAGAIN DSC:STOCKP_CTX LOCK
+    	CDS APPEND DSC:STOCKP_CTX op:op_operator_id AS post:operator_vap \
+    	                          common:system_date AS post:fecha_reg_vap
+    	
+    	CDS UPDATE DSC:STOCKP_CTX LOCK
+    	CDS UNLOCK DSC:STOCKP_CTX
+    	CDS ENDSELECT DSC:STOCKP_CTX
+	END IF
+	CDS UNLOCK "RegVAP_tmp_ctx"
+	CDS ENDSELECT "RegVAP_tmp_ctx"
+END SUB
+
+/*******/

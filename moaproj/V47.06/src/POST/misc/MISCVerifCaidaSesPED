@@ -1,0 +1,109 @@
+/****o* Pago en Destino/OFB:post:MISCVerifCaidaSesPED
+* NOMBRE
+*   OFB:post:MISCVerifCaidaSesPED
+* DESCRIPCION
+*   Verifico que no haya una caida en el presupesto PED 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   -2 , si la caida se produje despues del inicio de sesion
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:MISCfin_TeclaRapida
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCVerifCaidaSesPED
+	LOCAL l_codigo_siaf LIKE siaf:codigo_siaf
+	LOCAL l_es_ped LIKE post:es_PED
+	LOCAL l_doc_fis_ped LIKE post:DocFisPed
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:aux_context WHERE \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_bus_date == common:system_date && \
+		tlr:jnl_branch == common:sucursal_activa && \
+		PresNro == FLD:post:PresNro SORT "primary"
+
+	CDS FINDLAST DSC:tlr:aux_context NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:tlr:aux_context \
+			siaf:codigo_siaf INTO l_codigo_siaf
+			
+		IF (l_codigo_siaf == 99021) THEN
+			CDS EXTRACT DSC:tlr:aux_context \
+				post:es_PED INTO l_es_ped \
+				post:DocFisPed INTO l_doc_fis_ped
+				
+			CDS ENDSELECT DSC:tlr:aux_context
+			IF (l_es_ped == "S" || (l_doc_fis_ped == "NCRED" ) || (l_doc_fis_ped == "FACTU" )) THEN
+				//verifico que no existan registros en la PresuDet
+				CDS SELECT FROM DSC:post:TABPresuDeta  BECOMES DSC:post:CONPresuDeta \
+					WHERE post:fecha == common:system_date && \
+					post:op_operator_id == op:op_operator_id && \
+					post:PresNro == post:PresNro
+			 
+			  CDS FINDFIRST DSC:post:CONPresuDeta NOLOCK
+				IF (CDSRETVAL == 0) THEN  
+					IF (l_es_ped == "S" || l_doc_fis_ped == "FACTU") THEN
+						CDS SELECT FROM DSC:post:TABPresu  BECOMES DSC:post:CONPresu \
+							WHERE post:fecha == common:system_date && \
+							post:op_operator_id == op:op_operator_id && \
+							post:PresNro == post:PresNro
+					
+					  CDS FINDFIRST DSC:post:CONPresu NOLOCK
+						IF (CDSRETVAL == 0) THEN 
+							IF (l_doc_fis_ped == "FACTU") THEN
+								CDS EXTRACT DSC:post:CONPresu \
+									post:sesion_ped_flags \
+									post:pieza_ped \
+									post:cod_tx
+									
+									SWAPDUP post:pieza_ped
+							END IF
+							IF (l_es_ped == "S" && l_doc_fis_ped == "") THEN
+								CDS EXTRACT DSC:post:CONPresu \
+									post:sesion_ped_flags \
+									post:cod_tx
+							END IF
+						END IF
+						CDS ENDSELECT DSC:post:CONPresu
+					END IF
+					     
+       		CDS ENDSELECT DSC:post:CONPresuDeta
+       		CDS ENDSELECT DSC:tlr:aux_context
+       		RETURN 0
+				END IF
+				CDS ENDSELECT DSC:post:CONPresuDeta
+					
+				IF (l_es_ped == "S" && l_doc_fis_ped != "NCRED" && l_doc_fis_ped != "FACTU") THEN					
+					SETFLAG post:sesion_ped_flags,es_sesion_ped	
+				END IF	
+				
+				IF (l_doc_fis_ped == "NCRED") THEN
+					SETFLAG post:sesion_ped_flags,genera_nc_ped
+				END IF
+				
+				IF (l_doc_fis_ped == "FACTU") THEN
+					SETFLAG post:sesion_ped_flags,genera_fac_ped
+					IF (l_es_ped == "S") THEN
+						//Es CM sin modalidad, lo trato como una Imposicion PED
+						SETFLAG post:sesion_ped_flags,cm_sin_mod_ped
+					END IF
+				END IF
+				
+				SETFLAG post:sesion_ped_flags,caida_sesion_ped
+				CALL post:CDSactPresuPed_flags
+				//Fuerzo el Fin de Sesion ....
+				RETURN -2
+			END IF
+		END IF			
+	END IF
+	CDS ENDSELECT DSC:tlr:aux_context
+	RETURN 0
+END SUB
+
+/*******/

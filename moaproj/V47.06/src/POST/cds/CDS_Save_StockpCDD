@@ -1,0 +1,199 @@
+/****o* Rendición Piezas CDD /OFB:post:CDS_Save_StockpCDD
+* NOMBRE
+*   OFB:post:CDS_Save_StockpCDD
+* DESCRIPCION
+*   Esta rutina pasa de la tabla de StockpCDD_Aux las piezas correspondiente a la planilla ingresada a 
+*   la tabla StockpCDD.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SENDRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postcds.h"
+
+Sub post:CDS_Save_StockpCDD
+
+	/*Primero selecciono los registros de la tabla temporal StockpCDD_Aux que pertenecen a la planilla ingresada*/
+	CDS SELECT FROM DSC:StockpCDD_Aux_tbl BECOMES DSC:StockpCDD_Aux_ctx \
+			WHERE (post:CDD_plan_fecha == post:CDD_plan_fecha && \
+						post:CDD_plan_nro   == post:CDD_plan_nro)
+	
+	CDS FINDFIRST DSC:StockpCDD_Aux_ctx LOCK
+	
+	If (CDSRETVAL == -801) Then
+		MSGBOX "NO HAY PIEZAS PARA REGISTRAR",0x00,"ATENCION"
+		CDS UNLOCK DSC:StockpCDD_Aux_ctx
+		CDS ENDSELECT DSC:StockpCDD_Aux_ctx
+		RETURN -2
+	End If
+
+	DO
+		call csr:proc_list(F_CLEAR,LST:post:LISTRend_CDD_Tbl_Aux)
+     
+    CDS EXTRACT DSC:StockpCDD_Aux_ctx ALL
+    
+		post:adt_CDD_pieza = post:Pieza
+		post:adt_CDD_recep_f = common:system_date
+		post:adt_CDD_recep_h  = common:time_of_day
+		post:adt_CDD_recep_op = op:op_operator_id 
+		post:adt_CDD_entrega_f  = common:system_date
+		post:adt_CDD_entrega_h  = common:time_of_day 
+		post:adt_CDD_entrega_op = op:op_operator_id
+		post:adt_CDD_crem_imp  = post:CDD_crem_imp
+		post:adt_CDD_crem_impc = post:CDD_crem_imp     
+		post:adt_CDD_TipoDoc = post:CDD_rtte_TipoDoc
+		post:adt_CDD_NumDoc  = post:CDD_rtte_NumDoc 
+		post:adt_CDD_CtaOM  = post:CDD_ctaOM
+		post:adt_CDD_plan_fecha = post:CDD_plan_fecha
+		post:adt_CDD_plan_nro  =  post:CDD_plan_nro  
+		post:adt_CDD_plan_total = post:CDD_plan_total
+		post:adt_CDD_rct    =      post:CDD_rct     
+		post:adt_CDD_rend_cent  =  post:CDD_rend_cent   
+		post:adt_CDD_contingencia = "N"
+        
+    //calcular nro de orden!
+    CALL post:CDSobtiene_secuen ("CRORD")
+    post:adt_CDD_Orden = post:adt_codseq_nro
+        
+    clearfield post:adt_CDD_devol_fec
+    clearfield post:adt_CDD_devol_op
+    clearfield post:adt_CDD_devol_hor
+    clearfield post:adt_CDD_Observ
+        
+		if (post:adt_CDD_CtaOM.numchars == 0)
+			;minorista
+			call post:MISCes_no_liq_CREM(adt_CDD_crem_imp)
+			if (retval) then
+				;SC50269 - La pieza es no liquidable
+				post:adt_CDD_Baja  = "S"
+				post:adt_CDD_contingencia = "Q"
+				adt_CDD_Observ = "NO LIQUIDABLE"
+				post:adt_CDD_devol_fec = common:system_date
+				post:adt_CDD_devol_op  = op:op_operator_id 
+				post:adt_CDD_devol_hor = common:time_of_day
+			else
+				post:adt_CDD_Baja  = "N"
+			end if
+		else
+			;mayorista - no se liquida
+			post:adt_CDD_Baja  = "S"
+			;SC 50288 - para que se visualice la fecha de rendicion en los reportes del libro crem para piezas mayoristas
+			post:adt_CDD_devol_fec = common:system_date
+			post:adt_CDD_devol_op  = op:op_operator_id 
+			post:adt_CDD_devol_hor = common:time_of_day
+		endif    
+
+    //esta marca es para los reportes de Gestion de Stock
+    es_CDD = "S"
+    adt_CDD_rev = "N"
+    //seteo el campos es gran cliente segun corresponda
+    CALL MISCset_grancl_CDD
+                        
+    clearfield adt_CDD_original
+    call csr:cleararray(adt_CDD_serie)
+    call csr:cleararray(adt_CDD_nro)
+    call csr:cleararray(adt_CDD_dig)
+    call csr:cleararray(adt_CDD_fec) 
+    call csr:cleararray(adt_CDD_PresNro)
+    call csr:cleararray(adt_CDD_impGiro)
+        
+    /*Inserto el reg en la tabla StockpCDD*/
+    CDS SELECT FROM DSC:StockpCDD_tbl BECOMES DSC:StockpCDD_ctx \
+    		WHERE (post:adt_CDD_pieza == post:adt_CDD_pieza)
+    
+    CDS FINDFIRST DSC:StockpCDD_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    CDS CLEARBUFFER DSC:StockpCDD_ctx                
+                     
+		CDS APPEND DSC:StockpCDD_ctx adt_CDD_pieza \
+			adt_CDD_recep_f  \
+			adt_CDD_recep_h  \
+			adt_CDD_recep_op    \
+			adt_CDD_entrega_f  \
+			adt_CDD_entrega_h  \
+			adt_CDD_entrega_op  \
+			adt_CDD_crem_imp   \
+			adt_CDD_crem_impc  \
+			adt_CDD_TipoDoc  \
+			adt_CDD_NumDoc   \
+			adt_CDD_CtaOM    \
+			adt_CDD_plan_fecha  \
+			adt_CDD_plan_nro
+        
+		CDS APPEND DSC:StockpCDD_ctx adt_CDD_pieza \
+			adt_CDD_plan_total  \
+			adt_CDD_rct        \
+			adt_CDD_rend_cent  \
+			adt_CDD_contingencia  \
+			adt_CDD_Observ \
+			adt_CDD_Orden  \
+			adt_CDD_Baja   \
+			adt_CDD_es_grancl \
+			es_CDD \
+			adt_CDD_original \
+			adt_CDD_rev
+	
+		if (post:adt_CDD_crem_imp > 0)
+			idx = 0
+			WHILE (idx < 10)
+				CDS APPEND DSC:StockpCDD_ctx \
+					adt_CDD_serie[idx] \
+					adt_CDD_nro[idx] \
+					adt_CDD_dig[idx] \
+					adt_CDD_fec[idx] \
+					adt_CDD_PresNro[idx] \
+					adt_CDD_impGiro[idx]
+				idx = idx + 1
+			END WHILE
+		end if
+        
+		CDS APPEND DSC:StockpCDD_ctx \
+			post:adt_CDD_devol_fec \
+			post:adt_CDD_devol_op \
+			post:adt_CDD_devol_hor
+			
+		//gpb:SC 50190 - SC 50361
+		CDS APPEND  DSC:StockpCDD_ctx \
+			post:id_cupon_CCT \
+			post:adt_cct_nis_liq \
+			post:adt_cct_comitente \
+			post:adt_cct_cod_serv \
+			post:adt_cct_def_cupon \
+			post:adt_cct_cta_sap \
+			post:adt_cct_rend_fis \
+			post:cod_barra_CREM	
+		
+		//gpb:SC 50190 - SC 50361
+		CDS APPEND  DSC:StockpCDD_ctx \
+			post:adt_climay_razon
+
+		IF (lib:err_retval == -801) THEN
+			CDS INSERT DSC:StockpCDD_ctx LOCK
+		ELSE
+			CDS REPLACE DSC:StockpCDD_ctx LOCK
+		END IF
+         
+    /* Termino seleccion de tabla StockpCDD*/
+    CDS UNLOCK DSC:StockpCDD_ctx
+    CDS ENDSELECT DSC:StockpCDD_ctx
+  
+		/*Busco el siguiente reg de la tabla temporal*/
+		CDS FINDNEXT DSC:StockpCDD_Aux_ctx LOCK
+		If (CDSRETVAL == -801) Then
+			/* Termino seleccion de tabla temporal*/
+			CDS UNLOCK DSC:StockpCDD_Aux_ctx
+			CDS ENDSELECT DSC:StockpCDD_Aux_ctx
+			BREAK
+		End If
+  LOOP
+  
+End Sub
+
+/*******/

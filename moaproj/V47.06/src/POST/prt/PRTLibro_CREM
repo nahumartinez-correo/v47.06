@@ -1,0 +1,199 @@
+/****o* Reportes Gestión Stock/OFB:post:PRTLibro_CREM
+* NOMBRE
+*   OFB:post:PRTLibro_CREM
+* DESCRIPCION
+*   Impresiom del reporte correspondiente al Libro CREM.
+* ENTRADAS
+*   General, Particular
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:CDSPrint_LibroCREM
+*   post:PRTRep_Gestion_Stock
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2308
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRTLibro_CREM(tipo_listado)
+    Local f_recep like siaf:fecha_valor
+    LOCAL f_entrega LIKE siaf:fecha_valor
+    LOCAL f_devol LIKE siaf:fecha_valor
+    LOCAL f_liq LIKE siaf:fecha_valor
+    LOCAL x LIKE common:local_int
+    //50344-Cantidad copias Libro CREM mgi:AUT-2308
+    LOCAL cant_copias LIKE common:local_int
+    LOCAL l_file LIKE common:csr_string
+    LOCAL l_path like common:csr_string
+    LOCAL linea_1 like common:csr_string_aux
+    LOCAL linea_2 like common:csr_string_aux
+    LOCAL cadena_1 like common:csr_string_aux
+    local TC like adt_stockp_es_grancl
+    local l_Tipo_Formulario like Letra_Factura
+
+    LET siaf:INDencab_lis = OFB:PRTEnc_Libro_CREM
+    siaf:indica_calcu = 0
+    LET siaf:i = 1
+    FPRINT l_path,"%s%s", common:dirTemporal, "LibroCrem.lis"
+    call post:MISCopen_reporte(l_path)
+    
+    CALL PRTEnc_Libro_CREM        
+    
+    IF (tipo_listado == "Particular")
+        CDS SELECT FROM DSC:GStock_tbl BECOMES DSC:GStock_ctx \
+        WHERE operador_GS == op:op_operator_id ASCENDING SORT "Orden"
+        CDS FINDFIRST DSC:GStock_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END IF 
+    WHILE (lib:err_retval != -801)
+    		CLEARFIELD linea_1
+    		CLEARFIELD linea_2
+    		CLEARFIELD cadena_1
+
+        CALL csr:proc_list(F_CLEAR,LST:post:LISTstockp)
+        CALL csr:proc_list(F_CLEAR,LST:post:LISTstockpCDD)
+        CDS EXTRACT DSC:GStock_ctx ALL
+        
+        f_recep = adt_stockp_recepfech        
+        f_entrega = adt_stockp_entrega_f
+        f_devol = adt_stockp_devol_fec
+    
+        if (post:adt_stockp_en_devol == "S") then
+        	adt_stockp_Observ = "DEVOL.RTTE."
+        endif
+    
+        FPRINT linea_1 "<txS>105</txS><st>1</st>%-5.5e %-32.32e%*.*s%-20.20s", \
+        adt_stockp_Orden,adt_stockp_pieza,22,22," ", adt_stockp_rem_domic
+        
+        select (adt_stockp_es_grancl)
+            case "N"
+                TC = "M"
+                BREAK
+            case "T"
+                TC = "T"
+                BREAK
+            case "S"
+                TC = "C"
+                BREAK
+            case else
+                TC = " "
+                BREAK
+        end select
+        
+        FPRINT linea_1 "%s %1.1s" linea_1, TC
+        FPRINT linea_1 "%s  %10.10e %-8.8e      %-8.8e  %-8.8e",linea_1,adt_stockp_crem_imp\
+        ,f_recep,f_entrega,f_devol
+        
+        FPRINT linea_1 "%s %8s" linea_1, adt_CDD_plan_nro
+        IF (es_CDD == "S") THEN
+        	FPRINT linea_1 "%-s    %s  %-1.1s",linea_1,"CDD",adt_CDD_contingencia
+        ELSE
+            IF (post:adt_stockp_en_devol == "S") THEN
+            	;SC50190 PS9826 - Piezas con devolucion al remitente
+            	FPRINT linea_1 "%-s    %s  %-1.1s",linea_1,"D/R",adt_CDD_contingencia
+            ELSE	
+        	    FPRINT linea_1 "%-s    %s  %-1.1s",linea_1,"   ",adt_CDD_contingencia
+        	END IF
+    	END IF
+        call tes:MISCwrite_file_Land(1,fld:linea_1)
+        ;cargo los giros emitidos
+        //FPRINT linea_2 "%s - %1.1s" adt_stockp_rem_loc, CloProvin
+        FPRINT linea_2 "   %s - %1.1s" adt_stockp_rem_loc, CloProvin
+        
+        FPRINT linea_2 "%*.*s%-50.50s %-24.24s" 10,10," ", adt_stockp_rem_nom, linea_2
+        f_liq = adt_stockp_fec[0]
+        FPRINT linea_2 "%s%*.*s%13.13s %8.8e" linea_2,10,10," ",adt_stockp_TT_giros[0],f_liq
+        FPRINT linea_2 "%s  %1.1s%6.6s%1.1s" linea_2,adt_stockp_serie[0],adt_stockp_nro[0],adt_stockp_dig[0]
+        
+        fprint cadena_1 "%s" adt_stockp_DocInic
+        l_Tipo_Formulario = substr(cadena_1,0,1)
+    
+        fprint cadena_1 "%s-%s" substr(adt_stockp_DocInic,1,4), substr(adt_stockp_DocInic,5,8)
+        Select (l_Tipo_Formulario)
+            Case FACTURA_A
+                fprint cadena_1 "A %s" cadena_1
+            break
+            Case FACTURA_B
+                fprint cadena_1 "B %s" cadena_1
+        end select
+        FPRINT linea_2 "%s %11.11e %15.15s   " linea_2, adt_stockp_impGiro[0], cadena_1
+        if (adt_stockp_serie[1] == "") THEN
+            FPRINT linea_2 "<st>4</st>%s" linea_2
+        end if
+        CALL tes:MISCwrite_file_Land(1,fld:linea_2)
+        
+        x = 1
+        WHILE (x < 10)
+        	IF (adt_stockp_serie[x] != "") THEN
+        		f_liq = adt_stockp_fec[x]
+                FPRINT linea_2 "%*.*s%13.13s %8.8e" 95,95," ",adt_stockp_TT_giros[x],f_liq
+                FPRINT linea_2 "%s  %1.1s%6.6s%1.1s" linea_2,adt_stockp_serie[x],adt_stockp_nro[x],adt_stockp_dig[x]
+                FPRINT linea_2 "%s %11.11e %15.15s   " linea_2, adt_stockp_impGiro[x], cadena_1
+        		if (x != 9) then
+        		    if (adt_stockp_serie[x+1] == "" ) THEN
+                        FPRINT linea_2 "<st>4</st>%s" linea_2
+                    end if
+                else
+                    FPRINT linea_2 "<st>4</st>%s" linea_2
+                end if
+        		
+        		CALL tes:MISCwrite_file_Land(1,fld:linea_2)
+        	END IF
+        	x = x + 1
+    	END WHILE
+    	
+        CDS FINDAGAIN DSC:GStock_ctx NOLOCK
+        CDS FINDNEXT DSC:GStock_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+
+    post_string_aux = " Nomenclaturas:"
+    CALL tes:MISCwrite_file_Land(1,fld:post_string_aux)
+    post_string_aux = " Observaciones = CDD (piezas rendidas por CDD), D/R (devolución al remitente)"
+    CALL tes:MISCwrite_file_Land(1,fld:post_string_aux)
+    post_string_aux = " Estado  = N (normal), C (liquidada normalmente), V (liquidada sin vinculo), L (liquidada en contingencia), E (entregada en contingencia),"
+    CALL tes:MISCwrite_file_Land(1,fld:post_string_aux)
+    post_string_aux = "                 I (ingresada y entregada en contingencia), Q (No Liquidables)"
+    CALL tes:MISCwrite_file_Land(1,fld:post_string_aux)
+    post_string_aux = " Tipo Cliente  = M (Minorista), T (Rendición por cuenta de terceros), C (Rendición centralizada)"
+    CALL tes:MISCwrite_file_Land(1,fld:post_string_aux)
+
+    CDS ENDSELECT DSC:GStock_ctx
+
+    ;Imprimo listado    
+    call csr:file_close(1)
+//50344-Cantidad copias Libro CREM mgi:AUT-2308
+	cant_copias = 0
+	l_file = "LibroCrem.lis"
+	//mgi:AUT-2308 - Si se solicita todos los reportes imprime una copia de cada uno
+	IF	(post:reporte_cant_libCREM == 0 || post:reporte_cant_libCREM == "") THEN 
+	post:reporte_cant_libCREM = 1
+	END IF
+	
+	FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, l_file
+    WHILE (cant_copias < post:reporte_cant_libCREM)
+       
+       CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+    
+       IF (RETVAL < 0) THEN
+         MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+         RETURN
+       END IF
+
+       PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..."
+
+       IF (PRTRETVAL != 0) THEN
+         FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+         MSGBOX siaf:mensaje,0x00000000,"Error"
+       END IF 
+       CALL CSR:file_close(7)
+       
+       cant_copias = cant_copias + 1
+    END WHILE
+    CALL giros:MISCdeleteFile(l_file)
+END SUB
+
+/*******/

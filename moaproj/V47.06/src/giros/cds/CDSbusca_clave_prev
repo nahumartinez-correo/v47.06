@@ -1,0 +1,73 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSbusca_clave_prev
+* NOMBRE
+*   OFB:giros:CDSbusca_clave_prev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSbusca_clave_prev
+/*ACP- Se busca la clave del pago q se esta cancelando
+para poder journalizarlo luego en el campo 
+giros:clave_hdr_prev de la cancelacion */
+
+local Lbranch like tlr:jnl_branch
+
+if (giros:cod_tran_canc >= 70090 && giros:cod_tran_canc <= 70120) then
+	CDS SELECT FROM DSC:tlr:TABjnl becomes DSC:tlr:jnl_context2 \
+		where 		tlr:jnl_bus_date == common:system_date && \
+					tlr:jnl_sequence_corr == 0 && \
+					giros:Serie_fld  == Serie_fld && \
+	  				giros:NroGiro_fld == NroGiro_fld && \
+	  				giros:digito_fld  == giros:digito_fld && \
+	 				siaf:codigo_siaf == giros:cod_tran_canc && \
+	  				tlr:jnl_status < HOST_REJECTED && \
+	  				tlr:jnl_time < siaf:hora
+elseif (giros:cod_tran_canc == 70392) then
+	CDS SELECT FROM DSC:tlr:TABjnl becomes DSC:tlr:jnl_context2 \
+		where 		tlr:jnl_bus_date == common:system_date && \
+					tlr:jnl_sequence_corr == 0 && \
+					giros:cons_nro_ctrol == giros:mtcn_canc && \
+	 				siaf:codigo_siaf == giros:cod_tran_canc && \
+	  				tlr:jnl_status < HOST_REJECTED && \
+	  				tlr:jnl_time < siaf:hora 
+else
+	return
+endif
+
+// esto es xq si no hay registros que coincidan, el findlast se me quedaba colgado... (¡¿?!)
+CDS FINDFIRST DSC:tlr:jnl_context2 NOLOCK
+if (cdsretval == 0) then
+	CDS FINDLAST DSC:tlr:jnl_context2 NOLOCK
+	if (cdsretval == 0) then
+		DO
+			CDS EXTRACT DSC:tlr:jnl_context2 \
+						giros:clave_hdr_giros into giros:clave_hdr_prev \
+						tlr:jnl_branch into Lbranch
+			if (Lbranch == op:op_branch_id) then
+				 break
+			end if			
+			CDS FINDPREV DSC:tlr:jnl_context2 NOLOCK
+			if (cdsretval != 0) then
+				break
+			endif
+		LOOP
+	endif
+endif
+
+CDS ENDSELECT DSC:tlr:jnl_context2
+
+END SUB
+
+/*******/

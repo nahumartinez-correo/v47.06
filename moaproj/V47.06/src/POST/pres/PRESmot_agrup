@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:post:PRESmot_agrup
+* NOMBRE
+*   OFB:post:PRESmot_agrup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESmot_agrup
+
+    siaf:nombre_transac.HIGHLITE = 0
+    let tlr:tran_mnemonic = "MOTAGRU"
+    let drv:descrip = "MOTAGRU"
+    siaf:codigo_siaf = 6900
+    siaf:exhibe_pantalla = "S"
+    siaf:imprime_comprobante = "D"
+    siaf:INDhost_snd_fv = fld:drv:INDspc_rtn[6]
+    
+         /* si estoy en teclas ráìdas y tiene curso legal protejo el 
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+       
+    if (post:estado_presu == 1) then
+      
+         call post:CDSMPago_Clegal_load
+      	  if (retval == 0) then
+      	     siaf:moneda = post:adt_mp_cod	
+      	     protfield siaf:moneda
+      	     DISABLECONTROL drv:PBcb1
+          else
+             errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+             return (-2)
+          end if   
+      
+    end if        		
+
+    /*MFM - Borro de memoria los datos del picklist*/
+    CALL csr:f_sadroppl "TEMPLATES"
+    
+    /*MFM - Genero picklist dinámico con motivos habilitados*/
+    ;CALL MISCTemplates_Hab
+ 
+ 	CALL siaf:PRESfecha_hora
+	IF (RETVAL < 0) THEN
+		RETURN (-1)
+	END IF
+
+    /*MLD: Armo el picklist acá porque ya tengo el tipo de cliente*/
+
+    CALL MISCTemplates_Hab
+	
+    /****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.     17/10/2000                                 */
+    /****************************************************************/
+    if (post:estado_presu == 2 || post:estado_presu == 3) then       	        
+      if (siaf:adt_tran_med_pago != "S") then
+         post:captura_mp = siaf:adt_tran_med_pago 	
+         protfield siaf:moneda
+         siaf:moneda = 99
+         clearfield post:medio_pago_desc
+         DISABLECONTROL drv:PBcb1
+      else   
+         ; Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+      end if	
+    end if
+        
+    //cgw:limpiar nro.giro asociado al template
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+    	clearfield giros:Serie_fld
+        clearfield giros:NroGiro_fld
+        clearfield giros:digito_fld
+    end if
+   
+	IF (estado_presu == 1 || estado_presu == 2)
+        ;Obtengo el secuenciador de cabecera
+            IF (!testflag(tlr:tran_flags,correction)) THEN
+                call post:CDSobtiene_secuen("CABEC")
+                cod_agrupacion = adt_codseq_nro
+            END IF
+	END IF
+	INDPresuD_Dat = OFB:CDSTRAN6900_append
+	CALL post:MISCLeo_PresDet
+
+   	/*Limpio el campo que contiene el Grupo de IVA del cliente, ya que se saca de la PresuAct
+	y si no hay una Sesión debe estar vacío - Gabriel Falciola*/
+	if (post:estado_presu == 1)
+		clearfield post:PresGrupoIva
+	end if
+
+	PROTFIELD tmpl_desc
+	PROTFIELD tmpl_mon_desc
+	PROTFIELD sel_tmpl_mot
+	IF (estado_presu == 3)
+		PROTFIELD template
+	END IF
+	IF (estado_presu == 4) THEN
+		PROTFIELD template
+		PROTFIELD siaf:moneda
+	END IF
+    RETURN (RETVAL)
+END SUB
+
+/*******/

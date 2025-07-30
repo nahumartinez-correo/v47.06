@@ -1,0 +1,310 @@
+/****o* Pendientes de agrupación/OFB:post:PRESsf1
+* NOMBRE
+*   OFB:post:PRESsf1
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESsf1
+	LOCAL mensaje LIKE common:csr_string
+	LOCAL MuestraMensaje LIKE siaf:i
+	LOCAL esSesion LIKE siaf:i
+	LOCAL esTeclasR LIKE siaf:i
+	LOCAL capturaMP LIKE siaf:i
+	LOCAL Prov LIKE post:adt_rprov_prov
+	LOCAL esIplan LIKE siaf:i
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	IF (cli_tipo == 5) THEN
+		MSGBOX "TRANSACCION NO DISPONIBLE PARA CLIENTES MEDIOS",0x00,"ERROR"
+		RETURN -1
+	END IF
+
+	CLEARFIELD result_pin
+	CLEARFIELD result_id
+	CLEARFIELD result_id_orig
+	CLEARFIELD hcomm:MessageId
+	CLEARFIELD hcomm:orig_line_status
+	CLEARFIELD terminal
+	CLEARFIELD operador_tmpl
+	CLEARFIELD ticket
+	
+	CLEARFIELD post:sf1_importe
+	
+	CLEARFIELD PreDForFis
+	MuestraMensaje = 2
+
+	/*Se le asigna, por dafault, que este reg del journal es el que va a ser procesado
+	por la Interfaz del correo*/
+	LET ProcesaInterfaz = "S"
+
+	sf1_secuencia = 0
+	sf1_nro_secuencia = 0
+   
+	//cgw:AUT-1780 despues de confirmar pago facil en sesion y al volver a una nueva trx de pago facil
+	//mostraba el mensaje "Error, (L) Campo Requerido".
+	//Limpio buffer de teclas porque hay un ENTER de mas que provocaba la validacion de la utility
+	IF (post:estado_presu == 2) THEN
+		INIT 33,0
+	END IF
+
+	/*NAM-AUT-2322 
+	- se realiza para estado de presupuesto post:estado_presu = 1,
+	la limpieza (inicializacion vacía) de los siguientes campos*/  
+	IF (post:estado_presu == 1) THEN
+		CLEARFIELD post:es_CCT
+		SWAPDUP post:es_CCT
+		CLEARFIELD post:es_CCT
+	END IF
+	/*FIN AUT-2322*/
+       
+	IF (post:estado_presu == 4 || plataf:current_state == CONFIRMATION || plataf:current_state == RECOVERY) THEN
+		//FGB:
+		//NO HAGO ESTAS VALIDACIONES YA QUE SE SUPONE QUE LOS DATOS FUERON VERIFICADOS
+		//AL MOMENTO DE CARGAR LA TRANSACCION.
+	ELSE
+		IF ( sf1_id_terminal.numchars == 0 ) THEN
+			MSGBOX "Su Sucursal no tiene asociada ninguna Id-Terminal", \
+			OFB_OK,"Error"
+			RETURN -1
+		END IF
+	   
+		//30-07-1998 PJM  tomo la fecha de la ultima actualizacion de los bobs
+		CALL post:MISCget_version_bob(MuestraMensaje)
+		IF ( RETVAL < 0 )
+			RETURN -1
+		END IF
+	
+		//Me fijo la version de Bob
+		CALL csr:date_compare(common:system_date,post:fecha)
+		IF ( RETVAL != 0 ) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//MSGBOX "La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de Pago Facil",OFB_OK,"Error"
+			FPRINT l_descPagoFacil,"La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de %s",DSC:post:descPagoFacil
+			MSGBOX l_descPagoFacil,OFB_OK,"Error"
+
+			/* cgw: Adecuacion para RTJAVA. Se saca actualizacion pago facil.
+			drv:stack_cnt = drv:stack_cnt + 1
+			;LET drv:INDrun_funct = LST:post:TRANsf1_version
+			CALL csr:listexec(LST:post:TRANsf1_version)
+			*/
+			RETURN -1
+		END IF
+
+	END IF
+		
+	/*26.3.2004 la prohibicion de la dupla deja de tener efecto, debido a que la jerarquizacion 
+	de combos implica la confirmacion de estos ultimos en primer lugar dentro de un presupuesto; */   
+	/*Esta prohiba la dupla Combos_Monetarios - PAgo Facil - Busca en la Presudet
+	Me fijo que en la sesion actual no haya alguna una tx monetaria.
+	CALL giros:CDShay_giros2 ("N","S","Esta prohibida la dupla Combos Monetarios - Pago facil/AFIP en un presupuesto")
+	CALL giros:CDShay_giros2("S","N","Esta prohibida la dupla Giros - Pago facil/AFIP en un presupuesto") 
+	IF ( RETVAL != 0  ) THEN
+		RETURN (-1)
+	END IF*/
+
+	//Se Cambia el seteo de la multi-line
+	INIT 67,"X$"
+	post:INDPresuD_Dat = ofb:post:CDSTRAN6820_append
+	CALL post:MISCLeo_PresDet
+	IF ( RETVAL < 0 ) THEN
+		RETURN -1 
+	ENDIF
+
+	//CALL CDSobtiene_secuen("PAGOFAC")
+	//sf1_secuencia = adt_codseq_nro
+
+	PROTFIELD sf1_serv_desc
+	PROTFIELD siaf:importe
+	PROTFIELD adt_emp_cuit
+	CALL post:MISCprotege(LST:post:fld6820protege,LST:post:fld6820desprotege)
+
+	CLEARFIELD sf1_codbarras
+	CLEARFIELD sf1_codbarras2
+	CLEARFIELD adt_emp_cuit
+
+	Prov = SUBSTR(common:sucursal_activa,0,1)
+
+	IF (Modo == "R") THEN
+		CALL post:MISCarmo_pickPF(siaf:codigo_siaf,Prov)
+	END IF
+
+	SELECT (post:estado_presu )
+		CASE 1
+			IF (plataf:chosen_codtrn.NUMCHARS == 0) THEN
+				//cgw: no entra por busqueda rapida
+				CLEARFIELD sf1_codbarras1
+			END IF
+			// FGB 1.11.2000: para empezar, siempre oculto el 2do campo de CBarra
+			IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN
+				HIDEFIELD post:sf1_codbarras2
+				PROTFIELD post:sf1_codbarras2
+				CLEARFIELD sf1_serv_desc
+				LET post:cant_barras = 1
+				INIT 33,0
+			END IF
+		CASE 3
+		CASE 4
+			siaf:imprime_comprobante = "D"
+			SELECT (cant_barras)
+				CASE 1
+					IF (plataf:chosen_codtrn.NUMCHARS == 0) THEN
+						// sba 20040115 - Ahora se busca en una tabla por la utility
+						/*
+						esIplan = (post:sf1_id_paycode == "2NN" || post:sf1_id_paycode == "2PN")
+						call post:CDSutility_cod_prod
+						esIplan = (post:utility_cod_prod == "IPLAN")
+						*/
+						;CALL post:CDSutility_cod_prod("IPLAN")
+						CLEARFIELD esIplan
+						
+						CDS SELECT FROM UTILITY_TAB BECOMES UTILITY_CTX \
+							WHERE	post:sf1_utility_tmp == post:sf1_utility && \
+							post:utility_cod_prod == "IPLAN" && \
+							post:utility_codbarras == sf1_codbarras1
+						
+						IF (CDSRETVAL == 0) THEN
+							CDS FINDFIRST DSC:UTILITY_CTX Nolock
+							IF (CDSRETVAL == 0) THEN
+								esIplan = 1
+							END IF
+							CDS ENDSELECT UTILITY_CTX
+						END IF
+						IF (!esIplan) THEN
+							CLEARFIELD sf1_codbarras1
+						END IF
+					END IF
+					HIDEFIELD post:sf1_codbarras2
+					PROTFIELD post:sf1_codbarras2
+				BREAK
+		 	 	CASE 0
+					HIDEFIELD post:sf1_codbarras2
+					PROTFIELD post:sf1_codbarras2
+				BREAK
+				CASE ELSE
+					IF (plataf:chosen_codtrn.NUMCHARS == 0) THEN
+						//cgw: no entra por busqueda rapida
+						CLEARFIELD sf1_codbarras1
+					END IF
+					UNPROTFIELD post:sf1_codbarras2
+				BREAK
+			END SELECT
+		BREAK
+		CASE ELSE
+			LET siaf:imprime_comprobante = ""
+			IF (plataf:chosen_codtrn.NUMCHARS == 0) THEN
+				//cgw: no entra por busqueda rapida
+				CLEARFIELD sf1_codbarras1
+			END IF
+			HIDEFIELD post:sf1_codbarras2
+			PROTFIELD post:sf1_codbarras2
+			CLEARFIELD sf1_serv_desc
+			post:cant_barras = 1
+		BREAK
+	END SELECT
+
+	//Datos Fijos
+	sf1_tipo_ingreso = "A"
+	sf1_id_banco = "000"
+	sf1_nro_asociado = 0
+	sf1_nro_autoriza = 0
+	sf1_clearing = 0
+	
+	IF ( estado_presu == 1 || estado_presu == 2 ) THEN
+		CLEARFIELD sf1_codbarras
+		CLEARFIELD sf1_serv_desc
+		// FGB 8.3.2001
+		CLEARFIELD sf1_codbarras_nuevo
+	ELSE
+		IF (estado_presu == 4) THEN
+			/*MLD En la segunda pasada se debe ingresar el campo sf1_codbarras
+			nuevamente*/
+			CLEARFIELD sf1_codbarras
+		END IF
+	ENDIF
+
+	//Por Ahora va aca despues hacerlo mejor
+	IF ( post:estado_presu == 1) THEN
+		CLEARFIELD adt_emp_cuit
+		//FGB 7.9.2001: agregado para el cobro de servicios con bonos...
+		CLEARFIELD sf1_imp_max_bono
+		CLEARFIELD total_pesos
+		CLEARFIELD total_bonos
+	END IF
+
+	//Default de Mondea
+	siaf:moneda = "00"
+	
+	// Numero de Impresion
+	sf1_reimpresion = 1
+	REFRESH adt_emp_cuit
+	
+	siaf:nombre_transac.HIGHLITE = 0
+	siaf:codigo_siaf = 06820
+	CALL siaf:PRESfecha_hora
+	IF ( RETVAL < 0 ) THEN
+		RETURN -1
+	END IF
+
+	/*si estoy en teclas rápidas y tiene curso legal protejo el
+	campo y si no tiene le muestro un mensaje de error y no le permito
+	hacer la transacción - Hernán 14/11/2000*/
+	;[PAW] - pidieron que si no captura MP en sesion tambien tome el MP de curso legal. 08-01-2001
+	esSesion = (post:estado_presu == 2 || post:estado_presu == 3)
+	esTeclasR = (post:estado_presu == 1)
+	capturaMP = (siaf:adt_tran_med_pago == "S")
+
+	//IF ((esSesion && !capturaMP) || esTeclasR) THEN
+	//Teclas Rapidas tiene habilitado el Medio de Pago
+	IF (esSesion && !capturaMP) THEN
+		CALL post:CDSMPago_Clegal_load
+		IF (RETVAL == 0) THEN
+			siaf:moneda = post:adt_mp_cod
+			PROTFIELD siaf:moneda
+			DISABLECONTROL drv:PBcb0
+		ELSE
+			ERRMSG lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+			RETURN (-2)
+		END IF
+	END IF
+
+	CALL post:PRESsf1_cuentacorr
+	IF (RETVAL < 0) THEN
+		RETURN (-1)
+	END IF
+	
+	;SMC 16/02/1999 Se agrega la variable es_tesoro
+	;para que calcule bien en reversas
+	LET tes:es_tesoro = "S"
+
+	IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN
+		IF (estado_presu < 4) THEN //cgw:no se setea funcion en confirmacion
+			;SMC Seteo el Boton de Supervision
+			tlr:f08button = "F8 EMPRESAS PFACIL"
+			LET drv:button = TFB7
+			CALL drv:but_redraw
+			CALL drv:but_enable
+			KEYDEF F8,post:PB_SF1_empresa
+		END IF
+	END IF
+
+	IF (post:Modo == "R") THEN
+		PROTFIELD post:sf1_codbarras1
+		;DISABLECONTROL TAG:post:CHK1
+	End If
+
+END SUB
+
+/*******/

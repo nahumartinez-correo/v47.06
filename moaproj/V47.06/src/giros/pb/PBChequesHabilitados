@@ -1,0 +1,108 @@
+/****o* Pendientes de agrupación/OFB:giros:PBChequesHabilitados
+* NOMBRE
+*   OFB:giros:PBChequesHabilitados
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospb.h"
+
+SUB giros:PBChequesHabilitados
+
+    local item like siaf:i
+    local chk_cheque_aux like giros:adt_chk_nrogiro
+    local NoHay like siaf:ve_firma
+    
+    move "S" to NoHay
+
+    drv:button = drv:last_button
+    CALL drv:but_disable     
+
+    /* Busco los cheques Habilitados (HA) en la chequera */
+    /* Verifico que la chequera este recepcionada y no completada */
+    /* => adt_chk_estado = 2 */
+    
+    CDS SELECT FROM RecepChk_tab BECOMES RecepChk_ctx WHERE \
+     giros:adt_chk_suc == FLD:common:sucursal_activa && \
+     giros:adt_chk_op == FLD:op:op_operator_id && \
+     giros:adt_chk_estado == "2"
+
+    CDS FINDFIRST DSC:RecepChk_ctx NOLOCK
+    lib:err_retval = cdsretval
+    if (cdsretval < 0) then
+    	ERRMSG LST:common:errmsg_list, \
+    	"NO HAY CHEQUES CON ESTADO HABILITADO EN LA CHEQUERA"
+       drv:button = drv:last_button
+       CALL drv:but_up_enable    
+	return (-2)
+    end if
+
+    /* arma picklist con los cheques habilitados en la chequera */
+    CALL csr:f_sanewpl("cheques_habilitados", PIC:giros:cheq_habilitado)
+
+     while (cdsretval == 0) then
+	    cds extract DSC:RecepChk_ctx ALL
+    
+   	item = 0            
+   	WHILE (item < giros:adt_chk_cantid)
+        	clearfield common:csr_string
+		If (adt_chk_cheque[item] == "HA") Then
+			move "N" to NoHay
+			chk_cheque_aux = giros:adt_chk_nrogiro + item
+			/* armo registro para el picklist */
+			fprint common:csr_string "%1s      %6.6s",\
+			fld:giros:adt_chk_serie, chk_cheque_aux
+			call csr:f_saaddpl("cheques_habilitados",common:csr_string)
+		end if
+	 	item = item + 1			    	
+   	END WHILE
+   	
+   	// Busco si hay otra chequera
+   	cds findnext DSC:RecepChk_ctx NOLOCK
+   end while	    	
+
+    cds endselect dsc:RecepChk_ctx
+    
+    if (NoHay == "S")
+    	ERRMSG LST:common:errmsg_list, \
+    	"NO HAY CHEQUES CON ESTADO HABILITADO EN LA CHEQUERA"
+       drv:button = drv:last_button
+       CALL drv:but_up_enable    
+	return (-1)
+    end if
+
+    /* muestra picklist y se realiza eleccion */
+    call csr:f_sadopl "cheques_habilitados" common:csr_string
+    if (retval < 0)
+       drv:button = drv:last_button
+       CALL drv:but_up_enable    
+
+       return (-1)
+    else
+       Serie_fld  = SUBSTR(common:csr_string,0,1)
+       NroGiro_fld = SUBSTR(common:csr_string,7,6)
+    end if
+
+    refresh Serie_fld
+    refresh NroGiro_fld
+    nextfield digito_fld
+    
+    /* destrye picklist - libera memoria */
+    call csr:f_sadroppl("cheques_habilitados")
+    drv:button = drv:last_button
+    CALL drv:but_up_enable    
+
+    ;return (0)
+END SUB
+
+/*******/

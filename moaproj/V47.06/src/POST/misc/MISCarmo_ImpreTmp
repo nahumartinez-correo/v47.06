@@ -1,0 +1,549 @@
+/****o* Sesion Correo/OFB:post:MISCarmo_ImpreTmp
+* NOMBRE
+*   OFB:post:MISCarmo_ImpreTmp
+* DESCRIPCION
+*   Recorre la PresuDet o PresuDetOC (segun sea una sesion de orden de compra o no) y aquellas
+*	TX que deban aparecer en la factura las selecciona y segun la familia setea los campos para 
+*	grabar luego un registro en la tabla ImpreTmp
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSgenTabImpre,OFB:post:MISCFinSesDir,OFB:post:MISCFinSesDirBatch,OFB:post:MISCimprimoTransWeb
+*	OFB:post:PCOLimpresion_fiscal,OFB:post:PRT_IRP,
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCarmo_ImpreTmp
+	LOCAL IMPRIMO LIKE cantidad
+	LOCAL NRO_ITEM LIKE cantidad
+	LOCAL IMPORTE_FINAL LIKE importeIva_impre
+	LOCAL doc_trim LIKE post:PreDForFis
+	LOCAL importe_tmp LIKE siaf:importe
+	LOCAL familia LIKE siaf:adt_tran_fliatran
+	LOCAL imp_aux LIKE siaf:importe
+
+	IF (ImpCC_Min == "S") THEN
+		IMPRIMO =  NO_HAY_REGISTROS
+	ELSE
+		itemFact = 0
+		//No se puede seleccionar solo aquellas transacciónes que tiene algun formulario
+		//asociado porque pueden haber casos donde no haya formulario para la transaccion
+		//pero si para los opcionales.
+		//Me devuelve un 1 (HAY_REGISTROS) si hay registros a imprimir
+		//o un 0 (NO_HAY_REGISTROS) si no hay.
+
+    /* giros */
+    CALL giros:CDSborro_OpcFact
+    CALL giros:CDSborro_ServFact
+    /* fin giros */
+
+		IMPRIMO =  NO_HAY_REGISTROS
+		CALL CDSDelete_ImpreTmp
+		//CALL CDSdelete_TotMedPag
+		CLEARFIELD importe_impre
+		CLEARFIELD cantid_impre
+		CLEARFIELD adt_descto_aliciva
+		CLEARFIELD track_trace
+		CLEARFIELD post:importe_sesion
+
+		;necesito el máximo PreDNroTrn para la bonificacion. Al tener problemas en el ordenamiento
+		;de la factura en el caso especies, se decidió reorganizar los PreDNroTrn y por esto
+		;se necesita el ultimo usado.
+		CALL CDSmaxPreDNroTrn
+
+		IF ((post:OperacionAut || post:OperacionCob) && post:adt_oc_nro.NUMCHARS != 0) THEN
+			/*Si esta en post:PreDEst==9 es un combo con algun error*/
+			CDS SELECT FROM DSC:PresuDetOC_TBL BECOMES CONPresuDeta \
+				WHERE (post:op_operator_id == post:op_operator_id ) \
+				&& (post:PresNro == post:PresNro) \
+				&& (post:PreDEst < 9) \
+				&& (post:fecha == common:system_date) SORT "NroTrn" //se ordena por PreDNroTrn para
+			//que los anexos de las facturas de clientes medios no se defasen
+		ELSE
+			/*Si esta en post:PreDEst==9 es un combo con algun error*/
+			CDS SELECT FROM DSC:TABPresuDeta BECOMES CONPresuDeta \
+				WHERE (post:op_operator_id == post:op_operator_id ) \
+				&& (post:PresNro == post:PresNro) \
+				&& (post:PreDEst < 9) \
+				&& (post:fecha == common:system_date) SORT "NroTrn" //se ordena por PreDNroTrn para
+			//que los anexos de las facturas de clientes medios no se defasen
+		END IF
+
+		CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+		DO
+			LET lib:err_retval = CDSRETVAL
+			IF (lib:err_retval == -801) THEN
+				BREAK
+			END IF
+			CALL post:MISCclear_dat_impre
+			CALL csr:cleararray(post:vec_opc)
+			CALL csr:cleararray(post:vec_opc2)
+			cant_opc = 0
+			descuento = 0
+			CLEARFIELD PresNro_tt
+			CLEARFIELD NroTrn_tt	
+			CLEARFIELD Pieza
+		
+			;NroTrn_tt = 0
+			noImprimir = "N"
+			exisMotSinForFis = "N"
+			CLEARFIELD leyenlar_bloq
+			CLEARFIELD leyencor_bloq
+			CLEARFIELD imp_bloques
+			;CLEARFIELD adt_track_trace_web
+			CLEARFIELD post:adt_nis_guarda_web
+			//SC 50170
+			CLEARFIELD post:precio_unitario
+			CLEARFIELD post:dif_calculada
+			CLEARFIELD post:dif_calculada_tasa
+			CLEARFIELD post:cod_dif_aplicada
+			CALL csr:cleararray(post:dif_opc)
+		
+			CDS EXTRACT DSC:CONPresuDeta ALL
+					
+			IF (NroCompPago.NUMCHARS == 0) THEN
+				NroCompPago = 0
+			END IF
+		
+			CALL CSR:trimfield (post:PreDForFis, doc_trim)
+			IF ( doc_trim.NUMCHARS != 0 ) || (siaf:adt_tran_fliatran == "CSV" || (siaf:adt_tran_fliatran == "PCL")) THEN
+				/* Para ingresos y egresos varios puede pasar que se totalice el
+				impuesto pero no se imprima en la factura */
+				SELECT (siaf:adt_tran_fliatran)
+					CASE FAMILIA_ENC_INT	// ENCOMIENDA INTERNACINAL
+						IMPRIMO = HAY_REGISTROS
+						CALL post:MISCarmoImpre_EncInt
+					BREAK
+					CASE "CSE"
+					#ifdef SUCU_VIRTUAL
+					CASE "NET"	 			// CARTA ELECTRONICA
+					#endif
+					CASE "CSP"
+					CASE "CST"
+						//Se utilizo un campo nuevo alfanumerico para que me permita tener
+						//los opcionales y los servicios en la misma tabla.
+						//Solo Acumulo si tiene algun formulario fiscal.
+						IMPRIMO =  HAY_REGISTROS
+						
+						//se agrego un campo mas a la tabla auxiliar (05-06-98 PJM)
+						//dado que en los ticket se necesita que salga el importe con iva y sin Iva
+						//Esto fue Modificado PJM 23-06-1998 porque JUAN PABLO usa Otro Campo
+						//PJM 21-12-1998 Se elimino la Sobre Tasa
+						IF (post:adt_oc_nro.NUMCHARS != 0) THEN
+							desc_impre = post:item_desc_factura
+						ELSE
+							desc_impre = adt_serv_desc
+						END IF
+						
+						//SC 50170
+						IF (cod_dif_aplicada == "SERV") THEN
+							CALL MISCgenero_ImpreTmp (tipo_produc, SERVICIO, adt_serv_aliciva, tarifa, cantidad,post:dif_calculada)
+						ELSE
+							CALL MISCgenero_ImpreTmp (tipo_produc, SERVICIO, adt_serv_aliciva, tarifa, cantidad,0)
+						END IF
+						
+						/*resguardo el campo cantidad para dividir el importe de los opcionales*/
+						cant_aux = cantidad
+						
+						//SC 50170 - FACTURACION
+						//Lo borro para que no quede sucio cuando graba los bloques adicionales, opcionales y descuentos
+						CLEARFIELD post:precio_unitario
+						
+						//[PAW] --> pedido por Maricel (Mariano Gecik) bloq. adicionales.
+						//---------------------------------------------------------------
+						IF (leyenlar_bloq.NUMCHARS != 0) THEN
+							CALL MISCActua_BlocAdic
+						END IF
+						// ---------------------------------------------------------------
+
+						CALL MISCActua_Opcional
+						CALL MISCActua_Descuento
+						cantidad = cant_aux  // se perdia el campo cantidad.
+						
+						CALL MISCtotBonifPostTel
+						IF (post:promo_tot < 0) THEN
+							//SC 50170
+							CALL MISCgenero_ImpreTmp(99007, BONIF_PROD, adt_serv_aliciva, post:promo_tot, 1,0)
+						END IF
+
+						CALL MISCtotalizo_MedPag
+
+						CALL post:MISCarmo_Impre_NC
+						//***NI 50474: Se elimina el renglon del bien de cambio con importe cero*/
+						;Para cliente medio
+						;Esto es para que si un servicio tiene asociado un prod. de Mercha.
+						;agregue una línea con valor cero en la factura. *** MDG
+						/*IF (post:adt_oc_nro.numchars != 0) THEN
+								IF ((post:OperacionCob || post:OperacionAut) && post:item_bien_cambio != 0 && siaf:adt_tran_fliatran != "CST") THEN
+									CDS SELECT FROM DSC:post:adt_prodvs_table BECOMES DSC:post:adt_prodvs_context WHERE \
+										FLD:post:adt_prodvs_cod   == post:item_bien_cambio
+									CDS FINDFIRST DSC:post:adt_prodvs_context NOLOCK
+									LET lib:err_retval = CDSRETVAL
+									IF (lib:err_retval == -801) THEN
+										CDS ENDSELECT DSC:post:adt_prodvs_context
+										BREAK //RETURN (-2) se cambia el return por el break hacia estragos en el fin de sesion
+									END IF
+									CDS EXTRACT DSC:post:adt_prodvs_context post:adt_prodvs_desc
+		
+									CDS ENDSELECT DSC:post:adt_prodvs_context
+									CLEARFIELD importe_impre
+									CLEARFIELD post:tarifa
+									CLEARFIELD post:item_importe_oc
+									//BUG Están quedando sucios los siguientes importes (se arrastran de la carta)
+									CLEARFIELD post:ImporteConIvaOC
+									CLEARFIELD post:ImporteSinIvaOC
+									desc_impre = adt_prodvs_desc
+									//SC 50170
+									CALL MISCgenero_ImpreTmp (post:item_bien_cambio, MERCHA, 0, 0, cantidad,0)
+								END IF
+						END IF*/
+						/********************************************/
+					BREAK
+					CASE "VAP"
+						IMPRIMO =  HAY_REGISTROS
+						desc_impre = serv_desc_vap //adt_serv_desc
+						tipo_produc = adt_serv_serv
+						IMPORTE_FINAL = siaf:importe
+						//SC 50170
+						IF (cod_dif_aplicada == "SERV") THEN
+							CALL MISCgenero_ImpreTmp (adt_serv_serv, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,post:dif_calculada)
+						ELSE
+							CALL MISCgenero_ImpreTmp (adt_serv_serv, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,0)
+						END IF
+						CALL MISCtotalizo_MedPag
+					BREAK
+					CASE "CME"
+						//En siaf:importe viene el total de la transaccion
+						//En tarifa es el Precio Unitario
+						IMPRIMO =  HAY_REGISTROS
+						IMPORTE_FINAL = siaf:importe
+						
+						IF (post:adt_oc_nro.NUMCHARS == 0) THEN
+							LET desc_impre = adt_prodvs_desc
+						ELSE
+							desc_impre = post:item_desc_factura
+						END IF
+				
+						//Si no es Factura la SobreTasaIva viene en Cero
+						cantidad = cantidad2
+						
+						//SC 50170 - FACTURACION
+						CALL MISCgenero_ImpreTmp (adt_prodvs_cod, MERCHA, adt_prodvs_aliciva, IMPORTE_FINAL, cantidad2,post:dif_calculada)
+						
+						//Lo borro para que no quede sucio cuando graba los descuentos.
+						CLEARFIELD post:precio_unitario
+						
+						IF (post:adt_oc_nro.NUMCHARS != 0) THEN
+							IMPORTE_FINAL = post:item_importe_oc * cantidad2
+						END IF
+
+						CALL post:MISCtotBonifProdVs
+						IF (post:promo_tot < 0) THEN
+							LET post:promo_desc = promo_desc_pdvs
+							//SC 50170
+							CALL MISCgenero_ImpreTmp(99007, BONIF_PROD, adt_prodvs_aliciva, post:promo_tot, 1,0)
+						END IF
+						
+						CALL MISCtotalizo_MedPag
+					BREAK
+					CASE "TES"
+						//gpb:NI50479 - Genera NC PED
+						IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped) && siaf:codigo_siaf == 8500) THEN
+							post:cantidad = tes:adt_evaux_cantidad
+							FPRINT desc_impre "%s %20.20s",tes:espv_cod,tes:adt_evaux_subcod
+							CALL MISCgenero_ImpreTmp(tes:adt_evaux_subcod,TESORERIA,tes:adt_espv_aliciva,tes:adt_evaux_importe,post:cantidad,post:dif_calculada)
+							siaf:importe = tes:adt_evaux_importe
+							siaf:afecta_efectivo = "+"
+							CALL post:MISCtotalizo_MedPag
+						ELSE
+							IMPRIMO = HAY_REGISTROS
+							CALL post:MISCarmo_Impre_ev
+						END IF
+					BREAK
+					CASE "CSV"
+						cantidad = 1
+						SELECT (siaf:codigo_siaf)
+							//gpb: SC50368 - AUT-1692
+							CASE 7210
+								CALL siaf:CDSarmo_impreOJU
+								IF (RETVAL == 1) THEN
+									IMPRIMO = HAY_REGISTROS
+								END IF
+							BREAK						
+							CASE 6900 //Templates
+								/*El tratamiento para Templates se puso en esta rutina para que
+								quede mas prolijo - Gabriel Falciola*/
+								CALL CDSarmo_templ_impre
+								IF (RETVAL == 1) THEN
+									IMPRIMO = HAY_REGISTROS
+								END IF
+							BREAK
+							CASE 6650
+							CASE 6640
+								emite_mensaje = "S"
+							BREAK
+							CASE ELSE
+								CALL post:CDSarmo_impre_ie
+								IF (RETVAL == 1) THEN
+									IMPRIMO = HAY_REGISTROS
+								END IF
+						END SELECT
+					BREAK
+					CASE "TAV"
+						IF (siaf:codigo_siaf == 99020) THEN //Entrega de piezas a Clientes en ventanilla
+							IMPRIMO = HAY_REGISTROS
+							CALL CDSarmo_impre_EP
+						END IF
+						IF ((siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242) && \
+							siaf:siaf_status == HOST_ACCEPTED) THEN
+							IF (cli_tipo == OCASIONAL || cli_tipo == CLIUP || cli_tipo ==  CLIMED) THEN
+								post:cantidad = 1
+								IMPRIMO = HAY_REGISTROS
+								IMPORTE_FINAL = post:comision_rechazo
+								desc_impre = "GASTOS RECHAZO CHEQUE"
+								//SC 50170
+								CALL MISCgenero_ImpreTmp(siaf:codigo_siaf,ACTVARIAS,adt_serv_aliciva,IMPORTE_FINAL,1,0)
+								imp_aux = siaf:importe
+								siaf:importe = post:comision_rechazo
+								CALL MISCtotalizo_MedPag
+								siaf:importe = imp_aux
+							ELSE
+								;si es cliente corporativo no debe imprimir ningún formulario
+								emite_mensaje = "S"
+							END IF
+						END IF
+						/* Agregado para Endas con Poliza */
+						IF (siaf:codigo_siaf == 99124 && siaf:siaf_status == HOST_ACCEPTED) THEN
+							IMPRIMO = HAY_REGISTROS
+							CALL MISC_ImpreTmp_Pol
+						END IF
+						IF (siaf:codigo_siaf == 99480) THEN // && siaf:siaf_status == HOST_ACCEPTED) THEN
+							IMPRIMO = HAY_REGISTROS
+							IMPORTE_FINAL = siaf:importe
+							//SC 50170 -CHEQUEAR!!
+							CALL MISCgenero_ImpreTmp(99480,ACTVARIAS,adt_serv_aliciva,IMPORTE_FINAL,1,0)
+							CALL MISCtotalizo_MedPag
+						END IF
+						//EMISION DE NOTA DE CREDITO POR INCUMPLIMIENTO
+						IF (siaf:codigo_siaf == 99510) THEN
+							IMPRIMO = HAY_REGISTROS
+							IMPORTE_FINAL = siaf:importe
+							CALL MISCgenero_ImpreTmp(99510,ACTVARIAS,adt_serv_aliciva,IMPORTE_FINAL,1,0)
+							//CALL MISCtotalizo_MedPag //aca se setea el post:importe_sesion
+						END IF
+						//REGISTRACION WEB
+						IF (siaf:codigo_siaf == 6680) THEN
+							IMPRIMO = HAY_REGISTROS
+							FPRINT giros:desc_impre2,"Importe WEB: $%s",post:web_tmp_impweb
+							IMPORTE_FINAL = (post:adt_pweb_tarifa * post:web_tmp_cantidad)
+							post:adt_serv_desc = post:adt_pweb_nombre
+							CALL MISCgenero_ImpreTmp(6680,ACTVARIAS,post:adt_pweb_iva,IMPORTE_FINAL,1,0)
+							siaf:importe = IMPORTE_FINAL
+							CALL MISCtotalizo_MedPag
+						END if
+						//registro rpp
+						if (siaf:codigo_siaf == 18100 || siaf:codigo_siaf == 18101) then
+								IMPRIMO =  HAY_REGISTROS
+								//FPRINT desc_impre,"RPP:%s",post:serv_desc_vap al pepe hacerelo aca porque deespues lo pisa.
+								desc_impre = serv_desc_vap 
+								tipo_produc = adt_serv_serv
+								IMPORTE_FINAL = siaf:importe
+								//SC 50170
+								IF (cod_dif_aplicada == "SERV") THEN
+									CALL MISCgenero_ImpreTmp (adt_serv_serv, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,post:dif_calculada)
+								ELSE
+									CALL MISCgenero_ImpreTmp (adt_serv_serv, SERVICIO, adt_serv_aliciva,IMPORTE_FINAL, cantidad,0)
+								END IF
+								CALL MISCtotalizo_MedPag
+					BREAK
+						endif 
+					BREAK
+					CASE "SVC"
+						//En siaf:importe viene el total de la transaccion
+						IMPRIMO =  HAY_REGISTROS
+						IMPORTE_FINAL = siaf:importe
+						cant_aux = cantidad
+						LET desc_impre = adt_serv_desc
+						//SC 50170 CORRESPONDENCIA DE CARGO,LISTA,ALMACENAJE NACIONAL,GESTIONES VARIAS,PRES. ADUANA PIEZAS ENTRANTES,PRES. ADUANA ENCOMIENDAS ENTRANTES,ALMACENAJE INTERNACIONAL
+						CALL MISCgenero_ImpreTmp (tipo_produc, SERVICIO, adt_serv_aliciva, IMPORTE_FINAL, cantidad,post:dif_calculada)
+					
+						CALL post:MISCtotBonifSrvVs
+						IF (post:promo_tot < 0) THEN
+							//SC 50170
+							CALL MISCgenero_ImpreTmp(99007, BONIF_PROD, adt_serv_aliciva, post:promo_tot, 1,0)
+						END IF
+						CALL MISCtotalizo_MedPag
+					BREAK
+					CASE "PCL"
+						/*Ahora estas transacciones se totalizan en la Factura como las demas para que sea
+						más prolijo - Gabriel Falciola*/
+						SELECT (siaf:codigo_siaf)
+							CASE 99027
+							CASE 99028
+							CASE 99006
+							CASE 99029
+							CASE 99160
+								IF (siaf:codigo_siaf == 99029) THEN
+									//En siaf:importe viene el total de la transaccion
+									IMPRIMO = HAY_REGISTROS
+								END IF
+								IF ((ModalidadAT || OperacionCob) && siaf:codigo_siaf == 99160) THEN
+									IMPRIMO = HAY_REGISTROS
+									IMPORTE_FINAL = siaf:importe
+									desc_impre = "INTERESES POR FINANCIACION"
+									//SC 50170
+									CALL MISCgenero_ImpreTmp (99160, INGRVARIOS, post:iva_Porcentaje, IMPORTE_FINAL, 1,0)
+								END IF
+								IMPORTE_FINAL = siaf:importe
+								CALL MISCtotalizo_MedPag
+							BREAK
+							CASE 99019
+								IMPRIMO = HAY_REGISTROS
+								IMPORTE_FINAL = siaf:importe
+								LET desc_impre = siaf:adt_tran_desc
+								siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+								CLEARFIELD nro_ingrvario
+								cantidad = 1
+								//SC 50170
+								CALL MISCgenero_ImpreTmp (99019, INGRVARIOS, 0, IMPORTE_FINAL, cantidad,0)
+								CALL MISCtotalizo_MedPag
+							BREAK
+							CASE 99300
+								IF ((!ConvenioSesionV && post:PreDForFis.NUMCHARS > 0) || (ConvenioSesionV))THEN
+									IMPRIMO = HAY_REGISTROS
+									IMPORTE_FINAL = siaf:importe
+									//desc_impre = "DESCUENTO A CLIENTE MEDIO"
+									desc_impre = "DCTO" //se acorta la leyenda por cambio a impresora termica
+									/* Si estoy en cobranza o facturacion busco el flag Auxiliar PorSesion */
+									IF (post:OperacionCob || post:OperacionAut) THEN
+										;CLEARFIELD post:ConvenioSesionV
+										;CALL post:CDSRecuperoConvenio
+										ConvenioSesionV = PorSesion
+									END IF
+									IF (ConvenioSesionV) THEN
+										/* Imprimo el comprobante que lo generó */
+										IF (!post:OperacionCob && !post:OperacionAut) THEN
+											//FPRINT desc_impre,"%s %s %s%e %s%e ",desc_impre,"POR TOTAL DE VENTA","$",post:TotalSesionCM,"%",post:Dcto_CliMed
+											FPRINT desc_impre,"%s %s %s%e %s%e ",desc_impre,"TOTAL VTA","$",post:TotalSesionCM,"%",post:Dcto_CliMed
+
+										ELSE
+											//desc_impre = "DTO A CLIENTE MEDIO"
+											//desc_impre = "DCTO CM"
+											//FPRINT desc_impre,"%s %s %e %s%e ",desc_impre,"TOTAL VTA COMP",post:remito_nro,"%",post:Dcto_CliMed
+										//	FPRINT desc_impre,"%s %s %e %s%e ",desc_impre," ",post:remito_nro,"%",post:Dcto_CliMed
+	FPRINT desc_impre,"%s %e %s%e ",desc_impre,post:remito_nro,"%",post:Dcto_CliMed
+										END if
+									ELSE
+										CALL csr:trimfield (post:prod_DescuentoCM)
+										FPRINT desc_impre,"%s %s %s%e ",desc_impre,post:prod_DescuentoCM,"%",post:Dcto_CliMed
+									END IF
+									siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+									CLEARFIELD nro_ingrvario
+									cantidad = 1
+									//SC 50170
+									CALL MISCgenero_ImpreTmp (99300, BONIF_CLIMED, post:AliTrnCM, IMPORTE_FINAL, cantidad,0)
+									CALL MISCtotalizo_MedPag
+								END IF
+							BREAK
+							CASE 30300 //gpb:NI50479
+								IMPRIMO = HAY_REGISTROS
+								IMPORTE_FINAL = siaf:importe
+								//desc_impre = "DESCUENTO A CLIMED PED"				
+								desc_impre = "DCTO CM PED"				
+
+								CALL csr:trimfield (post:prod_DescuentoCM)
+								FPRINT desc_impre,"%s %s %s%e ",desc_impre,post:prod_DescuentoCM,"%",post:Dcto_CliMed
+								
+								siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+								CLEARFIELD nro_ingrvario
+								cantidad = 1
+								//SC 50170
+								CALL MISCgenero_ImpreTmp (30300, BONIF_CLIMED, post:AliTrnCM, IMPORTE_FINAL, cantidad,0)
+								CALL MISCtotalizo_MedPag										
+							BREAK
+							CASE 99160
+								CALL MISCtotalizo_MedPag
+							BREAK
+							CASE 99007
+								siaf:afecta_efectivo = "-"
+								CALL MISCtotalizo_MedPag
+							BREAK
+							CASE 99095
+								IMPRIMO = HAY_REGISTROS
+								IMPORTE_FINAL = siaf:importe
+								//desc_impre = "DESCUENTO SUR POSTAL"
+								desc_impre = "DCTO SUR POSTAL"
+								siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+								//SC 50170
+								CALL MISCgenero_ImpreTmp(99095, BONIF_SUR_POSTAL, post:adt_prodvs_aliciva, IMPORTE_FINAL, post:cantidad,0)
+								CALL MISCtotalizo_MedPag
+							BREAK
+						/*CASE 99350
+								//Dcto OC - No debe salir en la factura
+								siaf:afecta_efectivo = "-"
+								CALL MISCtotalizo_MedPag
+							BREAK*/
+						END SELECT
+					BREAK
+					CASE "CSM" // Giros
+						IF (siaf:codigo_siaf == 95000 || (TESTFLAG(giros:giros_importacion,proc_em_lg))) THEN
+							siaf:siaf_status = HOST_ACCEPTED
+						END IF
+						IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+							/*aca se llama al MISC de arriba*/
+							IMPRIMO = HAY_REGISTROS
+							// VOY A TENER QUE DIFERENCIAR DOS PRODUCTOS LA EMISION y SERVICIOS
+							CALL giros:MISC_ImpreTmp_CSM
+							familia = siaf:adt_tran_fliatran
+						END IF
+					BREAK
+					CASE "CPM"
+						IMPRIMO = HAY_REGISTROS
+						CALL post:MISCarmo_Impre_pm
+					BREAK
+					CASE "CMB"
+						//FGB 13.02.2004 - Combos -
+						IMPRIMO =  HAY_REGISTROS
+						desc_impre = adt_serv_desc
+						CLEARFIELD post:destino // p' que no salga destino en la factura
+						//SC 50170
+						CALL MISCgenero_ImpreTmp (tipo_produc,COMBOSERV, adt_serv_aliciva, tarifa, cantidad,0)
+						CALL MISCtotalizo_MedPag
+					BREAK
+				END SELECT
+			END IF
+			CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+		LOOP
+		CDS ENDSELECT DSC:CONPresuDeta
+
+		// PJM 22-12-98 se perdia el codigo siaf
+		siaf:codigo_siaf = 99023 // FIN SESION
+		CLEARFIELD siaf:afecta_efectivo
+		//Limpio el campo para que no quede supervisador el fin de sesion.
+		CLEARFIELD post:supervisor_id
+	
+		//CALL post:MISCtotales_sesion
+		CALL post:MISCtotal_sin_iva
+	END IF
+
+	IF (IMPRIMO ==  NO_HAY_REGISTROS) THEN
+		/*Si no hay nada para imprimir en la factura */
+		CLEARFIELD importe_sesion
+	END IF
+	
+	REFRESH importe_sesion
+	//borro este campo para que no quede journalizado en el header del fin de sesion
+	CLEARFIELD post:ImpCC_Min
+	CALL post:CDSpresu_ImpCC_Min
+	RETURN (IMPRIMO)
+
+END SUB
+
+/*******/

@@ -1,0 +1,126 @@
+/****o* Pendientes de agrupación/OFB:giros:PRESgeneralEmis
+* NOMBRE
+*   OFB:giros:PRESgeneralEmis
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospres.h"
+
+SUB giros:PRESgeneralEmis
+	CALL giros:PRESgral_giro
+	IF (RETVAL < 0) THEN
+		  RETURN (-1)
+	END IF
+	call giros:MISCbuscar_oblig
+	IF (RETVAL < 0) THEN
+		  RETURN (-1)
+	END IF
+	call MISCBusca_flia(siaf:codigo_siaf)
+	IF (RETVAL < 0) THEN
+		  RETURN (-1)
+	END IF
+	if (siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323)
+		IF (post:Modo == "R" || post:estado_presu == 1) THEN
+			msgbox "TRANSACCION SOLO ADMITE SESION CORREO!", OFB_OK ,"Aviso"
+			RETURN (-1)
+		END IF
+	endif
+	
+        // CSZ 10.1.2001: Se sacan las sentencias para fijar los medios
+        // de pago (ahora se hace todo en la PCOL)
+        
+	let post:INDPresuD_Dat = OFB:CDSappend70030
+    FechaEmision_fld = common:system_date
+    PROTFIELD FechaEmision_fld
+    PROTFIELD ProvBenef_fld
+    PROTFIELD Serie_fld
+    PROTFIELD NroGiro_fld
+    PROTFIELD digito_fld
+    PROTFIELD Comision_fld
+    PROTFIELD ImporteSelloEmis
+    PROTFIELD ImporteSelloPag
+    PROTFIELD ImporteTotal_fld
+    PROTFIELD post:adt_tarif_fijo
+    REFRESH FechaEmision_fld
+    REFRESH ProvBenef_fld
+    REFRESH Serie_fld
+    REFRESH NroGiro_fld
+    REFRESH digito_fld
+    REFRESH Comision_fld
+    REFRESH ImporteSelloEmis
+    REFRESH ImporteSelloPag
+    REFRESH ImporteTotal_fld
+    REFRESH post:adt_tarif_fijo
+    CLEARFIELD post:adt_tarif_fijo
+	call giros:MISCTranPresD(LST:LIST70030) // ---> Agrego a la PresuDet
+
+	if ((siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323) && (post:estado_presu < 4))
+	    call MISCrestauroDatos
+		if (post:estado_presu < 3)
+			ImporteNeto = totalRestante
+			refresh ImporteNeto
+		endif
+	endif
+
+	if (giros:es_emision_tele == "S")
+	    	es_emision_postal = "N"
+		es_envio_WU = "N"
+    		resetflag flags_back,no_habilitado
+	   	resetflag flags_back,enviado
+	else
+		es_emision_tele = "N"
+		es_envio_WU = "N"
+		resetflag flags_back,consultado
+	endif
+	es_emision_correohoy = "N"
+
+	resetflag flags_back,ya_pasado
+	resetflag flags_back,manual
+	resetflag flags_back,rechazado
+	resetflag flags_back,vencido
+	if (post:estado_presu < 3)
+		resetflag camara_flags,clear1
+		resetflag camara_flags,clear2
+		resetflag camara_flags,clear3 
+		resetflag camara_flags,emis1
+		resetflag camara_flags,emis2
+		resetflag camara_flags,emis3 //datos del emisor 2 REEMPLAZO CHEQUE GIRO POSTAL
+		
+		resetflag env_post_flag,envia_postal
+		resetflag pers_jur_flag,persona_juridica
+		resetflag pers_jur_flag,persona_op
+		resetflag pers_jur_flag,nocuit_emis
+		resetflag pjurid_benef_flag,persona_juridica
+		resetflag pjurid_benef_flag,nocuit_benef
+		resetflag pjurid_benef_flag,persona_op
+		
+	endif
+
+	// FGB 22.5.2001: Borro este campo de postales porque, en estado_presu = 3, si quedo cargado de alguna
+	// lectura de la PresuDet, genera que se calcule mal el importe en base al tarifario...
+	clearfield post:peso_en_kgs
+
+	IF (post:estado_presu == 3)
+		IF (giros:es_emision_postal == "S")
+		    UNPROTFIELD Serie_fld
+    		UNPROTFIELD NroGiro_fld
+    		UNPROTFIELD digito_fld
+    		//NEXTFIELD Serie_fld
+    		SETFLAG flags_back,manual
+		END IF
+	END IF
+
+END SUB
+
+/*******/

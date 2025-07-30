@@ -1,0 +1,115 @@
+/****o* Sesión Correo/OFB:post:MISCcancelaPres
+* NOMBRE
+*   OFB:post:MISCcancelaPres
+* DESCRIPCION
+*   Rutina que se llama del Boton "Cancelar Presupuesto" en la Captura de Medios de Pago y cancela
+*	el presupuesto activo.
+* ENTRADAS
+*   estPresu (post:estado_presu), pedirSup ( valor true o false)
+* SALIDAS
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:PBcancel_tran_presu
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcancelaPres(estPresu, pedirSup)
+	local retval_giro like lib:err_retval
+	msgbox "Cancela el Presupuesto?",OFB_YESNO,"Aviso"
+	if (retval == 6) then  /*si*/
+		if (pedirSup)
+			Clearfield ovr:ovr_sup_id
+			Call siaf:SVALnivel_sup
+			If ( Retval < 0 )
+				Clearfield ovr:ovr_sup_id
+				Return -2
+			End If
+		endif
+
+		Select (estPresu)
+			case 2
+			case 3
+				call post:CDSdelete_AuxIva
+				if (post:cli_tipo == CLIUP) then
+					//cgw:borra tabla AuxIvaUp
+					call post:CDSdelAll_AuxIvaUP
+					Cds EndSelect DSC:AuxIvaUP_ctx
+				end if
+
+				//cgw:borra tabla AuxIngBr
+				call post:CDSdelAll_AuxIngBr
+				Cds EndSelect DSC:AuxIngBr_ctx
+               
+				// FGB: borra los sellados calculados.
+				call post:CDSdelete_AuxImpp
+
+				//giros robados
+				CALL post:CDSdelTrTrace_giro
+
+
+				CALL post:CDSreverso_tt_presu
+
+				call post:CDSPresu_delImporte
+				call post:CDSdel_PresuDet
+				call post:MISCEnabl_BloqN_Act
+				; PS9570 Para que no se grave el fin de sesión con estado 100 se comenta
+				; la línea. *** MDG
+				;post:rechazoDiferido = true
+				call post:CDSadt_presuact_save
+
+				let plataf:current_state = BUDGET_CANCEL  //cancela presup. desde la captura
+				call plataf:CDSset_curr_state(op:op_operator_id,plataf:current_state)
+                
+                ; PS9570 Ya no es necesario actualizar el inicio de sesión.
+                ; CALL MISCcancelaSesionPP												
+				; PS9570 Me aseguro que la sesión termine seteando el estado de presupuesto en 2
+				; para el caso de que el estado de presupuesto sea 3 a fin de que no quede una 
+				; sesión abierta. *** MDG
+				estPresu = 2
+				; PS9570 Me aseguro que no se ejecute la SVAL para evitar problemas con las 
+				; validaciones. *** MDG
+                clearfield drv:INDsend_rtn
+				ungetkey RT_SEND
+				break
+			case 4
+
+				; FYI cancelando presupuesto porr ajuste encla captura...
+				fyimsg common:fyimsg_list,"Cancelando Presupuesto. Por favor, espere..."
+	
+				// sba 19.03.2003 - Marca para saber que el operador cancelo
+				// el presupuesto (post:cancelaOperador)
+				post:cancelaOperador = true
+				
+				post:rechazoDiferido = true
+				call post:CDSadt_presuact_save
+				
+				//Reingenieria
+				//En el caso de haber una cancelacion del presupuesto y hay una tx de giros 
+				//se manda el mensaje de cancelacion al switch
+				call post:MISCajusteGiros
+				IF (RETVAL < 0)
+					retval_giro = RETVAL
+					call post:CDSadt_presuact_load
+					post:rechazoDiferido = false
+					post:cancelaOperador = false
+					call post:CDSadt_presuact_save				
+					RETURN (retval_giro)
+				END IF
+				
+				; FYI cancelando presupuesto porr ajuste encla captura...
+				fyimsg common:fyimsg_list,"Cancelando Presupuesto. Por favor, espere..."
+
+				call post:MISCajusteUP
+				
+				post:cancelaOperador = false
+
+				break
+		end select
+	endif
+END SUB
+
+/*******/

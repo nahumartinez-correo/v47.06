@@ -1,0 +1,337 @@
+/****o* Pago en Destino/OFB:post:PBcargaFilePED
+* NOMBRE
+*   OFB:post:PBcargaFilePED
+* DESCRIPCION
+*   Carga los datos del archivo de Lista de Envios con Pago en Destino a Importar
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta  
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales  
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual  
+* REFERENCIADO POR
+*		post:BUTCargaListaPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPB.h"
+
+SUB post:PBcargaFilePED
+	LOCAL l_str_error LIKE common:csr_string_aux
+	LOCAL l_directorio LIKE common:csr_string
+	LOCAL caracter LIKE common:csr_string
+	LOCAL caracter2 LIKE common:csr_string
+	LOCAL l_registro LIKE common:csr_string_4096
+	LOCAL l_cabecera LIKE common:csr_string_4096
+	LOCAL l_registro_1 LIKE common:csr_string_4096
+	LOCAL l_registro_2 LIKE common:csr_string_4096
+	LOCAL l_registro_3 LIKE common:csr_string_4096
+	LOCAL l_mensaje LIKE common:csr_string_4096
+	LOCAL Linea LIKE common:csr_string
+	LOCAL l_cont LIKE siaf:i
+	LOCAL l_docu_emi_tipo LIKE common:csr_string
+	LOCAL l_docu_emi_nro LIKE common:csr_string
+	LOCAL l_cuit_emi_nro LIKE common:csr_string
+	LOCAL l_flag_cab LIKE siaf:i
+	LOCAL l_flag_reg LIKE siaf:i
+;	LOCAL l_seq_cab LIKE post:adt_codseq_nro
+;	LOCAL l_seq_req LIKE post:adt_codseq_nro
+;	LOCAL l_mod LIKE siaf:i
+;	LOCAL l_cec LIKE common:csr_string
+;	LOCAL l_cont_status_bar LIKE siaf:i
+	LOCAL l_NroDocEmisPED_fld LIKE common:csr_string
+	LOCAL l_last_button LIKE drv:last_button
+	LOCAL l_cant_reg LIKE siaf:i
+	LOCAL l_CliRazon LIKE post:CliRazon
+	LOCAL l_CliNombre LIKE post:CliNombre
+	LOCAL l_CliApellido LIKE post:CliApellido
+	
+  LET l_cont = 99999
+  LET Linea = ""
+  LET l_directorio = ""
+  LET l_docu_emi_tipo = ""
+  LET l_docu_emi_nro = ""
+  LET l_flag_cab = 0
+  LET l_flag_reg = 0
+  LET l_cabecera = ""
+  LET l_registro_1 = ""
+  LET l_registro_2 = ""
+  LET l_registro_3 = ""
+;  l_cont_status_bar = 0
+	LET post:nro_trx_ped = 0
+	
+	//resguardo los campos
+	LET l_CliRazon = post:CliRazon
+	LET l_CliNombre = post:CliNombre
+	LET l_CliApellido = post:CliApellido
+
+  l_last_button = drv:last_button 
+  drv:button = drv:last_button    
+  CALL drv:but_down_disable
+  CALL drv:all_but_disable
+
+  CALL post:MISCFtrim(giros:mdata_detalleArchLG)
+  
+  IF (giros:mdata_detalleArchLG.NUMCHARS == 0) THEN
+		FPRINT l_str_error "Debe seleccionar un archivo para la importacion."
+		MSGBOX l_str_error, OFB_OK, "Aviso"
+		GOTO error         
+  END IF
+
+  l_directorio = giros:mdata_detalleArchLG
+  FPRINT l_mensaje "LEYENDO DATOS DEL ARCHIVO %s", l_directorio
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+    
+	FPRINT caracter "%s", "\\"
+	FPRINT caracter2 "%s", "/"
+	CALL post:MISCremplazaCaracter(l_directorio,caracter2,caracter)
+	
+  CALL CSR:file_open 1 l_directorio "r"
+	IF (RETVAL < 0)
+		FPRINT l_str_error "El archivo seleccionado no se puede abrir, verifique su existencia."
+		MSGBOX l_str_error, OFB_OK, "Aviso"
+		GOTO error 
+	END IF
+	
+  FPRINT l_mensaje "CALCULANDO LA FIRMA DEL ARCHIVO %s", l_directorio
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+	
+	//Genero la firma MD5 del archivo y busco existencia en la tabla MD5_ped
+  CALL post:MISCMD5_ped (l_directorio,Linea)
+  
+  IF (RETVAL < 0) THEN
+		CALL CSR:file_close 1
+		GOTO error
+  END IF
+	
+	LET post:mdata_nroRegistros = "0"
+  REFRESH post:mdata_nroRegistros
+  LET post:mdata_nroRechazos = "0"
+  REFRESH post:mdata_nroRechazos
+    
+  CDS BEGINWORK
+  
+	DO
+	CLEARFIELD l_registro
+		//obtiene registro externo
+		CALL csr:file_getline(1,l_registro)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF
+
+		IF (l_cont == 99999) THEN
+			//Obtengo la cantidad de registros a procesar
+			LET l_cant_reg = SUBSTR(l_registro,0,3)
+			
+			CALL post:MISCinicProgressBar("PROCESANDO REGISTROS - ", l_cant_reg)
+			
+			//Valido tipo y nro de documento del cliente que inicio la sesion
+			LET l_docu_emi_tipo = SUBSTR(l_registro,3,2)
+			LET l_docu_emi_nro = SUBSTR(l_registro,5,8)
+			LET l_cuit_emi_nro = SUBSTR(l_registro,13,11)
+	           
+			CALL post:MISCpadNmb(l_docu_emi_nro,11,"0")
+
+			IF (post:TipoDocEmisPED == l_docu_emi_tipo) THEN
+				IF (l_docu_emi_tipo == 80 || l_docu_emi_tipo == 86) THEN
+					IF (post:CuitEmisPED == l_cuit_emi_nro) THEN
+						LET l_flag_cab = 1
+					END IF
+				ELSE
+					l_NroDocEmisPED_fld = post:NroDocEmisPED
+					CALL post:MISCpadNmb(l_NroDocEmisPED_fld,11,"0")
+					IF (l_NroDocEmisPED_fld == l_docu_emi_nro) THEN
+						LET l_flag_cab = 1
+					END IF
+				END IF 
+			END IF
+            
+			IF (l_flag_cab == 0) THEN
+				MSGBOX "     Los datos del Cliente Medio \n no corresponde con el usuario que inicio la Sesion.", OFB_OK, "Aviso"
+				CALL CSR:file_close 1
+				GOTO error
+			ELSE
+				LET l_cabecera = l_registro
+				LET l_cont =  0
+			END IF     
+    ELSE
+			IF (l_cont == 0) THEN
+				//Capturo la primera parte del registro
+				LET l_registro_1 = l_registro
+				LET l_cont = 1
+			ELSE
+				IF (l_cont == 1) THEN
+					//Capturo la segunda parte del registro
+					LET l_registro_2 = l_registro
+					LET l_cont = 2
+				ELSE
+					//Capturo la tercera parte del registro
+					LET l_registro_3 = l_registro
+					
+					//Hago las validaciones de los registros
+					CALL post:MISCvalRegPED(l_cabecera,l_registro_1,l_registro_2,l_registro_3)
+              
+          IF (RETVAL == 0) THEN
+              LET l_flag_reg = 1
+          ELSE
+              LET l_flag_reg = 0
+          END IF
+              
+					LET l_registro_1 = ""
+					LET l_registro_2 = ""
+					LET l_registro_3 = ""
+					LET l_cont =  0
+				END IF
+			END IF
+            
+			//Si el registro es valido
+			IF (l_flag_reg == 1) THEN
+				//Lo hago para recuperar el dato
+				IF (post:nro_sesion_ped.NUMCHARS == 0) THEN
+					DUPFIELD post:nro_sesion_ped
+					SWAPDUP post:nro_sesion_ped
+				END IF
+                
+				IF (post:nro_sesion_ped.NUMCHARS == 0) THEN
+					//Llamo a la rutina que consulta en la Presu si ya existe el nro de sesion ped 
+					CALL post:CDSPresuNroSesionPED   
+					IF (RETVAL != 0) THEN
+						//Llamo a la rutina que me calcula el nro de sesion ped
+						CALL post:MISCcec_seq_PED
+						IF (RETVAL != 0) THEN
+							GOTO error
+						ELSE
+							//Graba en Presu
+							CALL post:CDSPresuImpPED 
+						END IF
+					END IF
+				END IF
+                
+				//Llamo a la rutina que me graba el registro en sesion_ped
+				LET post:nro_trx_ped = post:nro_trx_ped + 1
+				LET post:adt_codseq_nro = post:nro_trx_ped
+				LET post:estado_ped = "I"      
+				LET post:a_emitir = "N"
+                
+				//Grabamos el codigo de la transaccion
+				siaf:codigo_siaf = 30010
+
+				//verifico que tenga en memoria los datos del Emisor, sino los recupero
+				CALL post:MISCrecuperoCM_PED
+				IF (RETVAL < 0) THEN
+					CLEARFIELD post:directorio_mdata
+					REFRESH post:directorio_mdata
+					UNPROTFIELD post:directorio_mdata
+				
+					CLEARFIELD giros:mdata_detalleArchLG
+					REFRESH giros:mdata_detalleArchLG
+					
+					CALL drv:back_but_status
+					drv:button = l_last_button
+					CALL drv:but_up_enable  
+					
+					//limpio el buffer del teclado
+					INIT 33,0
+					
+					//recupero los campos
+					LET post:CliRazon = l_CliRazon
+					LET post:CliNombre = l_CliNombre 
+					LET post:CliApellido = l_CliApellido
+					
+					RETURN (0)
+				END IF
+        
+        //primero tengo que consultar la clioca y ver si el cliente existe
+				LET post:TipoDocDestPED = post:CloTipDoc
+				LET post:CloCuitDestPED = post:CloCuit
+        CALL post:CDSped_clioca_verif
+        IF (RETVAL == -801) THEN	
+        	CALL post:CDSped_clioca_save
+      	END IF
+				CALL post:CDSgrabaSesionPED
+  
+  			NAP 250
+  			CALL post:MISCactProgressBar("PROCESANDO REGISTROS - ", 1, BARRAPORCENT, 1)
+
+				//Si grabo el registro actualizo contadores
+				IF (RETVAL == 0) THEN
+					LET post:mdata_nroRegistros = post:mdata_nroRegistros + 1
+					REFRESH post:mdata_nroRegistros
+				END IF
+                
+				//Reutilizo este flag para validar que cargo una vez la tabla MD5_ped
+				IF (l_flag_cab == 1) THEN
+					CALL post:CDSgrabaMD5ped (Linea)
+					LET l_flag_cab = 0
+				END IF
+				
+				LET l_flag_reg = 0
+			END IF
+    END IF
+
+	LOOP   
+	CALL CSR:file_close 1
+	
+	CALL post:MISCfinProgressBar
+	
+	//Si el archivo no contiene datos
+	IF (l_cont == 99999) THEN
+		FPRINT l_str_error "El archivo seleccionado no contiene datos."
+		MSGBOX l_str_error, OFB_OK, "Aviso"
+	END IF    
+    
+	//Si le falto la ultima linea de opcionales
+	IF (l_cont == 2) THEN
+		//Hago las validaciones de los registros
+		CALL post:MISCvalRegPED(l_cabecera,l_registro_1,l_registro_2,l_registro_3)
+	END IF
+    
+  LET l_mensaje = ""
+  FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+  
+	//recupero los campos
+	LET post:CliRazon = l_CliRazon
+	LET post:CliNombre = l_CliNombre 
+	LET post:CliApellido = l_CliApellido
+  
+  CLEARFIELD post:directorio_mdata
+  REFRESH post:directorio_mdata
+  UNPROTFIELD post:directorio_mdata
+  
+  CALL drv:back_but_status
+  drv:button = l_last_button
+  CALL drv:but_up_enable  
+   
+  CDS COMMITWORK
+    
+  //limpio el buffer del teclado
+  INIT 33,0
+ 
+  RETURN (0)
+    
+error:
+	//recupero los campos
+	LET post:CliRazon = l_CliRazon
+	LET post:CliNombre = l_CliNombre 
+	LET post:CliApellido = l_CliApellido
+					
+	CALL post:PRECCargaFilePED
+	
+	LET l_mensaje = ""
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+	
+	CALL drv:back_but_status
+	drv:button = l_last_button
+	CALL drv:but_up_enable 
+	
+	CDS COMMITWORK
+	
+	//limpio el buffer del teclado
+	INIT 33,0
+	
+	RETURN (-2)
+    
+END SUB
+
+/*******/

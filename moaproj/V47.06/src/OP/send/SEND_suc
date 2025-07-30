@@ -1,0 +1,192 @@
+/****o* Pendientes de agrupación/OFB:op:SEND_suc
+* NOMBRE
+*   OFB:op:SEND_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "adtutlsend.h"
+
+SUB op:SEND_suc
+            
+//mercedes
+    local aux like TipoEntero
+    local suc like TipoEntero
+    local ind like TipoEntero
+
+	/*Seteo los flags para que se realice la actualización correcta, esto lo pongo acá porque
+	puede darse el caso de que presionen SEND (ENTER) y no el botçon ACTUALIZAR. En ese caso no 
+	se estaban seteando los flags - Gabriel Falciola*/
+	RESETFLAG op:mode_flags,delete    
+	SETFLAG op:mode_flags,update
+
+    ;SMC Si es auditor, no puede modificar datosd el operador	
+    if (op:op_audit_auth == "X") then
+            errmsg lst:common:errmsg_list, "No posee permisos para modificar Operadores"
+            RESETFLAG op:mode_flags,update
+            return (-2)
+    endif		
+
+    IF (op:adt_branch_id == common:sucursal_activa) THEN
+        FPRINT common:csr_string "NO PUEDE ACTUALIZAR LA PROPIA SUCURSAL"
+        MSGBOX common:csr_string OFB_OK "ERROR"
+        RESETFLAG op:mode_flags,update
+        return -2
+    END IF
+    
+    FPRINT common:csr_string "¿DESEA ACTUALIZAR LA BASE LOCAL CON \nLOS DATOS DE LA SUCURSAL \"%s\" ?" \
+            op:adt_branch_id
+    MSGBOX common:csr_string OFB_YESNO "ATENCIÓN"
+    IF (RETVAL == 7) THEN
+    	RESETFLAG op:mode_flags,update
+        RETURN -2
+    END IF
+
+    let Dest_Server = admin:adt_br_server
+
+    FYIMSG drv:fyimsg_list,"INICIANDO CONEXION REMOTA"
+    CALL OFB:MISCconnect
+
+    IF (RETVAL == -1) THEN
+        CALL OFB:MISCre_connect
+        errmsg lst:common:errmsg_list, "NO PUEDO ESTABLECER LA CONEXION"
+        RESETFLAG op:mode_flags,update
+        return (-2)
+    END IF
+
+    ;SMC Chekeo que la sucursal a la que me conecto, 
+    ;sea la que me quiero conectar.
+    ;Si la parametria esta mal cargada, puede pasar que elija
+    ;una sucursal y termine conectandome a otra.
+    Call op:MISCCheckSucAct
+    IF (RETVAL < 0) THEN
+        CALL OFB:MISCre_connect
+        RESETFLAG op:mode_flags,update
+        return (-2)
+    END IF
+
+	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+    CDS SELECT FROM DSC:op:adt_op_table  BECOMES  DSC:op:adt_op_context \
+	WHERE op:op_branch_id == op:adt_branch_id && \
+	op:op_borrado_logico != "S" ASCENDING
+         
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+    
+    CALL CSR:f_sadroppl DSC:dynapic_2
+    CALL CSR:f_sanewpl  DSC:dynapic_2 PIC:lib:csr_dynamic_pic
+    
+    WHILE (CDSRETVAL == 0)
+        CDS EXTRACT DSC:op:adt_op_context \
+        op:op_login_id into op:adt_login_id
+        
+        FPRINT common:csr_string "%-14s" op:adt_login_id
+        CALL CSR:f_saaddpl DSC:dynapic_2 common:csr_string
+        CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+    END WHILE
+    CDS ENDSELECT DSC:op:adt_op_context
+                
+    LET ind = 0
+    LET aux = PL_GETITEM + ind
+    call csr:myPickcontrol DSC:dynapic_2 common:csr_string aux
+
+    WHILE (RETVAL == 0)
+        LET op:adt_login_id = common:csr_string
+        call csr:trimfield(op:adt_login_id)
+
+        CALL  OFB:op:CDSadt_op_load
+
+        LET post:adt_limsupev_suc = op:adt_branch_id
+        LET post:adt_limsupev_op  = op:adt_operator_id
+
+        CALL OFB:MISCsaca_limsupev
+
+        CALL  OFB:op:MISCre_display
+
+        ;SMC Limpio para que no quede como que esta trabajando en
+        ;la base centralizada.
+        let op:adt_node_id = ""
+        FYIMSG drv:fyimsg_list,"ACTUALIZANDO DATOS LOCALES"
+        CALL OFB:MISCre_connect
+
+        ;Si es el primer operador que se graba localmente, antes de grabar
+        ;borro todos los operadores locales
+        if (FLD:ind == 0) then
+            CDS SELECT FROM DSC:op:adt_op_table  BECOMES  DSC:op:adt_op_context \
+             WHERE op:op_branch_id == op:adt_branch_id ASCENDING
+            CDS FINDFIRST DSC:op:adt_op_context LOCK
+            WHILE (CDSRETVAL == 0)
+                CDS DELETE DSC:op:adt_op_context 
+                CDS FINDNEXT DSC:op:adt_op_context LOCK
+            END WHILE
+            CDS ENDSELECT DSC:op:adt_op_context
+        endif
+        
+        CALL OFB:MISCsave_adm
+
+        CALL OFB:MISCactu_limsupev
+
+        IF (RETVAL != 0) THEN
+            FPRINT common:csr_string "NO PUEDO ACTUALIZAR OPERADOR \"%s\"" adt_login_id
+            MSGBOX common:csr_string OFB_OK "ERROR"
+        else
+            hcomm:tran_status = MEMO
+       		//journalizacion
+       		let FLD:drv:INDjnl_rtn = OFB:op:JNLcambio_perfil
+       		let FLD:tlr:INDjnl_append = OFB:op:JNLcambio_perfil
+       	    MOVE "ACTUALIZO OPERADOR LOCAL" TO siaf:adt_mot_desc
+       	    let siaf:codigo_siaf = 98010
+       		call tlr:JNLout_of_tran
+       		//fin journalizacion
+        END IF
+
+        let Dest_Server = admin:adt_br_server
+        FYIMSG drv:fyimsg_list,"INICIANDO CONEXION REMOTA"
+        CALL OFB:MISCconnect
+        IF (RETVAL == -1) THEN
+            BREAK
+        END IF
+
+        LET ind = ind + 1
+        LET aux = PL_GETITEM + ind
+        call csr:myPickcontrol DSC:dynapic_2 common:csr_string aux
+
+    END WHILE
+    
+	/*Pongo la marca de cambio de perfil en blanco antes de conectarme al CDS 
+	local - Gabriel Falciola*/
+	call tes:CDSCambioPerfil(op:adt_branch_id,"DESMARCA")
+	
+    CALL OFB:MISCre_connect
+    CALL  CSR:proc_list F_CLEAR   LST:adt_main
+    CALL  CSR:proc_list F_REFRESH LST:adt_main
+    CLEARFIELD op:op_chk_flags
+    CLEARFIELD op:cl_chk_flags
+    //Limpio chks
+    call op:MISCdisable_chks
+
+    FYIMSG CLEAR
+ 
+    CLEARFIELD adt_branch_id
+    RESETVALDONE adt_branch_id
+    LET drv:button =  SB0
+    CALL  drv:but_disable
+    init 33,0        
+
+    LET drv:button = TAG:drv:PBcb0
+    CALL  OFB:drv:but_up_enable
+    RESETFLAG op:mode_flags,update
+    RETURN (-1)
+END SUB
+/* Fin Journalizacion de campo MEMO por Reset send */
+
+/*******/

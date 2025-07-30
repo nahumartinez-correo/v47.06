@@ -1,0 +1,163 @@
+/****o* Pendientes de agrupación/OFB:tes:CDStotales_espv
+* NOMBRE
+*   OFB:tes:CDStotales_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDStotales_espv
+ /* Hay que controlar que las tablas coinciden. Para eso el control debe 
+    ser viceversa, es decir todo lo que esta en la TesEspV debe coincidir
+    con la tabla auxiliar y la tabla auxiliar con la TesEspv. */
+
+    local importe like adt_espv_importe
+    local falta_subesp like siaf:i
+    
+    falta_subesp = 0
+
+/*
+		if (cod_ant != cod && ((tes:adt_espv_rend != "X" || \
+    	(tes:adt_espv_rend == "X" && (tes:adt_espv_importe != tes:adt_espv_imp_rend)))))
+	PS9680
+    cds select from dsc:TesEspV becomes dsc:TesEspV \
+    where adt_espv_suc == fld:op:op_branch_id && \
+	adt_espv_id  == fld:op:op_operator_id && \
+	adt_espv_es_tesoro == "N" && \
+	((adt_espv_importe != 0) || \
+	(adt_espv_fecha == common:system_date && \
+	(adt_espv_imp_ent != 0 || adt_espv_imp_sal != 0)))
+*/	
+    cds select from dsc:TesEspV becomes dsc:TesEspV \
+    where adt_espv_suc == fld:op:op_branch_id && \
+	adt_espv_id  == fld:op:op_operator_id && \
+	adt_espv_es_tesoro == "N" && \
+	adt_espv_importe != 0 
+
+	/*
+	cds select FROM DSC:TesEspV becomes DSC:TesEspV where \
+	adt_espv_suc       == op:op_branch_id  	       && \
+	adt_espv_id        == op:op_operator_id 	       && \
+	adt_espv_es_tesoro == "N"
+	*/
+
+    cds findfirst DSC:TesEspV NOLOCK
+
+    let lib:err_retval = CDSRETVAL
+
+    DO
+		if (lib:err_retval != 0) then
+		break
+		end if
+		
+		cds extract DSC:TesEspV ALL
+		adt_espv_rend = "X"
+		
+		/* Busco que exista la subespecie val */
+		call CDSespecie_chk(adt_espv_cod,adt_espv_subcod)
+
+		if (retval == 0) then
+       	    /* si tuvo algun movimiento 
+       	    if ((adt_espv_importe != 0) || \
+               (adt_espv_fecha == common:system_date && \
+               (adt_espv_imp_ent != 0 || adt_espv_imp_sal != 0)))
+               */
+               /* Si ya rindió y cambió el importe, o bien rindió mal */
+			if (tes:adt_espv_rend != "X" || \
+	    	(tes:adt_espv_rend == "X" && (tes:adt_espv_importe != tes:adt_espv_imp_rend)))
+               
+	        	call CDSget_imp_TesEVaux(op:op_branch_id,"N",op:op_operator_id,adt_espv_cod,adt_espv_subcod,importe)
+	        	if (retval < 0 ) then
+	            	if (adt_espv_fecha == common:system_date && \
+                       (adt_espv_imp_ent != 0 || adt_espv_imp_sal != 0))
+                    	 /* Existe la subespecie en la TesEspV pero no en la tabla auxiliar */
+                        let falta_subesp = 1                         
+	            	else
+	                	let falta_subesp = 0
+                        let importe = 0
+                    end if
+	       		end if
+	        	/* No le doy mas la opción de continuar */
+	       		if (importe != adt_espv_importe || falta_subesp == 1) then
+		        	
+		            MSGBOX "NO COINCIDE CON TOTALES. CONTINUA?",0x00000104,"ATENCION"
+		            if (RETVAL == 6) then      //Si
+		              ; cds unlock DSC:TesEspV
+	                        cds endselect DSC:TesEspV
+	                        adt_espv_rend = "D"
+		                return (0)
+		            else		       //No
+		              ; cds unlock DSC:TesEspV
+	                        cds endselect DSC:TesEspV
+		                return (-2)
+		            end if
+		        	
+					/*errmsg lst:common:errmsg_list "No Coincide con Totales"
+					return (-2)	        	*/
+	        
+	            end if
+            end if        
+		end if
+        cds findnext DSC:TesEspV NOLOCK
+        let lib:err_retval = CDSRETVAL
+	LOOP
+;    cds unlock DSC:TesEspV
+    cds endselect DSC:TesEspV
+
+    cds select FROM DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx where  \
+    adt_evaux_suc    == op:op_branch_id 			&& \
+    adt_evaux_op     == op:op_operator_id 			&& \
+    adt_evaux_tesoro == "N"
+
+    cds findfirst DSC:AuxEspV_ctx LOCK
+
+    let lib:err_retval = CDSRETVAL
+
+    DO
+		if (lib:err_retval != 0) then
+			break
+        end if
+
+        cds extract DSC:AuxEspV_ctx ALL
+       	if (adt_evaux_importe.numchars != 0) then
+			call CDSget_imp_TesEspV(op:op_branch_id,"N",op:op_operator_id,adt_evaux_codigo,adt_evaux_subcod,importe)
+			if (retval < 0) then
+				let importe = 0
+	   		end if
+	   		if (importe != adt_evaux_importe) then
+		   		
+		       MSGBOX "NO COINCIDE CON TOTALES. CONTINUA?",0x00000104,"ATENCION"
+		       if (RETVAL == 6) then		// Si
+		           cds unlock DSC:AuxEspV_ctx
+	                   cds endselect DSC:AuxEspV_ctx
+	                   adt_espv_rend = "D"
+		           return (0)
+		       else				// No
+		           cds unlock DSC:AuxEspV_ctx
+	                   cds endselect DSC:AuxEspV_ctx
+		           return (-2)
+		       end if
+		       
+		       //errmsg lst:common:errmsg_list "No coincide con totales"
+		       //return (-2)
+			end if
+		end if
+		cds findnext DSC:AuxEspV_ctx LOCK
+		let lib:err_retval = CDSRETVAL
+    LOOP
+    cds unlock DSC:AuxEspV_ctx
+    cds endselect DSC:AuxEspV_ctx
+END SUB
+
+/*******/

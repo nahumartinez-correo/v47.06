@@ -1,0 +1,467 @@
+/****o* Pendientes de agrupación/OFB:post:SVALsf1
+* NOMBRE
+*   OFB:post:SVALsf1
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALsf1
+	LOCAL Lmoneda_aux LIKE siaf:moneda
+	LOCAL Limporte_aux LIKE siaf:importe
+	LOCAL Lprov LIKE post:adt_pcia_cod
+	LOCAL Limporte_bono LIKE post:fd
+	LOCAL Lmon LIKE post:sf1_moneda
+	LOCAL idx LIKE post:sf1_cantidad
+	LOCAL LRetval LIKE lib:err_retval
+	LOCAL esIplan LIKE siaf:i
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	;PAW 16.7.2003: se agrego la segunda condicion para que no
+	;pida los códigos de barra (ya que los trae
+	;de la presudet) si es iplan o consulta OL.
+	IF (post:estado_presu == 4 && post:sf1_codbarras1.NUMCHARS > 0) THEN
+		CALL csr:set_currentfield fld:post:sf1_codbarras1
+		CALL post:FVALsf1_codbarras
+	END IF
+   
+	;PS9795 
+	IF (post:estado_presu == 1 && post:PresNro > 0 && post:Modo != "R") THEN
+		post:Modo = "R"
+	END IF
+   
+	IF (post:estado_presu == 4 && post:sf1_codbarras1.NUMCHARS == 0)
+		//cgw:muestro codigo barra pago facil - 2da vez
+		LET contador = 1
+		LRetval = 1
+		DO
+			INIT 33,0
+			IF (LRetval == 0) THEN
+				BREAK
+			END IF
+			CLEARFIELD sf1_codbarras1
+			CLEARFIELD sf1_codbarras2
+			POPUP scr:post:SCRNdatos_pfacil,post:PRESdatos_pfacil
+			IF (LASTKEY == RT_ESC) THEN
+				LRetval = 1
+			ELSE
+				//IF (contador > 1) THEN
+				IF (contador > 3) THEN  
+					MSGBOX "No se pudo verificar el código de barras.\n¿Desea cancelar la operación?" OFB_YESNO2,"Error en confirmación"
+					IF (RETVAL == OFB_IDYES) THEN // cancela
+						RETURN (-2)
+					ELSE                          // sigue participando 
+						LET contador = 1
+						LRetval = 1
+					END IF
+				ELSE
+					LRetval = 0
+				ENDIF
+			END IF
+		LOOP
+	END IF
+
+	IF (sf1_codbarras.NUMCHARS == 0 && nro_formulario.NUMCHARS == 0) THEN
+		MSGBOX "El Nro Formulario o El Codigo Barra tiene que tener un Valor ",OFB_OK,"ERROR"
+		RETURN -2
+	END IF
+	//PJM 22-04-1999 se agrego la validacion por si la variable de ambiente boblib
+	//no esta cargada(mas vale preveni que curar)
+
+	/*cgw:PS10276 - AUT-1646.
+	Se saca del if la condicion: (||  sf1_id_paycode == 0), ya que estaba trayendo problemas con los paycode, cuando este tiene el primer caracter alfabetico.
+	Siendo el campo post:sf1_id_paycode de tipo alfanumerico, no se puede comparar en la condicion contra un valor numerico 0.
+	Mosaic lo estaba mal interpretando como valor 0 en esta condicion, ocacionando que la validacion lo considere como paycode vacio.
+	*/
+	//IF ( sf1_id_paycode.NUMCHARS == 0 ||  sf1_id_paycode == 0  ) THEN
+	IF (sf1_id_paycode.NUMCHARS == 0)  then 
+		MSGBOX "Lectura Invalida del Servicio (IdPayCode Vacio)",OFB_OK,"ERROR"
+		RETURN -2
+	END IF
+
+	//FGB 4.9.2001: Aviso que, si esta en modo sesion, por mas que elija un servicio con
+	//bonos, por el momento solo se puede pagar en efectivo.
+	IF (post:Modo != "R") THEN
+		IF (post:sf1_imp_max_bono > 0) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//MSGBOX "EL COBRO DE SERVICIOS DE PAGO FACIL, EN MODO SESION,\n SOLO PUEDE SER EN EFECTIVO-PESOS",OFB_OK,"Advertencia"
+			FPRINT l_descPagoFacil,"EL COBRO DE SERVICIOS DE %s, EN MODO SESION,\n SOLO PUEDE SER EN EFECTIVO-PESOS",DSC:post:descPagoFacil
+			MSGBOX l_descPagoFacil,OFB_OK,"Advertencia"
+		END IF
+	END IF
+	//FGB fin
+
+	//MLD 10.01.2002: Si está en teclas rapidas y eligió efectivo, controlo que no elija
+	//de la lista de opciones ningún bono ya que el BOB no lo valida
+	IF (post:Modo == "R") THEN
+		IF (post:sf1_imp_max_bono > 0) && (post:sf1_med_pago == "E01") THEN
+			MSGBOX "Medio de pago no se corresponde con la selección",OFB_OK,"Advertencia"
+			RETURN (-2)
+		ENDIF
+	END IF
+	//FGB fin
+
+	IF (post:Modo != "R") THEN
+		IF (post:estado_presu != 4) THEN
+			CALL siaf:SVALnivel_sup
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+		END IF
+	END IF
+
+	;PAW 16.7.2003: Antes verifico si es iplan y solamente en ese caso hago viajes.
+	/*sba 16.1.2004: Ahora se busca en la tabla utilities por la utility
+	esIplan = (post:sf1_id_paycode == "2NN" || post:sf1_id_paycode == "2PN")
+	call post:CDSutility_cod_prod("")
+	esIplan = (post:utility_cod_prod == "IPLAN")
+	*/
+	CALL CDSchk_trxsf1_viaja(adt_tran_sf1_codigo)
+	IF (retval == 1) THEN
+		; Se inhibe a Teclas Rápidas para iPlan.
+		IF ( estado_presu == 1 ) THEN
+			MSGBOX "Transacciones con mensaje al HOST solo disponibles en modo presupuesto", OFB_OK, "Error"
+			RETURN -2
+		END IF
+		; No pueden mezclarse transacciones con viaje de giros y PF.
+		IF (estado_presu == 2 || post:estado_presu == 3) THEN
+			CALL giros:CDShay_giros
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+			CALL post:CDShay_PFconViaje
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+			//Verifica que no haya pago on site
+			CALL post:CDShay_PagoOnSite
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF                              
+		END IF
+		;Debe haber host para ingresar un codigo de barra de iPlan.
+		IF (!testflag(hcomm:state_flags,on_line)) THEN
+			MSGBOX "Host Down: imposible ingresar transacciones con mensaje al HOST", OFB_OK, "Error"
+			RETURN -2
+		ENDIF
+	ELSE
+		LET drv:INDhcomm_rtn = 0    // send
+		LET drv:INDspc_rtn[1] = 0   // rcve
+    
+		//PS 10587 - Se actualiza en la PresuAct la variable es_PF que indica que en el presupuesto
+		//hay al menos una tx de Pago Facil sin viaje
+		es_PF = "S"
+		CALL CDSupdPresuAct_PF		
+	END IF
+
+	/*Si estoy modificando la Transacción, voy a buscar el registro en la PresuDet para obtener
+	los valores anteriores - Gabriel Falciola*/
+	IF (post:estado_presu == 3 || post:estado_presu == 4) THEN
+		CALL CDSBuscoValAnterior
+	END IF
+
+	;se vuelve al seteo original de la multiline
+	;SMC Se comenta porque ahora se suma o resta en la MISCjnltran
+	;IF ( post:estado_presu == 1 || post:estado_presu == 4 ) THEN
+	;	CALL post:CDStotal_utility_sf1
+	;END IF
+	INIT 67,"$$"
+
+	IF (!(TESTFLAG(tlr:tran_flags,correction))) THEN
+		;SMC Restauro el Boton de Supervision
+		tlr:f08button = "F8 Supervision"
+		LET drv:button = TFB7
+		CALL drv:but_redraw
+		CALL drv:but_enable
+		/*EC Si no tiene autoridad de Gerente, Tesorero, Contador u Ofic.Neg.,
+		entonces el boton de F8 supervision, esta deshabilitado*/
+		IF (!TESTFLAG(common:menu_flags,AMsup_auth) && \
+			!TESTFLAG(common:menu_flags,AMtes_auth) && \
+			!TESTFLAG(common:menu_flags,AMcon_auth) && \
+			!TESTFLAG(common:menu_flags,AMsup_auth2)) THEN
+			LET drv:button = TFB7
+			CALL drv:but_disable
+		END IF
+		KEYDEF KEY_OVERRIDE,tlr:tlr_fb7 //cgw:setea funcion,vuelve a ser supervision.
+	ELSE
+		//FGB al reversar se perdia la configuracion del teclado... fait's jokes
+		CALL tlr:KEYScustom_tlr
+		END IF
+		IF ( post:estado_presu == 4 ) THEN
+			CALL MISCTotalTransac(siaf:codigo_siaf)
+		END IF
+    /*Acumulo el importe de la transacción en la PresuPag por medio de pago para obtener los
+    totales de la Sesión - Gabriel Falciola*/
+    CALL MISCActMedPago
+
+		//FGB 29.8.2001: capturo los bonos y el efectivo que el cliente utilizara para la
+		//transaccion.
+		IF (post:Modo == "R" ) THEN
+			CALL csr:cleararray(sf1_moneda_vec)
+			CALL csr:cleararray(sf1_med_pago_vec)
+			CALL csr:cleararray(sf1_importe_vec)
+			CLEARFIELD sf1_cantidad
+
+			IF (post:sf1_imp_max_bono > 0 && post:estado_presu == 1) THEN
+				CLEARFIELD siaf:tipo_moneda
+				// guardo en siaf:tipo_moneda el medio de pago de bonos en correo...
+				LET Lprov = SUBSTR(common:sucursal_activa,0,1)
+				;LET siaf:tipo_moneda = "B01" // codigo bonos (esto es temporal)
+				LET siaf:tipo_moneda = post:sf1_med_pago // codigo bonos (esto es temporal)
+				CALL CDSget_mp_sf1_corar("SF1",Lprov,siaf:codigo_siaf,siaf:tipo_moneda,Lmon)
+				IF (RETVAL < 0) THEN
+					ERRMSG common:errmsg_list,"DATOS DE MEDIO DE PAGO NO ENCONTRADO"
+					RETURN (-2)
+				END IF
+				//capturo los montos para los bonos, y el saldo en pesos
+				CALL MISCpfacil_cap_bonos
+				IF (RETVAL < 0) THEN
+					RETURN (-2)
+				ENDIF
+
+				IF (total_pesos > 0) THEN
+					CALL post:MISCcargo_arrays(total_pesos,"E01")
+					post:totales_mp_sf1 = siaf:tipo_moneda
+				END IF
+				IF (total_bonos > 0) THEN
+					;CALL post:MISCcargo_arrays(total_bonos,"B01")
+					CALL post:MISCcargo_arrays(total_bonos,post:sf1_med_pago)
+					post:totales_mp_sf1 = siaf:tipo_moneda
+				END IF
+				/*Si el importe de la transacción es 0 y no se cargó ningún medio de pago en el
+				vector, cargo pesos en 0 para que la Interfaz no tenga problemas para procesar
+				la transacción - Gabriel Falciola*/
+				IF (siaf:importe == 0 && sf1_cantidad == 0) THEN
+					CALL post:MISCcargo_arrays(0,"E01")
+					post:totales_mp_sf1 = siaf:tipo_moneda
+				END IF
+				
+				/*Paso los medios de pago al Array generico para el control de encaje
+				de los medios de pagos multiples en la SVALnivel_sup */
+				CALL tes:MISCvuelco_mp_pf
+				CALL siaf:SVALnivel_sup
+				IF (RETVAL < 0) THEN
+					CLEARFIELD dif_pesos
+					CLEARFIELD importe_pesos
+					CLEARFIELD dif_bonos
+					CLEARFIELD importe_bonos
+					CLEARFIELD total_pesos
+					CLEARFIELD total_bonos
+					PROTFIELD siaf:importe
+					RETURN (-2)
+				END IF
+
+      ELSE
+				post:sf1_cantidad = 1
+				sf1_importe_vec[0] = siaf:importe
+				sf1_med_pago_vec[0] = siaf:moneda
+
+				/*Paso los medios de pago al Array generico para el control de encaje
+				de los medios de pagos multiples en la SVALnivel_sup */
+				CALL tes:MISCvuelco_mp_pf
+
+				CALL siaf:SVALnivel_sup
+				IF (RETVAL < 0) THEN
+					RETURN (-2)
+				END IF
+
+				/*Captura la pantalla para calcular el vuelto a entregar al cliente de acuerdo
+				con lo abonado por el mismo - Gabriel Falciola*/
+				IF (post:sf1_med_pago != "E01") THEN
+					ERRMSG common:errmsg_list,"Seleccione otro Medio de Pago"
+					CLEARFIELD siaf:moneda
+					UNPROTFIELD siaf:moneda
+					REFRESH siaf:moneda
+					ENABLECONTROL drv:PBcb0
+					CLEARFIELD post:sf1_codbarras1
+					REFRESH post:sf1_codbarras1
+					PROTFIELD post:sf1_codbarras1
+					CLEARFIELD post:sf1_serv_desc
+					REFRESH post:sf1_serv_desc
+					CLEARFIELD siaf:importe
+					REFRESH siaf:importe
+					CLEARFIELD post:medio_pago_desc
+					REFRESH post:medio_pago_desc
+					DISABLECONTROL post:CHK0
+					DISABLECONTROL post:CHK1
+
+					IF (post:sf1_codbarras2.NUMCHARS > 0) THEN
+						CLEARFIELD post:sf1_codbarras2
+						REFRESH post:sf1_codbarras2
+						PROTFIELD post:sf1_codbarras2
+					END IF
+					RETURN (-2)
+				END IF
+
+				CALL MISCvuelto_sin_ses("")
+			END IF
+		END IF
+
+		IF (estado_presu == 1 || estado_presu == 4) THEN
+			//modifico el codigo de barras con el importe en bonos abonado por el cliente...
+			IF (post:total_bonos.NUMCHARS == 0 || post:total_bonos == 0) THEN
+				;FGB: saco los ceros cuando el importe en bonos es nulo, xq' le trae problemas a las utilities
+				;que no cobran con bonos...
+				;fprint post:sf1_codbarras_nuevo "%-56.56s0000",sf1_codbarras_nuevo
+				
+				//FGB 3.10.2001: al mero hecho de que estos campos no queden vacios al journalizar, en caso de no
+				//realizar la trx con bonos...
+				LET total_pesos = siaf:importe
+				LET total_bonos = 0.00
+				//FGB 26.11.2001: si se selecciono un paycode con bonos, dejo que el campo continue indicando el
+				//el importe maximo indicado por los BOB's.
+				IF (sf1_imp_max_bono.NUMCHARS == 0) then
+					LET sf1_imp_max_bono = 0
+				END IF
+				//FGB fin
+			ELSE
+				;Limporte_bono = (post:total_bonos * 100) / 100
+				;FPRINT post:sf1_codbarras_nuevo "%-56.56s%4.04s",sf1_codbarras_nuevo, Limporte_bono
+				
+				//MLD Dejo en estos campos los códigos del bono.
+				;post:sf1_med_pago = "B01"
+				
+				LET Lprov = substr(common:sucursal_activa,0,1)
+				;LET siaf:tipo_moneda = "B01" // codigo bonos (esto es temporal)
+				LET siaf:tipo_moneda = post:sf1_med_pago
+				CALL CDSget_mp_sf1_corar("SF1",Lprov,siaf:codigo_siaf,siaf:tipo_moneda,Lmon)
+				IF (RETVAL < 0) THEN
+					ERRMSG common:errmsg_list,"DATOS DE MEDIO DE PAGO NO ENCONTRADO"
+					RETURN (-2)
+				END IF
+				//FIN MLD
+				post:sf1_moneda = Lmon
+
+			END IF
+			CALL post:MISCobtiene_impreSf1
+			IF (RETVAL < 0) THEN
+				//saco de la TotalTransac, el importe del Pago Facil...
+				LET siaf:importe = siaf:importe * (-1)
+				CALL post:MISCTotalTransac(siaf:codigo_siaf)
+				LET siaf:importe = siaf:importe * (-1)
+				ERRMSG common:errmsg_list,"IMPOSIBLE GENERAR COMPROBANTE DE PAGO"
+				
+				//gbp:NI50455 CORREO PAGOS
+				//MSGBOX "BORRE ESTA TRANSACCION DEL PRESUPUESTO Y REPITA LA OPERACION DE PAGO FACIL", OFB_OK, "Aviso"
+				FPRINT l_descPagoFacil,"BORRE ESTA TRANSACCION DEL PRESUPUESTO Y REPITA LA OPERACION DE %s",DSC:post:descPagoFacil
+				MSGBOX l_descPagoFacil,OFB_OK,"Aviso"
+
+				RETURN (-2)
+			END IF
+			
+			CALL csr:cleararray(sf1_moneda_vec)
+			CALL csr:cleararray(sf1_med_pago_vec)
+			CALL csr:cleararray(sf1_importe_vec)
+			CLEARFIELD sf1_cantidad
+
+      post:totales_mp_sf1 = siaf:moneda
+
+			IF (total_pesos > 0) THEN
+				CALL post:MISCcargo_arrays(total_pesos,"E01")
+				post:totales_mp_sf1 = siaf:tipo_moneda
+			END IF
+			IF (total_bonos > 0) THEN
+				;CALL post:MISCcargo_arrays(total_bonos,"B01")
+				CALL post:MISCcargo_arrays(total_bonos,post:sf1_med_pago)
+				post:totales_mp_sf1 = siaf:tipo_moneda
+			END IF
+			/*Si el importe de la transacción es 0 y no se cargó ningún medio de pago en el
+			vector, cargo pesos en 0 para que la Interfaz no tenga problemas para procesar
+			la transacción - Gabriel Falciola*/
+			IF (siaf:importe == 0 && sf1_cantidad == 0) THEN
+				CALL post:MISCcargo_arrays(0,"E01")
+				post:totales_mp_sf1 = siaf:tipo_moneda
+			END IF
+		END IF
+
+   	CALL post:MISCGrabaDetalleTrn
+
+    //Solo para teclas rapidas!!!
+    IF ( estado_presu == 1 ) THEN
+			//FGB 6.9.2001: Una vez que estan todos los datos, y que ya se imprimio el comprobante,
+			//grabo los datos de la captura en caso de que surjan problemas...
+			CALL MISCpfacil_cap_save
+			
+			CALL tlr:JNLtran
+			CALL post:MISCclear_campos_jou
+
+			//Si eligió un Bono
+			IF (post:sf1_imp_max_bono > 0 || post:total_bonos > 0) THEN
+			//graba capturas
+			LET Lmoneda_aux = siaf:moneda
+			idx = 0
+			LET Lmoneda_aux = siaf:moneda
+			DO
+				IF (idx >= post:sf1_cantidad ) THEN
+					BREAK
+				END IF
+				LET siaf:moneda = post:correo_mp_vec[idx] // medio de pago bonos
+				LET siaf:importe =  post:sf1_importe_vec[idx]// monto pagado en bonos
+				UNGETKEY RT_SEND
+				CALL post:MISCcap_teclas_rap(siaf:importe)
+				LET journalizacionOk = "S"
+				CALL post:CDSmedioElegid_estad
+				idx = idx + 1
+			LOOP
+			CALL CDSdelete_TotMedPag
+			siaf:moneda = Lmoneda_aux
+		ELSE
+			//graba solo captura en pesos... (bah!,como era antes)
+			UNGETKEY RT_SEND
+			CALL post:MISCcap_teclas_rap(siaf:importe)
+		END IF
+	END IF
+    
+	IF ((post:estado_presu == 4) || (testflag(tlr:tran_flags,correction))) THEN
+		;checkeo si tiene que hacer viaje adicional (IPLAN, Confirmacion o Afinidad)
+		SELECT (post:sf1_tipo_viaje)
+			CASE "R"
+				//tengo que levantar los valores de la transacción correspondiente!!! 6870??
+				CALL post:MISCAfinidad_prep
+				IF (RETVAL < 0 ) THEN
+					RETURN -2
+				END IF
+			BREAK
+			CASE ELSE
+				CALL post:CDSutility_cod_prod("IPLAN")
+				IF (post:utility_desc_prod == "SOPIN") || (post:utility_desc_prod == "RECAR") THEN
+					CALL post:MISCiplan
+					IF (RETVAL < 0 ) THEN
+						RETURN -2
+					END IF
+					;Si no es Iplan, checkeo si es Consulta Online con confirmacion.
+				ELSE
+					CALL post:CDSutility_cod_prod("CBONL")
+					IF (post:utility_desc_prod == "CONFM") THEN
+						//CALL post:MISCConfirmaCobro 
+						//IF (RETVAL < 0 ) THEN 
+						ERRMSG common:errmsg_list,"Funcionalidad no implementada"
+						RETURN -2
+						//END IF
+					ELSE
+						/*IF (esIplan) THEN
+						//son los códigos originales de iPlan
+							LET drv:INDhcomm_rtn = OFB:post:SENDiplan
+							LET drv:INDspc_rtn[1] = OFB:post:RCVEiplan
+						END IF */
+						RETVAL = 0
+					END IF
+				END IF
+		  BREAK
+		END SELECT
+	END IF
+	RETURN (RETVAL)
+END SUB
+
+/*******/

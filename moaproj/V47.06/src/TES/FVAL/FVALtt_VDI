@@ -1,0 +1,88 @@
+/****o* Valor Declarado Interno/OFB:tes:FVALtt_VDI
+* NOMBRE
+*   OFB:tes:FVALtt_VDI
+* DESCRIPCION
+*   Validacion del campo Nro de Envio. Verifica que si se ingrea un T&T el mismo tenga el formato correcto
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:FVALtt_VDI
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesfval.h"
+
+SUB tes:FVALtt_VDI
+local l_PresNro like post:PresNro_tt
+    IF (!TESTFLAG(tlr:tran_flags,correction) && !TESTFLAG(admin:mode_flags,grb) && !TESTFLAG(admin:mode_flags,bor) && !TESTFLAG(admin:mode_flags,ninguno)) THEN
+        IF (post:track_trace == "")
+            ; Verifico en la DGralSuc si el T&T es obligatorio
+            CALL tes:CDStt_VDI_oblig
+            IF (RETVAL == 0)
+                MSGBOX "DEBE INGRESAR EL NRO DE ENVIO",0x00,"CAMPO REQUERIDO"
+                RETURN (-2)
+            END IF
+        ELSE
+            ; Verifico que sea un T&T valido
+            CALL post:MISCes_TT(post:track_trace)
+            if (retval == 0) then
+                CALL post:MISCcant_digitos_tt(post:track_trace,"1")
+            else
+                MSGBOX "EL TRACK & TRACE LEIDO ES INCORRECTO",0x00,"ERROR"
+                return -2
+            endif
+            post:adt_codtrackTx_codTx = siaf:codigo_siaf
+            post:adt_codtrackTx_codTT = substr(post:track_trace,0,2)
+            call post:CDScodTrackTT("GI")
+            if (retval == -2) then
+                MSGBOX "EL TRACK & TRACE LEIDO NO SE ENCUENTRA AGRUPADO CON ESTA TRANSACCION",0x00,"ERROR"
+                return -2
+            endif    
+            select (siaf:codigo_siaf)
+            case 9320 // Salida de cheque de caja a otra sucursal
+            case 9330 // Salida de cheque del tesoro a otra sucursal
+            case 8720 // Salida de cheque del tesoro a tesorería regional
+            case 8750 // Salida de cheque de caja a tesorería regional
+            case 8730 // Salida de efectivo caja a tesorería regional
+            case 8740 // Salida de efectivo de caja a otra sucursal
+            case 8700 // Salida de efectivo del tesoro a tesorería regional
+            case 8710 // Salida de efectivo del tesoro a otra sucursal
+                ; Verifico que el T&T no haya sido utilizado para VDI
+                call post:CDSTT_VDI("")
+                if (retval == 0) then
+                    MSGBOX "EL TRACK & TRACE LEIDO HA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+                    RETURN (-2)       
+                end if
+                    
+                ; Verifico que el T&T no haya sido utilizado con anterioridad para una imposicion.
+                CDS SELECT FROM DSC:post:TT_TAB BECOMES DSC:post:TT_CTX WHERE \
+                    post:fecha == common:system_date && \
+                    post:track_trace == FLD:post:track_trace
+                CDS FINDFIRST DSC:post:TT_CTX NOLOCK
+                IF (CDSRETVAL == 0) THEN
+                    cds extract DSC:post:TT_CTX post:PresNro_tt into l_PresNro
+                    ; Veo si es un cliente corporativo (correo), de ser así el T&T puede reutilizarse
+                    call post:CDSesClienCorpCorreo(l_PresNro)
+                    if (!retval)
+                        ; Ya se había usado ese T&T en otra Transacción.
+                        MSGBOX "EL TRACK & TRACE LEIDO YA HABIA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+                        CDS ENDSELECT DSC:post:TT_CTX
+                        RETURN (-2)
+                    end if
+                END IF
+                CDS ENDSELECT DSC:post:TT_CTX
+            end select
+        END IF
+        /*Se elimina el setvaldone, posibilitando que al finalizar de la carga de los datos se vuelva a validar el T&T
+        utilizado - Gabriel Falciola
+        http://jira.sibs.net/jira/browse/AUT-601
+        SETVALDONE post:track_trace*/
+    END IF
+END SUB
+
+/*******/

@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:plataf:captura_medpagos
+* NOMBRE
+*   OFB:plataf:captura_medpagos
+* DESCRIPCION
+*   Si el importe de la sesion es mayor a 0, genera la captura de medio de pago.
+*   Si el importe de la sesion es igual 0, directamente realiza el tratamiento para
+*   generar la tabla DifFact.(es en base a la que el sistema calcula si existen diferencias
+*   por redondeo en la factura)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   plataf:estado_presu_accion,
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+/////////////////////////////////////////////////////////////
+// Dentro de esta rutina, realizo los tejes y manejes ne_  //
+// cesarios para realizar la captura de medios de pago en  //
+// su primera instancia, y que la misma quede grabada en   //
+// la PresuDet como una transaccion mas del presupuesto.   //
+/////////////////////////////////// FGB 13.11.2002 //////////
+
+SUB plataf:captura_medpagos
+local l_PreDNroTrn	like post:PreDNroTrn
+local l_fecha		like post:fecha
+local l_operator	like post:op_operator_id
+local l_INDtrn		like tlr:INDtran_name
+local l_PrePEst		like post:PrePEst
+local l_PreDEst		like post:PreDEst
+local l_NroCompPag	like post:NroCompPago
+local l_modif_op	like post:modif_operator
+local l_moneda		like siaf:moneda
+local l_mpag_des	like post:medio_pago_desc
+
+// verifico que la sesion tenga importe > 0
+clearfield post:adt_importe
+//call post:CDStotal_PresuPag
+call post:CDStot_ses_presudet
+
+//cgw:SC 50170
+INIT 22,1
+let post:adt_importe = post:importe 
+INIT 22,0
+
+//Solicitud 50170: borro la tabla que guarda los valores para generar factura con 4 decimales
+call post:CDSdel_DifFact
+
+if (post:adt_importe != 0) then
+	// sesion con importe 
+	call CDSset_pasadaMP(op:op_operator_id,PRIMER_PASADA) // para PW 
+	call CDSset_curr_state(op:op_operator_id,CLOSING_BUDGET)
+
+	// agrego la captura en la PresuDet
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta \
+		WHERE	post:fecha == FLD:common:system_date && \
+				post:op_operator_id == FLD:op:op_operator_id && \
+				post:PresNro == post:PresNro && siaf:codigo_siaf == 99099
+	CDS FINDFIRST DSC:post:CONPresuDeta LOCK
+	if (cdsretval == 0)
+		// Este es caso que un egreso produjo que quedara en cero el total
+		If ( post:adt_importe == 0 )
+			Cds Delete DSC:post:CONPresuDeta
+		End If 
+		//No hago nada porque ya existe
+	else
+		If ( post:adt_importe !=  0 ) 
+			call post:CDSIncSecSesion(post:PresNro,"TRN",1,post:enAnulacion)
+			let l_PreDNroTrn	= retval
+			let l_fecha			= common:system_date
+			let l_operator		= op:op_operator_id
+			let l_INDtrn		= LST:post:TRAN99099
+			let l_PrePEst		= 1
+			let l_PreDEst		= 1
+			let l_NroCompPag	= 0
+			let l_modif_op		= 0
+			let l_moneda		= 99
+			let l_mpag_des		= " "
+			call plataf:CDSload_tran_tmp(99099)
+			if (retval == 0) then
+				CDS CLEARBUFFER DSC:post:CONPresuDeta
+				CDS APPEND DSC:post:CONPresuDeta \
+						l_fecha 					AS post:fecha \
+						l_operator	 				AS post:op_operator_id \
+						post:PresNro \
+						siaf:adt_jer_pres_tmp		AS siaf:adt_tran_jer_pres \
+						l_PreDNroTrn				AS post:PreDNroTrn  \
+						l_INDtrn					AS tlr:INDtran_name \
+						l_PreDEst					AS post:PreDEst  \
+						siaf:adt_tran_codigo_tmp 	AS siaf:codigo_siaf \
+						siaf:adt_tran_af_ef_tmp 	AS siaf:adt_tran_afec_efvo    \
+						siaf:adt_fliatran_tmp  		AS siaf:adt_tran_fliatran \
+						l_PrePEst					AS post:PrePEst \
+						l_moneda					AS siaf:moneda  \
+						l_mpag_des					AS post:medio_pago_desc 
+				CDS INSERT DSC:post:CONPresuDeta LOCK
+			else
+				CDS UNLOCK DSC:post:CONPresuDeta
+				CDS ENDSELECT DSC:post:CONPresuDeta
+				errmsg common:errmsg_list, "PARAMETRIA DE TRANSACCION INCOMPLETA"
+				return (-2)
+			endif
+		End If 
+	endif
+	CDS UNLOCK DSC:post:CONPresuDeta
+	CDS ENDSELECT DSC:post:CONPresuDeta
+
+	// agrego la captura en la PresuDet
+	let drv:INDrun_funct = LST:post:TRAN99099
+	call drv:do_mode
+
+else
+	// sesion sin importe 
+	call CDSset_curr_state(op:op_operator_id,BUDGET_CLOSED)
+	let drv:INDrun_funct = OFB:plataf:estado_presu_accion
+	call drv:do_mode
+end if
+
+if (LASTKEY == RT_ESC) then
+		return (-2)
+else
+	return  0
+endif
+
+END SUB
+
+/*******/

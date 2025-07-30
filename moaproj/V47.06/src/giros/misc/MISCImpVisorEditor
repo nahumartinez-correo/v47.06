@@ -1,0 +1,100 @@
+/****o* Lista de Giros/OFB:giros:MISCImpVisorEditor
+* NOMBRE
+*   OFB:giros:MISCImpVisorEditor
+* DESCRIPCION
+*   Graba en un archivo el reporte 
+* ENTRADAS
+*   p_file = nombre del archivo
+*   link_num = canal de comunicacion del archivo
+*   p_out = tipo de salida (I = impresora, P = pantalla , A = archivo)
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISClst_GirEmi_cli, giros:MISCrepListaGiro
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-520
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1252
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCImpVisorEditor(p_file,p_out,link_num)
+	LOCAL l_file LIKE common:csr_string
+	LOCAL l_out LIKE common:csr_string
+	LOCAL l_editor LIKE common:csr_string
+	LOCAL Lind LIKE drv:INDlast_menu
+
+	LET l_file = p_file
+	LET l_out = p_out
+	
+	FYIMSG CLEAR
+  CALL CSR:file_close(link_num)
+
+	//Si es por pantalla
+	IF (l_out == "P") THEN	
+		l_editor = "Visor"
+		CLEARFIELD common:csr_string
+		CALL csr:get_profile_string("PROG_EXT",l_editor,common:csr_string) /*Ruta del programa visor/editor de texto*/
+		IF (RETVAL < 0) THEN
+			MOVE "No se pudo obtener la ruta de la aplicacion. Verifique la configuracion en el archivo DDproj.ini." to drv:error_msg
+			CALL drv:error_msg
+			FYIMSG CLEAR
+		ELSE			 			 
+			CALL csr:StrConcat(common:csr_string," ",common:csr_string)
+			CALL csr:StrConcat(common:csr_string,common:dirTemporal,common:csr_string)
+			CALL csr:StrConcat(common:csr_string,l_file,common:csr_string)	    
+		END IF
+	    
+		IF (common:csr_string.NUMCHARS > 0) THEN
+			EXEC common:csr_string
+			IF (RETVAL < 0) then
+				MOVE "Error al arrancar el visor externo. Verifique la ruta especificada en el archivo DDproj.ini." to drv:error_msg
+				CALL drv:error_msg
+				FYIMSG CLEAR
+				Lind = LST:post:MENURepListaGiros //(Asignar menu que te interesa)
+				IF (drv:INDlast_menu == Lind) THEN
+					CALL giros:MISCjoinDesktopTool
+				END IF
+			END IF
+    END IF
+    CALL giros:MISCdeleteFile(l_file) 
+	//Si es por archivo
+	ELSEIF (l_out == "A") THEN
+		MSGBOX "Archivo generado exitosamente.",0x00000000,"Aviso"
+	//Va por impresora
+	ELSE
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, l_file
+		CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+		IF (RETVAL < 0) THEN
+			MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+			RETURN 
+		END IF 
+	    
+		//gpb:NI50752
+		CALL tes:MISCflowPDF(l_file)
+		IF (siaf:pantalla_impreso != "P") THEN
+  		//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF(l_file)
+		
+;;		IF (siaf:pantalla_impreso == "I" || siaf:pantalla_impreso == "D") THEN
+;;			//Si es impreso o si fallo la creacion del PDF entonces fuerzo la impresion
+;;			IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN  
+;;			  PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;				IF (PRTRETVAL != 0) THEN
+;;					FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;					MSGBOX siaf:mensaje,0x00000000,"Error"
+;;				END IF 
+;;			END IF
+			END IF
+		END IF
+		CALL CSR:file_close(7)
+		CALL giros:MISCdeleteFile(l_file)  
+	END IF
+	
+END SUB
+
+/*******/

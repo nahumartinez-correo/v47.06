@@ -1,0 +1,135 @@
+/****o* Pendientes de agrupación/OFB:giros:PRES70610
+* NOMBRE
+*   OFB:giros:PRES70610
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospres.h"
+
+
+SUB giros:PRES70610
+	
+	local cod_err like common:csr_string
+    
+    //PS 10965
+    //Esto se hace para limpiar el area dup que queda sucio y pisa los nombres cuando manda los giros
+    clearfield post:CliRaz
+	clearfield post:CliRazon
+	clearfield post:CliNombre
+	clearfield post:CliApellido
+	swapdup post:CliRaz
+	swapdup post:CliRazon
+	swapdup post:CliNombre
+	swapdup post:CliApellido
+	clearfield post:CliRaz
+	clearfield post:CliRazon
+	clearfield post:CliNombre
+	clearfield post:CliApellido
+    
+    call giros:OFBgenero_caida_gm
+	call csr:proc_list(F_CLEAR,LST:LISTgm_clear)
+	call csr:proc_list(F_REFRESH,LST:LISTgm_clear)
+    
+	call csr:proc_list(F_CLEAR,LST:LISTemi_gm_flds)
+	call csr:proc_list(F_REFRESH,LST:LISTemi_gm_flds)
+
+	call csr:proc_list(F_CLEAR,LST:LISTtotales_trx_gm)
+	call csr:proc_list(F_REFRESH,LST:LISTtotales_trx_gm)
+                    
+	unprotfield post:CliRaz
+    clearfield post:tablaCli
+    if ( post:estado_presu == 2)
+        
+		/*Esta rutina verifica que no haya mas de una transaccion de giros dentro de una sesion
+		si es asi te devuelve un mensaje y te saca de la misma*/
+			
+		CALL giros:CDShay_giros
+		IF (RETVAL < 0)
+			RETURN (-2)
+		END IF
+		CALL post:CDShay_PFconViaje
+		IF (RETVAL < 0)
+			RETURN (-2)
+		END IF
+        
+        ;Caida del sistema
+    	CDS SELECT FROM DSC:post:TABPresu BECOMES DSC:post:CONPresu \
+	    WHERE  post:op_operator_id == fld:post:op_operator_id && \
+	    post:fecha == common:system_date && \
+	    post:PresNro == post:PresNro && \
+	    post:tipo_giro_presu == "GM"
+        
+   	    CDS FINDFIRST DSC:post:CONPresu NOLOCK
+        if (cdsretval == 0) then
+           	cds extract DSC:post:CONPresu all
+           	CDS ENDSELECT DSC:post:CONPresu
+	    	call giros:MISCgmleotransac(70610)
+	    	return 0
+	    else
+	        ;Esto corrige que cuando existe una sesión abierta no permita la tx. de 
+	        ;giros masivos. *** MDG
+	        MSGBOX "(L) TRANSACCION NO ADMITE ESTA SESION CORREO",0x00000040,"Error"
+	        return -2
+	    end if
+    end if
+    
+    
+	siaf:codigo_siaf = 70610
+	call siaf:PRESfecha_hora
+    	if (retval < 0) then
+		return -2
+	end if
+   
+    //cgw:se graba en PresuAct,el campo que indica si hay cheque acreditado Giros Masivos limpio.
+    IF (post:estado_presu == 1) THEN
+        clearfield post:chq_acre_GM
+        CALL post:CDSadt_presuact_save
+    END IF    
+   
+    ;Ya no se necesita
+    /*
+	if (testflag(giros:giros_masivos,caida_gir_masivos))
+
+		// Verificar caida antes o despues de JNL99021
+		if ( estado_caida_gm != GM_SIN_SESION )
+
+			// Obtener datos del inicio de sesion
+			call giros:MISCleer99021_gm(post:PresNro)
+			if ( retval < 0 )
+				return	-2
+			end if
+		else
+			// No se Genero JNL99021, extract de los datos
+			// del cliente para generar presupuesto.
+			call giros:OFBobtengo_cli_gm
+			if ( retval < 0 )
+				return -2
+			end if
+		end if
+
+	end if
+    */
+    	siaf:moneda = "00"
+    	post:medio_pago_desc = "PESOS"
+    	post:cantidad = 1
+
+	
+	if (post:estado_presu < 3)
+		resetflag env_post_flag,envia_postal
+	endif
+	
+
+END SUB
+
+/*******/

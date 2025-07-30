@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:PB_SF1_empresa
+* NOMBRE
+*   OFB:post:PB_SF1_empresa
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PB_SF1_empresa
+	LOCAL LineaPick LIKE common:ExecString
+	LOCAL LIndice LIKE common:csr_string
+	LOCAL LRetVal LIKE lib:err_retval
+	LOCAL LTablaSf1 LIKE common:csr_string
+	LOCAL LDescSf1 LIKE common:csr_string
+	LOCAL LVto1Sf1 LIKE common:csr_string
+	LOCAL LVto2Sf1 LIKE common:csr_string
+	LOCAL LReveSf1 LIKE common:csr_string
+	LOCAL LImporteSf1 LIKE common:csr_string
+	LOCAL LCobraSf1 LIKE siaf:importe
+	LOCAL LObsSf1 LIKE common:csr_string
+	LOCAL l_descPagoFacil LIKE common:csr_string
+	
+	LET drv:button = TFB7
+	CALL drv:but_down_disable
+	KEYDEF F8
+	
+	//gbp:NI50455 CORREO PAGOS
+	//FYIMSG LST:common:fyimsg_list,"GENERANDO EL LISTADO DE EMPRESAS PAGO FACIL..."
+	FPRINT l_descPagoFacil,"GENERANDO EL LISTADO DE EMPRESAS %s...",DSC:post:descPagoFacil
+	FYIMSG LST:common:fyimsg_list,FLD:l_descPagoFacil
+	
+	SETFLAG drv:mode_flags,picklist_mode
+	LIndice = 0
+	LRetVal = 0
+	FLD:LTablaSf1 = "PAYCODE"
+	
+	;SMC Genero El PickList
+	CALL CSR:f_sanewpl DSC:post:PickEmpresaSF1 PIC:post:PickEmpresaSF1 610 350
+	
+	;SMC Devuelve 0 si no pudo leer, 1 si leyo
+	DLL SFPrimerRegistro("PAYCODE")
+	LET LRetVal = RETVAL
+	
+	;TESTEO
+	;LRetVal = 1
+	WHILE (LRetVal != 0)
+		CLEARFIELD FLD:LDescSf1
+		CLEARFIELD FLD:LVto1Sf1
+		CLEARFIELD FLD:LVto2Sf1
+		CLEARFIELD FLD:LReveSf1
+		CLEARFIELD FLD:LImporteSf1
+		CLEARFIELD FLD:LObsSf1
+	
+		DLL SFGetCampo("PAYCODE", "DESCRIPCION", FLD:LDescSf1,30)
+		LET LRetVal = RETVAL
+	
+		IF (LRetVal > 0) THEN
+			DLL SFGetCampo("PAYCODE", "VENCIMIENTO1",   FLD:LVto1Sf1,    1)
+			DLL SFGetCampo("PAYCODE", "VENCIMIENTO2",   FLD:LVto2Sf1,    1)
+			DLL SFGetCampo("PAYCODE", "REVENCIDA",      FLD:LReveSf1,    1)
+			DLL SFGetCampo("PAYCODE", "LIMITECOBRANZA", FLD:LImporteSf1, 13)
+			DLL SFGetCampo("PAYCODE", "EXPLICACION",    FLD:LObsSf1,     30)
+		END IF
+	
+		IF (LRetVal > 0) THEN
+			FPRINT FLD:LineaPick "%-30.30s" FLD:LDescSf1
+			IF (FLD:LVto1Sf1 == 1) THEN
+				FPRINT FLD:LineaPick "%s SI" FLD:LineaPick
+			ELSE
+				FPRINT FLD:LineaPick "%s NO" FLD:LineaPick
+			ENDIF
+			IF (FLD:LVto2Sf1 == 1) THEN
+				FPRINT FLD:LineaPick "%s SI" FLD:LineaPick
+			ELSE
+				FPRINT FLD:LineaPick "%s NO" FLD:LineaPick
+			ENDIF
+			IF (FLD:LReveSf1 == 1) THEN
+				FPRINT FLD:LineaPick "%s SI" FLD:LineaPick
+			ELSE
+				FPRINT FLD:LineaPick "%s NO" FLD:LineaPick
+			END IF
+	
+			LET FLD:LCobraSf1 = FLD:LImporteSf1 / 100
+			;LET FLD:LCobraSf1 = FLD:LCobraSf1 / 100
+			FPRINT FLD:LineaPick "%s%13.13e" FLD:LineaPick FLD:LCobraSf1
+			
+			FPRINT FLD:LineaPick "%s %-30.30s" FLD:LineaPick FLD:LObsSf1
+	
+			;SMC Agrego en el Pick List
+			CALL  CSR:f_saaddpl DSC:post:PickEmpresaSF1 FLD:LineaPick
+			LIndice = LIndice + 1
+		END IF
+		DLL SFProximoRegistro("PAYCODE")
+		LET LRetVal = RETVAL
+	END WHILE
+	
+	FYIMSG CLEAR
+	CLEARFIELD LineaPick
+	
+	/* Ordeno Pick */
+	CALL csr:PickOp 4 DSC:post:PickEmpresaSF1 "0,10"
+	
+	;SMC Muestro Pick List
+	SETFLAG drv:mode_flags,picklist_mode
+	CALL CSR:f_sadopl (DSC:post:PickEmpresaSF1,FLD:LineaPick)
+	RESETFLAG drv:mode_flags,picklist_mode
+	
+	;SMC Destruyo PickList
+	CALL csr:f_sadroppl DSC:post:PickEmpresaSF1
+	
+	RESETFLAG drv:mode_flags,picklist_mode
+	IF (LIndice == 0) THEN
+		//gbp:NI50455 CORREO PAGOS	
+		//ERRMSG LST:common:errmsg_list,"NO SE PUEDE OBTENER DATOS DE EMPRESAS PAGOFACIL"
+		FPRINT l_descPagoFacil,"NO SE PUEDE OBTENER DATOS DE EMPRESAS %s",DSC:post:descPagoFacil
+		ERRMSG LST:common:errmsg_list,FLD:l_descPagoFacil
+	END IF
+	
+	KEYDEF F8,post:PB_SF1_empresa
+	LET drv:button = TFB7
+	CALL drv:but_up_enable
+	
+	RETURN (0)
+END SUB
+
+/*******/

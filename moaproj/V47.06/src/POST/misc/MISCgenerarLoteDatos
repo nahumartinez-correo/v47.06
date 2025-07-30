@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgenerarLoteDatos
+* NOMBRE
+*   OFB:post:MISCgenerarLoteDatos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenerarLoteDatos(abm, tabla, archivo, l_separador)
+    LOCAL l_abm      LIKE post:adt_mdata_abm
+    LOCAL l_str    LIKE common:csr_string_4096
+    LOCAL l_registro LIKE common:csr_string_4096
+    LOCAL l_cantidad LIKE post:cantidad
+    LOCAL INDICE_INF LIKE post:cantidad
+    LOCAL INDICE     LIKE post:cantidad
+    LOCAL INDICEA     LIKE post:cantidad
+    LOCAL INDICEB     LIKE post:cantidad
+    LOCAL l_columnas     LIKE post:cantidad
+    local esComentario like siaf:i
+	local bHayErrores like siaf:i
+	local bEncontroComilla like siaf:i
+	local l_mensaje like common:csr_string_4096
+	local l_directorio like common:path_1024
+	local caracter LIKE common:csr_string
+	local caracter2 LIKE common:csr_string
+    //Recorre archivo externo y genera picklist CargaTabla con los datos a actualizar,
+    //segun validaciones sobre MetaData.
+
+    CLEARFIELD l_abm
+    FPRINT common:path_1024,archivo
+    CALL CSR:file_open 1 common:path_1024 "r"
+	IF (RETVAL < 0) THEN
+		fprint l_str, "Error al abrir el archivo %s\n", common:path_1024
+		call post:MISClogCargaMas(mdata_directorio, mdata_abm, l_str)
+		RETURN (-2)
+	END IF
+
+    ;Destruyo picklist MetaData que pudiera haber quedado
+    CALL CSR:magic_sadroppl DSC:PickTabla_mdata
+    ;Genero picklist MetaData
+    CALL CSR:magic_sanewpl DSC:PickTabla_mdata PIC:PickTabla_mdata 700 300
+	;Destruyo picklist CargaTabla que pudiera haber quedado
+    CALL CSR:magic_sadroppl DSC:PickCargaTabla
+    ;Genero picklist CargaTabla
+    CALL CSR:magic_sanewpl DSC:PickCargaTabla PIC:PickTabla_mdata 3000 300
+	//carga MetaData del abm  en picklist
+	CALL post:MISCcargaMetaData(abm,tabla)
+	l_directorio = archivo
+	FPRINT caracter "%s", "\\"
+	FPRINT caracter2 "%s", "/"
+	CALL post:MISCremplazaCaracter(l_directorio,caracter,caracter2)
+	fprint l_mensaje "LEYENDO DATOS DEL ARCHIVO %s", l_directorio
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+
+	siaf:lineas_cl = 0
+
+    DO
+		CLEARFIELD l_registro
+		//obtiene registro externo
+		Call csr:file_getline(1,l_registro)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF
+		siaf:lineas_cl = siaf:lineas_cl + 1
+		fprint l_mensaje "PROCESANDO REGISTRO - %5.5s", siaf:lineas_cl
+		FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+		
+		INDICE = 0
+		; me fijo que no sea un comentario:
+		esComentario = false
+		bEncontroComilla = false
+		INDICEB = 0
+		INDICEA = 0
+
+		CALL csr:str_search (l_registro,"'",INDICEA,0)
+		bEncontroComilla = retval == 0
+
+		CALL csr:str_search (l_registro,"\x22",INDICEB,0)
+		bEncontroComilla = bEncontroComilla || (retval == 0)
+
+		; me quedo con el más chico (el primero que encontré.
+		if (INDICEA > INDICEB)
+			INDICE = INDICEB
+		else
+			INDICE = INDICEA
+		endif
+
+		if (bEncontroComilla)
+			// me fijo que empiece con esto.
+			INDICE = INDICE - 1
+			l_str = substr(l_registro,0,INDICE)
+		else
+			l_str = l_registro
+		endif
+
+		call CSR:trimfield(l_str)
+		if (l_str == "")
+			esComentario = true
+		endif
+
+		;recorre picklist MetaData y segun el orden de los campos busca en el registro
+		;del archivo externo los datos y vuelca al picklist CargaTabla con el estado
+		;correspondiente segun sea un alta o actualizandose si es una modificacion.
+		if (!esComentario)
+			call post:MISCcantvecesEnlaCad(l_registro, l_separador)
+			l_columnas = RETVAL + 1
+			IF (l_columnas != post:adt_mdata_cant_col)
+				siaf:columnas_cl = 1
+				fprint l_str, "ERROR FATAL: Esta línea tiene %s columnas.\nLa cantidad debe ser de %s\n", l_columnas, post:adt_mdata_cant_col
+				call post:MISClogCargaMas(mdata_directorio, mdata_abm, l_str)
+				CALL CSR:file_close 1
+				RETURN (-2)
+			END IF
+			CALL post:MISCbuscaNovedades(l_registro, l_separador)
+			if (retval < 0)
+				bHayErrores = true
+			endif
+		endif
+    LOOP
+
+    CALL CSR:file_close 1
+   	siaf:lineas_cl = 0
+
+    if (bHayErrores)
+    	return -2
+	endif
+END SUB
+
+/*******/

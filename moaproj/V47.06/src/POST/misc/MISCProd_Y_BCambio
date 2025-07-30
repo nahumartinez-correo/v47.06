@@ -1,0 +1,115 @@
+/****o* Bienes de Cambio/OFB:post:MISCProd_Y_BCambio
+* NOMBRE
+*   OFB:post:MISCProd_Y_BCambio
+* DESCRIPCION
+*   Rutina que Agrega o Borra el dcto de Cliente Medio sobre el bien de cambio.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCCliMed_BCambio
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCProd_Y_BCambio(codigo,tipo,dcto)
+
+	//Calculo el importe del descuento
+	INIT 22,1
+	//Imp_DctoCliMed = (post:ImpServUP * post:Dcto_CliMed) / 100
+	Imp_DctoCliMed = (post:ImpServUP * dcto) / 100
+	INIT 22,0
+	siaf:importe = Imp_DctoCliMed
+	
+	//Descripcion del bien de cambio
+	IF (!ConvenioSesionV) THEN
+		post:prod_DescuentoCM = codigo
+	ELSE
+		CLEARFIELD prod_DescuentoCM
+	END IF
+	
+	SELECT (tipo)
+		CASE "A"	
+			//Para interfaz de Nina: Calculo importe de vectores
+			CALL post:CDSCalcTotVentasCM(post:AliServUP,Imp_DctoCliMed)
+
+			//gpb:NI50479
+			IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && (Dcto_CliMed > 0 || post:DctoCM_bc > 0)) THEN
+				CALL post:MISCagregTrn30300(siaf:adt_tran_fliatran,post:AliServUP,Imp_DctoCliMed)
+			ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped) && TESTFLAG(post:sesion_ped_flags,cm_sin_mod_ped) && (Dcto_CliMed > 0 || post:DctoCM_bc > 0)) THEN
+				CALL post:MISCagregTrn30300(siaf:adt_tran_fliatran,post:AliServUP,Imp_DctoCliMed)
+			ELSE
+				CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,post:AliServUP,Imp_DctoCliMed)
+			END IF
+		BREAK
+		CASE "B"
+			siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+			post:AliTrnCM = AliServUP
+			//si no tiene formulario fiscal asociado no desglosar
+			IF (PreDForFis.NUMCHARS != 0) THEN
+				/*Se calcula el importe con iva y sin que debo sumar para la transacción, ya que
+				se vuelve atrás el descuento por sesión*/
+				//SC 50170
+				CALL MISCdesglosaIva(Imp_DctoCliMed,post:AliTrnCM, 1,0)
+			END IF
+				
+			/*Actualizo la PresuPag*/
+			CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,Imp_DctoCliMed,0)
+			
+			/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+			IF (PreDForFis.NUMCHARS == 0) THEN
+				EstadoFormu = SIN_FORM
+			ELSE
+				EstadoFormu = CON_FORM
+			END IF
+				
+			CALL CDSAcumImpSes(0,0,Imp_DctoCliMed,post:ImporteSinIva,siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+			
+			/*Configuro los datos de la transacción de Descuento para que la actualización 
+			de la AuxIva la haga en relación a esta transacción*/
+			
+			//gbp:NI50479
+			//siaf:codigo_siaf = 99300
+			IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && (Dcto_CliMed > 0 || post:DctoCM_bc > 0)) THEN
+				siaf:codigo_siaf = 30300
+			ELSE
+				siaf:codigo_siaf = 99300
+			END IF
+			
+			siaf:adt_tran_fliatran = "PCL"
+			siaf:adt_tran_afec_efvo = "-"
+			siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+			siaf:ImporteConIva = Imp_DctoCliMed
+			siaf:ImporteSinIva = post:ImporteSinIva
+			CALL MISCborrarIva
+		BREAK
+		CASE "R" //se usa en la reversa cuando se regenera el iva
+			/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+			//SC 50170
+			CALL MISCdesglosaIva(Imp_DctoCliMed,AliServUP, 1,0)
+			post:AliTrnCM = AliServUP
+			post:ImporteConIva = post:ImporteSinIva + ImporteIva
+			
+			//gbp:NI50479
+			//siaf:codigo_siaf = 99300
+			IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && (Dcto_CliMed > 0 || post:DctoCM_bc > 0)) THEN
+				siaf:codigo_siaf = 30300
+			ELSE
+				siaf:codigo_siaf = 99300
+			END IF
+			
+			siaf:adt_tran_fliatran = "PCL"
+			siaf:adt_tran_afec_efvo = "-"
+			siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+			CALL MISCgenerarIva()
+		BREAK
+	END SELECT
+	
+END SUB
+
+/*******/

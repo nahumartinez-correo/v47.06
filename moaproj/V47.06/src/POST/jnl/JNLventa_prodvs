@@ -1,0 +1,170 @@
+/****o* Productos Varios/OFB:post:JNLventa_prodvs
+* NOMBRE
+*   OFB:post:JNLventa_prodvs
+* DESCRIPCION
+*   Journalizacion campos de la trx de Venta de Productos Varios
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANventa_prodvs
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLventa_prodvs
+	LOCAL l_promo_desc LIKE post:promo_desc
+	
+	l_promo_desc = post:promo_desc
+	post:PreDForFis = post:adt_prodvs_formfisca
+    
+	IF (post:promo_tot_ProdVs == 0) THEN	// ESTO ES PARA SABER SI LA PROMOCION
+		post:promo_aplica = "N"							// SE APLICA O NO MDG
+		post:promo_desc = ""
+		post:promo_inhibeUpPdvs = "N"
+	ELSE
+		post:promo_aplica = "S"
+	END IF
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:tes:es_tesoro \
+		FLD:adt_prodvs_cod \
+		FLD:adt_prodvs_desc \
+		FLD:adt_prodvs_codbarra \
+		FLD:adt_prodvs_aliciva \
+		FLD:adt_prodvs_formfisca \
+		FLD:cantidad2 \
+		FLD:ImporteIva \
+		FLD:ImporteSinIva \
+		FLD:ImporteConIva \
+		FLD:TasaIva \
+		FLD:adt_prodvs_tarifa \
+		FLD:siaf:importe \
+		FLD:adt_stock_stock \
+		FLD:post:PreDForFis \
+		FLD:siaf:importe_tot_serv \
+		FLD:post:promo_aplica \
+		FLD:post:promo_desc_pdvs AS post:promo_desc \
+		FLD:post:promo_cod_pdvs AS post:promo_cod \
+		FLD:post:promo_inhibeUpPdvs AS post:promo_inhibeUp \
+		FLD:post:promo_bon_pdvs AS post:promo_bon \
+		FLD:post:promoPdvsTipoBon AS post:promoTipoBon \
+		FLD:post:promo_tot_ProdVs AS post:fld_promo_imp \
+		FLD:post:promo_tot_ProdVs \
+		FLD:post:promo_imp
+
+	/* Campos Necesarios Para el reverso de operaciones */
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:ImporteConIvaNeto \
+		FLD:post:ImporteSinIvaNeto
+
+	//CALL MISCasig_datos_vta
+	//CALL CDSumov_save
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:NroCompPago post:NroCompPago2
+
+	// PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+	CALL post:JNLcamp_nota_credito
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:ImpServUP post:AliServUP \
+		FLD:post:nro_impre \
+		FLD:post:adt_stock_coddep
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:adt_prodvs_ctl_stock \
+		FLD:post:cod_agrupacion \
+		FLD:tes:SubImporte \
+		FLD:post:TotalSinIva
+
+	/*
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:cant_caja_prev \
+		FLD:post:cant_cinta_prev \
+		FLD:tran_original
+	*/
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:tran_original
+
+	/*MFM - Descuento Cliente Medio*/
+	//PS 6218 - Grabar el descuento por sesion en cada transaccion involucrada en el mismo
+	IF (ConvenioSesionV && bonificaCM == "S") THEN
+		//recupero el descuento para grabarselo a NINA
+		CALL CDSLoadDctoSesion
+	END IF
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:codesp_prod \
+		post:subcod_prod \
+		FLD:secuencia_vta
+
+	/* MLD en la cobranza o facturacion automatica el campo no lo tengo cargado y
+	necesito journalizarlo para los reportes */
+	IF ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.NUMCHARS != 0 && \
+		post:bonificaCM == "S") THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:Dcto_CMPres AS post:Dcto_CliMed
+	ELSE
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:Dcto_CliMed
+	END IF
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:bonificaCM
+
+	IF (ConvenioSesionV) THEN
+		//lo borro para que no se me grabe luego el campo PreDNroTrnAsoc!
+		clearfield post:Dcto_CliMed
+	END IF
+	
+	//NI 50324
+	IF (post:Dcto_CliMed > 0 || post:DctoCM_bc > 0) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:PreDNroTrn AS post:PreDNroTrnAsoc	 //me sirve para la anulación
+	ELSE
+		CLEARFIELD post:PreDNroTrnAsoc
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:PreDNroTrnAsoc
+	END IF
+
+	/* Dejo grabado el nro de comprobante que lo generó */
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:remito_nro
+ 	
+	CALL post:MISCcampos_reporte(0,post:cantidad2,post:ImporteSinIva,NO_TARIFA)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreporte,0)
+
+	/*ORDEN DE COMPRA*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_oc_nro
+	
+	post:promo_desc = l_promo_desc
+	
+	; SC50170 - Propuesta superadora
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:dif_calculada \
+		post:cod_dif_aplicada
+	
+	//cgw: NI50324 Ventas de Productos Varios - Descto CM Convenio por Producto
+	//Se agrega la journalizacion del campo post:DctoCM_bc (para luego poder enviarlo en el viaje)
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:Dcto_CliMed \
+		post:DctoCM_bc
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+    post:NIS_Imposicion	
+
+	//gpb:NI50479	
+	//Journalizo post:es_PED y post:DocFisPed
+	CALL post:JNLes_PED
+    	
+END SUB
+
+/*******/

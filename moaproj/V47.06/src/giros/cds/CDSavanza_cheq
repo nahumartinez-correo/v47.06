@@ -1,0 +1,75 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSavanza_cheq
+* NOMBRE
+*   OFB:giros:CDSavanza_cheq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+
+SUB giros:CDSavanza_cheq(estado)
+
+    local item            like siaf:i
+    local varl_esta_orig  like giros:adt_chk_estado
+	
+    clearfield varl_esta_orig
+
+    CDS SELECT FROM RecepChk_tab BECOMES RecepChk_ctx WHERE \
+     adt_chk_serie == Serie_fld && \
+    (adt_chk_nrogiro <= NroGiro_fld && adt_chk_nrofin >= NroGiro_fld )
+    CDS FINDFIRST RecepChk_ctx LOCK
+    IF ( CDSRETVAL == 0 )
+    	CDS Extract RecepChk_ctx ALL
+		let item = NroGiro_fld - adt_chk_nrogiro
+		IF (!TESTFLAG(tlr:tran_flags,correction) && \
+			!TESTFLAG(tran_send_mode,cancelacion)) THEN
+			If (adt_chk_cheque[item] == "HA") Then
+		    	/* Sumo uno a la cantidad de cheques */
+				adt_chk_usado = adt_chk_usado + 1
+				/* Si se agotaron las chequeras le cambio el estado */
+				If (adt_chk_usado == adt_chk_cantid) Then
+					let adt_chk_estado = 4
+					let adt_chk_tesoro = "S"
+					clearfield giros:adt_chk_habilitador
+					varl_esta_orig = giros:adt_chk_estado
+				End if
+			End if
+		ELSE
+			if (estado == "HA") then
+				adt_chk_usado = adt_chk_usado - 1
+				if (adt_chk_estado == 4) then
+					varl_esta_orig = giros:adt_chk_estado
+					let adt_chk_estado = 2
+					let adt_chk_tesoro = "N"
+					call tes:CDSverificar_hab
+				end if
+			end if
+		END IF
+		/* Actualizo el estado del Cheque */
+		adt_chk_cheque[item] = estado
+		Cds Append RecepChk_ctx adt_chk_usado adt_chk_cheque[item] \
+								adt_chk_estado adt_chk_tesoro
+		if ( varl_esta_orig == 4 )
+			CDS Append RecepChk_ctx adt_chk_habilitador
+		end if
+
+		Cds Update RecepChk_ctx Lock
+    End IF
+    Cds EndSelect RecepChk_ctx
+END SUB
+
+/*******/
+
+
+

@@ -1,0 +1,91 @@
+/****o* Pendientes de agrupación/OFB:batch:MISCvuelco_DumpRep
+* NOMBRE
+*   OFB:batch:MISCvuelco_DumpRep
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "batchmisc.h"
+
+SUB batch:MISCvuelco_DumpRep
+/*Esta rutina realiza el vuelco del journal hacia la tabla DumpRep para que luego se generen
+los Reportes Comerciales - Gabriel Falciola*/	
+local hora like post:hor_a
+local fecha like giros:cons_fecha_emi
+local fecha_temporal like giros:cons_fecha_emi
+local primer_dia like post:llegada_pdm
+local Vuelco_Activado like common:csr_string
+
+    /*Verifico si está activado el vuelco en el DDproj.ini*/
+    CALL csr:get_profile_string("REP_COMER","Vuelco_Activado",Vuelco_Activado)
+    if (Vuelco_Activado != "S") then
+    	return (0)
+    end if
+    
+    fecha = common:system_date
+	hora = common:time_of_day
+    FPRINT common:csr_string,"\n\nVuelco de información en la tabla DumpRep: %e Hora: %e \n",fecha,hora
+    CALL MISCgeneraLog(common:csr_string,"INFO","N")
+       
+	/*Obtengo la sucursal activa*/
+	CALL giros:MISCobt_suc_act
+	IF (RETVAL < 0) THEN
+		FPRINT common:csr_string_171,"\n\nNo se pudo obtener la Sucursal Activa.\n"
+		CALL MISCgeneraLog(common:csr_string,"INFO","N")
+		call MISCfin_DumpRep(1)
+		RETURN (-2)
+	END IF 
+
+    /*Obtengo los valores de la tabla DumpRep para hacer el vuelco del Journal*/
+    call CDSBuscoMaxDumpRep
+    if (retval != 0) then
+    	call MISCfin_DumpRep(1)
+    	return (-2)
+    end if
+	
+    /*Selecciono los registros del journal y los paso a la DumpRep. Se hacen los selects 
+    tomando según lo que se obtuvo en la fecha y hora máxima de la DumpRep*/
+	if (post:adt_dump_fecha.numchars > 0) then
+		/* Si la última fecha de la DumpRep es menor a la del día, voy seleccionando por día 
+		hasta llegar al de hoy*/
+		if (post:adt_dump_fecha < common:system_date) then	
+			fecha_temporal = post:adt_dump_fecha
+			primer_dia = "S"
+	   		while (fecha_temporal < common:system_date) then
+	   			if (primer_dia == "S") then
+	   				call CDSPasoJourDumpRep(2,fecha_temporal,tlr:jnl_hora_ult_act,"")
+    				primer_dia = "N"
+    			else
+    				call CDSPasoJourDumpRep(3,fecha_temporal,"","")
+				end if
+   				if (retval != 0) then
+   					call MISCfin_DumpRep(1)
+   					return (-2)
+   				end if
+				call csr:date_add (fecha_temporal,  1,  "D", fecha_temporal)
+    		end while
+    	end if
+    else
+    	/*Si no hay registros en la DumpRep, tomo a partir del día anterior en el journal*/
+    	call csr:date_add (common:system_date,  -1,  "D", fecha_temporal)
+    	call CDSPasoJourDumpRep(3,fecha_temporal,"","")
+		if (retval != 0) then
+			call MISCfin_DumpRep(1)
+			return (-2)
+		end if
+    end if
+    
+	call MISCfin_DumpRep(0)
+END SUB
+
+/*******/

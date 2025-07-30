@@ -1,0 +1,76 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISCpickRepServiMnl
+* NOMBRE
+*   OFB:post:MISCpickRepServiMnl
+* DESCRIPCION
+*   Carga el PickList con los datos de los Servicios
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:PBcomitente_CCT
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCpickRepServiMnl
+    LOCAL l_Cod_serv LIKE common:csr_string
+    LOCAL l_Des_serv LIKE common:csr_string
+    LOCAL l_cdsretval LIKE lib:err_retval 
+    LOCAL cant_reg LIKE post:adt_cct_long_cb    
+
+    //Lo hago al principio porque se requiere que entre en la transaccion
+    CALL csr:f_sadroppl "servicio"
+    CALL csr:f_sanewpl  "servicio" pic:PICservicios_Mnl 400 100
+
+    CDS ENDSELECT DSC:ParamCCT_ctx
+
+    CDS SELECT SEMIDISTINCT post:adt_cct_desc_serv,post:adt_cct_cod_serv\
+        FROM DSC:ParamCCT_table BECOMES DSC:ParamCCT_ctx WHERE \
+            post:adt_cct_cod_barra == "N" && \
+            post:adt_cct_vig_inic <= fld:common:system_date && \
+            (adt_cct_vig_fin >=  fld:common:system_date || adt_cct_vig_fin == "        ") && \
+            post:adt_cct_comitente == post:adt_cct_comitente SORT "Servicio"
+
+    CDS FINDFIRST DSC:ParamCCT_ctx NOLOCK
+    l_cdsretval = CDSRETVAL
+    
+    IF (l_cdsretval < 0) THEN
+        CDS ENDSELECT DSC:ParamCCT_ctx
+        RETURN 0
+    END IF
+    LET cant_reg = 0
+    DO
+        CLEARFIELD l_Cod_serv
+        CLEARFIELD l_Des_serv       
+
+	    CDS EXTRACT DSC:ParamCCT_ctx post:adt_cct_cod_serv   INTO l_Cod_serv, \
+	                                 post:adt_cct_desc_serv  INTO l_Des_serv 
+        CLEARFIELD common:csr_string    
+        FPRINT common:csr_string "%-10.10s  %-38.38s" l_Cod_serv, l_Des_serv
+
+        CALL csr:f_saaddpl "servicio" common:csr_string           
+        cant_reg = cant_reg + 1
+                           
+        CDS FINDNEXT DSC:ParamCCT_ctx NOLOCK
+        l_cdsretval = CDSRETVAL
+        IF (l_cdsretval < 0)
+            BREAK
+        END IF
+    LOOP
+    IF (cant_reg == 1) THEN
+        CALL post:MISCFtrim(l_Des_serv)
+        LET post:servicio_CCT = l_Des_serv
+        LET post:adt_cct_cod_serv = l_Cod_serv        
+        REFRESH post:servicio_CCT
+    END IF
+
+    CDS ENDSELECT DSC:ParamCCT_ctx
+
+END SUB
+
+/*******/

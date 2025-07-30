@@ -1,0 +1,111 @@
+/****o* Lista de Giros/OFB:giros:PBEnvio_Post_LG
+* NOMBRE
+*   OFB:giros:PBEnvio_Post_LG
+* DESCRIPCION
+*   Tratamiento de Envio de Giros Postales pertenecientes a lista de giros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:giros:BUTSelGirosAEmitir
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1206
+* SOURCE
+*/
+
+#include "girospb.h"
+
+
+SUB giros:PBEnvio_Post_LG
+
+	local l_retval like lib:err_retval
+	local varl_mensaje      like common:csr_string
+    local l_codigo_siaf     like siaf:codigo_siaf
+    
+	drv:button = drv:last_button
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+
+    l_codigo_siaf = siaf:codigo_siaf
+    
+    CLEARFIELD giros:Giros_emi_env_lg
+    REFRESH giros:Giros_emi_env_lg
+    
+    // HACE RECUPERACION DE ENVIOS DE GIROS SOBRE LA TABLA JNL_CAIDAS_LG	
+    call giros:CDSchk_caidas_lg
+	if (retval < 0)
+	    siaf:codigo_siaf = l_codigo_siaf
+		call csr:proc_list(F_CLEAR,LST:LISTlg_clear)
+		call csr:proc_list(F_REFRESH,LST:LISTlg_clear)
+    	CALL drv:back_but_status
+    	drv:button = drv:last_button
+    	CALL drv:but_up_enable		
+		return -2
+	end if
+
+	//Verifico que no haya quedado un cheque pendiente de anular en la AnulChq y de ser asi se lo anula
+	CALL OFBproceso_AnulChq
+	if ( retval < 0 ) then
+		msgbox "Error en envio de operaciones",OFB_OK,"Atencion"
+		siaf:codigo_siaf = l_codigo_siaf
+		call csr:proc_list(F_CLEAR,LST:LISTlg_clear)
+		call csr:proc_list(F_REFRESH,LST:LISTlg_clear)
+		CALL drv:back_but_status
+	    drv:button = drv:last_button
+	    CALL drv:but_up_enable
+		return -2
+	end if	
+
+	call giros:OFBproceso_lg("P",giros:nro_sesion_lg)
+	select (retval)
+		case 4
+			msgbox "No hay giros postales para emitir.",OFB_OK,"Atencion"
+			l_retval = -2
+			break
+		case 0
+			l_retval = 0
+			break		
+		case -2 //Escape o error en tablas
+			//Si los valores correspondiente al nro inicial del cheque postal de la plancha, esta vacio,
+			//significa que salio de la pantalla de carga de los mismos con Esc. En este caso no mostramos
+			//el siguiente msgbox.
+			IF (giros:F_Serie_fld.numchars > 0 && giros:F_NroGiro_fld.numchars > 0 && \
+			    giros:F_digito_fld.numchars > 0) THEN
+			    msgbox "Error en envio de operaciones",OFB_OK,"Atencion"
+	        END IF
+			call csr:proc_list(F_CLEAR,LST:LISTlg_clear)
+			call csr:proc_list(F_REFRESH,LST:LISTlg_clear)
+			l_retval = -2
+			break	
+		case -1 //Mensaje rechazado
+		case -3	//Caida en vuelo
+			call csr:proc_list(F_CLEAR,LST:LISTlg_clear)
+			call csr:proc_list(F_REFRESH,LST:LISTlg_clear)
+			l_retval = -2
+			break	
+	end select		
+
+    siaf:codigo_siaf = l_codigo_siaf
+    CALL giros:PCOLSelGirosAEmitir
+
+    CALL drv:back_but_status
+    drv:button = drv:last_button
+    CALL drv:but_up_enable	
+	
+	IF (l_retval == 0) THEN
+        drv:button = 5
+        CALL drv:but_disable
+        drv:button = 7
+        CALL drv:but_disable
+	END IF
+	
+	return l_retval
+	
+END SUB
+
+
+/*******/

@@ -1,0 +1,250 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdel_tx_sesion
+* NOMBRE
+*   OFB:post:MISCdel_tx_sesion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+//Maxi
+SUB post:MISCdel_tx_sesion
+	/* Rutina que hace el tratamiento de borrado de cada tx seleccionada en el Presupuesto*/
+	local Imp_aux like siaf:importe
+	local Mone_aux like siaf:moneda
+	local loc_deltxses_NroTrn	like post:PreDNroTrn
+	
+	/*Lo resguardo porque se pierde*/
+	Imp_aux = siaf:importe
+	Mone_aux = siaf:moneda
+	loc_deltxses_NroTrn = post:PreDNroTrn // fgb (patch: value was lost sometimes)
+	
+
+	if (siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CST" || \
+		siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CME") then
+		call post:MISCBorrar_Adic
+	end if
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+  //Entrega de Piezas - Palabra Clave
+    if (siaf:codigo_siaf == 99020) then
+     //ENTREGA CON PALABRA CLAVE
+			CALL post:CDSConsulta_PresuPC("DELPZA")
+			IF (RETVAL == 0) THEN
+				MSGBOX "NO SE PUEDE BORRAR UNA PIEZA CON PALABRA CLAVE ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+    		return -2
+    	ENDIF
+	endif
+	
+	 //Entrega de Piezas Alta Seguridad (PAS) Y OTRAS...
+    if (siaf:codigo_siaf == 99020) then
+     //ENTREGA CON PALABRA CLAVE
+			CALL post:CDSConsulta_PresuPAS("DELPZA")
+			IF (RETVAL == 0) THEN
+			//	MSGBOX "NO SE PUEDE BORRAR UNA PIEZA DE ALTA SEGURIDAD ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+				MSGBOX "NO SE PUEDE BORRAR UNA PIEZA ENTREGADA POR HAND HELD.",OFB_OK,"ERROR"
+    		return -2
+    	ENDIF
+	endif
+	
+	if (siaf:codigo_siaf == 6900)
+		siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+	end if
+
+	// Giros Robados
+	IF (TESTFLAG(giros:env_post_flag,envia_postal))
+		CLEARFIELD giros:TrackTrace_giros
+		CALL giros:CDSgrabo_tt_Presu
+	END IF
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	//Reingeniería: borro los T&T asociados a las tx a eliminar
+//	IF (siaf:adt_tran_fliatran == "CSP" || 	siaf:adt_tran_fliatran == "CSE") then
+//		CALL post:CDSdel_tt_presu("TRANSAC")
+//	END IF
+
+	/*Para borrar Impuesto de Sellados - Gabriel Falciola*/
+	call MISCborrarImpSellos
+	siaf:importe = Imp_aux
+	siaf:moneda = Mone_aux
+	
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	if (siaf:codigo_siaf == 6900)
+		siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+		; tengo que setear el campo post:afecEfvoAnt.
+		post:afecEfvoAnt = siaf:adt_tran_afec_efvo
+	end if
+
+	if (siaf:codigo_siaf == 40002)
+		call CDScancelo_reserva(post:adt_prodvs_cod,post:adt_stock_coddep,post:cantidad2)
+	end if
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+
+	/*Actualizo la Tabla PresuPag - Gabriel Falciola*/
+	CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,0,siaf:importe)
+	
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+	call post:MISCborrarAuxIngBr
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	if (siaf:codigo_siaf == 99120) // Borro de la tabla auxiliar
+		call post:CDSborra_pmaux_presu
+	end if
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	Call MISClimpia_presudet
+	Call CDSpresudet_load
+	
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	call MISCborrarIva
+
+
+	//Reingeniería: borro los T&T asociados a las tx a eliminar
+	IF (siaf:adt_tran_fliatran == "CSP" || 	siaf:adt_tran_fliatran == "CSE") then
+		CALL post:CDSdel_tt_presu("TRANSAC")
+	END IF
+
+	post:PreDNroTrn = loc_deltxses_NroTrn // fgb
+	
+	if (promo_aplica == "S")
+		call post:CDSdel_bonifAsociada(post:PreDNroTrn, "", "")
+	endif
+	
+	//Solicitud 50076
+	IF ((siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) && cli_tipo != CTACTE)
+		call post:CDSdel_bonifAsocSurP(post:PreDNroTrn)
+	END IF
+	//Solicitud 50190
+	If (siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) then
+		call giros:CDSdel_desctoReemb(post:PreDNroTrn)
+		call post:CDSdel_6860(post:PreDNroTrn)
+	end if
+	
+	//CALL post:CDSdel_trn_presu
+	CALL CDSdel_tx_sesion
+	
+	//cgw:NI50361 - CCT
+	IF (siaf:codigo_siaf == 6670) THEN
+		//Limpia los campos de pantalla CCT leidos de PresuDet
+		//para que no queden con valores instanciados los campos CCT no autoclear.
+       CALL CSR:proc_list(F_CLEAR,LST:post:LISTdatos_cuponCCT)
+       CALL CSR:proc_list(F_REFRESH,LST:post:LISTdatos_cuponCCT)
+	END IF
+
+	IF (siaf:codigo_siaf == 70322 || siaf:codigo_siaf == 70323) THEN
+        //cgw:si se elimina una emision de giro c/cheque deshabilito el boton
+        //    F6 Modificar Remitos
+        call giros:CDSborrarRemitTmp
+        let drv:button = TFB5
+        call drv:but_disable
+	END IF
+	
+	CALL MISCrut_especiales
+	//NUEVO!!Tratamiento Cliente Medio
+	If (cli_tipo == CLIMED && Dcto_CliMed > 0 && siaf:codigo_siaf != 8500) Then
+		Dcto_CliMed = 0
+		//resguardo el siaf:importe de la transaccion original
+		Imp_aux = siaf:importe
+		siaf:importe = 0
+		post:PreDNroTrnAsoc = post:PreDNroTrn
+    	CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,post:adt_serv_aliciva,siaf:importe)
+		//PS Opcionales
+    	call MISCProd_Y_Adic ("A")
+		//recupero el siaf:importe de la transaccion original
+		siaf:importe = Imp_aux
+	End if
+
+	// Cálculo de bonificaciones locales a partir de los registros marcados de la PresuDet.
+	call MISCcalcBonifLocal(BONIF_SIN_JOURNAL, BONIF_TODAS, BONIF_TODAS)
+
+	if (!bInhibirUP)	// La bonificacionLocal puede inhibir la bonificacion UP
+		/*Se agrega calculo de Bonificaciones Postales - Gabriel Falciola*/
+		/*Debe filtrarse por el Tipo de Cliente !!!!!*/
+		if (post:cli_tipo == CLIUP)
+			call CDSVenUP_Presu
+		endif
+	else
+		// borrar si existió la bonificación.
+		call post:MISCreversaUP
+	endif
+
+	// fgb: a veces se pierde la categoria de IVA
+	call post:CDSPresu_load_Iva
+	
+	//Calculo y Genero Acrecentamientos y Percepciones
+	call MISCagregTrnPrec
+
+
+	CALL MISCobt_med_pag_pres /* Regenerar tabla de Medios de Pago*/
+
+
+	// PJM 21-07-1998 pedido por marcelo agregado para que pida el importe a pagar
+	// efectivo pesos y dolares
+	// pesos
+	//Creo que para Reingeniería, el llamado a esta rutina está de más...
+	Call post:MISCcalc_dol_pesos
+
+
+	// Esto fue Agreagado para la pantalla que lleva el Estado de la Sesio
+	// PJM 27-05-1998
+	// Resto 1 en el Contador de Transacciones
+	Cuenta_Postal = Cuenta_Postal - 1
+
+	/*Se Actualiza el Total del Importe*/
+	call post:CDSTotSesionPag
+	
+	//cgw:SC 50170 (Redondea a dos decimales)	
+	INIT 22,1		 
+	Total_importe = post:importe
+	INIT 22,0
+
+//	Call MISCagregoCapturaMed
+
+	Call post:CDSadt_presuact_save
+
+
+	// SMC Se resta 1 al contador de extracciones Galicia - 18 Jun 1998
+	select (siaf:codigo_siaf)
+		case 700
+		case 710
+			let gali:indicador_pin_sesion = gali:indicador_pin_sesion - 1
+			break
+    end select
+
+    //Adelanto
+    if (siaf:codigo_siaf == 99430) then
+    	post:ModalidadAT = FALSE
+	clearfield post:anticipo_CM
+    	call post:CDSpresu_modalidadCM
+    	post:pago_diferido = "N"
+    	call post:CDSUP_PagoDif_save
+	endif
+
+    //Facturacion de Intereses Punitorios
+    if (siaf:codigo_siaf == 99480) then
+    	post:OperacionInt = FALSE
+		call post:CDSpresu_modalidadCM
+	endif
+	
+	 
+END SUB
+
+/*******/

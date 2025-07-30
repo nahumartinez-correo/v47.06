@@ -1,0 +1,94 @@
+/****o* Clientes Medios/OFB:post:SVAL99440
+* NOMBRE
+*   OFB:post:SVAL99440
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   POST:TRAN99440,POST:MISCobtSeqIdentFact,POST:CDSobtiene_secuen
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2221
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99440
+
+	local varl_importe like common:csr_string
+	
+	IF (estado_presu == 4 && ModalidadCD && \
+		!OperacionInt && !OperacionCob && !OperacionAut)
+		
+		post:ImprimeAcuseRec = TRUE
+		CALL CDSpresu_modalidadCM
+		//calcular el nº del comprobante de imposicion y grabarlo en la presu para tenerlo
+		//al momento de la impresion del mismo.
+		CALL post:MISCobtSecCIMPO
+		Fprint NroCompImpos "%04.4s%08.8s",common:br_CEC,adt_codseq_nro_final
+		CALL CDSpresuNroCIMPO
+		//siaf:imprime_comprobante = "D"
+		call DOCSCompImpos
+
+		//Recupero los datos de la tx original
+		CALL CDStran_PresuDet(99440)
+    		post:tira_auditora = "N"
+	END IF
+
+	//Grabarlo en la presu!!
+	move siaf:importe to post:Imp_CobroDif
+	call post:CDSpresu_modalidadCM
+	
+	if (post:estado_presu == 4 )
+		giros:codigo_procesamiento = 997040
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+
+   		//Genero el secuenciador del viaje de Ingreso de Factura
+		CALL post:MISCobtSeqIdentFact
+
+		call post:CDSpresu_climed_load
+
+		if (!post:OperacionAut)
+			varl_importe = post:Imp_CobroDif * 100
+			fprint post:financiado_operacion,"%s%012.12s",CLIMED_SUMA,varl_importe
+		else
+			fprint post:financiado_operacion,"%s%012.12s",CLIMED_SUMA,"0"
+		end if
+
+		varl_importe =  CobAnticipo_CM * 100
+		fprint post:consumo_operacion,"%s",CLIMED_RESTA
+
+		if (post:OperacionInt )
+			clearfield drv:INDhcomm_rtn
+			clearfield drv:INDspc_rtn[1]
+			clearfield giros:hora_viaje
+			clearfield giros:dia_viaje	
+			clearfield post:adt_codseq_nro
+			clearfield post:financiado_operacion
+			clearfield post:consumo_operacion
+		else
+			call post:MISCclimed_ingr_fact(siaf:codigo_siaf)
+			if (retval < 0 )
+				return -2
+			end if
+		end if
+
+	end if
+
+   	if (estado_presu == 4) //ante ultima transaccion de presupuesto
+      		call post:MISCTotalTransac(siaf:codigo_siaf) 
+	  	;let PresEst = 2
+      		;CALL CDSadt_presu_estado //marca el presupuesto como finalizado
+   	endif
+   
+   call post:MISCGrabaDetalleTrn
+   
+END SUB
+
+/*******/

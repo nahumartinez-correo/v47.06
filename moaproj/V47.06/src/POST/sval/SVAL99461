@@ -1,0 +1,171 @@
+/****o* Transferencias Bancarias/OFB:post:SVAL99461
+* NOMBRE
+*   OFB:post:SVAL99461
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la TX de Cobranza de Facturas CM con TB(99461).
+*   Valida que la cantidad de facturas y NC seleccionadas no sea mayor a 10.
+*   Valida que el importe de TB alcance para pagar el Total de facturas seleccionadas.
+*   En el caso de que dicho importe no sea suficiente se le preguntara al operador si el saldo desea abonarlo con efectivo.
+*   Si contesta que SI continua con la confirmación, sino permanece dentro de la TX.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99461
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99461
+	local varl_marca   like post:nro_factura
+	local varl_importe like common:csr_string
+
+	if (post:estado_presu != 4)
+		//Controlar que haya seleccionado al menos una factura/NC
+		if (aux_cantidad == 0) then
+				MSGBOX "Debe seleccionar al menos una Factura.", OFB_ICONSTOP ,"ATENCION"
+				RETURN (-2)
+		endif
+		//Controlar que no haya seleccionado mas de 10 facturas/NC
+		if (aux_cantidad > 10) then
+					MSGBOX \
+		"Seleccionó más de 10 facturas / NC. Deberá cobrar 10, luego deberá ingresar nuevamente a la transacción para cobrar el resto.",OFB_ICONSTOP,"ATENCION"
+				RETURN -2
+		endif
+		//Validar que el importe total no sea negativo 
+		if (post:importe_fpendsel < 0) then		
+				MSGBOX "El importe de la cobranza no puede ser negativo.",OFB_ICONSTOP,"ATENCION"
+				RETURN (-2)
+		endif
+		 
+		//Validar que el importe de TB alcance para pagar el Total de facturas seleccionadas ( vencidas y no vencidas).
+		if (post:saldo_TB >= post:importe_fpendsel) then
+				//cargar el vector con las facturas y NC a pagar
+				Call post:MISCctrl_fact_TB
+				if (retval < 0) then
+					siaf:i = 0 //Lo uso para contar la cantidad	de facturas
+					post:total_cobranza = 0 //siaf:importe + total de los remitos seleccionados (el importe que viene del switch, no el que se calcula del tarifario actual).
+					post:resta_saldoCM = 0
+					siaf:importe = 0
+					clearfield imp_nc_consumida
+					call csr:cleararray(vec_facturas)
+					call csr:cleararray(vec_impfact)
+					call csr:cleararray(vec_saldofact)
+					call csr:cleararray(vec_tipofact)
+					call csr:cleararray(vec_seqfac)
+					call csr:cleararray(vec_fact_fecha)
+					call csr:cleararray(vec_nc_tipo)
+					call csr:cleararray(vec_nc_nro)
+					call csr:cleararray(vec_nc_imp)
+					return -2
+				endif
+				//marco las transferencias utilizadas
+				call post:CDSabmTransfBanc("M", siaf:importe, "", CAN_FAC)
+		else
+				/* En el caso de que dicho importe no sea suficiente se le preguntara al operador si el saldo desea abonarlo con efectivo. 
+				//Si contesta que SI continua con la confirmación, sino permanece dentro de la TX.
+				MSGBOX "El monto de la Transferencia Bancaria no es suficiente para realizar la cobranza.\nAbona el saldo en efectivo?",OFB_STOPYESNO1,"ATENCION"
+		 		if (RETVAL == OFB_IDYES) Then //SI
+					//cargar el vector con las facturas y NC a pagar
+						Call post:MISCctrl_fact_TB
+						if (retval < 0) then
+							siaf:i = 0 //Lo uso para contar la cantidad	de facturas
+							post:total_cobranza = 0 //siaf:importe + total de los remitos seleccionados (el importe que viene del switch, no el que se calcula del tarifario actual).
+							post:resta_saldoCM = 0
+							siaf:importe = 0
+							clearfield imp_nc_consumida
+							call csr:cleararray(vec_facturas)
+							call csr:cleararray(vec_impfact)
+							call csr:cleararray(vec_saldofact)
+							call csr:cleararray(vec_tipofact)
+							call csr:cleararray(vec_seqfac)
+							call csr:cleararray(vec_fact_fecha)
+							call csr:cleararray(vec_nc_tipo)
+							call csr:cleararray(vec_nc_nro)
+							call csr:cleararray(vec_nc_imp)
+							RETURN -2
+						endif
+						//marco las transferencias utilizadas
+						call post:CDSabmTransfBanc("M", siaf:importe, "", CAN_FAC)
+				else*/
+				  MSGBOX "El monto de la Transferencia Bancaria no es suficiente para realizar la cobranza.",OFB_ICONSTOP,"ATENCION"
+					RETURN -2
+				//endif	
+		endif	
+	endif
+	
+	if (post:estado_presu == 4)
+		giros:codigo_procesamiento = 997040
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+		call post:CDSpresu_climed_load
+		
+	
+		//en este campo va el importe que se le debe devolver al limite del cliente
+		varl_importe = (post:total_cobranza - post:resta_saldoCM) * 100 
+		fprint post:financiado_operacion,"%s%012.12s",CLIMED_RESTA,varl_importe
+
+		//En esta cobranza no se utiliza adelanto para pagar las facturas, solo se utiliza transferencias
+		varl_importe = CobAnticipo_CM * 100
+		fprint post:consumo_operacion,"%s",CLIMED_RESTA
+			
+		call post:MISCcm_trx_datos("99461")
+		if (retval < 0 )
+			return -2
+		end if
+		
+		call post:MISCcm_armar_facts
+		if (retval < 0 )
+			return -2
+		end if
+			
+		call post:MISCcm_armar_tb
+		if ( retval < 0 )
+			return -2
+		end if
+		
+		//Se envian los datos del recibo en el bit 108 para que queden registrados en la hist_comprobante_saldo
+		clearfield post:datos_msg108
+		clearfield post:nro_recibo
+		//recupero el nro de recibo de la Presu
+		call post:CDSpresu_climed_load
+		fprint post:datos_msg108,\
+		"%015.15s%-54.54s%015.15s%012.12s%-3.3s",\
+		"0"," ",post:nro_recibo,varl_importe,"RCA"
+		
+		//AUT-652 grabo la tabla CobTB
+		// NI 50552 - Solo cuando se paga todo con TB
+	//	if (siaf:importe <= post:monto_TB)then
+					call post:CDSgrabar_CobTB
+		//endif
+	endif
+  	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola*/
+  		call MISCTotalTransac(siaf:codigo_siaf) 
+	call post:MISCAcumTotalesSes
+	
+	post:INDPresuD_Dat = OFB:CDSappend_99461
+    
+   	//Controlar si admite cheque diferido
+   	call post:MISCRestFlia
+    
+	Call post:MISCGrabaDetalleTrn 
+ 	
+	//Flag para saber si confirmamos desde la transaccion o si hubo alguna caida y se confirma por fuera.
+	post:TrxOpeCan = TRUE
+	post:OperacionCan = TRUE
+	
+	call post:CDSpresu_modalidadCM
+
+  	RETURN (RETVAL)
+END SUB
+
+		
+	
+/*******/

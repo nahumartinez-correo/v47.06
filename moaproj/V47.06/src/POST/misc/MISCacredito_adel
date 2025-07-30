@@ -1,0 +1,70 @@
+/****o* Lista de Giros/OFB:post:MISCacredito_adel
+* NOMBRE
+*   OFB:post:MISCacredito_adel
+* DESCRIPCION
+*   Esta rutina arma el importe de saldo de adelanto monetario que se deberá acreditar on line.
+*	Si se pagó el adel monentario con efectivo o con cheque certificado en plazo entonces el saldo se 
+*	registrará on line, sino no.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:SVALreemp_chqrech_up,post:SVALreemp_chqrob,OFB:post:SVALcanc_reemp,OFB:post:SVALcancReempRob
+*	OFB:post:MISCverif_ch_acred,OFB:post:MISCcalc_adel_lg
+* REFERENCIADO POR
+*   OFB:post:SVAL99430,OFB:post:MISCarmo_viaje_UP
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:MISCacredito_adel
+local lmoneda like siaf:moneda
+local limporte like siaf:importe
+local ldias like post:adt_mp_diasatras
+local l_new_date like post:fec_e
+
+	post:imp_adel_mon = 0
+	CDS SELECT FROM Dsc:TblImpreMedio BECOMES "CtxTotMedP" WHERE \
+	(fld:post:op_operator_id == fld:post:op_operator_id)
+
+	CDS FINDFIRST "CtxTotMedP" NOLOCK
+	let lib:err_retval = cdsretval
+	
+	DO
+		if (lib:err_retval == 0) then
+			CDS EXTRACT "CtxTotMedP" siaf:moneda into lmoneda siaf:importe into limporte \
+			post:adt_mp_dias_plazo into ldias fec_e
+			select (lmoneda)
+			case "00"
+			//PS10956 - No deben enviarse como parte del adelanto monetario los intereses generados por pago diferido.
+				imp_adel_mon = imp_adel_mon + limporte - post:monto_impuestos
+				break
+			case "15"
+				//si es certificado en plazo entonces acredito el saldo en el momento
+				/*Se debe consultar de la tabla MedPago el atributo post:adt_mp_diasatras y verificar que
+				 la fecha de emisión del cheque + los días del campo post:adt_mp_diasatras 
+				 sea mayor o igual a la fecha actual para saber si el cheque está en plazo.*/
+				call  csr:date_add (fec_e,  ldias,  "d",  l_new_date)
+				call csr:date_compare(common:system_date ,l_new_date)
+				/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+				If (RETVAL == 0 || RETVAL == 2) Then
+					imp_adel_mon = imp_adel_mon + limporte
+				endif
+				break
+			end select
+		else 
+			CDS ENDSELECT "CtxTotMedP"
+			break
+		endif
+		
+		CDS FINDNEXT "CtxTotMedP" NOLOCK
+		let lib:err_retval = cdsretval
+		
+	LOOP
+
+END SUB
+
+/*******/

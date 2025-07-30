@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVALnivel_sup
+* NOMBRE
+*   OFB:siaf:SVALnivel_sup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVALnivel_sup
+
+    /* Flags de pedido de supervision en orden de menor a mayor jerarquia
+	req_tes 	Tesorero (Cajero-Tesorero)
+	req_con		Contador
+	req_sup2	Oficial de Negocios
+	req_sup1	Jefe de Oficina o Gerente
+	req_sist	Supervisor de Sistema
+    */
+
+    /* verificar si requiere nivel 1 o 2 a partir de la tabla de supervision */
+    RESETFLAG siaf_flags,req_sup1
+    RESETFLAG siaf_flags,req_sup2
+    RESETFLAG siaf_flags,req_tes
+    RESETFLAG siaf_flags,req_con
+    RESETFLAG siaf_flags,req_sist
+    CALL MISCnivel_sup
+    SELECT (RETVAL)
+    CASE -2
+      /* no se puede ejecutar la transaccion por no tener un supervisor que
+	alcance el monto a autorizar !!!! */
+        RESETFLAG tlr:tran_flags,supovr_request
+	CUTSCREEN SCR:SCRNinformacion, NOCURSOR
+        ERRMSG LST:common:errmsg_list, \
+"(L) NO SE PUEDE AUTORIZAR ESTA \n TRANSACCION, SERA CANCELADA "
+        CALL ovr:OVRovr_canceled
+        UNGETKEY 0x0190
+        RETURN (-2)
+    CASE -1
+        /* No la encontro o no necesita supervision por montos pero si es
+	   reversa debe llamar a supervisar con el nivel mas bajo */
+	   /* Si tiene seteado el flag de supervision por medio de pago y estoy en una
+	   tx que captura medio de pago o en teclas rápidas */
+        IF (TESTFLAG(tlr:tran_flags,correction) || \
+        (siaf:moneda != 99 && post:SupMedPago == "S")) THEN
+        //((post:captura_mp == "S" || post:Modo == "R") && post:SupMedPago == "S")) THEN
+	       clearfield siaf:cartel
+           SETFLAG siaf_flags,req_tes
+	  /*
+           SETFLAG siaf_flags,req_con
+           SETFLAG siaf_flags,req_sup2
+	  */
+           SETFLAG siaf_flags,req_sup1
+	       SETFLAG tlr:tran_flags,supovr_request
+          /*si es reversa cualquier supervision es valida */
+	else
+	    retval = 0
+        end if
+	break
+    CASE 0
+        SETFLAG tlr:tran_flags,supovr_request
+    END SELECT
+
+    /* Si es una de la familia "TAV" solo pido supervisión por reversa salvo que sea
+    entrega de piezas cliente ventanilla*/
+    if (siaf:adt_tran_fliatran != "TAV" || \
+        (siaf:adt_tran_fliatran == "TAV" && siaf:codigo_siaf == 99020)) then
+        siaf:secuencia_aux = tlr:sequence + 1
+    
+        /*********************************************************
+        Se comenta porque ahora no quieren que en la extraccion
+    	imprima dos tickets.
+    
+        if (!testflag(tlr:tran_flags,correction)) then
+            	select (siaf:codigo_siaf)
+    	   		case 0700
+    				// obtengo numero de comprobante
+    				IF (post:estado_presu == 1 || post:estado_presu == 4) then
+    					call gali:MISCnro_comprobante
+    					tlr:INDdocs_list = LST:gali:DLSText_efvo
+    					CALL CSR:printlist tlr:INDdocs_list 0
+    				END IF
+    				BREAK
+    	   		case 0710
+    				// obtengo numero de comprobante
+    				IF (post:estado_presu == 1 || post:estado_presu == 4) then
+    					call gali:MISCnro_comprobante
+    					tlr:INDdocs_list = LST:gali:DLSText_cierre
+    					CALL CSR:printlist tlr:INDdocs_list 0
+    				END IF
+    				BREAK
+    	  	end select
+        end if
+        *********************************************************/
+    
+        /* verificar monto limite de efectivo por operador */
+        ;    CLEARFIELD linea1
+        ;    CLEARFIELD linea2
+        CALL SVALmonto_operador
+        if (retval < 0) then
+    	    return (-2) // no puede realizar la trx. por desvio de limites
+        end if
+        ;    IF ((linea1.NUMCHARS > 0) || (linea2.NUMCHARS > 0)) THEN
+        ;	JOINSCREEN SCRNinformacion, NOCURSOR
+        ;    END IF
+        
+        /* Verifica rendiciones de monedas y especies valorizadas */
+        CALL SVALmarca_rendicion 
+        
+        // CALL SVALmarca_rend_espv 
+    end if
+    /* llama a la rutina de supervision en base a las flags seteadas */
+    call MISCovr_process
+    cutscreen SCR:SCRNinformacion, NOCURSOR
+    clearfield siaf:cartel
+    ; Limpio el cartel que queda sucio.
+    RETURN (RETVAL)
+END SUB
+
+/*******/

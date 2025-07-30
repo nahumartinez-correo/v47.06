@@ -1,0 +1,249 @@
+/****o* Notas de Credito CM/OFB:post:CDSPasoAnulNC_CM
+* NOMBRE
+*   OFB:post:CDSPasoAnulNC_CM
+* DESCRIPCION
+*   Esta rutina realiza varias acciones durante la Anulacion de una NC a CM:
+*	Borra la tabla NcTable
+*	Pasa los datos del journal correspondiente a la NC que se va a anular para hacer el proceso
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALanulacionNC
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSPasoAnulNC_CM
+	local secuencia like tlr:jnl_sequence
+	local hora like tlr:jnl_time
+	local sequence_dire_aux like post:jnl_sequence_dire
+	local l_dire like post:jnl_sequence_dire
+	local tmpImporte like siaf:importe
+	local tmpImp2 like siaf:importe
+	local ind like siaf:i
+	local tmpFactConvAnt like post:factor_conversion
+	local tmpDescConvAnt like post:adt_mon_desc
+	local esGirosNoAceptada like siaf:i
+	LOCAL importe_aux LIKE siaf:importe
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL esCaptura like siaf:i
+	LOCAL esInicioFinSesion like siaf:i
+	LOCAL esTemplate like siaf:i
+	LOCAL esEntregaPzas like siaf:i
+	Local CODIGO like common:csr_string
+	local loc_enAnul	like post:enAnulacion
+	local l_retval like lib:err_retval
+	local l_fliatran like siaf:adt_tran_fliatran
+	local l_ImporteSinIva like ImporteSinIva
+//	local l_importeNeto like siaf:importe
+
+
+	; borro la NcTable por si tiene con algun dato.
+	; habia un error que ocurria cuando se seleccionaba una
+	; transaccion para la cual no habia disponible en caha
+	; y despues se seleccionaba otra ya que quedaban las
+	; dos sesiones seguidas en la NcTable.
+	call CDSborro_NcTable
+
+	clearfield secuencia
+	clearfield NisUP
+    clearfield post:climed_tipo
+    clearfield post:climed_numero
+	clearfield post:id_cliente
+	jnl_nuevo_medpag = "N"
+	TranAnul_idx = 0
+    post:acumSellos = 0
+	post:acumSesion = 0
+	bInhibirUP = false
+	
+	/*Seteo este flag para indicar que hay que mandar el mensaje de cancelación de la NC*/
+	setflag post:journal_flags,enviar_mensaje_host
+
+	CDS SELECT FROM DSC:NC_TAB BECOMES DSC:NC_CON
+
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+    (tlr:jnl_branch == common:sucursal_activa && \
+    tlr:jnl_operator == FLD:op:op_operator_id && \
+    tlr:jnl_bus_date ==  FLD:common:system_date && \
+    tlr:jnl_sequence_corr == 0 && \
+    PresNro == FLD:PresNro && \
+    tlr:jnl_status < 100 && siaf:cancelacion == "" && \
+    ((siaf:jnl_tran_modpresu != "I") || \
+     (siaf:jnl_tran_modpresu == "I" && siaf:codigo_siaf == 99021)))
+     /* La 99021 es "I" pero debe entrar */
+    Do
+    	clearfield PreDForFis
+    	clearfield tlr:jnl_sequence
+    	clearfield siaf:jnl_codigo_siaf
+    	clearfield ver_anulacion
+    	clearfield cod_agrupacion
+    	/*Para saber si esta en el contexto o no - Gabriel Falciola*/
+    	jnl_sequence_dire = "XX"
+    	clearfield jnl_flia_tran
+    	clearfield siaf:moneda
+		clearfield siaf:importe
+    	clearfield ImporteConIva
+    	clearfield ImporteSinIva
+		clearfield jnl_flia_tran
+		clearfield NroCompPago
+    	clearfield siaf:adt_mot_fliatran
+    	clearfield siaf:afecta_efectivo
+
+	    clearfield giros:gir_imp_acre
+	    clearfield giros:gir_totimp_fact
+	    clearfield giros:gir_totimp_emi
+	    clearfield giros:ImpFactChq
+	    clearfield giros:ImpNetoChq
+	    clearfield promo_inhibeUp
+		//cliente medio
+		clearfield post:Dcto_CliMed
+		clearfield post:tarifa
+		clearfield fld_promo_imp
+
+    	CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+    	If ( CdsRetval != 0 )
+    		Cds endselect DSC:NC_CON
+    		Cds endselect DSC:tlr:jnl_context
+    		Break
+    	Endif
+    	CALL CSR:copy_record(DSC:tlr:jnl_context,DSC:NC_CON)
+    	cds extract DSC:tlr:jnl_context PreDForFis tlr:jnl_sequence siaf:jnl_codigo_siaf \
+    	tlr:jnl_time ver_anulacion cod_agrupacion jnl_sequence_dire jnl_flia_tran \
+    	siaf:moneda siaf:importe NroCompPago ImporteNeto giros:ImporteNeto \
+		giros:gir_imp_acre  giros:gir_totimp_fact giros:gir_totimp_emi giros:ImpFactChq \
+		giros:ImpNetoChq post:promo_inhibeUp post:fld_promo_imp
+
+    	cds extract DSC:tlr:jnl_context siaf:nombre_transac giros:clave_hdr_giros giros:imp_servicio_fld
+
+		call csr:cleararray(fliatran_vec)
+		call csr:cleararray(impciva_vec)
+		call csr:cleararray(impsiva_vec)
+
+		; campos necesarios para el calculo anticipado de los impuestos - IB.
+    	cds extract DSC:tlr:jnl_context ImporteConIva ImporteSinIva siaf:adt_mot_fliatran \
+							siaf:afecta_efectivo PresNro array fliatran_vec array impciva_vec \
+							array impsiva_vec ImporteConIvaNeto ImporteSinIvaNeto
+
+    	/*Con esto chequeo si tengo que hacer un append de los campos de control de la anulacion
+    	o tengo que modificar el contexto - Gabriel Falciola*/
+    	if (jnl_sequence_dire == "XX")
+    		clearfield jnl_sequence_dire
+    		sequence_dire_aux = jnl_sequence_dire
+    	else
+    		clearfield jnl_sequence_dire
+    		sequence_dire_aux = "XX"
+    	end if
+
+		if (secuencia.numchars == 0)
+    		secuencia = tlr:jnl_sequence - 1
+    		hora = tlr:jnl_time - 1
+    	end if
+		select (siaf:jnl_codigo_siaf)
+		case 99021
+				; Necesito datos del cliente para calcular IB
+				cleArfield cli_tipo
+				clearfield CloInscripto
+				clearfield post:CloTipDoc
+				clearfield post:CloCuit
+				clearfield post:CloCatCodIB
+				clearfield post:CloProvin
+				clearfield post:IvaCod
+		    	cds extract DSC:tlr:jnl_context cli_tipo CloInscripto post:CloTipDoc post:CloCuit \
+				post:CloCatCodIB post:CloProvin post:IvaCod NisUP \
+				post:climed_tipo post:climed_numero \
+				post:jnl_cli_tipo into post:id_cliente
+
+				; rescato el porcentaje de bonificacion.
+				if (cli_tipo == CLIUP)
+					call CDSbuscoPorcBonifUP(NisUP, CloTipDoc, CloCuit)
+				endif
+		case else
+			post:jnl_sequence_dire = "ND"
+			break			
+		end select
+   		if (sequence_dire_aux.numchars == 0)
+    		CDS APPEND DSC:NC_CON jnl_sequence_dire jnl_nuevo_medpag monedaNC medio_pago_descNC
+    	else
+    		Call csr:update_record(DSC:NC_CON,"post","jnl_sequence_dire",jnl_sequence_dire,1)
+ 			Call csr:update_record(DSC:NC_CON,"post","jnl_nuevo_medpag",jnl_nuevo_medpag,1)
+			Call csr:update_record(DSC:NC_CON,"post","monedaNC",monedaNC,1)
+			Call csr:update_record(DSC:NC_CON,"post","medio_pago_descNC",medio_pago_descNC,1)
+    	end if
+    	CDS INSERT DSC:NC_CON NOLOCK
+    	Cds ClearBuffer DSC:NC_CON
+    Loop
+
+	/*Seteo que es una reversa total*/
+	revTotal = "S"
+
+    /*Cuando termino de procesar las transacciones armo la cabecera con la informacion
+    necesaria - Gabriel Falciola*/
+	tmpImporte = siaf:importe
+
+	; A esta altura ya tengo los siguientes campos de impuestos en memoria:
+	; - siaf:importe 		(total de ingresos brutos)
+	; - post:acumSellos 	(total de sellados)
+	; - post:ImpTotAcrePerc (total de Acrecentamientos)
+	; - post:ImporteVenUP 	(total de Bonificacion UP)
+
+	clearfield post:PresNro
+
+	call post:CDSArmoCab_99515(secuencia,hora)
+
+	/*Si se anula una transacción de Giros, primero debo enviar la anulación
+	al Host - Gabriel Falciola*/
+	let loc_enAnul = enAnulacion
+	let enAnulacion = "S" // FGB: necesito saber cuando estoy cancelando desde
+						  // anulacion de comprobantes.
+
+	if (post:tipoViaje == "PF ")
+
+		l_fliatran = siaf:adt_tran_fliatran
+		siaf:adt_tran_fliatran = "PF "
+		call post:MISCmanejo_iPlan
+		l_retval = retval
+		siaf:adt_tran_fliatran = l_fliatran
+	    if (l_retval < 0)
+	    	enAnulacion = loc_enAnul
+	    	call CDSborro_NcTable
+	    	clearfield post:consulta_excepcion
+	    	clearfield post:consulta_excepcionCM
+	    	clearfield post:consulta_ordenCM
+	    	//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+	    	//    y en consulta y venta por OC.
+	    	clearfield post:cliente_inhibido
+	    	clearfield post:cliente_pagodiferido
+	        return (-2)
+	    else
+    		call CDSgraboCaidaEnVuelo
+	    end if
+	else
+	    l_fliatran = siaf:adt_tran_fliatran
+	    siaf:adt_tran_fliatran = "CSM"
+	    call giros:MISCmanejo_cancel
+	    l_retval = retval
+	    siaf:adt_tran_fliatran = l_fliatran
+	    if (l_retval < 0)
+	    	enAnulacion = loc_enAnul
+	    	call CDSborro_NcTable
+	    	clearfield post:consulta_excepcion
+	    	clearfield post:consulta_excepcionCM
+	    	clearfield post:consulta_ordenCM
+	    	//cgw:limpio variables locales utilizadas para Tratamiento de Cheques en la consulta de excepciones,
+	    	//    y en consulta y venta por OC.
+	    	clearfield post:cliente_inhibido
+	    	clearfield post:cliente_pagodiferido
+	        return (-2)
+	    end if
+	endif
+
+    enAnulacion = loc_enAnul
+END SUB
+
+/*******/

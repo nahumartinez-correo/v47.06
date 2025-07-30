@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:post:PBmodifRecTmp
+* NOMBRE
+*   OFB:post:PBmodifRecTmp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBmodifRecTmp
+    /* T&T: Recepcion Pieza     */
+    /* May. 1998 - B. Petrella -    */
+
+	let post:control = 1
+    /* Verifico que las modificaciones sean correctas */
+    if (SiNoTT != "S" && SiNoTT != "N") then
+        let common:csr_string = "Error: Debe ingresar S o N"
+        errmsg common:errmsg_list,FLD:common:csr_string
+
+        let drv:button = 4 /* Agregar */
+        call drv:but_up_enable
+
+      NEXTFIELD post:SiNoTT
+        INIT 33,0
+        return (-1)
+    end if
+    if (SiNoTT == "S")
+        call FVALpiezaRecep
+    NEXTFIELD post:Pieza_aux
+    else
+    call FVALenvioGCltes
+    NEXTFIELD post:EnvioGdesCltes
+    end if
+    if (retval < 0)
+        INIT 33,0
+        call MISChabModBor
+        return (-1)
+    end if
+
+    call FVALdestinoRec
+    if (retval < 0)
+        call MISChabModBor
+        NEXTFIELD post:DestinoPieza
+        INIT 33,0
+	  let post:control = 0
+        return (-1)
+    else
+	if (post:DestinoPieza == "SERV. ABONADOS")
+		call FVALdep_DomPostal_2
+		if (retval < 0)
+		      call MISChabModBor
+        		NEXTFIELD post:DestinoPieza
+        		INIT 33,0
+			let post:control = 0
+        		return (-1)
+		end if
+	end if
+    end if
+
+    /* Verifica si SiNo (Contrareeembolso S/N) es Si */
+    /* Obliga el importe (ContraReembolso) - Idem Valor Declarado */
+    IF (SiNo == "S" || SiNoVD == "S")
+        IF (SiNo == "S")
+        IF (ContraReembolso == 0)
+                let common:csr_string = "Debe Ingresar el Importe del ContraReembolso."
+                errmsg common:errmsg_list,FLD:common:csr_string
+                call MISChabNuevoAgr
+                NEXTFIELD post:ContraReembolso
+                INIT 33,0
+                return (-1)
+            END IF
+      END IF
+        IF (SiNoVD == "S")
+        IF (ImporteVD == 0)
+                let common:csr_string = "Debe Ingresar el Importe del Valor Declarado."
+                errmsg common:errmsg_list,FLD:common:csr_string
+                call MISChabNuevoAgr
+                NEXTFIELD post:ImporteVD
+                INIT 33,0
+                return (-1)
+            END IF
+      END IF
+
+    END IF
+
+    /* Verifica que si se modificó el T&T de la pieza */
+    /* No sea un T&T que ya se ha dado de alta anteriormente */
+
+    swapdup Pieza_aux /* Recupero el valor resguardado en el area dup */
+    let Pieza = Pieza_aux
+    swapdup Pieza_aux /* Recupero el valor ingresado por pantalla */
+
+    if (SiNoTT == "N") then
+    let Pieza_aux = substr(EnvioGdesCltes,0,13)
+    end if
+
+    if (Pieza != Pieza_aux)
+        CALL CDSselSacoPza
+        if (retval == -1)
+            let common:csr_string = "T&T de la Pieza ya existente."
+            errmsg common:errmsg_list,FLD:common:csr_string
+            NEXTFIELD post:Pieza_aux
+            INIT 33,0
+            call MISChabModBor
+            return (-1)
+        else
+            CALL CDSselSacoPieza
+        endif
+    endif
+
+    /* Asigna el Nro. de secuencia siempre que sea      */
+    /* con ContraReembolso o VD - B. Petrella - May. 1998   */
+    IF ((SiNo == "S" || SiNoVD == "S" ) && \
+         adt_codseq_nro == 0) then
+        call post:CDSobtiene_secuen("CONTR")
+        refresh adt_codseq_nro
+    END IF
+
+    /* Actualiza en la tabla RecepTmp */
+    call CDSgrabaRecTmp
+
+    call MISCclearRecep
+    call MISCrefRecep
+    NEXTFIELD post:Pieza_aux
+    INIT 33,0
+    call MISChabNuevoAgr
+    INIT 33,0
+    let control = 0
+END SUB
+
+/*******/

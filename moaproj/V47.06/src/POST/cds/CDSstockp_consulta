@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:post:CDSstockp_consulta
+* NOMBRE
+*   OFB:post:CDSstockp_consulta
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSstockp_consulta
+	LOCAL stock_ctx_aux LIKE adt_tabla_context1
+	
+	//gpb:PS10898 - Busqueda por T&T o TN (Ecommerce)
+	CDS SELECT FROM DSC:stockp_tbl BECOMES DSC:stockp_ctx \
+		WHERE (adt_stockp_pieza == pieza_stockp || adt_stockp_ecom_tn == pieza_stockp)  
+	
+	CDS FINDFIRST DSC:stockp_ctx NOLOCK
+	IF (CDSRETVAL < 0) THEN
+		CDS ENDSELECT DSC:stockp_ctx
+		CALL CDSstockpHist_cons("N")
+		IF (RETVAL < 0) THEN
+			//MSGBOX "PIEZA INEXISTENTE EN TABLA DE STOCK",0X00,"ERROR"
+			RETURN -2
+		ELSE
+			LET stock_ctx_aux = "stockpHist_ctx"
+		END IF
+	ELSE
+		LET stock_ctx_aux = "stockp_ctx" 
+	END IF
+    
+	CALL CSR:proc_list(F_CLEAR,LST:LISTpieza_flds)
+	CALL CSR:proc_list(F_CLEAR,LST:LISTcon_pieza_flds)
+	CALL CSR:proc_list(F_REFRESH,LST:LISTcon_pieza_flds)
+    
+  CDS EXTRACT FLD:stock_ctx_aux ALL
+  
+  //gpb:PS10898 - Busqueda por T&T o TN (Ecommerce)
+	IF (adt_stockp_destino == DSC:post:ECOM_desc) THEN
+		LET pieza_stockp = adt_stockp_pieza
+		REFRESH pieza_stockp
+	END IF
+	
+	IF (adt_stockp_ctaOM != "") THEN
+		adt_climay_ctaclie = adt_stockp_ctaOM
+		adt_climay_tipodoc = adt_stockp_tipo_doc
+		adt_climay_nrodoc = adt_stockp_doc    	
+		CALL CDSCliMay_crem_sel
+		IF (RETVAL == 0) THEN
+			//Cargo los datos del cliente mayorista crem
+			adt_stockp_rem_nom = adt_climay_razon
+			FPRINT adt_stockp_rem_domic "%s %s %s",adt_climay_calle, adt_climay_nropuerta, adt_climay_piso
+			adt_stockp_rem_loc = adt_climay_loca
+			adt_stockp_rem_CP = adt_climay_codpost
+			adt_stockp_rem_pcia = adt_pcia_cod
+		END IF
+	ELSE
+		IF (adt_stockp_tipo_doc != "") && (adt_stockp_doc != "") THEN
+			CloTipDoc = adt_stockp_tipo_doc
+			CloCuit = adt_stockp_doc
+			CALL CDSCliOca_sel
+			IF (RETVAL == 0) THEN
+				//Cargo los datos del cliente ocacional
+				IF (CloRazon != "") THEN
+					adt_stockp_rem_nom = CloRazon
+				ELSE	
+					FPRINT adt_stockp_rem_nom "%s %s", CloNombre, CloApellido
+				END IF
+    			
+  			FPRINT adt_stockp_rem_domic "%s %s %s",CloCalle, CloNroDir, CloPiso
+  			adt_stockp_rem_loc = CloLoc
+  			adt_stockp_rem_CP = CloCodPost
+  			adt_stockp_rem_pcia = CloProvin   			
+  		END IF
+  	END IF
+  END IF
+    
+  post:adt_CDD_contingencia = adt_stockp_conting
+  lugar_guarda_pieza = adt_stockp_lugarGuar
+  ord_guarda_pieza = adt_stockp_ordGuarda
+    
+  CALL CSR:proc_list(F_COPY,LST:LISTpieza_flds,LST:LISTcon_pieza_flds)
+  /*CALULAR LA PROVINCIA SEGUN LA INICIAL adt_stockp_rem_pcia */
+  CALL MISCcalculo_prov
+  CALL csr:proc_list(F_REFRESH,LST:LISTcon_pieza_flds)
+  
+  UNPROTFIELD Observ_nueva_stockp
+  CDS ENDSELECT FLD:stock_ctx_aux
+    
+END SUB
+
+/*******/

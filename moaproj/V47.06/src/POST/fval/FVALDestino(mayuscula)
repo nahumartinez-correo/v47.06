@@ -1,0 +1,189 @@
+/****o*  Recepción de Piezas/OFB:post:FVALDestino
+* NOMBRE
+*   OFB:post:FVALDestino
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*NI 50569-RPP
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALDestino
+
+	if (!testflag(tlr:tran_flags,correction)) //??
+		if (AsignaDestino == "X") then
+			RETURN 0
+		end if
+if (AsignaDestino != "M")
+		if (caratula_transf.numchars == 0 && caratula_saca.numchars == 0) then
+			drv:button = drv:last_button
+			CALL drv:but_up_enable
+			unprotfield caratula_saca
+			unprotfield caratula_transf
+			msgbox "Ingrese una Carátula.",0x00,"AVISO"
+			return -2
+		endif
+ endif
+		if (post:stockp_destino.numchars == 0) then
+			CALL PBDestino
+		else
+	if (AsignaDestino == "M")
+			CDS SELECT FROM DSC:destinosP_tbl BECOMES DSC:destinosP_ctx \
+			where post:adt_dest_destino == stockp_destino && \
+			post:adt_dest_pza_ent_suc == "S"
+	else
+		CDS SELECT FROM DSC:destinosP_tbl BECOMES DSC:destinosP_ctx \
+			where post:adt_dest_destino == stockp_destino
+	endif		
+			
+			cds findfirst dsc:destinosP_ctx nolock
+			lib:err_retval = cdsretval
+			
+		
+			if (lib:err_retval == 0) then
+				clearfield post:adt_dest_pza_ent_suc
+				CDS EXTRACT DSC:destinosP_ctx adt_dest_guarda into stockp_es_guarda
+				/* \
+				post:adt_dest_pza_ent_suc */
+				cds endselect dsc:destinosP_ctx
+							
+			/*	if (AsignaDestino == "M" && post:adt_dest_pza_ent_suc != "S") then
+						cds endselect dsc:destinosP_ctx
+						MSGBOX "EL DESTINO NO PUEDE SELECCIONARSE CON TIPO DE OPERACION ENTREGA MISMA SUCURSAL.",0X00,"ERROR"
+   					CLEARFIELD stockp_destino
+   					REFRESH stockp_destino
+   					 return -2
+   			ENDIF*/
+				
+				CALL MISCverif_destino_OE
+				if (retval == 0) then
+					CALL MISCverif_destino
+				else
+					RETURN -2
+				endif
+				
+				clearfield lugar_guarda_pieza
+				refresh lugar_guarda_pieza
+				
+				IF (adt_dest_guarda != "S")
+					clearfield ord_guarda_pieza
+					refresh ord_guarda_pieza
+				END IF
+				
+				IF (stockp_es_guarda == "S")
+					//sumo un nro al seq GUARD y lo muestro
+					CALL post:CDSobtiene_secuen("GUARD")
+					ord_guarda_pieza = adt_codseq_nro
+				ELSE
+					clearfield ord_guarda_pieza
+				END IF
+				refresh ord_guarda_pieza
+				//SETVALDONE  post:stockp_destino
+			else
+				cds endselect dsc:destinosP_ctx
+				CALL PBDestino
+			endif
+		endif
+      	
+      	
+		If (stockp_destino == "DEPOSITO INTER" || stockp_destino == "PIEZA PACTADA EN SUC")Then
+			IF (substr(stockp_pieza,0,2) == "DE")
+				MSGBOX "IMPOSIBLE RECIBIR LA PIEZA CON ESTE DESTINO",0X00,"ERROR"
+				RETURN -2                	
+			ELSE 
+				IF (substr(stockp_pieza,0,2) == "TL" && currentfield != "REENCAMINAMIENTO")
+					stockp_destino = "REENCAMINAMIENTO" 
+					refresh stockp_destino			
+				END IF
+			END IF
+		End If
+      	
+		INIT 33,0
+   
+
+		//Prueba
+		/*IF (stockp_es_guarda == "S")
+			//sumo un nro al seq GUARD y lo muestro
+			CALL post:CDSobtiene_secuen("GUARD")
+			ord_guarda_pieza = adt_codseq_nro
+		ELSE
+			clearfield ord_guarda_pieza
+		END IF
+		refresh ord_guarda_pieza
+		*/
+
+		if (post:stockp_destino == "CASILLA DE CORREO") || (post:stockp_destino == "RTA POSTAL PAGA") THEN
+			SETVALDONE  post:stockp_destino
+			nextfield post:stockp_abonado
+			If (currentfield.ID != stockp_abonado.ID) Then
+				UNGETKEY RT_TAB
+			End If
+			RETURN 0
+		else
+			hidefield stockp_abonado
+			hidefield stockp_rpp_corp
+		End If
+    
+		if (post:stockp_destino == "INTERDICTA") THEN
+			SETVALDONE  post:stockp_destino
+			nextfield post:stockp_Oficio
+			If (currentfield.ID != stockp_Oficio.ID) Then
+				UNGETKEY RT_TAB
+			End If
+			RETURN 0
+		else
+			hidefield stockp_Oficio
+		End If
+    
+		If (stockp_destino == "LISTAS" || stockp_destino == "DOM.INACCESIBLE") Then
+			SETVALDONE  post:stockp_destino
+			nextfield post:stockp_destin_nom
+			If (currentfield.ID != stockp_destin_nom.ID) Then
+				UNGETKEY RT_TAB
+			End If
+			RETURN 0
+		else
+			hidefield stockp_destin_nom
+		End If
+		
+		
+		refresh SCR:post:SCRNpiezas_CM
+						
+		//gpb:NI50437
+		SETVALDONE post:stockp_destino
+		
+		IF (stockp_destino == DSC:post:PED_desc) THEN
+			IF (common:br_admitePED != "S" && common:br_imponePED != "S")
+				MSGBOX "SUCURSAL NO HABILITADA PARA RECIBIR PIEZAS PED",0X00,"ERROR"
+				CLEARFIELD stockp_destino
+				RETURN -2				
+			END IF
+			/*IF (stockp_en_devol == "S")
+				PROTFIELD stockp_crem_imp
+			ELSE
+				UNPROTFIELD stockp_crem_imp
+			END IF*/
+			PROTFIELD stockp_en_devol
+			PROTFIELD stockp_vd_imp
+			PROTFIELD stockp_franq_inc
+			PROTFIELD stockp_crem_imp
+		ELSE
+			UNPROTFIELD stockp_en_devol
+			UNPROTFIELD stockp_vd_imp
+			UNPROTFIELD stockp_franq_inc
+			UNPROTFIELD stockp_crem_imp			
+		END IF
+	endif
+    
+End Sub
+
+/*******/

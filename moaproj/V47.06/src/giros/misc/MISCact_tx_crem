@@ -1,0 +1,98 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCact_tx_crem
+* NOMBRE
+*   OFB:giros:MISCact_tx_crem
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCact_tx_crem
+; Esta rutina se encarga de actualizar el mensaje, el status y el sequence_corr, en el
+; journal, de la tx de anulación crem
+LOCAL hora LIKE post:hor_a
+LOCAL l_jnl_sequence LIKE tlr:jnl_sequence
+LOCAL l_codigo_siaf like siaf:codigo_siaf
+LOCAL x like siaf:i
+local l_track[10] like post:track_trace
+    
+    
+    IF (hcomm:tran_status == HOST_ACCEPTED && giros:PresNro_canc > 0) THEN
+        ; Agrego esto para saber a que hora se anuló al trx. a través del proceso batch...
+        let tlr:jnl_hora_ult_act = common:time_of_day
+        let tlr:jnl_dia_ult_act = common:system_date
+        siaf:cancelacion = "TRANCANCELADA"
+        
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES "jnl_ctx" WHERE  \
+            tlr:jnl_branch == FLD:tlr:jnl_branch && \
+            tlr:jnl_operator == FLD:tlr:jnl_operator && \
+            tlr:jnl_bus_date == FLD:tlr:jnl_bus_date && \
+            post:PresNro == giros:PresNro_canc && \
+            siaf:codigo_siaf != 99021 && \
+            siaf:codigo_siaf != 99023
+            
+        CDS FINDFIRST "jnl_ctx" LOCK 
+        WHILE (CDSRETVAL == 0)
+             
+            CDS EXTRACT "jnl_ctx" tlr:jnl_sequence INTO l_jnl_sequence \
+            siaf:codigo_siaf into l_codigo_siaf
+            
+            if (l_codigo_siaf == 70041 || l_codigo_siaf == 95000) then
+                CDS EXTRACT "jnl_ctx" \
+                giros:Serie_fld \
+                giros:digito_fld \
+                giros:NroGiro_fld
+                x = 0
+                while (x < 10)
+                    CDS EXTRACT "jnl_ctx" post:track[x] into l_track[x]
+                    x = x + 1
+                end while
+            end if    
+            
+            CDS FINDAGAIN "jnl_ctx" LOCK 
+            CDS CLEARBUFFER "jnl_ctx"
+        
+            FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,hcomm:tran_status
+            siaf:mensaje = "TRANSACCION ACEPTADA"
+            CDS APPEND "jnl_ctx" \
+            l_jnl_sequence AS FLD:tlr:jnl_sequence_corr \
+            FLD:siaf:mensaje \
+            FLD:siaf:cancelacion \
+            FLD:tlr:jnl_hora_ult_act \
+            FLD:tlr:jnl_dia_ult_act
+
+            CDS UPDATE "jnl_ctx" LOCK
+            IF (RETVAL < 0)
+                hora = common:time_of_day
+                fprint common:csr_string "\nError al actualizar el journal luego de la respuesta del switch de la tx con sequencia %e .\n Termina el proceso RT batch en forma anormal. Hora: %e\n",tlr:jnl_sequence,hora
+                CALL batch:MISCgeneraLog(common:csr_string,"ERROR","N")
+                RETURN (-1)       
+            END IF
+            
+            x = 0
+            while (x < 10)
+                call post:CDSstockp_CDD_up_rev(l_track[x])
+                call post:CDSdelFalloCrem(l_track[x])
+                x = x + 1
+            end while
+            
+            CDS FINDNEXT "jnl_ctx" LOCK
+        END WHILE
+        CLEARFIELD siaf:mensaje 
+        CDS UNLOCK "jnl_ctx" 
+        CDS ENDSELECT "jnl_ctx" 
+    END IF          
+    
+END SUB 
+
+/*******/

@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:PBctacte_comp_mod
+* NOMBRE
+*   OFB:post:PBctacte_comp_mod
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBctacte_comp_mod
+
+//////////////////////////////////////////
+// Modifica el comprobante del picklist //
+//////////////////////////////////////////
+
+local varl_idx		like siaf:idx
+local varl_picstr	like common:csr_string
+local varl_picstr2	like common:csr_string
+local varl_message	like common:csr_string
+local varl_importe	like post:imp_comprobante
+local varl_tipo		like post:tipo_comprobante
+
+LET drv:button = drv:last_button
+CALL drv:but_up_enable
+CALL drv:but_redraw
+
+// se modificara el comprobante que este siendo mostrado en el combofield
+if (PicDescrip.NUMCHARS == 0) then
+    errmsg common:errmsg_list,"Debe Seleccionar un Comprobante de la Lista"
+    return (-2)
+end if
+
+// verifico los campos modificados
+call MISCcc_comp_inflds
+if (retval < 0) then
+    return (-2)
+end if
+
+// armo el item nuevo
+clearfield varl_picstr2
+fprint varl_picstr2 "%3.3s %1.1s %4.4d-%8.8d %16.16e" tipo_comprobante, \
+                                                      letra_comprobante, \
+                                                      cec_comprobante, \
+                                                      num_comprobante, \
+                                                      imp_comprobante
+// aca primero quiero confirmar la operatoria...
+let varl_message = "Ud. solicita modificar:"
+fprint varl_message "%s\n%s" varl_message,PicDescrip 
+fprint varl_message "%s\nPor:\n%s" varl_message,varl_picstr2
+msgbox FLD:varl_message,OFB_YESNO,"Confirmacion"
+if (retval == OFB_IDYES) then
+    //
+    // busco el comprobante dentro del picklist
+    //
+    let varl_idx = PL_GETITEM
+    call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+    while (retval == 0 && varl_picstr != PicDescrip) 
+        let varl_idx = varl_idx + 1
+        call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+    end while
+    if (retval < 0) then
+        errmsg common:errmsg_list,"Comprobante a modificar no encontrado"
+        return (-2)
+    end if
+    //
+    // borro el item dentro del picklist
+    //
+    let varl_idx = varl_idx - PL_GETITEM
+    if (varl_idx >= 0) then
+        call csr:myPickdelete "comprobantes" varl_picstr varl_idx
+        if (retval < 0) then
+            msgbox "Imposible Modificar Comprobante",OFB_OK,\
+                   "Error de Aplicacion"
+            return (-2)
+        else
+            // restamos al total
+            let varl_importe = substr(varl_picstr,20,16)
+            let varl_tipo = substr(varl_picstr,0,3) 
+            pickverify varl_tipo,PIC:post:TipoComprobante
+            let siaf:signo = substr(common:csr_string,32,1)
+            if (siaf:signo == "+") then
+                let siaf:importe2 = siaf:importe2 - varl_importe
+            else
+                let siaf:importe2 = siaf:importe2 + varl_importe
+            end if
+        end if
+    end if
+    //
+    // Agrego el item modificado
+    // 
+    call PBctacte_comp_add // reutilizo la rutina. Practico, no?
+    if (retval < 0) then
+        // si llego aca, es porque borro el item, y no puede insertar el nuevo
+        // asi que intento reinsertar el original al menos
+        call csr:f_saaddpl "comprobantes" varl_picstr
+        if (siaf:signo == "+") then
+            let siaf:importe2 = siaf:importe2 + varl_importe
+        else
+            let siaf:importe2 = siaf:importe2 - varl_importe
+        end if
+        refresh FLD:siaf:importe2
+        // aviso del error
+        msgbox "Imposible Modificar Comprobante",OFB_OK,"Error de Aplicacion"
+        return (-2)
+    end if
+    // si todo salio bien, limpio los campos
+    call csr:proc_list F_CLEAR LST:post:LISTccte_cobza_flds2
+    call csr:proc_list F_REFRESH LST:post:LISTccte_cobza_flds2
+end if
+
+END SUB
+
+/*******/

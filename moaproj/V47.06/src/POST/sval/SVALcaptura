@@ -1,0 +1,143 @@
+/****o* Pendientes de agrupación/OFB:post:SVALcaptura
+* NOMBRE
+*   OFB:post:SVALcaptura
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcaptura
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 22/04/99]      Esta rutina se encarga de capturar los números de factura en las reimpresiones */
+   /*                       o en la transacción de anulación parcial.                                      */
+   /*                                                                                                      */
+   /* Salidas:                                                                                             */
+   /* - Retval      :       [Salida anormal] Devuelve (-2) en caso de errores de validación.               */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+   	local auxTic like revTicket
+	local NRO_FACTURA_INIC like DocInic
+	local NRO_FACTURA_FIN like  DocInic
+
+   auxTic = revTicket
+
+    if (captuNc == "S")
+		; Se pidio eliminar el control del digito verificador, asi que lo genero yo ahora.
+	   // Valido Modulo el Digito verificador
+	   	String_Nume50  = DSC:post:peso_impresion
+    	Call csr:set_currentfield fld:post:DocInicNC
+		fprint post:DocInicNC "%s%s", post:DocInicNCsdv,0
+	   	Call post:MISCcalc_digito_ver(String_Nume50)
+		fprint post:DocInicNC "%s%s", post:DocInicNCsdv,retval
+
+    	Call csr:set_currentfield fld:post:DocFinNC
+		fprint post:DocFinNC "%s%s", post:DocFinNCsdv,0
+	   	Call post:MISCcalc_digito_ver(String_Nume50)
+		fprint post:DocFinNC "%s%s", post:DocFinNCsdv,retval
+
+    	Call csr:set_currentfield fld:post:DocInicNC
+    else
+    	Call csr:set_currentfield fld:post:DocInic
+    endif
+
+    if (revTicket != "S")
+    	Call post:FVALdoc_impre
+    else
+    	clearfield revTicket
+    	Call post:FVALdoc_impre
+		revTicket = "S"
+    endif
+    If ( Retval <  0 )
+    	if (captuNc == "S")
+       		NextField fld:post:DocInicNC
+       	else
+       		NextField fld:post:DocInic
+        endif
+       EnableControl drv:PBcb0
+       Return -2
+    Endif
+
+    if (captuNc == "S")
+   		Call csr:set_currentfield fld:post:DocFinNC
+    else
+   		Call csr:set_currentfield fld:post:DocFin
+    endif
+   	Call post:FVALdoc_impre
+    If ( Retval <  0 )
+   		if (captuNc == "S")
+   			NextField fld:post:DocFinNC
+   	   	else
+       		NextField fld:post:DocFin
+       	endif
+       EnableControl drv:PBcb0
+   	   Return -2
+    Endif
+    // La Factura Final no puede ser  menor que la inicial PJM
+	if (captuNc == "S")
+    	If ( DocInicNC > DocFinNC ) then
+ 	   		MsgBox "El Numero de la Factura Inicial debe ser menor igual a la Factura Final!!!",OFB_OK,"ERROR"
+ 			EnableControl drv:PBcb0
+ 			Return -2
+    	Endif
+ 	    adt_nro_fact = substr(DocInicNC,1,12)
+   		nro_factura  = substr(DocFinNC,1,12)
+	else
+		If ( DocInic > DocFin ) then
+			MsgBox "El Numero de la Factura Inicial debe ser menor igual a la Factura Final!!!",OFB_OK,"ERROR"
+			EnableControl drv:PBcb0
+    		Return -2
+		Endif
+		adt_nro_fact = substr(DocInic,1,12)
+	  	nro_factura  = substr(DocFin,1,12)
+    endif
+	/*if (revTicket != "S")
+		If ((  nro_factura - adt_nro_fact + 1  )   != post:cantidad2 )
+			MsgBox "La Cantidad de Facturas indicada es distinta a la requerida ",OFB_OK ,"ERROR"
+			EnableControl drv:PBcb0
+			Return -2
+    Endif
+	endif*/
+   	// PJM 31-07-1998 se agrego que se graben el numero de factura para el
+   	// controlarlas en un listado
+	clearfield revTicket
+	;    Call post:MISCcontrol_fac_save
+
+	// [PAW] --> verifico los numeros de factura.
+	if (captuNc != "S")
+		NRO_FACTURA_INIC = substr(DocInic,1,12)
+		NRO_FACTURA_FIN  = substr(DocFin,1,12)
+	else
+		NRO_FACTURA_INIC = substr(DocInicNC,1,12)
+		NRO_FACTURA_FIN  = substr(DocFinNC,1,12)
+	endif
+
+	Call post:CDSctrol_rango_verif(NRO_FACTURA_INIC,NRO_FACTURA_FIN)
+    If (Retval == 0)
+       MsgBox "El Lote de Facturas es invalido !!!",OFB_OK ,"ERROR"
+       EnableControl drv:PBcb0
+	   revTicket = auxTic
+       Return -2
+    Endif
+	revTicket = auxTic
+	if (captuNc != "S")
+		post:Tipo_Formulario = substr(DocInic, 0, 1)
+	else
+		post:Tipo_Formulario = substr(DocInicNC, 0, 1)
+	endif
+END SUB
+
+/*******/

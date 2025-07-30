@@ -1,0 +1,140 @@
+/****s* Pendientes de agrupación/SCR:post:SVALcierre_lote
+* NOMBRE
+*   OFB:post:SVALcierre_lote
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la TX de Cierre de Lote.
+*   Se comunica con el POS y cierre el lote de todas las tarjetas que operaron en esa terminal
+*   Journaliza el encabezado de cierre y una pantalla por cada tarjeta con movimiento
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANcierre_lote
+* DOCUMENTACION
+* SOURCE
+*/
+#include "postsval.h"
+#define VPI_EMPTY_BATCH	          105		//El lote se encuentra vacío.
+
+SUB post:SVALcierre_lote
+
+	//Llamo a la rutina que se comunica con el POS y cierra el lote
+	CALL post:MISCvpiBatchClose    
+	IF (RETVAL < 0)
+		FPRINT msg_tx_lcierre "TRANSACCION RECHAZADA: %s",adt_vpi_leyenda_off
+		
+		//Si no se pudo hacer pregunto si quiere continuar con el cierre de caja o no
+		if (tes:en_cierre == "S") then
+			//let common:trap_reset = ofb:lib:KEYSreset_esc
+			display siaf:SCRNconfirma_list
+			collect
+			WHILE (lastkey == RT_ESC)
+				display siaf:SCRNconfirma_list
+				collect
+			END WHILE
+			undisplay siaf:SCRNconfirma_list
+       		INIT 33,0
+	       	FYIMSG CLEAR
+    	   	if (lastkey == RT_ESC) then
+       			tes:en_cierre = "N"
+	       	end if
+    	   	if (siaf:continua_transaccion == "N") then
+       			tes:en_cierre = "N"
+	       	else
+    	   		// Recibe el estado Actual
+       			call tes:CDSProximo_Estado(CIERRE_LOTE)
+	       	end if	
+		END IF			
+		
+	ELSE
+	    //Pregunto si se imprimio bien el ticket
+        CALL post:MISCvpiPrintBatchClo
+	
+		post:jnl_lcie_batchNumber = post:adt_lcie_batchNumber			// Número de lote 
+	
+		//Cierre de Lote OK
+		CALL tlr:JNLtran
+   		UNGETKEY RT_SEND
+
+		//Tengo que recorrer la tabla LoteCIE para ver journalizar el detalle del cierre.
+		CDS SELECT FROM DSC:post:LoteCIE_tbl BECOMES DSC:post:LoteCIE_ctx WHERE \
+		post:adt_lcie_date == post:vpi_date	&& \
+		post:adt_lcie_terminalID == post:vpi_terminalID && \
+		post:adt_lcie_jnlOK == "N"
+		//post:adt_lcie_batchNumber == post:vpi_batchNumber
+			
+		CDS FINDFIRST DSC:post:LoteCIE_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+		
+		WHILE (lib:err_retval == 0)	
+			
+			CDS EXTRACT DSC:post:LoteCIE_ctx ALL 
+			
+			//Obtebgo la descripcion de la tarjeta que cerro su lote
+			CALL CDSobt_CodInt_tarj			
+			
+			//seteo los campos a journalizar
+			post:jnl_lcie_acquirerCod = post:adt_lcie_acquirerCod			// Código de procesador 
+			post:jnl_lcie_batchNumber = post:adt_lcie_batchNumber			// Número de lote 
+			post:jnl_lcie_issuerCode = post:adt_lcie_issuerCode		  		// Código de tarjeta 
+			post:jnl_lcie_purchaCount = post:adt_lcie_purchaCount	    	// Cantidad de ventas 
+			post:jnl_lcie_purchaAmoun = post:adt_lcie_purchaAmoun / 100 	// Monto total de ventas 
+			post:jnl_lcie_voidCount = post:adt_lcie_voidCount			  	// Cantidad anulaciones de venta 
+			post:jnl_lcie_voidAmount = post:adt_lcie_voidAmount	/ 100		// Monto total de anulaciones 
+			post:jnl_lcie_refundCount = post:adt_lcie_refundCount			// Cantidad de devoluciones venta 
+			post:jnl_lcie_refundAmoun = post:adt_lcie_refundAmoun / 100		// Monto total de devoluciones 
+			post:jnl_lcie_refvoidCoun = post:adt_lcie_refvoidCoun			// Cantidad anulaciones devolución 
+			post:jnl_lcie_refvoidAmou = post:adt_lcie_refvoidAmou / 100		// Monto total anul. Devolución
+			post:jnl_lcie_date = post:adt_lcie_date							// Fecha ("DD/MM/AAAA")  
+			post:jnl_lcie_time = post:adt_lcie_time							// Hora ("HH:MM:SS")
+			post:jnl_lcie_terminalID = post:adt_lcie_terminalID				// Terminal pos ID
+			
+			 /* Journalizo el detalle*/
+			siaf:adt_tran_codigo = 9035
+	       	siaf:codigo_siaf = 9035
+			tlr:tran_mnemonic = "DETCIEL"
+   			siaf:nombre_transac = "DETALLE DE CIERRE DE LOTE"
+			drv:INDscr = SCR:post:SCRNdet_CieLote
+    	   	drv:INDjnl_rtn = OFB:post:JNLdet_CieLote
+       		CALL tlr:JNLtran
+	       	//UNGETKEY RT_SEND   
+	       	
+	       	//actualizo el detalle de cada tarjeta como journalizado en la tabla LoteCIE
+	       	CDS FINDAGAIN DSC:post:LoteCIE_ctx LOCK
+	       	IF (CDSRETVAL == 0)
+	       		post:adt_lcie_jnlOK = "S"
+	       		CDS APPEND DSC:post:LoteCIE_ctx post:adt_lcie_jnlOK
+	       		CDS UPDATE DSC:post:LoteCIE_ctx LOCK
+	       	END IF
+	       	CDS UNLOCK DSC:post:LoteCIE_ctx
+			
+			CDS FINDNEXT DSC:post:LoteCIE_ctx NOLOCK
+			lib:err_retval = CDSRETVAL
+			
+		END WHILE
+	
+ 		CLEARFIELD drv:INDsend_rtn
+    	CLEARFIELD drv:INDscr
+    	CLEARFIELD drv:INDjnl_rtn
+    	CLEARFIELD drv:INDspc_rtn[0]
+    	CLEARFIELD drv:INDspc_rtn[2]	
+
+
+		if (tes:en_cierre == "S") then
+    	   	if (lastkey == RT_ESC) then
+       			tes:en_cierre = "N"
+	       	end if
+   	   		// Recibe el estado Actual
+   			call tes:CDSProximo_Estado(CIERRE_LOTE)
+		END IF			
+
+	
+	END IF
+
+    
+END SUB
+
+/*******/

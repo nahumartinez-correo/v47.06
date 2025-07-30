@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCreverso_giro
+* NOMBRE
+*   OFB:giros:MISCreverso_giro
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCreverso_giro
+	local varl_INDtots_append	like tlr:INDtots_append
+	post:siaf_flags_aux = siaf:siaf_flags
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:post:Jounarl_anul_Ctx \
+		WHERE tlr:jnl_branch == common:sucursal_activa && \
+			  tlr:jnl_operator == op:op_operator_id && \
+			  tlr:jnl_bus_date == tlr:jnl_bus_date && \
+			  tlr:jnl_sequence == tlr:aux_sequence
+	//CDS FINDNEXT DSC:post:Jounarl_anul_Ctx NOLOCK
+	CDS FINDNEXT DSC:post:Jounarl_anul_Ctx LOCK
+	If (CDSRETVAL == 0)
+	    // FGB 16.8.2001: a pedido de Nina, tienen que ser identificables las EMGP con ruptura de cheque, por parte 
+	    // de la interfaz 
+	    let siaf:cancelacion = DSCERR_PRT_CHQ
+		CDS CLEARBUFFER DSC:post:Jounarl_anul_Ctx
+		CDS APPEND DSC:post:Jounarl_anul_Ctx siaf:cancelacion
+		CDS UPDATE DSC:post:Jounarl_anul_Ctx NOLOCK 
+		// 
+		CDS FINDAGAIN DSC:post:Jounarl_anul_Ctx NOLOCK
+	    // FGB fin 
+		CDS EXTRACT DSC:post:Jounarl_anul_Ctx All
+		siaf:adt_tran_codigo = siaf:codigo_siaf
+		tlr:jnl_supervisor = ovr:ovr_sup_id
+	    tlr:sequence_corr = tlr:aux_sequence
+	    /* Muevo la hora de la original*/
+	    tlr:hora_corr = tlr:jnl_time
+		Setflag flags_back,cancelacion
+	    SetFlag tlr:tran_flags,correction
+	    if (!( post:enSesion == "S" ))
+	    	SetFlag tlr:tran_flags,supovr_granted
+	    Endif
+	    cancelacion = "ANULACION GIRO EMITIDO"
+
+
+	    siaf:siaf_flags = post:siaf_flags_aux
+	    tlr:state_flags = tlr:jnl_tran_flags
+	    Call siaf:MISClleno_modalidad
+	    UNGETKEY RT_SEND
+
+	    // FGB 21.6.2001: si se esta recuperando de una caida del sistema mientras cancelaba la emision de un cheque,
+	    // no quiero que totalice, porque ya se recupero de los totales cuando el operador ingreso a Mosaic nuevamente...
+	    if (giros:es_emision_postal == "S") then
+	    	if (giros:checkpoint_emision == ANTES_IMPRE_SUB_2) then
+	    		let varl_INDtots_append = drv:INDspc_rtn[0]
+	    		clearfield drv:INDspc_rtn[0] // lista de totales
+	    	end if
+	    end if
+	    // 
+
+	    CALL tlr:JNLtran
+		CLEARFIELD cancelacion
+	    clearfield siaf:cancelacion	    // FGB 16.8.2001 
+	    
+	    // FBG 14.06.2004
+	    if (hcomm:tran_status == HOST_ACCEPTED) then
+	    	//printdoc OFB:giros:PRTaudita_anul,docprt,"Imprimiendo auditora..."
+	    endif
+	    
+	    // FGB 21.6.2001: recupero la rutina de totales para que totalice bien la proxima emision...
+	    if (giros:es_emision_postal == "S") then
+	    	if (giros:checkpoint_emision == ANTES_IMPRE_SUB_2) then
+	    		let drv:INDspc_rtn[0] = varl_INDtots_append
+	    	end if
+	    end if
+	    // 
+
+	End If
+	CDS ENDSELECT DSC:post:Jounarl_anul_Ctx
+	Resetflag lib:state_flags,scan_mode
+	Resetflag flags_back,cancelacion
+End Sub
+
+/*******/

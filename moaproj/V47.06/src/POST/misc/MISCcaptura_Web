@@ -1,0 +1,82 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcaptura_Web
+* NOMBRE
+*   OFB:post:MISCcaptura_Web
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcaptura_Web
+    local l_str like common:csr_string
+    /*Actualizo el registro en la Presu */
+	post:importe = post:importemp_web
+	post:importe_pesos = 0
+    post:importe_dolares = 0
+    post:dif_pesos = 0
+    post:dif_dolares = 0
+	CALL post:CDSpresu_CobraPaga(PresNro)
+	CALL post:CDSpresu_vuelto_act
+
+    IF (post:estado_pasivo == "S") THEN
+    	CDS SELECT FROM Dsc:TblMpagoWeb BECOMES DSC:CtxMpagoWeb \
+               WHERE post:adt_nroDoc_web == post:adt_nroDoc_web && \
+                     post:adt_nro_lote_web == post:adt_nro_lote_web && \
+                     post:adt_fecha_web == post:adt_fecpro_web
+    ELSE
+        CDS SELECT FROM Dsc:TblMpagoWeb BECOMES DSC:CtxMpagoWeb \
+               WHERE post:adt_nroDoc_web == post:adt_nroDoc_web && \
+                     post:adt_fecha_web >= post:adt_fecdes_web && \
+                     post:adt_fecha_web <= post:adt_fechas_web && \
+		  			 ((post:adt_nro_lote_web >= NroLote_inic_aux1 && \
+					 post:adt_nro_lote_web <= NroLote_fin_aux1) || \
+		  			 (post:adt_nro_lote_web >= NroLote_inic_aux2 && \
+					 post:adt_nro_lote_web <= NroLote_fin_aux2))
+    END IF
+
+	CDS FINDFIRST DSC:CtxMpagoWeb Lock
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:CtxMpagoWeb ALL
+    ELSE
+    	call post:MISCreturn_err
+    	CALL batch:MISCgeneraLog("ERROR: No existen med.pagos para las transac. internet\n","ERROR","N")
+    	CDS ENDSELECT DSC:CtxMpagoWeb
+    	RETURN (-2)
+	END IF
+
+	Call post:MISCprocMedios_Web
+	IF (RETVAL < 0) THEN
+		call post:MISCreturn_err
+		fprint l_str "ERROR: No existe medio de pago %s\n" post:adt_medio_web
+	    CALL batch:MISCgeneraLog(l_str,"ERROR","N")
+		CDS ENDSELECT DSC:CtxMpagoWeb
+		RETURN (-2)
+	END IF
+
+	Call post:MISCjour_Medios_Web
+	IF (RETVAL < 0) THEN
+		CDS ENDSELECT DSC:CtxMpagoWeb
+		RETURN (-2)
+	END IF
+	Clearfield  drv:INDjnl_rtn
+
+	CDS ENDSELECT DSC:CtxMpagoWeb
+	/* grabo en Presu el factor de conversion y DescripMedPag */
+	Call post:CDSmone_curso_legal(dsc:post:CorreoArgentino)
+	adt_mon_cod = adt_emp_moneda
+	Call post:CDSadt_moneda_load
+	factor_conversion = 1
+    Call post:CDSPresu_Save_factor
+End Sub
+
+/*******/

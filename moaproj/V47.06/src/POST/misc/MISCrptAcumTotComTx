@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrptAcumTotComTx
+* NOMBRE
+*   OFB:post:MISCrptAcumTotComTx
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrptAcumTotComTx(EsAdicional, ReinicioTotales)
+LOCAL l_cli_tipo like post:cli_tipo
+LOCAL indice like post:cantidad
+;ESTA RUTINA ACUMULA LOS TOTALES POR CORTE DE CONTROL DE post:adt_raux_tx
+	;SI REINICIO LA ACUMULACION DE TOTALES LIMPIO LOS TOTALES ANTERIORES *** MDG
+	IF (ReinicioTotales == "S") THEN
+		CALL post:MISCrptClearTotCom(1)
+	END IF
+	;SI EL LISTADO ES CONSOLIDADO SE DEBE TOTALIZAR LOS TIPOS DE CLIENTE
+	;1, 2, 4 Y 5 CUANDO ES PARA TODOS LOS CLIENTES.
+	;PARA ELLO GENERO UN NUEVO TOTAL DE LA LINEA *** MDG
+	post:raux_icons_aux = 0
+	IF (post:rep_modalidad == "C" || post:rep_modalidad == "B") THEN
+		CLEARFIELD post:adt_raux_ccons
+		CLEARFIELD post:adt_raux_icons
+		indice = PL_GETITEM
+		IF (post:cant_cli_tipo > 0)
+			CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+		END IF
+		WHILE ((indice - PL_GETITEM) < post:cant_cli_tipo )
+			l_cli_tipo = SUBSTR(common:csr_string,0,1)
+			SELECT (l_cli_tipo)
+				CASE 1
+				CASE 2
+				CASE 4
+				CASE 5
+					IF (TESTFLAG(post:Rep_Comercial, RPcliente_todos))THEN
+						;ACA ACUMULO CUANDO ES PARA TODOS *** MDG
+						post:adt_raux_ccons = post:adt_raux_ccons + post:adt_raux_cant[l_cli_tipo]
+						post:adt_raux_icons = post:adt_raux_icons + post:adt_raux_imp[l_cli_tipo]
+					ELSE
+						;ACA ACUMULO CUANDO ES PARA UN CLIENTE EN PARTICULAR
+						;POR OTRA PARTE BORRO EL RESTO PARA QUE NO APAREZCAN
+						;EN EL LISTADO *** MDG
+						post:adt_raux_ccons = post:adt_raux_cant[post:cli_tipo]
+						post:adt_raux_icons = post:adt_raux_imp[post:cli_tipo]
+						IF (l_cli_tipo != post:cli_tipo) THEN
+							CLEARFIELD post:adt_raux_cant[l_cli_tipo]
+							CLEARFIELD post:adt_raux_imp[l_cli_tipo]
+						END IF
+					END IF
+					BREAK
+			END SELECT
+			indice = indice + 1
+			CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+		END WHILE
+	END IF
+	;SI EL LISTADO ES DETALLADO SE DEBE TOTALIZAR SOLO POR TIPO DE CLIENTE
+	;PARA ELLO GENERO UN NUEVO TOTAL DE LA LINEA *** MDG
+	IF (post:rep_modalidad == "D") THEN
+		post:adt_raux_ccons = post:adt_raux_cant[post:cli_tipo]
+		post:adt_raux_icons = post:adt_raux_imp[post:cli_tipo]
+	END IF
+	;SI EL LISTADO ES DETALLADO SE TOTALIZAN TODOS *** MDG
+	IF (post:rep_modalidad == "G") THEN
+		CLEARFIELD post:adt_raux_ccons
+		CLEARFIELD post:adt_raux_icons
+		indice = PL_GETITEM
+		IF (post:cant_cli_tipo > 0)
+			CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+		END IF
+		WHILE ((indice - PL_GETITEM) < post:cant_cli_tipo )
+			l_cli_tipo = SUBSTR(common:csr_string,0,1)
+			post:adt_raux_ccons = post:adt_raux_ccons + post:adt_raux_cant[l_cli_tipo]
+			post:adt_raux_icons = post:adt_raux_icons + post:adt_raux_imp[l_cli_tipo]
+			indice = indice + 1
+			CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+		END WHILE
+	END IF
+	;TOTALES POR COLUMNA *** MDG
+	indice = PL_GETITEM
+	IF (post:cant_cli_tipo > 0)
+		CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+	END IF
+	WHILE ((indice - PL_GETITEM) < post:cant_cli_tipo )
+		l_cli_tipo = SUBSTR(common:csr_string,0,1)
+		;SI ES ADICIONAL (BLOQUES, FRANQUEO, ETC) NO SUMA EN LA CANTIDAD DE LA
+		;VENTA, SOLO INFLUYE EN EL IMPORTE *** MDG
+		IF (EsAdicional == "N") THEN
+			raux_cant_totPorTx[l_cli_tipo] = raux_cant_totPorTx[l_cli_tipo] + \
+			post:adt_raux_cant[l_cli_tipo]
+			raux_cant_totPorCod[l_cli_tipo] = raux_cant_totPorCod[l_cli_tipo] + \
+			post:adt_raux_cant[l_cli_tipo]
+		END IF
+		raux_imp_totPorCod[l_cli_tipo] = raux_imp_totPorCod[l_cli_tipo] + \
+		post:adt_raux_imp[l_cli_tipo]
+		;SI ES GIROS DESGLOSO *** MDG
+		raux_imp_totPorTx[l_cli_tipo] = raux_imp_totPorTx[l_cli_tipo] + \
+		post:adt_raux_imp[l_cli_tipo]
+		indice = indice + 1
+		CALL csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+	END WHILE
+	;TOTALES GENERALES
+	;SI ES ADICIONAL (BLOQUES, FRANQUEO, ETC) NO SUMA EN LA CANTIDAD DE LA
+	;VENTA, SOLO INFLUYE EN EL IMPORTE *** MDG
+	IF (EsAdicional == "N") THEN
+		raux_ccons_totPorCod = raux_ccons_totPorCod + post:adt_raux_ccons
+		raux_ccons_totPorTx = raux_ccons_totPorTx + post:adt_raux_ccons
+	END IF
+	raux_icons_totPorCod = raux_icons_totPorCod + post:adt_raux_icons
+	raux_icons_totPorTx = raux_icons_totPorTx + post:adt_raux_icons
+
+END SUB
+
+/*******/

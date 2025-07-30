@@ -1,0 +1,157 @@
+/****o* Pendientes de agrupación/OFB:post:TOTSlista_prod_stock
+* NOMBRE
+*   OFB:post:TOTSlista_prod_stock
+* DESCRIPCION
+*   Genera el reporte de stock de merchandising
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-454
+* SOURCE
+*/
+#include "posttots.h"
+
+SUB post:TOTSlista_prod_stock
+	LOCAL copias_aux LIKE siaf:i //para cant. de copias del listado.
+	LOCAL l_mayo LIKE siaf:i
+	LOCAL l_mino LIKE siaf:i
+	
+	//cantidad de elementos cargados en los picklist mayoristas y minoristas
+	l_mayo = 0
+	l_mino = 0
+	
+	CDS SELECT FROM DSC:adt_stock_table BECOMES DSC:adt_stock_context \
+		WHERE post:adt_stock_stock > 0
+        
+	IF (CDSRETVAL != 0) THEN
+		ERRMSG LST:common:errmsg_list,ERRprodvs_select
+		/* RESET TRAN */
+		CDS ENDSELECT DSC:adt_stock_context
+		CALL csr:file_close(1)
+		RETURN (-2)
+	END IF
+
+	CDS FINDFIRST DSC:adt_stock_context nolock
+	IF (CDSRETVAL != 0 && siaf:modo == "SUCURSAL") THEN
+		/* RESET TRAN */
+		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			ERRMSG LST:common:errmsg_list,"NO HAY PRODUCTOS PARA LISTAR" // FGB 4.11.5: agrego msg
+		END IF
+		CDS ENDSELECT DSC:adt_stock_context
+		CALL csr:file_close(1)
+		RETURN (-2)
+	END IF
+
+	LET siaf:pick_titulo = "stock"
+	
+	//Creo picklist para guardar los clientes mayoristas y minoristas a mostrar por pantalla
+	CALL csr:f_sadroppl(siaf:pick_titulo)
+	CALL CSR:f_sanewpl siaf:pick_titulo PIC:stock
+	
+	//Creo picklist para guardar los cliente mayoristas
+	CALL csr:f_sadroppl("stockMayo")
+	CALL csr:f_sanewpl("stockMayo",PIC:stockMayo)
+	
+	//Creo picklist para guardar los cliente minoristas
+	CALL csr:f_sadroppl("stockMino")
+	CALL csr:f_sanewpl("stockMino",PIC:stockMino)
+    
+	siaf:i = 1
+	siaf:cta_hojas = 1
+	
+	LET tmp_stock_coddep = 99
+	DO
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+		
+		CDS EXTRACT DSC:adt_stock_context ALL
+		CDS UNLOCK DSC:adt_stock_context
+	        
+		IF (adt_stock_coddep.NUMCHARS != 0) THEN
+			CALL MISCcons_prod_stock
+			
+			IF (RETVAL == 0 ) THEN
+				l_mayo = l_mayo + 1
+			ELSE
+				l_mino = l_mino + 1
+			END IF
+		END IF
+	 	CDS FINDNEXT DSC:adt_stock_context NOLOCK
+  LOOP
+	
+	CDS ENDSELECT DSC:adt_stock_context
+	FYIMSG CLEAR
+
+	CLEARFIELD common:csr_string
+	
+	IF (siaf:pantalla_impreso == "P") THEN
+		//llamo a la rutina que prepara los pick para ver en pantalla
+		CALL post:MISClst_Merchan_P(l_mayo,l_mino)
+	ELSE
+		//llamo a la rutina que prepara los pick para la impresion
+		CALL post:MISClst_Merchan_I(l_mayo,l_mino)
+	END IF
+
+	IF (siaf:pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string, "%s%s", common:dirTemporal, "stock.lis"
+		KEYDEF PUSH
+		CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+		KEYDEF POP
+	ELSE
+		FYIMSG CLEAR
+		CALL CSR:file_close(1)
+
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "stock.lis"
+		LET copias_aux = 1
+
+		//gpb:NI50752
+		CALL tes:MISCflowPDF("stock.lis")
+		IF (siaf:pantalla_impreso != "P") THEN
+			//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("stock.lis")
+
+;;				/* Se modifica el manejo del archivo temporal para que lo abra y cierre para
+;;				cada copia a imprimir ya que como lo hacía antes sólo imprimía una copia. Al imprimir
+;;				una segunda, el puntero del achivo estaba al final y asumía que había terminado, por lo
+;;				tanto no imprimía nada más - Gabriel Falciola*/
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;					IF (RETVAL < 0) THEN
+;;						MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;						RETURN 
+;;					END IF 
+;;					PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;					IF (PRTRETVAL != 0) THEN
+;;						FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;						MSGBOX siaf:mensaje,0x00000000,"Error"
+;;					END IF 
+;;					LET copias_aux = copias_aux + 1
+;;					CALL CSR:file_close(7) 			
+;;				END WHILE
+			END IF
+		END IF
+	END IF
+
+	CALL post:MISCfile_exists(common:tmpDirTemporal)
+	IF (RETVAL == 0)  THEN
+		CLEARFIELD common:csr_string	
+    FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "stock.lis"
+    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+    EXEC common:csr_string
+	END IF
+
+END SUB
+
+/*******/

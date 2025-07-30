@@ -1,0 +1,94 @@
+/****o* Oficios Judiciales/OFB:siaf:CDSoficio_caida
+* NOMBRE
+*   OFB:siaf:CDSoficio_caida
+* DESCRIPCION
+*   Elimina todos los oficios del lote en la tabla OfiJudi que ya esten grabados en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		siaf:PRES_7210
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2097
+*		SC50368
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSoficio_caida
+	LOCAL l_retval_ofijudi LIKE lib:err_retval
+	LOCAL l_retval_presudet LIKE lib:err_retval
+	LOCAL cant_reg LIKE siaf:adt_oju_presnro 
+	LOCAL l_cant LIKE siaf:i
+	LOCAL l_oju_fecha LIKE siaf:adt_oju_fecha
+	LOCAL l_oju_hora LIKE siaf:adt_oju_hora
+	LOCAL l_oju_operator_id LIKE siaf:adt_oju_operator_id
+	LOCAL l_oju_presnro LIKE siaf:adt_oju_presnro
+
+	CDS SELECT FROM DSC:siaf:OfiJudi_tbl BECOMES DSC:siaf:OfiJudi_ctx \
+					WHERE	siaf:adt_oju_fecha == common:system_date \
+					&& siaf:adt_oju_presnro == post:PresNro \
+					&& siaf:adt_oju_operator_id == op:op_operator_id 
+
+	CDS FINDFIRST DSC:siaf:OfiJudi_ctx LOCK
+	l_retval_ofijudi = CDSRETVAL
+	
+	IF (l_retval_ofijudi == 0) THEN
+		/* Si encontró al menos uno, me fijo cuántos son*/
+		cant_reg = 0
+		CDS AGGREGATE DSC:siaf:OfiJudi_ctx COUNT siaf:adt_oju_presnro 
+		CDS EXTRACT DSC:siaf:OfiJudi_ctx siaf:adt_oju_presnro INTO cant_reg	
+		LET l_cant = cant_reg		
+		CDS FINDFIRST DSC:siaf:OfiJudi_ctx LOCK
+	ELSE
+		//No hay oficios a eliminar en el lote
+		CDS ENDSELECT DSC:siaf:OfiJudi_ctx
+		RETURN (0)
+	END IF
+
+	WHILE (l_retval_ofijudi == 0)
+		CDS EXTRACT DSC:siaf:OfiJudi_ctx \
+							siaf:adt_oju_fecha INTO l_oju_fecha \
+							siaf:adt_oju_hora INTO l_oju_hora \
+							siaf:adt_oju_operator_id INTO l_oju_operator_id \
+							siaf:adt_oju_presnro INTO l_oju_presnro
+
+		CDS SELECT FROM DSC:post:TABPresuDeta BECOMES "PresuDet_Ctx" \
+							WHERE	post:fecha == l_oju_fecha \
+							&& siaf:adt_oju_hora == l_oju_hora \
+							&& post:op_operator_id == l_oju_operator_id \
+							&& post:PresNro == l_oju_presnro
+
+		CDS FINDFIRST "PresuDet_Ctx" NOLOCK
+		l_retval_presudet = CDSRETVAL
+	
+		//si existe el registro en la PresuDet entonces lo borro de la OfiJudi
+		IF (l_retval_presudet == 0) THEN
+			CDS DELETE DSC:siaf:OfiJudi_ctx
+			LET l_cant = l_cant - 1
+		END IF
+		CDS ENDSELECT "PresuDet_Ctx"
+	
+		CDS FINDNEXT DSC:siaf:OfiJudi_ctx LOCK
+    l_retval_ofijudi = CDSRETVAL
+	END WHILE	
+	
+	CDS ENDSELECT DSC:siaf:OfiJudi_ctx
+
+	IF (l_cant > 0) THEN
+		//si son iguales entonces no hay oficios cargados en la grilla del presupusto
+		IF (l_cant == cant_reg) THEN
+			RETURN (0)
+		ELSE
+			RETURN (-2)
+		END IF
+	ELSE
+		RETURN (0)
+	END IF
+
+END SUB   
+
+/*******/

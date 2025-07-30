@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:post:SVAL99470
+* NOMBRE
+*   OFB:post:SVAL99470
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99470
+
+	local varl_importe like common:csr_string
+	
+	
+	call post:MISCTotalTransac(siaf:codigo_siaf) 
+		
+ 	IF (estado_presu == 4 && ModalidadCC && post:ImpCC_Min == "S")
+		//calcular el nº del comprobante de imposicion y grabarlo en la presu para tenerlo
+		//al momento de la impresion del mismo y para poder mandarlo al switch...
+		CALL post:MISCobtSecCIMPO
+		Fprint NroCompImpos "%04.4s%08.8s",common:br_CEC,adt_codseq_nro_final
+		CALL CDSpresuNroCIMPO
+		//siaf:imprime_comprobante = "D"
+		//SC 50389 - Se deberá imprimir el comprobante de imposicion luego de realizarse el viaje al HOST
+		//call DOCSCompImpos
+
+
+		//Recupero los datos de la tx original
+		CALL CDStran_PresuDet(99470)
+    		post:tira_auditora = "N"
+		
+	END IF
+	//PS 9337 - Enviar el importe financiado en cero cuando es orden de compra, pero
+	// guardar el importe del remito.
+	if (post:consulta_ordenCM == "S") then
+		post:Imp_FactDif = post:consumo_OC
+	else
+		post:Imp_FactDif = siaf:importe
+	end if
+	
+	// post:Imp_FactDif = siaf:importe
+	
+	call post:CDSpresu_modalidadCM
+
+	if (post:estado_presu == 4)
+ 	
+	 	call post:CDSpresu_climed_load
+
+		varl_importe = post:anticipo_CM * 100
+		fprint post:consumo_operacion,"%s",CLIMED_RESTA
+		//Solicitud de Cambio 50072 - No se usa el credito en OC
+		if (post:consulta_ordenCM == "S") then
+			varl_importe = 0
+		else
+			varl_importe = post:Imp_FactDif * 100
+		end if
+		fprint post:financiado_operacion,"%s%012.12s",CLIMED_SUMA,varl_importe
+ 	
+		//giros:codigo_procesamiento = 997050
+		//Para la V40.00 se agrega nuevo codigo de proc. para que puedan convivir las versiones anteriores
+		giros:codigo_procesamiento = 997070
+		
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+  
+		call post:MISCclimed_it_compra
+		if (retval < 0 )
+			return -2
+		end if
+	end if
+   		
+END SUB
+
+/*******/

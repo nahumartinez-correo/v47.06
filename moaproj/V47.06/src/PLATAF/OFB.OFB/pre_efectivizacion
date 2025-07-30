@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:plataf:pre_efectivizacion
+* NOMBRE
+*   OFB:plataf:pre_efectivizacion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+/////////////////////////////////////////////////////////////
+// Dentro de esta rutina, realizo los pasos necesarios pa_ //
+// ra comenzar el proceso de efectivizacion del presupues_ //
+// to. A partir de este punto, y con viento a favor, no    //
+// deberia haber mas intervencion del operador sino hasta  //
+// la impresion del formulario fiscal...                   //
+/////////////////////////////////// FGB 13.11.2002 //////////
+
+SUB plataf:pre_efectivizacion
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	//fgb: verifico que los BOB's sigan estando habilitados...
+	//esta validacion ya no se realiza en la PRES cuando esta confirmando.
+	CALL post:CDStienePagoFacil("")
+	IF (RETVAL != 0) THEN
+		CALL post:MISCget_version_bob(2)
+		IF ( RETVAL < 0 ) THEN
+			;PS9661 Borro la tabla TotMedioPago para que no queda sucia. *** MDG
+			CALL post:CDSdelete_TotMedPag
+			RETURN -2
+		END IF
+		//Me fijo la version de Bob
+		CALL csr:date_compare(common:system_date,post:fecha)
+		IF ( RETVAL != 0 ) THEN
+			LET post:fecha = common:system_date
+			
+			//gbp:NI50455 CORREO PAGOS
+			//MSGBOX "La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de Pago Facil",OFB_OK,"Error"
+			FPRINT l_descPagoFacil,"La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de %s",DSC:post:descPagoFacil	
+			MSGBOX l_descPagoFacil,OFB_OK,"Error"
+			
+			;PS9661 Borro la tabla TotMedioPago para que no queda sucia. *** MDG
+			CALL post:CDSdelete_TotMedPag
+			RETURN -2
+		END IF
+	END IF
+	
+	/*Actualizo los valores en la Presu para luego journalizarlos - Gabriel Falciola*/
+	CALL post:CDSpresu_vuelto_act
+	
+	CLEARFIELD cant_total
+	
+	CALL CDSset_pasadaMP(op:op_operator_id,SEGUNDA_PASADA)
+	CALL CDSset_curr_state(op:op_operator_id,CONFIRMATION)
+	
+	STARTTRAN
+	;bug 14376. Debido a que la MISCtratam_redondeo lee la presudet, todos los campos
+	;tomados por la lectura pasan a formar parte de la transacción del menú principal.
+	;Esto ocaciona infinidades de problemas para las siguientes transacciones. *** MDG
+	
+	//Solicitud 50170: Genero la Diferencia en la DifFact y la actualizo en la PresuDet/PresuDetOC.
+	CALL post:MISCtratam_redondeo
+	UNGETKEY RT_SEND
+	ENDTRAN
+	//Se limpian los flags antes de empezar con las transacciones
+	CALL tlr:MISCendtran_nowait
+
+END SUB
+
+/*******/

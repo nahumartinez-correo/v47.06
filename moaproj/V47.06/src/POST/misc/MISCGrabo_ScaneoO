@@ -1,0 +1,251 @@
+/****o* Novedades de T&T/OFB:post:MISCGrabo_ScaneoO
+* NOMBRE
+*   OFB:post:MISCGrabo_ScaneoO
+* DESCRIPCION
+*   Cada vez que se realiza una imposición o una devolución interdicta o
+*   una devolución a Rebut se graba el Scaneo O en la tabla NovTT.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:CDSrecup_scaneoO, LST:post:LISTscaneoO_IPS
+* REFERENCIADO POR
+*   OFB:post:MISCverif_ScaneoO,OFB:post:CDSGrabo_ScaneoUP
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* NI 50562 - Reporte de Piezas pendientes de expedicion
+ * SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCGrabo_ScaneoO
+	/*MFM - Cada vez que se realiza una imposición o una devolución interdicta o
+	una devolución a Rebut se graba el Scaneo O*/
+	
+	/*MFM - Agosto 2000 - Grabo nuevos campos para hacer los filtros correspondientes en 
+	el cierre de contenedor y/o saca*/
+
+	LOCAL fecha LIKE post:adt_stockp_recepfech
+	LOCAL hora LIKE post:adt_stockp_recephora
+	LOCAL fecha_hora LIKE post:adt_novtt_fecha
+	
+  /*Concateno la fecha y la hora para grabarlas en el scaneo*/
+  fecha = tlr:jnl_date
+  hora = tlr:jnl_time
+  FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora
+  CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx WHERE \
+	  adt_novtt_op == tlr:jnl_operator && \
+	  adt_novtt_sequence == tlr:jnl_sequence && \
+	  adt_novtt_fecha == fecha_hora && \
+	  adt_novtt_tipo == 15
+    
+  CDS FINDFIRST DSC:NovTT_ctx LOCK
+  LET lib:err_retval = CDSRETVAL
+  CDS CLEARBUFFER DSC:NovTT_ctx
+    
+	adt_novtt_op = tlr:jnl_operator
+	adt_novtt_sequence = tlr:jnl_sequence
+	/*Resguardo el sequence para actualizar luego este registro*/
+	post:sequence_aux = adt_novtt_sequence  
+	adt_novtt_tipo = 15
+	adt_novtt_subtipo = 0
+	adt_novtt_fecha = fecha_hora
+  //NI50562 - Se necesita tener el campo FECHA Y HORA DE IMPOSICION POR SEPARADO para mostrarlos en el Reporte dePiezas Pendientesde Expedcion
+  adt_novtt_fecha_rep = substr(adt_novtt_fecha,0,8)
+  adt_novtt_hora_rep  = substr(adt_novtt_fecha,8,6)
+  adt_novtt_tyt = substr (adt_novtt_pieza,0,2)
+    	                  
+	/*MFM Enero 2001 - Se hace una modificación para que el campo adt_novtt_uneg tenga siempre longitud 6*/
+	SELECT (siaf:codigo_siaf)
+		CASE 99215
+			//Rrecepcion UP
+			FPRINT adt_novtt_uneg "%06.6e", CliUP_UniNeg    	
+		BREAK
+		CASE 99235
+			//Clasificacion UP
+			FPRINT adt_novtt_uneg "%06.6e", adt_stockpUP_UniNeg
+			//extraigo la fecha del scaneo L
+			CALL CDSdate_scaneoL(adt_novtt_pieza)
+			fecha = substr(adt_novtt_fecha,0,8)
+			hora = substr(adt_novtt_fecha,8,6)
+			hora = hora - 2
+			FPRINT adt_novtt_fecha,"%8.8e%6.6e", fecha, hora
+		BREAK
+		CASE ELSE
+			FPRINT adt_novtt_uneg "%06.6e", common:br_CUN
+		BREAK
+	END SELECT
+        		    
+    IF (siaf:codigo_siaf == 18901)
+    	post:adt_novtt_cliente = "55555555"
+    END IF
+        		    
+    
+	/*Para bloque horario 2*/
+	IF (jnl_servicio_en_bh2 != "S") THEN
+		//adt_novtt_ruta = common:sucursal_activa
+		/*MFM - PS5939*/
+		adt_novtt_ruta = "     "
+	ELSE
+		adt_novtt_ruta = "00002"
+	END IF
+	/*MFM - REQ 3621*/
+	/*MFM - Req 4289 - Anula al 3621
+	IF (adt_novtt_cliente == "") THEN
+		adt_novtt_cliente = "          "
+	END IF*/
+ 	/*MFM (5.11.2001) Se vuelven atrás todas las modificaciones solicitadas con respecto a cliente cuenta correntista*/
+	//adt_novtt_cliente = "          "
+	
+	//MFM (05.2020)Cuando se invoca desde recepcion up y es pieza prepaq el campo adt_novtt_cliente tiene valor (cliente generico 55555555)
+ 	if (post:adt_novtt_cliente.numchars == 0)
+			post:adt_novtt_cliente = "          "
+	endif
+	
+	IF (common:br_opTT.NUMCHARS == 0)
+		adt_novtt_optt = 999999
+	ELSE
+		FPRINT adt_novtt_optt "%06.6e", common:br_opTT
+	END IF
+    
+	adt_novtt_promesa = 3
+	adt_novtt_en_cond = "S"
+	adt_novtt_listo = "N"
+	
+	adt_novtt_linea = ""
+	adt_novtt_op2 = ""
+	adt_novtt_excep = "N"
+	adt_novtt_excep_exis = ""
+
+	//Si el escaneo se genera en una Operacion Web el mismo no se debe transmitir, por lo tanto
+	//se setea como transmitido al momento de generarlo
+	IF (siaf:codigo_siaf == 6680)
+		adt_novtt_trans = "T"
+		adt_novtt_operWEB = "S"
+	ELSE
+		adt_novtt_trans = "F"
+		adt_novtt_operWEB = "N"
+	END IF
+
+
+	/*MFM (5.11.2001) Se agrega un nuevo campo para cliente cuenta correntista*/
+	IF (adt_novtt_sap == "") THEN
+		//PS 6924 - Para cliente minorista - medio - up
+		IF (siaf:codigo_siaf == 11113) THEN //CARTA DOCUMENTO LABORAL
+			adt_novtt_sap = 10827
+		ELSE
+			//gpb:Evaluo si es un Cliente Medio
+			IF (post:cli_tipo == 5) THEN
+				//Verifico que exista el servicio asociado al cliente y que este habilitado
+				CALL post:MISCverif_ServClient
+				IF (RETVAL == 0) THEN
+					adt_novtt_sap = adt_servcli_sap
+				ELSE
+					adt_novtt_sap = "     "
+				END IF
+			ELSE
+				adt_novtt_sap = "     "
+			END IF
+		ENDIF
+	ELSE
+		//PS 6924  - Para cuenta correntista tambien
+		CALL csr:trimfield (post:adt_jnl_desc)
+		IF (post:adt_jnl_desc == "CARTA DOCUMENTO LABORAL") THEN
+			adt_novtt_sap = 10827
+		ELSE
+			//gpb:Evaluo si es un Cliente Medio
+			IF (post:cli_tipo == 5) THEN
+				//Verifico que exista el servicio asociado al cliente y que este habilitado
+				CALL post:MISCverif_ServClient
+				IF (RETVAL == 0) THEN
+					adt_novtt_sap = adt_servcli_sap
+				END IF
+			END IF
+		END IF
+		IF (adt_novtt_sap.numchars < 5) THEN
+			FPRINT adt_novtt_sap,"%05.5s",adt_novtt_sap
+		END IF
+	END IF
+
+	//IPS - 50387 CALCULO FECHA Y HORA IPS (sumo 3 horas)
+	CALL post:MISCsumo_hora(fecha, hora, 3)
+	post:adt_novtt_ips_trans = "N"
+	
+	CDS APPEND DSC:NovTT_ctx FLD:adt_novtt_op \
+		FLD:adt_novtt_sequence \
+		FLD:adt_novtt_codseq \
+		FLD:adt_novtt_tipo \
+		FLD:adt_novtt_subtipo \
+		FLD:adt_novtt_fecha \
+		FLD:adt_novtt_uneg \
+		FLD:adt_novtt_ruta \
+		FLD:adt_novtt_cliente \
+		FLD:adt_novtt_sap \
+		FLD:adt_novtt_pieza \
+		FLD:adt_novtt_promesa \
+		FLD:adt_novtt_opcional \
+		FLD:adt_novtt_optt \
+		FLD:adt_novtt_guia_cont \
+		FLD:adt_novtt_corte \
+		FLD:adt_novtt_grupo \
+		FLD:adt_novtt_grupo_desc \
+
+  CDS APPEND DSC:NovTT_ctx FLD:adt_novtt_apertura \
+		FLD:adt_novtt_apert_desc \
+		FLD:adt_novtt_saca_tipo \
+		FLD:adt_novtt_saca_desc \
+		FLD:adt_novtt_despacho \
+		FLD:adt_novtt_desc \
+		FLD:adt_novtt_contenedor \
+		FLD:adt_novtt_saca \
+		FLD:adt_novtt_desp \
+		FLD:adt_novtt_en_cond \
+		FLD:adt_novtt_listo \
+		FLD:adt_novtt_trans \
+		FLD:adt_novtt_linea \
+		FLD:adt_novtt_op2 \
+		FLD:adt_novtt_simp_esp \
+		FLD:adt_novtt_guia_saca \
+		FLD:adt_novtt_excep \
+		FLD:adt_novtt_excep_exis \
+		FLD:adt_novtt_est_pieza
+                             
+	//50387 -IPS
+	CDS APPEND DSC:NovTT_ctx FLD:adt_novtt_peso_kg  \
+		op:op_login_id AS FLD:adt_novtt_op_id \
+		post:jnl_ips_pais_cod AS FLD:adt_novtt_ips_pais \
+		post:jnl_ips_cont_cod AS FLD:adt_novtt_ips_cont \
+		post:adt_serv_ips_tipo  AS FLD:adt_novtt_ips_tipo \
+		post:adt_serv_ips_class AS FLD:adt_novtt_ips_class \
+		post:adt_serv_ips_cont  AS FLD:adt_novtt_ips_dm \
+		FLD:adt_novtt_ips_item \
+		FLD:adt_novtt_ips_office \
+		op:op_node_id AS FLD:adt_novtt_terminal \
+		FLD:adt_novtt_ips_VDimp \
+		FLD:adt_novtt_ips_fecha \
+		FLD:post:adt_novtt_ips_trans
+		
+	//Para Operaciones WEB (MercadoLibre)
+	CDS APPEND DSC:NovTT_ctx \
+		FLD:post:adt_novtt_operWEB
+      //NI 50562 - Reporte de Piezas pendientes de expedicion
+    CDS APPEND DSC:NovTT_ctx    FLD:adt_novtt_fecha_rep \
+                                FLD:adt_novtt_hora_rep  \
+                                FLD:adt_novtt_tyt
+    //NI 50552 - se graba el campo que indica si la pieza es entregada en la misma sucursal
+		CDS APPEND DSC:NovTT_ctx \
+		post:ent_misma_suc 
+                           
+	IF (lib:err_retval == -801) THEN
+		CDS INSERT DSC:NovTT_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:NovTT_ctx LOCK
+	END IF
+  
+	CDS UNLOCK DSC:NovTT_ctx
+	CDS ENDSELECT DSC:NovTT_ctx
+             
+END SUB
+
+/*******/

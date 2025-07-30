@@ -1,0 +1,172 @@
+/****o* Pendientes de agrupación/OFB:tes:MISClist_oper
+* NOMBRE
+*   OFB:tes:MISClist_oper
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISClist_oper
+    local i like siaf:i      // contador
+    local varl_cant_locks like siaf:i   // cantidad de registros lockeados
+    local tesoro_cerrado like tes:rend_marca_cierre
+
+	/* guarda los cajero que se encuentran abiertos el dia de hoy */
+    CALL tes:CDSestado_cajas(common:system_date,"IQUAL")
+    tes:cant_open_caj = retval
+	/* de los cajeros abiertos dejo solo los que no tengan hecha la rendicion */
+    if (tes:cant_open_caj > 0) then
+        call tes:MISCsaco_rendidos(tes:cant_open_caj)
+        let tes:cant_open_caj = retval
+    end if
+	/* verifica si tiene que agregar el tesoro a la lista */
+    tesoro_cerrado = "N"
+    CALL tes:CDSadd_teso
+    if (retval < 0)
+       /* no es mas un impedimiento
+       move "EL TESORO ESTA CERRADO" to common:csr_string
+       errmsg common:errmsg_list FLD:common:csr_string
+       return (-2)
+       */
+       let tesoro_cerrado = "S"
+    end if
+
+	/* selecciona los operadores de caja que se encuentran identificados */
+	/* proy POST: se agregan los operadores con merchandizing (retaguardia)*/
+	/* Si es tesorero y el tesoro esta cerrado no le permite hacerse un pase
+	si mismo */
+    IF (op:op_tesoro == "S" && op:op_tlr_auth == "X" && tesoro_cerrado == "N") THEN
+    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_node_id > " " && op:op_branch_id == op:op_branch_id && \
+       (op:op_tlr_auth == "X" || op:op_ret_auth == "X") && \
+       op:op_borrado_logico != "S"
+    ELSE
+		/* Si es una extraccion del fondo, me puedo pasar a mi mismo */
+		if (siaf:codigo_siaf == 8990) then		
+    
+	    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+	       cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+	       WHERE op:op_node_id > " " && \
+	       op:op_branch_id == op:op_branch_id && \
+	       (op:op_tlr_auth == "X" || op:op_tesoro == "S" || \
+	        op:op_ret_auth == "X") && \
+	        op:op_borrado_logico != "S"
+	    else
+	    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+	       cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+	       WHERE op:op_node_id > " " && \
+	       op:op_branch_id == op:op_branch_id && \
+	       op:op_login_id != op:op_login_id && \
+	       (op:op_tlr_auth == "X" || op:op_tesoro == "S" || \
+	       op:op_ret_auth == "X") && \
+	       op:op_borrado_logico != "S"
+		end if	    
+    END IF
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+    let lib:err_retval = cdsretval
+    if (lib:err_retval == -801) // no hay registros que coincidan
+       return (-2)
+    end if
+	/* arma picklist con los operadores identificados y con cajas abiertas */
+    call csr:f_sanewpl("operators",PIC:tes:oper_salida)
+    let varl_cant_locks = 0
+    DO
+    	if (lib:err_retval != -803) // si el registro no esta lockeado
+      		CALL tes:CDSextract_op
+          	let i = 1
+          	do
+            	if (i > tes:cant_open_caj) then
+                	break
+	            end if
+             	if (texto_aux[i] == op:adt_operator_id)
+             		/*Si el operador no es tesoro, ni subtesoro...solo puede hacer la salida a un operador
+             		que sea tesoro, subtesoro o supervisor. Si es tesoro o subtesoro puede hacerle a cualquiera*/
+             		/* Si estoy NO estoy haciendo el cierre Guiadpo */
+             		if (tes:en_cierre != "S") then
+	             		if ((op:op_tesoro == "S") || (op:op_subtesoro == "S") || (op:op_tes_auth == "X") || \
+	             		((op:op_tesoro != "S" && op:op_subtesoro != "S" && op:op_tes_auth != "X") && \
+	             		(op:adt_tesoro == "S" || op:adt_subtesoro == "S" || op:adt_tes_auth == "X")) )
+		                	fprint common:csr_string "%-14s %5.5s %5.5s %15s",fld:op:adt_login_id, fld:op:adt_branch_id, \
+		                	fld:op:adt_operator_id,fld:op:adt_display_tmp
+		                	call csr:f_saaddpl("operators",common:csr_string)
+		                	break
+		                end if
+		            else
+		            	;if ((op:op_tesoro == "S") || (op:op_subtesoro == "S") || \
+		            	/* Solo le puede hacer el pase al tesorero o subtesoro */
+	             		;if (op:adt_tesoro == "S" || op:adt_subtesoro == "S")
+	             		
+						/* Si es un cierre guiado solo le puede pasar al tesorero o subtesorero */
+						/* Si es cierre guiado y esta en un pase de valores, solo a tesorero o Jefe de Oficina*/
+						if ((siaf:codigo_siaf == 8580 && (op:adt_tesoro == "S" || op:adt_sup_auth == "X" || op:adt_tes_auth == "X")) \
+						|| (siaf:codigo_siaf != 8580 & (op:adt_tesoro == "S" || op:adt_subtesoro == "S" || \
+						op:adt_tes_auth == "X"))) then
+							
+						;((op:op_operator_id != op:adt_operator_id) && op:adt_tes_auth == "X")))) then
+	             		
+		                	fprint common:csr_string "%-14s %5.5s %5.5s %15s",fld:op:adt_login_id, fld:op:adt_branch_id, \
+		                	fld:op:adt_operator_id,fld:op:adt_display_tmp
+		                	call csr:f_saaddpl("operators",common:csr_string)
+		                	break
+		                end if
+					end if
+		                
+             	end if
+             	let i = i + 1
+          	loop
+		else
+  			/* registro de profile lockeado (imposible determ. si esta ident.) */
+      		let varl_cant_locks = varl_cant_locks + 1
+       	end if
+       	clearfield common:csr_string
+       	CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+       	let lib:err_retval = cdsretval
+       	if (lib:err_retval == -801 || lib:err_retval == -802)
+        	break
+       	end if
+	LOOP
+    CDS ENDSELECT DSC:op:adt_op_context
+	/* aviso de posibles receptores de pases fuera de la lista */
+    if (varl_cant_locks > 0) then
+    	let drv:error_msg = "Existen %d cajeros fuera de la lista"
+    	fprint drv:error_msg "%s\n(Imposible determinar estado de ingresado)" \
+    	drv:error_msg
+    	msgbox fld:drv:error_msg,OFB_OK,"AVISO"
+    end if
+	/* muestra picklist y se realiza eleccion */
+    call csr:f_sadopl "operators" common:csr_string
+    if (retval < 0)
+       	clearfield tes:login_dest
+       	refresh tes:login_dest
+       	return (-1)
+    else
+    	tes:op_id  = SUBSTR(common:csr_string,21,5)
+       	tes:op_suc = SUBSTR(common:csr_string,15,5)
+       	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       	cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       	WHERE op:op_branch_id == tes:op_suc && op:op_operator_id == tes:op_id && \
+       	op:op_borrado_logico != "S"
+       	CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+       	CALL tes:CDSextract_op     /*hace el extract al profiles*/
+       	CDS EXTRACT DSC:op:adt_op_context FLD:op:op_login_id INTO FLD:op:adt_login_id \
+       	FLD:op:op_operator_id INTO FLD:tes:operator_id_dest
+
+       	CDS ENDSELECT DSC:op:adt_op_context
+    end if
+	/* destrye picklist - libera memoria */
+    call csr:f_sadroppl("operators")
+END SUB
+
+/*******/

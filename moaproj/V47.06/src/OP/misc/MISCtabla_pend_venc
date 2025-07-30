@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:op:MISCtabla_pend_venc
+* NOMBRE
+*   OFB:op:MISCtabla_pend_venc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCtabla_pend_venc(OperadorID, ACCION)
+    local LRetVal like lib:err_retval
+    local LFecha like common:system_date
+    local LMensaje like common:csr_string
+    local LContador like op:op_operator_id
+    local LTabla like op:adt_temp_tabla
+    local LCantDias like op:idx
+    local LContexto like common:csr_string
+    local LEstado like common:csr_string
+
+    LET FLD:LContexto = "ModifPendientesCtx"
+
+    let FLD:LContador = 0
+
+    let FLD:LCantDias = (FLD:op:adt_validez_tablas * -1)
+    ;let FLD:LCantDias = (FLD:op:adt_validez_tablas * 1)
+    CALL csr:date_add(common:system_date,FLD:LCantDias,"D",FLD:LFecha)
+
+    ;SMC Por cada tabla que este vencida
+    CDS SELECT FROM DSC:op:adt_temporal_table BECOMES FLD:LContexto \
+        WHERE FLD:op:adt_temp_estado == "PENDIENTE" && \
+        FLD:op:adt_temp_op != OperadorID && \
+        FLD:op:adt_temp_fecha <= FLD:LFecha
+
+    CDS FINDFIRST FLD:LContexto NOLOCK
+    let FLD:LRetVal = CDSRETVAL
+
+    WHILE (FLD:LRetVal == 0)
+        CDS EXTRACT FLD:LContexto \
+            op:adt_temp_tabla,\
+            op:adt_temp_op,\
+    	    op:adt_temp_fecha,\
+    	    op:adt_temp_hora,\
+            op:IND_temp_tran    	    
+
+        ;SMC Por cada tabla, checkeo los permisos para ver si estoy autorizado
+        ;    a borrarlas
+        CDS SELECT FROM DSC:op:adt_permisos_table BECOMES DSC:op:adt_permisos_ctx \
+            WHERE op:adt_permisos_op == OperadorID && \
+                  op:adt_permisos_tabla == FLD:op:adt_temp_tabla
+        CDS FINDFIRST DSC:op:adt_permisos_ctx NOLOCK
+
+        ;Si tengo permisos sobre la tabla pendiente
+        if (CDSRETVAL == 0) then
+            if (ACCION == "RECHAZO") then
+                let FLD:LEstado = "RECHAZADO"
+                CALL post:CDSupdate_temporal(FLD:LEstado)
+
+                ;Seteo Los Valores a Journalizar
+                ;post:MISCSeteoTablasIND(FLD:op:adt_temp_tabla)
+                
+           		;SMC - journalizacion Rechazo de Modificacion Pendiente
+                let tlr:INDdcol_scrn[0] = 0
+       		    MOVE "" TO siaf:adt_mot_desc
+           		let FLD:tlr:INDjnl_append = OFB:op:JNLRechazosModifPend
+           		let siaf:codigo_siaf = 97060
+           		call tlr:JNLout_of_tran
+            endif
+            ;Si tengo permisos, aumento el contador
+            let FLD:LContador = FLD:LContador + 1
+        endif
+
+        CDS ENDSELECT DSC:op:adt_permisos_ctx
+
+        ;SMC Sigo con la siguiente tabla
+        CDS FINDNEXT FLD:LContexto NOLOCK
+        let FLD:LRetVal = CDSRETVAL
+    END WHILE
+    CDS ENDSELECT FLD:LContexto
+
+    return (FLD:LContador)
+END SUB
+
+/*******/

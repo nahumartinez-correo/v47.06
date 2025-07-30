@@ -1,0 +1,136 @@
+/****o* Lista de Giros/OFB:giros:PBingresarLG
+* NOMBRE
+*   OFB:giros:PBingresarLG
+* DESCRIPCION
+*   Boton de Ingreso a la Carga Manual de Lista De Giros.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No se pudo obtener el nro de lista de giros.
+*   RETURN (-2): No pudo encontrar relacion tipo de Giro de la trx.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:BUTCargaListaGiros
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girospb.h"
+
+SUB giros:PBingresarLG
+    LOCAL l_last_button LIKE drv:last_button
+    LOCAL l_mensaje_log LIKE common:csr_string
+    LOCAL l_registro_log LIKE common:csr_string
+    LOCAL l_nombre_transac LIKE siaf:nombre_transac
+
+    l_nombre_transac = siaf:nombre_transac //reservo el nombre de la trx original.
+
+    l_last_button = drv:last_button //drv:button = 1
+    drv:button = drv:last_button    
+    CALL drv:but_down_disable
+
+    CALL CSR:proc_list(F_CLEAR,LST:giros:LISTcamposPant_lg)    
+    CALL giros:MISCclear_array_lg //limpia campos array que se graba en sesion_lg
+
+    //SC 50170-FACTURACION
+    CLEARFIELD giros:ComisionSinIva4_fld
+    CLEARFIELD giros:TasaSinIva4_fld 
+
+    CLEARFIELD post:sobretasa
+    CLEARFIELD post:sobretasa_prod
+    CLEARFIELD post:sobretasa_opc
+    
+    SELECT (giros:tipo_ing_lg)
+        CASE "P" //Postales
+        	//cgw:PS10286 - AUT-1683
+            //POPUP giros:SCRNlgPostal,giros:PRESlg_post,giros:PCOLlg_carga_manual,giros:SVALlg_post  
+            CALL drv:MISCpopup(scr:giros:SCRNlgPostal,ofb:giros:PRESlg_post,ofb:giros:PCOLlg_carga_manual,ofb:giros:SVALlg_post,LST:giros:BUTPostalManualLG)
+            BREAK
+        CASE "T" //Telegraficos
+            //cgw:PS10286 - AUT-1683
+            //POPUP giros:SCRNlgTelegrafico,giros:PRESlg_tele,giros:PCOLlg_carga_manual,giros:SVALlg_tele 
+            CALL drv:MISCpopup(scr:giros:SCRNlgTelegrafico,ofb:giros:PRESlg_tele,ofb:giros:PCOLlg_carga_manual,ofb:giros:SVALlg_tele,LST:giros:BUTTelegrafManualLG)
+            BREAK
+        CASE ELSE
+            MSGBOX "No hay ningún tipo de giro seleccionado.",0x00,"Error"
+            drv:button = l_last_button
+            CALL drv:but_up_enable
+            RETURN
+            BREAK
+    END SELECT
+
+    siaf:nombre_transac = l_nombre_transac //recupero el nombre de la trx original.
+
+    IF (LASTKEY != RT_ESC) THEN
+        //Lo hago para recuperar el dato
+        IF (giros:nro_sesion_lg.NUMCHARS == 0) THEN
+            DUPFIELD giros:nro_sesion_lg
+            SWAPDUP giros:nro_sesion_lg
+        END IF
+                
+        IF (giros:nro_sesion_lg.NUMCHARS == 0) THEN
+            //Llamo a la rutina que consulta en la Presu si ya existe el nro de sesion de lista de giros 
+            CALL giros:CDSPresuNroSesionLG                    
+            IF (RETVAL != 0) THEN
+                //Llamo a la rutina que me calcula el nro de sesion de lista de giros
+                CALL giros:MISCcec_seq_LG 
+                IF (RETVAL != 0) THEN
+                	LET l_mensaje_log = "NO SE PUDO OBTENER EL NRO DE LA LISTA DE GIROS."
+        	        FPRINT l_registro_log "Mensaje de Error: %s",l_mensaje_log
+        	        drv:button = l_last_button
+            		call drv:but_up_enable
+            	    RETURN (-2)
+                ELSE
+                    //Seteo el flag de importacion de lista de giros
+                    SETFLAG giros:giros_importacion,proc_imp_lg
+                    RESETFLAG giros:giros_importacion,proc_em_lg
+                    LET post:tipo_giro_presu = "LG" 
+                    //Graba en Presu
+                    CALL giros:CDSPresuImpLG 
+                END IF
+            END IF
+        END IF
+
+        //Obtengo la secuencia de los registros de la Lista de Giros
+        CALL post:CDSobtiene_secuen("TRXLG")
+        IF (RETVAL != 0) THEN
+        	LET l_mensaje_log = "NO SE PUDO OBTENER EL NRO DE TRANSACCION DEL REGISTRO DE LA LISTA DE GIROS."
+        	FPRINT l_registro_log "Mensaje de Error: %s",l_mensaje_log
+            drv:button = l_last_button
+            call drv:but_up_enable
+            RETURN (-2)
+        END IF     
+        //resultado va en post:adt_codseq_nro
+        giros:nro_trx_lg = post:adt_codseq_nro
+
+        //Llamo a la rutina que graba el registro del giro en la tabla sesion_lg
+        LET giros:tipo_giro_fld = giros:tipo_ing_lg
+        LET giros:estado_lg = "I"      
+        LET giros:a_emitir = "N"  
+
+        //Instancia algunos campos necesarios que no estababan instanciados, para grabar en sesion_lg
+        CALL giros:MISCdatos_sesion_lg
+        IF (RETVAL < 0) THEN
+        	RETURN (-2)
+        END IF
+        CLEARFIELD giros:clave_hdr_giros //para que no arrastre valor despus de una trx de giros con viaje.
+        //Llamo a la rutina que me graba el registro en sesion_lg
+        CALL giros:CDSgrabaSesionLG
+    END IF
+
+    //Borro todos los campos que se graban en sesion_lg excepto los campos del emisor del giro,
+    //para que no queden sucios en las siguientes cargas.   
+    CALL csr:proc_list(F_CLEAR,LST:giros:LISTlistaGirosCLR)
+    CALL giros:MISCclear_array_lg
+        
+    //Refresco en pantalla los campos de Totales
+    //Se invoca giros:PRECCargaListaGiros para refrescar la pantalla de Carga de Lista de Giros
+    CALL giros:PRECCargaListaGiros
+        
+    drv:button = l_last_button
+    call drv:but_up_enable
+    
+END SUB
+
+/*******/

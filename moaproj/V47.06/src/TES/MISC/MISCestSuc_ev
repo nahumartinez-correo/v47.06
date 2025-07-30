@@ -1,0 +1,138 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCestSuc_ev
+* NOMBRE
+*   OFB:tes:MISCestSuc_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCestSuc_ev(suc,abrio)
+	LOCAL especie_ant         LIKE adt_espv_cod
+	LOCAL total_imp           LIKE adt_espv_importe
+	LOCAL total_imp_pase      LIKE adt_espv_importe /* totaliza los pases */
+	LOCAL total_imp_fisico    LIKE adt_espv_importe /* total del pase + disponible */
+	LOCAL total_subesp_fisico LIKE adt_espv_importe
+	LOCAL total_imp_inic      LIKE adt_espv_imp_inic
+	LOCAL total_imp_ent       LIKE adt_espv_imp_ent
+	LOCAL total_imp_sal       LIKE adt_espv_imp_sal
+    
+	CALL MISCwrite_file1(1,common:csr_string)
+	especie_ant = ""
+	CDS SELECT FROM DSC:Especie BECOMES "Esp1"
+	CDS FINDFIRST "Esp1" NOLOCK
+	DO
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+		CDS EXTRACT "Esp1" FLD:adt_espv_cod FLD:adt_espv_subcod
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+		IF (especie_ant != adt_espv_cod) THEN
+			IF (especie_ant != "") THEN
+				total_imp_fisico = total_imp_pase + total_imp
+				FPRINT common:csr_string," "
+				CALL MISCwrite_file1(1,common:csr_string)
+				// modificar los espaciados
+				FPRINT common:csr_string, \
+					"TOTAL                %10.10s %10.10s %10.10s %10.10s %10.10s %10.10s",\
+					total_imp_inic, total_imp_ent,total_imp_sal,total_imp,total_imp_pase,total_imp_fisico
+				CALL MISCwrite_file1(1,common:csr_string)
+			END IF
+			total_imp        = 0
+			total_imp_inic   = 0
+			total_imp_ent    = 0
+			total_imp_sal    = 0
+			total_imp_pase   = 0
+			total_imp_fisico = 0
+		
+			especie_ant = adt_espv_cod
+			FPRINT common:csr_string," "
+			CALL MISCwrite_file1(1,common:csr_string)
+			FPRINT common:csr_string," "
+			CALL MISCwrite_file1(1,common:csr_string)
+			FPRINT common:csr_string,"  %-20.20s",adt_espv_cod
+			CALL MISCwrite_file1(1,common:csr_string)
+			FPRINT common:csr_string," "
+			CALL MISCwrite_file1(1,common:csr_string)
+			FPRINT common:csr_string, \
+				"TIPO                     INIC.$   ENTRADA$    SALIDA$   DISPON.$     PASES$    FISICO$"
+			CALL MISCwrite_file1(1,common:csr_string)
+		END IF
+		CDS SELECT FROM DSC:TesEspV BECOMES DSC:TesEspV \
+			WHERE  adt_espv_suc == suc && \
+			adt_espv_es_tesoro == FLD:adt_espv_es_tesoro && \
+			adt_espv_id == FLD:adt_espv_id && \
+			adt_espv_cod == FLD:adt_espv_cod && \
+			adt_espv_subcod == FLD:adt_espv_subcod
+
+		adt_espv_importe    = 0
+		adt_espv_imp_inic   = 0
+		adt_espv_imp_ent    = 0
+		adt_espv_imp_sal    = 0
+		total_subesp_pase   = 0
+		total_subesp_fisico = 0
+	
+		CDS FINDFIRST DSC:TesEspV NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT DSC:TesEspV FLD:adt_espv_importe  \
+				FLD:adt_espv_imp_inic \
+				FLD:adt_espv_imp_ent  \
+				FLD:adt_espv_imp_sal
+
+			/* Acumula en total_subesp_pase el importe total del pase por subespecie */
+			CALL CDSpases_TesEspVMov(suc,op:adt_login_id,adt_espv_es_tesoro,adt_espv_cod,adt_espv_subcod,total_subesp_pase)
+			total_subesp_fisico = total_subesp_pase + adt_espv_importe
+			IF (abrio == "N") THEN
+				adt_espv_imp_ent = 0
+				adt_espv_imp_sal = 0
+				adt_espv_imp_inic = adt_espv_importe
+			END IF
+		END IF
+		Cds endselect dsc:TesEspVMov
+		total_subesp_fisico = total_subesp_pase + adt_espv_importe
+		common:csr_string = ""
+		FPRINT common:csr_string, \
+			"%-20.20s %10.10s %10.10s %10.10s %10.10s %10.10s %10.10s", \
+			adt_espv_subcod,adt_espv_imp_inic,adt_espv_imp_ent,adt_espv_imp_sal,adt_espv_importe,total_subesp_pase,total_subesp_fisico
+		CALL MISCwrite_file1(1,common:csr_string)
+
+		total_imp = total_imp + adt_espv_importe
+		total_imp_inic = total_imp_inic + adt_espv_imp_inic
+		total_imp_ent = total_imp_ent + adt_espv_imp_ent
+		total_imp_sal = total_imp_sal + adt_espv_imp_sal
+		total_imp_pase = total_imp_pase + total_subesp_pase
+
+		CDS FINDNEXT "Esp1" NOLOCK
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+	LOOP
+	cds endselect "Esp1"
+	IF (especie_ant != "") THEN
+		total_imp_fisico = total_imp_pase + total_imp
+		FPRINT common:csr_string," "
+		CALL MISCwrite_file1(1,common:csr_string)
+		FPRINT common:csr_string, \
+			"TOTAL                %10.10s %10.10s %10.10s %10.10s %10.10s %10.10s", \
+			total_imp_inic,total_imp_ent,total_imp_sal,total_imp,total_imp_pase,total_imp_fisico
+		CALL MISCwrite_file1(1,common:csr_string)
+		FPRINT common:csr_string," "
+		CALL MISCwrite_file1(1,common:csr_string)
+		FPRINT common:csr_string," "
+		CALL MISCwrite_file1(1,common:csr_string)
+	END IF
+END SUB
+
+/*******/

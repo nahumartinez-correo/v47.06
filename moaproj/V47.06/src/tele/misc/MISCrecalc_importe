@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:tele:MISCrecalc_importe
+* NOMBRE
+*   OFB:tele:MISCrecalc_importe
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telemisc.h"
+
+SUB tele:MISCrecalc_importe
+    LOCAL palabras_tmp LIKE tele_cant_palabras
+    LOCAL idx LIKE siaf:i
+	LOCAL l_tieneRango like siaf:i
+	LOCAL l_rango like common:csr_string
+    CDS SELECT FROM DSC:post:Tarifas_tbl BECOMES DSC:post:Tarifas_ctx WHERE \
+	post:adt_tarif_serv == FLD:post:tipo_produc2 && (post:adt_tarif_dest ==  \
+	FLD:post:destino) && (post:adt_tarif_um == FLD:post:adt_serv_umstd ) && \
+	post:adt_tarif_desde <= tele:tele_cant_palabras && \
+	post:adt_tarif_hasta >= tele:tele_cant_palabras
+   	CDS FINDFIRST DSC:post:Tarifas_ctx NOLOCK
+   	IF (CDSRETVAL == 0) THEN
+      	CDS EXTRACT DSC:post:Tarifas_ctx ALL
+      	CDS ENDSELECT DSC:post:Tarifas_ctx
+      	l_tieneRango = true
+      	l_rango = post:adt_tarif_desde
+   	ELSE
+   		l_tieneRango = false
+   		CDS ENDSELECT DSC:post:Tarifas_ctx
+
+	    CDS SELECT FROM DSC:post:Tarifas_tbl BECOMES DSC:post:Tarifas_ctx WHERE \
+		post:adt_tarif_serv == FLD:post:tipo_produc2 && (post:adt_tarif_dest ==  \
+		FLD:post:destino) && (post:adt_tarif_um == FLD:post:adt_serv_umstd )
+  		CDS FINDLAST dsc:post:Tarifas_ctx NOLOCK
+      	IF (CDSRETVAL == 0) THEN
+        	CDS EXTRACT DSC:post:Tarifas_ctx ALL
+        	CDS ENDSELECT DSC:post:Tarifas_ctx
+		ELSE
+	    	CDS ENDSELECT DSC:post:Tarifas_ctx
+	    	post:tarifa = 0
+	    	siaf:importe = 0
+	    	tele:importe_tot_serv_tel = 0
+	    	refresh post:tarifa
+	    	refresh tele:importe_tot_serv_tel
+	      	RETURN (-2)
+	    END IF
+	END IF
+
+    post:unidad_fac_aux = post:adt_tarif_um
+
+  	IF (post:cli_tipo != 1 && post:enCombo != "S") THEN
+      	CALL post:CDSbasico(post:tipo_produc2,tele_cant_palabras,post:adt_serv_umstd,post:adt_tarif_dest)
+        IF (RETVAL < 0)
+            CALL post:MISCParamDefect(post:tipo_produc2,post:adt_tarif_dest,post:adt_serv_umstd)
+            RETURN (-2)
+        END IF
+
+		post:tarifa = post:adt_tarif_precio * post:cantidad
+
+	    IF ((post:estado_presu == 2 || post:estado_presu == 3) && post:IvaCod == "RNI") THEN
+	        //SC 50170
+	        CALL post:MISCdesglosaIva(post:tarifa,post:adt_serv_aliciva,post:cantidad,0)
+	        post:sobretasa_prod = post:SobreTasaIva
+	    END IF
+	    CLEARFIELD post:promo_imp_srv_tot
+		CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+		IF (post:aplica_bonif_serv ==	"S") THEN
+			IF (l_tieneRango == true) THEN
+	    		CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_SERVICIO, l_rango)
+			ELSE
+				CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_SERVICIO, "")
+			END IF
+			IF (post:promo_imp_srv_tot == 0) THEN
+				post:promo_tot_Serv = post:promo_imp_blq_tot + post:promo_imp_tot_opc + \
+					post:promo_imp_srv_tot
+				post:fld_promo_imp = post:promo_tot_Serv
+				REFRESH post:fld_promo_imp
+				CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+			END IF
+		END IF
+
+		CALL post:MISCBonifBlq()
+	    post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+	    siaf:importe = post:tarifa + post:costo_opc - post:descuento + post:sobretasa + post:imp_bloques
+		tele:importe_tot_serv_tel = siaf:importe - post:fld_promo_imp
+        REFRESH post:tarifa
+        REFRESH tele:importe_tot_serv_tel
+        REFRESH post:sobretasa
+
+		// FGB: saco mensaje por el visor
+		call post:MISCmensaje_visor("D")
+
+    END IF
+
+    /* Agregado para que salga correcto el IRP */
+    /* JPM - 02/2000 */
+    IF (post:cli_tipo == 1) THEN
+	    CALL post:CDSbasico(post:tipo_produc2,tele_cant_palabras,post:adt_serv_umstd,post:adt_tarif_dest)
+        let post:tarifa_label_cc =  post:adt_tarif_precio
+     END IF
+END SUB
+
+/*******/

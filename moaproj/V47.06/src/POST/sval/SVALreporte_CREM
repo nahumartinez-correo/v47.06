@@ -1,0 +1,101 @@
+/****Cobro por Cuenta de Terceros/OFB:post:SVALreporte_CREM
+* NOMBRE
+*   OFB:post:SVALreporte_CREM
+* DESCRIPCION
+*   Rutina SVAL del Reporte de CREM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No Existen Operadores con Nivel Cajero
+*   RETURN (-2): No hay filtros de seleccion para el reporte
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:TRANReporte_crem
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postsval.h"
+
+
+SUB post:SVALreporte_CREM
+    LOCAL l_oper_CCT           LIKE post:operador_CCT 
+    LOCAL l_fechad_CCT         LIKE common:csr_string
+    LOCAL l_fechah_CCT         LIKE common:csr_string
+    LOCAL l_tipo_rend_CCT      LIKE common:csr_string
+    LOCAL l_comitente_CCT      LIKE common:csr_string
+    LOCAL l_oper_id_CCT        LIKE op:op_operator_id
+   
+    LET l_oper_CCT = post:operador_CCT
+    LET l_fechad_CCT = post:fechad_CCT 
+    LET l_fechah_CCT = post:fechah_CCT 
+    LET l_tipo_rend_CCT = post:tipo_rend_CCT    
+    LET l_comitente_CCT = post:comitente_CCT
+    
+    CALL post:MISCFtrim(l_oper_CCT)
+    CALL post:MISCFtrim(l_fechad_CCT) 
+    CALL post:MISCFtrim(l_fechah_CCT)
+    CALL post:MISCFtrim(l_tipo_rend_CCT)
+    CALL post:MISCFtrim(l_comitente_CCT)
+
+    IF (l_fechad_CCT.NUMCHARS == 0 && l_fechah_CCT.NUMCHARS == 0 ) THEN
+        MSGBOX "Debe ingresar la fecha de cobro.",0x00000000,"Error"
+        RETURN (-2)
+    END IF
+    
+    IF (l_tipo_rend_CCT.NUMCHARS == 0 ) THEN
+        MSGBOX "Debe ingresar Tipo de Rendicion.",0x00000000,"Error"
+        RETURN (-2)
+    END IF
+    
+    IF (l_comitente_CCT.NUMCHARS == 0 ) THEN
+        MSGBOX "Debe ingresar Comitente.",0x00000000,"Error"
+        RETURN (-2)
+    END IF
+    
+    //Tratamiento filtro de Operadores. 
+    IF (l_oper_CCT == "TODOS") THEN
+        CLEARFIELD post:oper_id_CCT     
+    ELSE
+    	//Obtiene el codigo id de operador para filtro del reporte.
+        CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+			WHERE op:op_branch_id == fld:common:sucursal_activa && \
+				  op:op_login_id == l_oper_CCT
+        CDS FINDFIRST DSC:op:adt_op_context LOCK
+        IF (CDSRETVAL < 0) THEN
+	        CDS UNLOCK DSC:op:adt_op_context
+	        CDS ENDSELECT DSC:op:adt_op_context
+			MSGBOX "No Existen Operadores con Nivel Cajero",0x00000000,"Error"
+	        RETURN (-2)
+	    END IF
+        CDS EXTRACT DSC:op:adt_op_context op:op_operator_id INTO post:oper_id_CCT
+        LET l_oper_id_CCT = post:oper_id_CCT
+		CDS UNLOCK DSC:op:adt_op_context
+		CDS ENDSELECT DSC:op:adt_op_context
+	END IF
+
+    IF (RETVAL < 0) THEN
+    	//No hay filtros de seleccion para el reporte.
+    	RETURN (-2)
+    END IF
+
+    UNDISPLAY post:SCRNreporte_crem
+	IF (LASTKEY == 0x0190) THEN
+		RETURN (-2)
+	END IF
+	FYIMSG LST:common:fyimsg_list, "(L) PROCESANDO LISTADO..."
+	common:csr_string_tmp = "REPORTE CREM CLIENTE MAYORISTA CON COBROS POR CT"
+
+    //Reporte CREM
+    clearfield siaf:codigo_siaf
+    clearfield tes:list_cobro_ct
+	CALL post:MISCcaseRepCremCobCT(l_oper_id_CCT,l_oper_CCT,l_fechad_CCT,l_fechah_CCT,l_tipo_rend_CCT,l_comitente_CCT)
+	
+    CALL CSR:f_sadroppl "PICoperador_CCT" 
+    CALL CSR:f_sadroppl "comitente"	
+    
+END SUB
+
+/*******/
+

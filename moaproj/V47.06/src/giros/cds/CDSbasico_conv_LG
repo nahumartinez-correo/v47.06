@@ -1,0 +1,87 @@
+/****o* Lista de Giros/OFB:giros:CDSbasico_conv_LG
+* NOMBRE
+*   OFB:giros:CDSbasico_conv_LG
+* DESCRIPCION
+*   Obtiene la tarifa del giro de la tabla items_lg (convenio de Lista de Giros).
+* ENTRADAS
+*   tarif_servicio = producto
+*   tarif_cantidad = importe
+*   tarif_destino = destino
+* SALIDAS
+*   RETURN (-2): No pudo obtener la tarifa del giro.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCact_tarifa_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+
+#include "giroscds.h"
+
+SUB giros:CDSbasico_conv_LG(tarif_servicio,tarif_cantidad,tarif_destino)
+
+    CALL csr:trimfield(tarif_servicio)
+	CALL csr:trimfield(tarif_destino)
+
+    CDS SELECT FROM DSC:post:TABitems_lg BECOMES DSC:post:CTXitems_lg WHERE  \
+        post:op_operator_id == FLD:op:op_operator_id && \
+        post:adt_itemlg_codprod == tarif_servicio && \
+        post:adt_itemlg_destino == tarif_destino && \
+        post:adt_itemlg_rdesde >= tarif_cantidad && \
+        post:adt_itemlg_rhasta <= tarif_cantidad
+
+    CDS FINDFIRST DSC:post:CTXitems_lg LOCK
+    lib:err_retval = CDSRETVAL
+    IF (CDSRETVAL == -801 ) THEN  
+        CALL post:MISCFtrim(giros:mdata_detalleArchLG)
+        
+        //si no estoy importando un archivo de Lista de Giros
+        IF (giros:mdata_detalleArchLG.NUMCHARS == 0) THEN
+            MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA POR NO HALLARSE EN EL TARIFARIO UN RANGO PARA LOS VALORES DESTINO/CANTIDAD INGRESADOS",0x00,"Error"
+        END IF
+        
+        CDS ENDSELECT DSC:post:CTXitems_lg
+        RETURN (-2)
+    END IF
+
+    CDS EXTRACT DSC:post:CTXitems_lg ALL
+
+    LET post:precio_tmp = post:adt_itemlg_precio
+	LET post:desde_tmp = post:adt_itemlg_rdesde
+	LET post:hasta_tmp = post:adt_itemlg_rhasta
+	LET post:um_tmp = post:adt_itemlg_umstd
+	LET post:adt_tarif_fijo = post:adt_itemlg_tasa
+	LET post:adt_tarif_fijo_des = post:adt_itemlg_tasa_desc
+	LET post:adt_tarif_fj_aliciva = post:adt_itemlg_iva //vacio o cero para giros postales.
+	
+	LET post:adt_tarif_modo = post:adt_itemlg_mod_calc	
+	CLEARFIELD post:adt_tarif_uneg //no viene en el convenio y no se accede a tabla servicio-tarifa.
+	
+	IF (post:adt_tarif_fj_aliciva.numchars == 0) THEN
+		//puede venir vacio del host para postales (post:adt_itemlg_iva)
+		post:adt_tarif_fj_aliciva = 0.00
+    END IF
+    IF (post:precio_tmp < 0) THEN
+        CDS ENDSELECT DSC:post:CTXitems_lg
+        RETURN (post:precio_tmp)
+    ENDIF
+    SELECT (post:adt_itemlg_mod_calc)
+        CASE "P"
+            LET post:precio_tmp = (post:precio_tmp * tarif_cantidad / 100) + post:adt_tarif_fijo
+            BREAK
+        CASE "D"
+            LET post:precio_tmp = post:precio_tmp + post:adt_tarif_fijo
+            BREAK
+    END SELECT
+
+    LET post:adt_tarif_precio = post:precio_tmp
+	LET post:adt_tarif_desde = post:desde_tmp
+    LET post:adt_tarif_hasta = post:hasta_tmp
+    LET post:adt_tarif_um = post:um_tmp
+
+    CDS ENDSELECT DSC:post:CTXitems_lg
+END SUB
+
+/*******/

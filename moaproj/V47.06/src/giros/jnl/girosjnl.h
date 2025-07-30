@@ -1,0 +1,6 @@
+#include "desktop.h"
+#include "gsp.h"
+#include "ofbdefs.h"
+#include "csr.h"
+#include "giros.h"
+#include "reporte.h"

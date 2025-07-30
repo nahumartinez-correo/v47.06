@@ -1,0 +1,258 @@
+/****o* Sesión Correo/OFB:post:SVALidentifica_cli
+* NOMBRE
+*   OFB:post:SVALidentifica_cli
+* DESCRIPCION
+*   Rutina que se ejecuta en la confirmación del Inicio de Sesión
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANidentifica_copia,LST:post:TRANidentifica_cli,LST:post:TRANident_sin_scr
+*	LST:post:TRANidentifica_copia
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-1126
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALidentifica_cli
+	LOCAL activa LIKE drv:screen_active
+	
+	RETVAL = 0
+	CALL post:CDSadtivaTipDoc_load
+	IF (RETVAL != 0) THEN
+		MSGBOX "ERROR en relación Categoría de IVA - Tipo de Documento",OFB_OK,"ERROR"
+		IF (Modo == "R") THEN
+			errorDocIva = "S"
+		ELSE
+			RETURN (-2)
+		END IF
+	END IF
+
+	//gpb:NI50479 Refacturacion PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		CALL post:MISCget_climed_ped
+		IF (RETVAL != 0) THEN
+			RETURN (-2)
+		END IF
+
+		CALL post:MISCconvenioSucursal
+		//El convenio no debe consultarse cuando el cliente no pertenece a la sucrusal,
+		//cuando está bloqueado	o cuando el campo PagoContado está en FALSO
+		//(indica que el cliente tiene una modalidad pero decide pagar en efectivo)
+		IF (RETVAL == 0 && bloqueo_CM == "N" && !PagoContado && !post:ModalidadTB && !post:ConsumoAnticipoMon) THEN
+			CALL post:OFBclimed_ped_conv
+		ELSE
+			//borro las tablas de convenios
+			CALL post:CDSborrar_conv_prod
+			CALL post:CDSborrar_conv_vtas
+		END IF
+		
+		//Consume Credito o es Cobro Diferido o es Facturacion Diferida
+		//IF (post:ConsumoAnticipo == TRUE || (post:modalidad_CM == "C" && post:ModalidadCC  == TRUE) || (post:modalidad_CM == "D" && post:ModalidadCD == TRUE) ) THEN			
+		//	CALL post:OFBclimed_ped_conv		
+		//ELSE
+				IF (post:modalidad_CM == "S" && post:ConsumoAnticipo == FALSE) THEN
+					//CM sin Modalidad
+					SETFLAG post:sesion_ped_flags,cm_sin_mod_ped
+				END IF
+		//END IF
+	END IF
+
+#ifdef COMPILA_SAP
+  IF (post:cli_tipo != CLIUP) THEN
+#else
+  IF (post:cli_tipo != 1 && post:cli_tipo != CLIUP) THEN
+#endif
+		CALL post:MISCchequea_scr
+		IF (RETVAL != 0) THEN
+			RETURN (-2)
+		END IF
+	END IF
+    
+	IF (post:cli_tipo == 2 && (post:CloCuit == 99999999999 || post:CloCuit == 99999999995) && post:esSesionReempChq == "S") THEN
+		MSGBOX "No puede realizar Reemplazos para un cliente generico",OFB_OK,"AVISO"
+		RETURN (-2)
+	END IF
+    
+	IF (cli_tipo == 2 || cli_tipo == CLIUP) THEN
+		CALL CSR:trimfield(post:CliRazon,post:CliRazon)
+		IF (CloPersonaJuridica == "N" && post:cli_tipo == 2) THEN
+			FPRINT CliRaz "%s %s", CliNombre, CliApellido
+		ELSE
+			LET CliRaz = CliRazon
+		END IF
+		/*Si esta en la segunda pantalla y el cliente no existe sacar mensaje*/
+		CALL post:CDSverif_existe_cli2
+		lib:err_retval = RETVAL
+    
+		IF (lib:err_retval == 0) THEN
+			IF (CloRazon.NUMCHARS > 0 && (es_juridica == "N")) THEN
+				MSGBOX "El cliente es Persona Jurídica y no coincide con lo seleccionado",OFB_OK,"ERROR"
+				RETURN -2
+			ELSEIF (CloNombre.NUMCHARS > 0 && CloApellido.NUMCHARS > 0 && (es_juridica == "S")) THEN
+				MSGBOX "El cliente es Persona Física y no coincide con lo seleccionado",OFB_OK,"ERROR"
+				RETURN -2
+			END IF
+			IF (CloRazon != CliRazon && (es_juridica == "S")) THEN
+				;IF (CloRazon != CliRazon) THEN
+				IF (CliRazon.numchars == 0) THEN
+					MSGBOX "La Razon Social es obligatoria",OFB_OK,"ERROR"
+				ELSE
+					MSGBOX "La Razon Social no corresponde a este cliente",OFB_OK,"ERROR"
+				END IF
+				RETURN (-2)
+			ELSE
+				IF (CloNombre != CliNombre && CloApellido != CliNombre && cli_tipo == 2) THEN
+					IF (CliRaz.NUMCHARS == 0) THEN
+						MSGBOX "El nombre y el apellido son obligatorios",OFB_OK,"ERROR"
+					ELSE
+						MSGBOX "El nombre y/o el apellido no se corresponde con lo registrado",OFB_OK,"ERROR"
+					END IF
+					RETURN (-2)    
+				END IF
+			END IF
+			IF (IvaCod != "CF" && cli_tipo != CLIUP) THEN /* && drv:screen_active != 0)*/
+				CALL post:CDSregrabar_clioca
+			END IF
+		ELSE
+			IF (CloCalle.NUMCHARS == 0 && IvaCod == "CF" && \
+				(TESTFLAG (MPcheque, MPpago_cheque) || \
+				TESTFLAG (cheque_dif, UPpago_dif) || \
+				TESTFLAG (MPtarjeta, MPpago_tarjeta))) THEN
+				MSGBOX "Debe cargar los datos del domicilio del cliente.",OFB_OK,"ERROR"
+				RETURN (-2)
+			END IF
+			MSGBOX "Cliente Inexistente, Debe Darle de Alta",OFB_OK,"ERROR"
+			RETURN (-2)
+		END IF
+	END IF
+
+	IF (tablaCli == DSC:post:cliocaUP_tbl && common:system_date > CliUP_FechaFin) THEN
+		MSGBOX "EL CONTRATO PARA ESTA UNIDAD POSTAL SE ENCUENTRA VENCIDO",0x00,"ERROR"
+		CALL post:MISCident_cli_clear
+		CLEARFIELD IvaCod
+		RETURN (-2)
+	END IF
+
+	/* Limpia la Tabla Auxiliar de Especies Valorizadas */
+	CALL tes:CDSsesAuxEspV_clear
+	/*Borra toda la tabla AuxIngBr - Gabriel Falciola*/
+	CALL post:CDSdelAll_AuxIngBr
+	CALL post:CDSdelAll_AuxIvaUP
+	CALL post:CDSdel_presup_sincob /*Borra de PresuPag los presup. sin cobrar*/
+
+	LET post:estado_presu = 2
+	
+	IF ((cli_tipo == 2 && IvaCod != "CF") || cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+		//seteo el checkbox requiere factura para que sea jornalizado
+		SETFLAG req_factura,Requiere_factura
+		ALTERCONTROLSET TAG:post:CHK8
+		ENABLECONTROL TAG:post:CHK8
+	END IF
+
+	//cgw:cliente minorista y consumidor final en sesion 
+	; Si la sesión es de reemplazo de cheques no se muestra el siguiente mensaje *** MDG      
+	IF (!TESTFLAG (req_factura, Requiere_factura) && cli_tipo == 2 && \
+		IvaCod == "CF" && post:Modo != "R" && post:esSesionReempChq != "S" && esSesionRenPagoMasOp != "S") THEN
+		MSGBOX "¿El Cliente Requiere Factura ?",OFB_YESNO2,""
+		//seteo el checkbox requiere factura
+		IF (RETVAL == 6) THEN
+			SETFLAG req_factura,Requiere_factura
+		ELSE
+			RESETFLAG req_factura,Requiere_factura
+		END IF
+		ALTERCONTROLSET TAG:post:CHK8
+		ENABLECONTROL TAG:post:CHK8
+	END IF
+
+	IF (cli_tipo == 2 || cli_tipo == CLIUP || cli_tipo == CLIMED) THEN //minorista
+		CALL CDSadt_ivacod_load  //busca en tabla CatIva
+		percep_r212 = adt_cativa_perc
+		PresGrupoIva = adt_cativa_grupo
+	ELSE
+		percep_r212 = "N"
+	END IF
+
+	CALL post:CDSobtiene_secuen("PRESU")
+	PresNro = adt_codseq_nro
+	post:rechazoDiferido = false
+	CALL post:CDSadt_presuact_save
+	
+	IF (consulta_excepcion == "S") THEN
+		/*MFM - 28.01.2002 Grabo el PresNro en el registro correspondiente de la tabla 
+		ExcepTmp,esto es para saber que se está realizando una sesion de venta up por 
+		excepcion llegado el caso de que se caiga el sistema*/
+		CALL CDSUpdate_excepcion
+		/*MFM - 30.01.2002 Actualizo la 99180 con el PresNro, esto me servirá en caso de
+		cancelación de la sesión*/
+		/*MFM - 31.01.2005 No sirve, me genera problemas en caso de reimpresion
+		CALL CDSUpdate_99180*/
+	END IF
+   
+	//Cliente Medio - Excepciones*/ 
+	IF (consulta_excepcionCM == "S") THEN
+		/*MFM - 28.01.2002 Grabo el PresNro en el registro correspondiente de la tabla 
+		ExcepTmp,esto es para saber que se está realizando una sesion de venta CM por 
+		excepcion llegado el caso de que se caiga el sistema*/
+		CALL CDSUpdate_excepCM
+		/*MFM - 30.01.2002 Actualizo la 99400 con el PresNro, esto me servirá en caso de
+		cancelación de la sesión*/
+		/*MFM - 31.01.2005 No sirve, me genera problemas en caso de reimpresion
+		CALL CDSUpdate_99400*/
+	END IF
+   
+	//Cliente Medio - Orden de Compra*/ 
+	IF (consulta_ordenCM == "S") THEN
+		/*MFM - Grabo el PresNro en el registro correspondiente de la tabla 
+		Orden_Compra,esto es para saber que se está realizando una sesion de CM por 
+		OC llegado el caso de que se caiga el sistema*/
+		CALL CDSUpdate_ordenCM
+		/*MFM - 30.01.2002 Actualizo la 99500 con el PresNro, esto me servirá en caso de
+		cancelación de la sesión*/
+		/*MFM - 31.01.2005 No sirve, me genera problemas en caso de reimpresion
+		CALL CDSUpdate_99500*/
+	END IF
+
+	//cgw: setea campos post:climed_tipo y post:climed_numero
+	CALL MISCcliente_nro(post:cli_tipo,"L") //cgw:Modo Local
+
+	/* Grabo los Datos del Presupuesto PJM */
+	PresEst = 1
+	CALL post:CDSadt_presu_save
+	
+	CALL MISCBot_estado_presu
+	
+	RESETFLAG post:IdentCli_flags,screen1
+	RESETFLAG post:IdentCli_flags,screen2
+	RESETFLAG post:IdentCli_flags,cambia_scr
+
+	/*Libero la memoria utilizada para el picklist de incripción de
+	Ingresos Brutos - Gabriel Falciola*/
+	CALL csr:f_sadroppl DSC:PICInscIngBr
+
+#ifdef COMPILA_SAP
+	LET drv:screen_active = 0
+	LET drv:INDscreen[1] = 0
+	LET drv:INDscreen[2] = 0
+	LET drv:next_screen = -1
+#else
+  drv:screen_active = drv:screen_active + 1
+#endif
+
+	tlr:INDdcol_scrn[0] = SCR:post:SCRNidentifica_cli
+	
+	//cgw:para teclas rapidas, setea la pantalla de inicio de sesion para su journalizacion.
+	IF (post:Modo == "R") THEN
+		drv:INDscr = SCR:post:SCRNidentifica_cli
+	END IF
+	
+	//PJM 1/10/1999 se agrego para que no tenga valor en el journal
+	CLEARFIELD siaf:moneda
+
+END SUB
+
+/*******/

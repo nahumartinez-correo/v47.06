@@ -1,0 +1,99 @@
+/****o* Transferencias Bancarias/OFB:post:MISCctrl_fact_ven
+* NOMBRE
+*   OFB:post:MISCctrl_fact_ven
+* DESCRIPCION
+*   CARGA LOS CAMPOS Y VECTORES CON LOS QUE SE HARAN EL VIAJE DE INGRESO DE FACTURA.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVAL99461
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCctrl_fact_ven
+local idx like siaf:i
+local i_idx like siaf:i
+local ind like siaf:i
+local varl_imp_rem like post:importe_factura
+local varl_imp_consumo like	 post:importe_factura    
+local varl_neto         like importe_consumo	
+local varl_tipo_fact like post:consulta_ordenCM
+
+	
+	//Recorro el picklist de facturas vencidas
+	let idx = 0
+	let i_idx = PL_GETITEM + idx
+	clearfield common:csr_string
+	call csr:myPickcontrol(dsc:facturas_venc,common:csr_string,i_idx)
+	
+	Do
+	    if (retval < 0)
+	    	break
+	    end if
+
+	    if (substr(common:csr_string,62,1) == "*")
+					vec_tipofact[siaf:i] = SUBSTR(common:csr_string,11,1)
+      		vec_facturas[siaf:i] = SUBSTR(common:csr_string,13,15)
+      		vec_impfact[siaf:i]  = substr(common:csr_string,29,16)
+      		vec_seqfac[siaf:i]   = substr(common:csr_string,46,15) //FACT_ID, porque hay que enviarlo en el mensaje
+      	  vec_saldofact[siaf:i] = substr(common:csr_string,76,16) //importe neto de la factura (imp - consumo adelanto)
+      	  //MFM - 50552 Agrego la fecha de la factura
+  				vec_fact_fecha[siaf:i] = substr(common:csr_string,125,2) +  substr(common:csr_string,128,2) * 100 + substr(common:csr_string,131,4) * 10000
+      	  varl_neto = substr(common:csr_string,76,16)
+      	  //recupero el importe del consumo de adelanto
+					varl_imp_consumo  = substr(common:csr_string,92,16) 
+      	  varl_imp_rem = substr(common:csr_string,108,16)
+      	  varl_tipo_fact = substr(common:csr_string,124,1)
+      	    
+      	   /*Sumo los importes de las facturas seleccionadas*/
+					siaf:importe = siaf:importe + varl_neto
+			
+      	   // MFM - Sumo el importe real de las facturas, en caso de que provengan de una fact.auto.			
+					if (varl_imp_rem > 0) then
+						post:total_cobranza = post:total_cobranza + varl_imp_rem
+						else
+						post:total_cobranza = post:total_cobranza + varl_neto
+					endif
+        	//PS 9330/9331
+      	    //supuestamente este tipo de facturas no se cobran por esta TX
+      	    /*if (varl_tipo_fact == "I") then 
+				//este despues lo resto de total cobranza antes del viaje!!
+				post:resta_saldoCM = post:resta_saldoCM + varl_neto
+			endif*/
+			//PS 9337 - Pidieron que en la tabla remitos del switch, cuando el remito pertenezca a una 
+			//OC, se guarde el importe original del mismo, esto hace que tenga que modificar
+			//el tratamiento del campo resta_saldoCM porque sino en la cobranza de facturas
+			//se está devolviendo credito al cliente por una factura de una OC.
+				if (varl_tipo_fact == "O") then
+					post:resta_saldoCM = post:resta_saldoCM + varl_imp_rem
+				endif
+      	siaf:i = siaf:i + 1
+     else
+    /* 		if (vec_facturas[siaf:i] != "") then
+     			;hay facturas vencidas no seleccionadas para pagar....entonces hay que ver que no elija facturas no vencidas?? y si las elige porque no le alcanza la transferncia? el cliente estara presente para pagar en efectivo siempre?
+  ; tambien hay que ver  si alcanza el saldo de TB para pagar :( es un moño esto...
+     			if (post:saldo_TB > Imp_TotFactVenc) then 
+     				return (-2)
+     			endif	
+     		endif*/
+     endif	
+	   
+		 let idx = idx + 1
+	   let i_idx = PL_GETITEM + idx
+	   clearfield common:csr_string
+	   call csr:myPickcontrol(dsc:facturas_venc,common:csr_string,i_idx)
+	    
+	Loop
+
+	
+END SUB
+
+/*******/

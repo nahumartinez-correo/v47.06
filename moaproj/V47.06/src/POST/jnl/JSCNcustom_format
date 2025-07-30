@@ -1,0 +1,281 @@
+/****o* Pendientes de agrupación/OFB:post:JSCNcustom_format
+* NOMBRE
+*   OFB:post:JSCNcustom_format
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JSCNcustom_format
+    local Limporte_origen like tlr:jnl_amount_1
+/* pre-clear fields that may not be appended */
+/*Agrego los 3 primeros campos para la descripciones */
+	; intercambio el valor del area storage con el duparea. El tema es que cuando se reversa
+	; por journal en modo mostrar es diferente el contenido del campo tanto el area storage como
+	; su duparea con relación a cuando se reversa en modo rápido.
+	; De esta manera, logramos que en ambos casos el duparea contengan lo mismo. *** MDG
+	swapdup siaf:codigo_siaf
+	
+    CLEARFIELD siaf:nombre_transac
+    CLEARFIELD tlr:jnl_op_login_id
+    CLEARFIELD post:medio_pago_desc
+    clearfield tlr:jnl_tran_name
+    clearfield tlr:jnl_account_1
+    clearfield tlr:jnl_amount_1
+    clearfield tlr:jnl_tran_flags
+    clearfield siaf:codigo_siaf
+    clearfield siaf:jnl_sucursal
+    clearfield siaf:jnl_window_node
+    clearfield siaf:jnl_journal_host
+    clearfield siaf:hora_reentry
+    clearfield siaf:modalidad
+    clearfield siaf:moneda
+    clearfield post:jnl_flia_tran
+    clearfield gali:sucursal
+    clearfield gali:digito_verif
+    clearfield post:adt_Modo
+    clearfield post:importe_sesion
+    clearfield post:DocFiscal
+    clearfield post:DocFin
+    clearfield post:importe_pesos
+    clearfield ovr:ovr_sup_login
+    clearfield post:reimpre_nombre
+    clearfield post:reimpre_unitario
+    clearfield post:cant_reimpre
+    /*Se agregan campos para mostrar - Gabriel Falciola*/
+    clearfield tlr:jnl_date
+    //Se agrega campo de importe en moneda origen (post:importe_origen) MLD
+    clearfield post:importe_origen
+    
+/* extract fields for display */
+  /*  3 primeros campos para la descripciones */
+   cds extract DSC:tlr:CONjscn \
+   siaf:nombre_transac \
+   tlr:jnl_op_login_id \
+   post:medio_pago_desc \
+   tlr:jnl_bus_date \
+        tlr:jnl_time \
+        tlr:jnl_sequence \
+        tlr:jnl_tran_name \
+        tlr:jnl_branch \
+        tlr:jnl_operator \
+        tlr:jnl_account_1 \
+        tlr:jnl_amount_1 \
+        tlr:jnl_tran_flags \
+        siaf:codigo_siaf \
+        siaf:jnl_sucursal \
+        siaf:jnl_window_node \
+        siaf:jnl_journal_host \
+        siaf:hora_reentry \
+        siaf:modalidad \
+        siaf:moneda \
+        post:jnl_flia_tran \
+        gali:sucursal \
+        gali:digito_verif \
+        post:adt_Modo \
+		post:importe_sesion \
+		post:DocFiscal \
+		post:DocFin \
+		post:importe_pesos \
+		tlr:jnl_date \
+		post:reimpre_nombre \
+		post:reimpre_unitario \
+		post:cant_reimpre \
+		post:importe_origen
+
+		
+cds extract DSC:tlr:CONjscn \
+		post:nro_autorizac 
+
+		/*Seleccion para el journal AMIGABLE */
+
+    //cgw:se diferencia descripcion entre dif.por redondeo y dif.de caja positiva.
+    IF (siaf:codigo_siaf == 8516 && post:importe_origen <= common:emp_limite) THEN
+    	CLEARFIELD siaf:nombre_transac
+    	siaf:nombre_transac = "DIF.REDOND.POS"
+    END IF    
+    //cgw:se diferencia descripcion entre dif.por redondeo y dif.de caja negativa.
+    IF (siaf:codigo_siaf == 8517 && post:importe_origen <= common:emp_limite) THEN
+    	CLEARFIELD siaf:nombre_transac
+    	siaf:nombre_transac = "DIF.REDOND.NEG"
+    END IF
+
+/* build line 1 of display */
+    fprint tlr:jscn_ds_line1, \
+        "%10.10e %5.5e %4.4s %5.5e-%-30.30s %-8e %-24.24s %s" \
+        tlr:jnl_date,tlr:jnl_time,tlr:jnl_sequence,siaf:codigo_siaf,substr(siaf:nombre_transac,0,29), \
+        siaf:hora_reentry,substr(tlr:jscn_ds_flag,12,36),post:adt_Modo
+    /* build line 2 of display */
+
+    if (post:jnl_flia_tran == "BG" ) then
+        call csr:trimfield tlr:jnl_account_1
+        if (tlr:jnl_account_1.numchars != 0) then
+            fprint tlr:jscn_ds_line2 "%9.9e-%4.4e/%1.1s%9s",\
+                tlr:jnl_account_1,\
+                gali:sucursal, \
+                gali:digito_verif, " "
+
+            if (siaf:moneda.NUMCHARS != 0) then
+                fprint common:csr_string "%-15.15s ",post:medio_pago_desc
+            else
+                fprint common:csr_string "%-15.15s ",  "  "
+            end if
+        else
+            fprint tlr:jscn_ds_line2 "%9.9s %4.4s %1.1s%9s",\
+                " ",\
+                " ",\
+				" ",\
+                " "
+            fprint common:csr_string " %s" "  "
+        end if /* jnl_account_1 != 0 */
+
+		/* Si tiene Documento Fiscal Asociado, lo imprime, y muestra el
+		   numero de Factura final - 23/10/98 */
+        fprint tlr:jscn_ds_line2,\
+            "%5s %s", \
+            tlr:jnl_branch, \
+			tlr:jscn_ds_line2
+	ELSE
+		IF	(siaf:codigo_siaf == 8560) THEN
+			fprint tlr:jscn_ds_line2,\
+				"%5s %-30.30s", \
+				tlr:jnl_branch, \
+				post:reimpre_nombre
+		ELSE
+			fprint tlr:jscn_ds_line2,\
+				"%5s %-9s %-14s", \
+        	    tlr:jnl_branch, \
+				post:DocFiscal, \
+				post:DocFin
+		END IF
+    end if /* if Familia BG */
+
+	/*si se trata de fin de sesion el importe que se muestra es el total de la sesion */
+	if (siaf:codigo_siaf == 99023 ) then
+	    fprint tlr:jscn_ds_line2,\
+            "%s%18e", \
+            tlr:jscn_ds_line2,post:importe_sesion
+	else
+	    //fprint tlr:jscn_ds_line2,\
+            //  "%s%18e", \
+            //tlr:jscn_ds_line2, tlr:jnl_amount_1
+            
+            // FGB - 10.1.2001 -
+            // El importe origen no tiene incluido el pattern para negativos y existen trx de
+            // giros que toman este valor. Por lo tanto, lo paso a otro campo para mostrarlo.
+
+		if (siaf:codigo_siaf == 8616 || siaf:codigo_siaf == 8816)
+			let Limporte_origen = tlr:jnl_amount_1
+			fprint tlr:jscn_ds_line2,"%s%18e",tlr:jscn_ds_line2, Limporte_origen
+		else
+			IF (siaf:codigo_siaf == 8560)
+	        	LET Limporte_origen = post:reimpre_unitario
+	        	fprint tlr:jscn_ds_line2,"%s%12.12e",tlr:jscn_ds_line2, Limporte_origen
+	        ELSE
+	        	LET Limporte_origen = post:importe_origen
+	        	fprint tlr:jscn_ds_line2,"%s%18e",tlr:jscn_ds_line2, Limporte_origen
+			END IF
+	     
+		end if
+	END IF
+
+
+    if (siaf:moneda.NUMCHARS != 0 && siaf:codigo_siaf != 8560) then
+            fprint tlr:jscn_ds_line2, \
+             " %s %-15.15s ", tlr:jscn_ds_line2, post:medio_pago_desc
+    else
+             fprint tlr:jscn_ds_line2, \
+             " %s %-15.15s ", tlr:jscn_ds_line2, " "
+    end if
+
+
+
+    fprint tlr:jscn_ds_line2,"%s%-3s",tlr:jscn_ds_line2,siaf:modalidad
+
+	IF (post:jnl_flia_tran == "CSM" && post:nro_autorizac.NUMCHARS > 0) THEN
+	    fprint tlr:jscn_ds_line2,"%s CTROL:%012s",tlr:jscn_ds_line2,post:nro_autorizac
+	END IF
+
+    IF	(siaf:codigo_siaf == 8560)
+    	IF (post:cant_reimpre > 0) THEN
+    		fprint tlr:jscn_ds_line2,"%-30s Cantidad: %5s",tlr:jscn_ds_line2,post:cant_reimpre
+    			ELSE
+    		fprint tlr:jscn_ds_line2,"%-30s Cantidad:     1",tlr:jscn_ds_line2
+		END IF
+	END IF
+	
+    /*Se agrega una linea mas para el journal - Gabriel Falciola*/
+    fprint tlr:jscn_ds_line3 " %-14s  %s%10.10e" tlr:jnl_op_login_id dsc:tlr:jcsn_fecha_valor \
+    tlr:jnl_bus_date
+
+    ;SMC - DB Se agrega Codigo de Motivo en Tercera linea de Journal para estas transacciones
+
+    // IMPORTANTE: Para todas las transacciones, menos los login-logout, etc
+    // y 99023 se muestra en la segunda linea el importe en moneda origen
+    // (post:importe_origen)
+    // y en la tercera, el importe en moneda base (siaf:importe)
+    
+    select (siaf:codigo_siaf)
+        case 6600
+        case 6610
+        case 6800
+        case 6810
+        case 8690
+        case 8890
+        
+            cds extract DSC:tlr:CONjscn siaf:motivo
+            fprint tlr:jscn_ds_line3 "%s %s" tlr:jscn_ds_line3 siaf:motivo
+
+            //fprint tlr:jscn_ds_line3, \
+            //" %s Base: %-15.15s",\
+            //tlr:jscn_ds_line3,tlr:jnl_amount_1
+
+            fprint tlr:jscn_ds_line3, \
+            " %s Base: %18e", \
+            tlr:jscn_ds_line3,tlr:jnl_amount_1
+
+            break
+        case 98010
+        case 98020
+        case 98030
+        case 98040
+        case 98050
+        case 98060
+        case 98070
+        case 98080
+            clearfield op:adt_login_id
+            cds extract DSC:tlr:CONjscn siaf:adt_mot_desc op:adt_login_id
+            call csr:trimfield(tlr:jscn_ds_line3)
+            call csr:trimfield(op:adt_login_id)
+            call csr:trimfield(siaf:adt_mot_desc)
+            fprint tlr:jscn_ds_line3 "%s %s %s" tlr:jscn_ds_line3 siaf:adt_mot_desc op:adt_login_id
+            break
+        case 99023
+            fprint tlr:jscn_ds_line3, \
+            " %s  Monto Entregado: %-15.15s",\
+            tlr:jscn_ds_line3,post:importe_pesos
+            break
+        case else
+            fprint tlr:jscn_ds_line3, \
+            " %s       Base: %18e",\
+            tlr:jscn_ds_line3,tlr:jnl_amount_1
+            break
+     end select
+     
+     
+	/*Se agrega para un futuro el estado del host. Por ahora que comentado - Gabriel Falciola
+	fprint tlr:jscn_ds_line3 "%s                       %15.15s" tlr:jscn_ds_line3 tlr:jscn_ds_status*/
+END SUB
+
+/*******/

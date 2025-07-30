@@ -1,0 +1,89 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCchk_rend_espv
+* NOMBRE
+*   OFB:tes:MISCchk_rend_espv
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCchk_rend_espv
+/**************************************************************************
+Agrego el chequeo de las rendiciones de Especies Valorizadas. Lee la Tabla
+de Rendiciones y verifico que exista en la Tabla de Especies. Si no rindió
+en esa especie lo obliga a hacerlo.
+Además si no coincide con totales le avisa.
+**************************************************************************/
+    /*
+    PS9680
+    cds select from dsc:TesEspV becomes dsc:TesEspV_ctx where \
+    adt_espv_suc == op:op_branch_id 		           && \
+    adt_espv_id == op:op_operator_id 			   && \
+    adt_espv_es_tesoro == "N" && \
+    (adt_espv_importe != 0 || \
+    adt_espv_imp_ent != 0 || \
+    adt_espv_imp_sal != 0)
+    */
+    cds select from dsc:TesEspV becomes dsc:TesEspV_ctx where \
+    adt_espv_suc == op:op_branch_id 		           && \
+    adt_espv_id == op:op_operator_id 			   && \
+    adt_espv_es_tesoro == "N" && \
+    adt_espv_importe != 0
+    
+    // MLD 31-08-2000
+    // Selecciono unicamente las que tengan saldo o tuvieron movimientos
+    // durante el dia.
+    
+    cds findfirst dsc:TesEspV_ctx nolock
+    let lib:err_retval = cdsretval
+    do
+       if (lib:err_retval == -801) then
+	  break
+       end if
+       cds extract dsc:TesEspV_ctx all
+       /* Verifico que exista en la Tabla de Especies */
+       call CDSespecie_chk(adt_espv_cod,adt_espv_subcod)
+       if (retval == 0)
+
+          if (adt_espv_rend == "D") then
+             fprint common:csr_string, \
+             "Ultima Rendición en %20.20s con Diferencias, debe volver a rendir",adt_espv_cod
+             errmsg LST:common:errmsg_list,FLD:common:csr_string
+             return (-2)
+          end if
+
+	  if (adt_espv_rend != "X") then
+	     fprint common:csr_string, \
+	     "Error en Cierre de Caja: Rendicion en %20.20s Incompleta o No Realizada",adt_espv_cod
+	     errmsg LST:common:errmsg_list,FLD:common:csr_string
+	     cds endselect DSC:tes:TesEspV_ctx
+	     return (-2)
+	  end if
+	  /*
+	  ;call CDSget_imp_TesEspV(op:op_branch_id,"N",op:op_operator_id,adt_espv_cod,adt_espv_subcod,importe)
+	  */
+	  // Si lo rendido no coincide con lo actual no le permito cerrar.
+          if (adt_espv_importe != adt_espv_imp_rend) then
+	     fprint common:csr_string,"Error en Cierre de Caja: La Rendicion en %20.20s difiere de Totales",\
+    	     adt_espv_cod
+	     errmsg LST:common:errmsg_list,FLD:common:csr_string
+	     cds endselect DSC:TesEspV_ctx
+	     return (-2)
+	  end if
+       end if
+       cds findnext dsc:TesEspV_ctx nolock
+       let lib:err_retval = cdsretval
+    loop
+END SUB
+
+/*******/

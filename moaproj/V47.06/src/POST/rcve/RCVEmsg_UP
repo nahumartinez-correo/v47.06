@@ -1,0 +1,181 @@
+/****o* Mensajería/OFB:post:RCVEmsg_UP
+* NOMBRE
+*   OFB:post:RCVEmsg_UP
+* DESCRIPCION
+*   Emite mensajes de error segun codigo de respuesta del host en una consulta de pago diferido.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Retorna:
+*	-1:Mensaje de rechazo en modo consulta
+*	-2:Mensaje rechazo en RTbatch == 09 y 98
+*	-3:Mensaje rechazo en RTbatch != 09 y 98
+*	-4:Mensaje de rechazo en Directa modo NO consulta
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:hcomm:COMM_host_tran,OFB:post:RCVEhdr_up
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+* SOURCE
+*/
+#include "postrcve.h"
+
+SUB post:RCVEmsg_UP
+
+	LOCAL monto_excedido LIKE siaf:importe
+
+	IF ( giros:CodRespuesta_comm != "09" && giros:CodRespuesta_comm != "98" )	
+		
+		IF (TESTFLAG(giros:tran_send_mode,consulta_simple))
+	
+			//uso la vble common:csr_string_130 para mandar mensaje al operador
+			IF (giros:CodRespuesta_comm == "22") //Monto supera el permitido
+				;SC50200
+				if (!TESTFLAG (cheque_dif, chq_dif_al_dia)) then
+					monto_excedido = monto_chk_dif - limite_up
+					FPRINT common:csr_string_130,"    SALDO INSUFICIENTE\n\n Monto máximo permitido:  $ %e\n Monto excedido:   $ %e"\
+					limite_up,monto_excedido
+				endif
+			ELSE
+				IF (giros:CodRespuesta_comm == "" || giros:CodRespuesta_comm == "08")
+					FPRINT common:csr_string_130,"NO SE PUEDE REALIZAR LA CONSULTA"
+				ELSE
+					FPRINT common:csr_string_130,siaf:mensaje
+				END IF
+				//Si es un consulta tiene que volver a la captura
+			END IF	
+			IF (siaf:codigo_siaf == 99180 && giros:CodRespuesta_comm.NUMCHARS == 0) THEN
+				siaf:mensaje = "ERROR DE COMUNICACION - TRANSACCION RECHAZADA"
+			END IF
+			IF (siaf:codigo_siaf == 99180 && giros:CodRespuesta_comm.NUMCHARS != 0 && giros:CodRespuesta_comm == "00") THEN
+				siaf:mensaje = "TRANSACCION ACEPTADA"
+			END IF
+			if (giros:CodRespuesta_comm == "22" && TESTFLAG (cheque_dif, chq_dif_al_dia)) then
+				lib:err_retval = 0
+			else
+				MSGBOX common:csr_string_130,OFB_OK,"Mensaje"
+				lib:err_retval = -1
+			endif
+			
+			
+		ELSE
+			SELECT (giros:CodRespuesta_comm)		
+				CASE ""
+				CASE "22"
+				CASE "23"
+					//Tienen otro mensaje además del que devuelve el switch... por eso están fuera del case
+					BREAK
+				CASE "06"
+				CASE "12"
+				CASE "20"
+				CASE "21"
+				CASE "24"
+				CASE "25" //Difiere monto...????
+				CASE "26" //Cancelacion Inválida
+				CASE "27" //fecha inválida
+				CASE "28"
+				CASE "42"
+				CASE "63"
+				CASE "96" 
+				CASE "08"
+				CASE "30"
+				CASE "31"
+				CASE "32"
+				CASE "33"
+				CASE "34"
+				CASE "35"
+				CASE "36"				
+				CASE "38"
+				CASE "40"
+				CASE ELSE
+					//BREAK			
+	
+					IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+						FPRINT common:csr_string_171,"%s\n . Hora: %e ",siaf:mensaje,common:time_of_day
+						CALL batch:MISCgeneraLog(common:csr_string_171,"AMBOS","N")
+						lib:err_retval = -3
+					ELSE 
+						IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+							if (post:MsgBIN_comm == "7800000000") then
+								MSGBOX common:csr_string_130 OFB_OK "Mensaje"
+							else
+								MSGBOX siaf:mensaje OFB_OK "Mensaje"
+							endif
+							lib:err_retval = -4
+						END IF
+					END IF
+	
+			END SELECT
+		
+	
+			IF (giros:CodRespuesta_comm.numchars == "")			
+				IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+					FPRINT common:csr_string_171,"Error de Comunicacion - No se obtuvo Codigo de Respuesta\n . Hora: %e ",common:time_of_day
+					lib:err_retval = -3
+				ELSE
+					IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+						MSGBOX "Error de Comunicacion",OFB_OK,"Mensaje"
+					END IF 
+					IF (!TESTFLAG(giros:tran_send_mode,cancelacion) && \
+						(!TESTFLAG(tlr:controla_firma,cancelacion)))
+						MSGBOX "Imposible abonar con Cheque Diferido",OFB_OK,"Atención"	
+					END IF
+					lib:err_retval = -4
+				END IF
+			ELSE			
+				IF (giros:CodRespuesta_comm == "22")
+					;SC50200
+					if (!TESTFLAG (cheque_dif, chq_dif_al_dia)) then
+						monto_excedido = Imp_chk_dif - limite_up
+						FPRINT common:csr_string_130,"    SALDO INSUFICIENTE\n\n Monto máximo permitido:  $ %e\n Monto excedido:   $ %e"\
+						limite_up,monto_excedido
+						IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+							FPRINT common:csr_string_171,"%s\n . Hora: %e ",siaf:mensaje,common:time_of_day
+							lib:err_retval = -3
+						ELSE
+							IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+								MSGBOX common:csr_string_130,OFB_OK,"Mensaje"
+							END IF
+							lib:err_retval = -4
+						END IF
+					endif
+				ELSE
+					IF (giros:CodRespuesta_comm == "23")
+						IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+							
+							lib:err_retval = -3
+							
+						ELSE
+							IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+								MSGBOX common:csr_string_130,OFB_OK,"Mensaje"
+								IF (siaf:codigo_siaf != 99200 && siaf:codigo_siaf != 99240 && siaf:codigo_siaf != 99242)	
+									MSGBOX "Ingrese correctamente los datos del cheque",OFB_OK,"Atención"
+								END IF
+							END IF
+							lib:err_retval = -4
+						END IF	
+					END IF			
+				END IF
+			END IF
+		
+		END IF
+	
+	
+	ELSE
+		
+		/*******PROCESO RT BATCH RECUPERACION CAIDAS********/
+		IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN			        
+	    	hora = common:time_of_day
+		    FPRINT common:csr_string "\nRecuperacion Rechazada. CodRespuesta = %e. Hora: %e ",giros:CodRespuesta_comm,hora
+		    CALL batch:MISCgeneraLog(common:csr_string,"AMBOS","N")
+		END IF
+	    /*******FIN PROCESO RT BATCH RECUPERACION CAIDAS********/
+	  		lib:err_retval = -2
+	END IF
+	
+	CLEARFIELD common:csr_string_130
+	RETURN (lib:err_retval)
+END SUB
+
+/*******/

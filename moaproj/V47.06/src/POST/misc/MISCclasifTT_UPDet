@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:MISCclasifTT_UPDet
+* NOMBRE
+*   OFB:post:MISCclasifTT_UPDet
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCclasifTT_UPDet
+
+	CDS SELECT FROM dsc:stockpUP_pend_tbl becomes dsc:stockpUP_pend_ctx where \
+		tmpUP_op == op:op_operator_id && \
+		MarcaBorrado == "*"
+	CDS FINDFIRST dsc:stockpUP_pend_ctx NOLOCK
+	let lib:err_retval = CDSRETVAL
+	WHILE (lib:err_retval != -801)
+		
+		call MISCclear_clasifUP
+		
+		CDS EXTRACT	dsc:stockpUP_pend_ctx ALL
+		
+		 /* Journalizo el detalle*/
+		siaf:adt_tran_codigo = 99235
+        siaf:codigo_siaf = 99235
+		tlr:tran_mnemonic = "DECLUP"
+    	siaf:nombre_transac = "DETALLE DE CLASIFICACION PIEZAS UP"
+    	
+
+		cantidad = 1    	
+		drv:INDscr = SCR:post:SCRNtt_UPDet
+		drv:INDcur_tran = LST:TRANclasifTT_UPDet
+        drv:INDjnl_rtn = OFB:post:JNLrecepTT_UPDet
+        
+    	piezaUP = tmpUP_piezaUP
+    	apertura = tmpUP_apertura
+    	corte_op = tmpUP_corte_op
+		tiene_ar = adt_stockpUP_AR
+		if (tiene_ar == "S") then
+			adt_novtt_opcional = "Y"
+		else
+			adt_novtt_opcional = " "
+		endif
+		
+		//Busco en la tabla de corte operativo como es la expedicion de la pieza
+		CDS SELECT FROM DSC:CORTE_TAB BECOMES DSC:CORTE_CTX \
+		WHERE post:adt_corteop_cod == corte_op
+		CDS FINDFIRST DSC:CORTE_CTX NOLOCK
+		CLEARFIELD adt_corteop_guiacont
+		CLEARFIELD adt_corteop_saca
+		CLEARFIELD adt_corteop_despacho
+		IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT DSC:CORTE_CTX \
+				adt_corteop_guiacont \
+				adt_corteop_saca \
+				adt_corteop_despacho \
+				adt_corteop_ctrl
+		END IF
+		CDS ENDSELECT DSC:CORTE_CTX		
+	
+		//Busco en la RelMod el grupo de corte de la pieza con apertura expedición
+		CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+		WHERE (post:adt_relMod_modelos == common:br_modelo && \
+		post:adt_relMod_corteop == corte_op && \
+		post:adt_relMod_apertura == apertura)
+		CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			CLEARFIELD adt_relMod_grucorte
+			CLEARFIELD adt_relMod_sacatipo
+			CDS EXTRACT DSC:adt_relMod_ctx \
+			adt_relMod_grucorte \
+			adt_relMod_sacatipo
+			IF (adt_relMod_sacatipo != "")
+	       		LET adt_corteop_saca = "S"
+	    	ELSE
+	       		LET adt_corteop_saca = "N"
+	    	END IF
+	    END IF
+		CDS ENDSELECT DSC:adt_relMod_ctx
+
+		jnl_corteop_despacho = adt_corteop_despacho
+		jnl_corteop_saca = adt_corteop_saca
+		jnl_corteop_guiacont = adt_corteop_guiacont
+		jnl_grucorte_cod = adt_relMod_grucorte
+		jnl_marca_excep = "N"
+		jnl_stockp_reenc = "N"
+		jnl_simp_esp = "N"
+		
+		
+		//No journalizaba los campos post:jnl_corteop_guiacont, guiasaca y despacho
+		//y no realizaba la expedición porque estaba faltando este campo!!
+		post:adt_serv_piezacont = "T"
+		
+        CALL tlr:JNLtran
+        
+		CALL CDSGrabo_ScaneoUP
+        
+        UNGETKEY RT_SEND   
+        
+		CDS FINDNEXT dsc:stockpUP_pend_ctx NOLOCK
+		let lib:err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT dsc:stockpUP_pend_ctx
+END SUB
+
+/*******/

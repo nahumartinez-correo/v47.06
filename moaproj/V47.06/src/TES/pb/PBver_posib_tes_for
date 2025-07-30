@@ -1,0 +1,128 @@
+/****o* Pendientes de agrupación/OFB:tes:PBver_posib_tes_for
+* NOMBRE
+*   OFB:tes:PBver_posib_tes_for
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBver_posib_tes_for
+    local i like siaf:i
+    local varl_cant_locks like siaf:i
+    local LSuc like common:sucursal_activa
+    
+    
+
+     LSuc = op:op_branch_id
+     op:op_branch_id = tes:sucursal
+    /*guarda los cajeros que se encuentran abiertos el dia de hoy*/
+    CALL tes:CDSestado_cajas(common:system_date,"IQUAL")
+    tes:cant_open_caj = retval //cantidad de operadores sin rendir
+    op:op_branch_id = LSuc
+
+    
+    // selecciono los operadores que puedan ser receptores de la marca de
+    // tesoro forzado: los (JEFES DE OFICINA o los TESOREROS) y cajero 
+    // que debe estar identificado
+    /*Se agrega marca de borrado logico - Gabriel Falciola*/
+    CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+    WHERE op:op_branch_id == tes:sucursal              && \
+	  op:op_operator_id  != tes:tes_op_inter && \
+	  op:op_operator_id  != tes:tes_operator_id_orig  && \
+	  op:op_llave_tesoro != "S"                       && \
+	  op:op_tesoro       != "S"                       && \
+	 (op:op_tes_auth == "X" || op:op_sup_auth == "X") && \
+	  op:op_tlr_auth == "X"                           && \
+	  op:op_node_id > " " && op:op_borrado_logico != "S"
+
+
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+    lib:err_retval = cdsretval
+    if (cdsretval != 0) then
+       drv:button = drv:last_button
+       CALL drv:but_up_enable    
+	return (-2)
+    end if
+    
+    /*arma picklist con los operadores identificados y con cajas abiertas*/
+    CALL csr:f_sanewpl("operators", PIC:tes:oper_salida)
+    let varl_cant_locks = 0
+
+
+    DO
+       if (lib:err_retval != -803) // si el registro no esta lockeado
+	  CALL tes:CDSextract_op
+	  let i = 1
+	  do
+	     if (i > tes:cant_open_caj) then
+		break
+	     end if
+	     if (texto_aux[i] == op:adt_operator_id)
+		fprint common:csr_string "%-14s %5.5s   %5.5s   %15s",\
+		fld:op:adt_login_id, fld:op:adt_branch_id, \
+		fld:op:adt_operator_id,fld:op:adt_display_tmp
+		call csr:f_saaddpl("operators",common:csr_string)
+		break
+	     end if
+	     let i = i + 1
+	  loop
+       else
+  /* registro de profile lockeado (imposible determ. si esta ident.) */
+      let varl_cant_locks = varl_cant_locks + 1
+       end if
+       clearfield common:csr_string
+       CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+       let lib:err_retval = cdsretval
+       if (lib:err_retval == -801 || lib:err_retval == -802)
+	  break
+       end if
+    LOOP
+    CDS ENDSELECT DSC:op:adt_op_context
+
+
+    /* muestra picklist y se realiza eleccion */
+    call csr:f_sadopl "operators" common:csr_string
+    if (retval < 0)
+       clearfield tes:login_dest
+       refresh tes:login_dest
+       drv:button = drv:last_button
+       CALL drv:but_up_enable    
+
+       return (-1)
+    else
+       tes:op_id  = SUBSTR(common:csr_string,23,5)
+       tes:op_suc = SUBSTR(common:csr_string,15,5)
+       /*Se agrega marca de borrado logico - Gabriel Falciola*/
+       cds select FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_branch_id == tes:op_suc && op:op_operator_id == tes:op_id && \
+       op:op_borrado_logico != "S"
+       CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+       /*CALL tes:CDSextract_op     hace el extract al profiles*/
+       CDS EXTRACT DSC:op:adt_op_context \
+       FLD:op:op_login_id    INTO FLD:tes:tes_login_dest \
+       FLD:op:op_operator_id INTO FLD:tes:tes_operator_id_dest
+
+       CDS ENDSELECT DSC:op:adt_op_context
+    end if
+
+    refresh tes:tes_login_dest
+    refresh tes:tes_operator_id_dest
+    /* destrye picklist - libera memoria */
+    call csr:f_sadroppl("operators")
+    drv:button = drv:last_button
+    CALL drv:but_up_enable    
+
+END SUB 
+
+/*******/

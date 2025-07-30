@@ -1,0 +1,232 @@
+/****o* Pendientes de agrupación/OFB:siaf:FVALmotivo_sin_cta
+* NOMBRE
+*   OFB:siaf:FVALmotivo_sin_cta
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafFVAL.h"
+
+SUB siaf:FVALmotivo_sin_cta
+    IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+       RETURN (0)
+    END IF
+    IF (currentfield.numchars == 0) THEN
+        RETURN (-2)
+    END IF
+    /*MFM - Chequeo si el motivo ingresado se encuentra en el picklist*/
+    CALL CSR:f_sadopv("MOTIVOS HAB",motivo,1) 
+    IF (RETVAL == -399) THEN
+        RETURN -2
+    ELSE
+        IF (RETVAL == -1) THEN
+             MSGBOX "No hay motivos cargados",0x00,"AVISO"
+             CLEARFIELD motivo
+             REFRESH motivo
+             RETURN -2
+        END IF
+    END IF
+    LET siaf:adt_mot_desc_tmp = substr(common:csr_string,6,30)
+	REFRESH motivo
+	REFRESH siaf:adt_mot_desc_tmp
+
+    /*MFM - Busco el motivo ingresado en la tabla de Motivos y extraigo los campos 
+    para poder hacer las validaciones de abajo*/
+    CALL MISCSelect_Motivo  
+    
+    //cgw:Verifica que el motivo sea no exclusivo del template
+	IF (siaf:codigo_siaf == 6600 || siaf:codigo_siaf == 6800) THEN
+	    CALL siaf:CDStmpl_mot_noexclus(adt_mot_codigo,adt_mot_modulo,adt_mot_submodulo)
+	    IF (RETVAL < 0) THEN
+		    MSGBOX "Motivo exclusivo para un template",0x00,"AVISO"
+	        RETURN (-2)
+        END IF	    
+    END IF
+            
+    /*CALL FVALmotivo2
+    IF (RETVAL < 0) THEN
+       RETURN (RETVAL)
+    END IF*/
+	
+	/*Esto se está haciendo en el select con el que se arma el picklist!!
+	if (adt_mot_grupoiva != FLD:post:PresGrupoIva && adt_mot_grupoiva != "") then
+	    msgbox "El Motivo no pertenece al Grupo de Iva del Cliente",OFB_OK,"ERROR"
+		return (-2)
+	end if   */
+	
+	/*MFM - Se chequea que el motivo no se encuentre restringido para la provincia
+	CALL siaf:CDSVerif_MotProv(motivo)
+	IF (RETVAL < 0) THEN
+	    RETURN -2
+	END IF*/
+    /*Carina-Chequea que el tipo de factura del motivo elegido se correspona con el tipo de factura de 
+    la categoria de iva del cliente*/
+    /*Florencia K.- se comenta debido a que el req 477 fue modificado*/
+    /*IF (post:estado_presu != 1) THEN
+	 CALL MISCverif_tipfact
+	 IF (RETVAL < 0) THEN
+	    RETURN (-2)
+	 END IF	
+     END IF
+     */
+     /*Fin Carina*/
+     IF (adt_mot_capt != "S" )
+		CLEARFIELD nro_impre
+		REFRESH nro_impre
+		PROTFIELD nro_impre
+     ELSE
+		UNPROTFIELD nro_impre
+     END IF
+     if (adt_mot_serv.numchars != 0 || adt_mot_serv != "") then
+        if (adt_mot_nis_dest == "N") then
+            clearfield Nis_Destino
+            protfield Nis_Destino
+            refresh Nis_Destino
+            DISABLECONTROL drv:PBcb2
+        else
+            unprotfield Nis_Destino
+            ENABLECONTROL drv:PBcb2
+        end if
+     else
+        /* No cobra sellado */
+        clearfield Nis_Destino
+        refresh Nis_Destino
+        protfield Nis_Destino
+        DISABLECONTROL drv:PBcb2
+        clearfield ProvImpuesto
+     end if   
+     
+     IF (((post:estado_presu == 2) || (post:estado_presu == 3)) && \
+        (adt_mot_mod_aten == "N")) THEN
+	ERRMSG LST:common:errmsg_list,"Motivo No Admite Modo Presupuesto"
+	RETURN (-2)
+     ELSE
+	IF ((post:estado_presu == 1) && (adt_mot_mod_aten == "E")) THEN
+           post:codigo_siaf_aux = siaf:codigo_siaf
+           drv:INDcur_tran_aux  = drv:INDcur_tran
+           ClearField siaf:importe2
+           let drv:INDrun_funct = lst:post:TRANidentifica_cli
+           call drv:do_mode
+        
+           /*Florencia - verificar que la categoria de Iva y el motivo
+           sean del mismo grupo de categoria de Iva*/
+  	   CALL siaf:MISCverif_grupoIva	//DUDA:ESTO NO SE ESTA TENIENDO EN CUENTA EN EL SELECT QUE SE HACE PARA ARMAR EL PICKLIST??
+	   /*Fin Florencia*/
+        
+           Return -2
+           //cutscreen fld:drv:INDscr,CURRENTFIELD
+           //drv:INDscr_aux = fld:drv:INDscr
+           //drv:stack_cnt = drv:stack_cnt + 1
+           //Call csr:listexec lst:post:TRANidentifica_cli
+           //joinscreen fld:drv:INDscr_aux,NOCURSOR
+           //let drv:INDrun_funct = lst:post:TRANidentifica_cli
+           //call drv:do_mode
+           //siaf:codigo_siaf = post:codigo_siaf_aux
+           //drv:reload_screen = -1
+           //Call csr:listexec drv:INDcur_tran_aux
+
+        END IF
+     END IF
+     /*Florencia - verificar que la categoria de Iva y el motivo
+     sean del mismo grupo de categoria de Iva*/
+     If (adt_mot_mod_aten == "E") THEN//DUDA: ESTO NO SE ESTA HACIENDO EN EL SELECT QUE SE HACE PARA ARMAR EL PICKLIST??
+  	    CALL MISCverif_grupoIva	
+  	    if (retval < 0)
+  	        return (-2)
+  	    end if  	
+     end if
+     /*Fin - Florencia*/
+	
+     nextfield Nis_Destino
+     clearfield motivo_desc
+     refresh motivo_desc
+     setvaldone motivo_desc
+        /*
+     nextfield moneda
+     clearfield motivo_desc
+     refresh motivo_desc
+     setvaldone motivo_desc
+     */
+     if (post:estado_presu == 1)
+         call post:CDSMPago_Clegal_load
+      	  if (retval == 0) then
+      	     siaf:moneda = post:adt_mp_cod	
+      	     protfield siaf:moneda
+      	     DISABLECONTROL drv:PBcb1
+      	     refresh siaf:moneda
+      	     let post:medio_pago_desc = post:adt_mp_desc
+      	     refresh post:medio_pago_desc   
+          else
+             errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+             return (-2)
+          end if        
+    else
+        /*
+        if (siaf:adt_tran_med_pago != "N")
+            clearfield siaf:moneda
+            unprotfield siaf:moneda
+            clearfield post:medio_pago_desc
+            refresh siaf:moneda
+            refresh post:medio_pago_desc  
+            ENABLECONTROL drv:PBcb1
+        end if        
+        */
+    end if
+
+   
+    if (post:cli_tipo == CLIMED) then
+   		post:bonificaCM = siaf:adt_mot_bonifCM
+   		if (post:ConvenioSesion && siaf:adt_mot_bonifCM == "S" && !post:ExcepSinLinea) then
+			unprotfield post:Dcto_CliMed
+			refresh     post:Dcto_CliMed
+    	 else
+			clearfield  post:Dcto_CliMed
+			refresh     post:Dcto_CliMed
+			protfield   post:Dcto_CliMed
+   		end if
+   		//PS 7534:Restringir la venta por excepcion a productos que admitan la bonificación
+   		if (post:consulta_excepcionCM == "S" && siaf:adt_mot_bonifCM != "S" && post:ExcepSesion) then
+			msgbox "El motivo no está habilitado para bonificar a Cliente Medio",0x00, "ERROR"
+			drv:button = drv:last_button
+    		CALL drv:but_up_enable
+    		CALL drv:but_redraw
+			return -2
+		endif
+    else
+	    clearfield  post:Dcto_CliMed
+		refresh     post:Dcto_CliMed
+		protfield   post:Dcto_CliMed
+	end if
+
+
+    IF (adt_mot_cotiza == "S")
+	   	UNPROTFIELD coti_moneda
+    	UNPROTFIELD imp_a_cotizar
+    	ENABLECONTROL drv:PBcb4
+    	PROTFIELD ImporteSinSello
+    	NEXTFIELD coti_moneda
+    ELSE
+		CLEARFIELD coti_moneda
+		CLEARFIELD imp_a_cotizar	
+		REFRESH coti_moneda
+		REFRESH imp_a_cotizar
+		REFRESH ImporteSinSello
+	   	PROTFIELD coti_moneda
+    	PROTFIELD imp_a_cotizar
+    	UNPROTFIELD ImporteSinSello
+    	DISABLECONTROL drv:PBcb4
+    END IF
+	
+END SUB
+
+/*******/

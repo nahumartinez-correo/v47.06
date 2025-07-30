@@ -1,0 +1,208 @@
+/****o* Pendientes de agrupación/OFB:post:MISCverif_PresuDet_g
+* NOMBRE
+*   OFB:post:MISCverif_PresuDet_g
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverif_PresuDet_g
+
+    LOCAL loc_cuenta              LIKE post:cantidad
+    LOCAL loc_importe             LIKE siaf:importe
+    LOCAL loc_tasa                LIKE post:adt_serv_aliciva
+    LOCAL loc_cantidad            LIKE post:cantidad
+
+    LOCAL loc_tran_afec_efvo      LIKE siaf:adt_tran_afec_efvo
+    LOCAL loc_tran_fliatran       LIKE siaf:adt_tran_fliatran
+    LOCAL l_codigo_siaf           LIKE siaf:codigo_siaf
+    LOCAl l_jnl_status            LIKE tlr:jnl_status
+    LOCAL loc_codigo_siaf         LIKE siaf:codigo_siaf
+    LOCAL loc_PreDForFis          LIKE post:PreDForFis
+    LOCAL loc_siaf_status         LIKE siaf:siaf_status
+    LOCAL loc_emision_postal      LIKE giros:es_emision_postal
+    LOCAL loc_emision_tele        LIKE giros:es_emision_tele
+    LOCAL loc_envio_WU	          LIKE giros:es_envio_WU
+    LOCAL loc_emision_inte        LIKE giros:es_emision_inte    
+    LOCAL loc_emi_correohoy       LIKE giros:es_emision_correohoy
+    LOCAL loc_Comision_fld        LIKE giros:Comision_fld
+    LOCAL loc_serv_aliciva        LIKE post:adt_serv_aliciva
+    LOCAL loc_tarif_fj_aliciva    LIKE post:adt_tarif_fj_aliciva
+    LOCAL loc_tarif_fijo          LIKE post:adt_tarif_fijo
+    LOCAL loc_imp_servicio_fld    LIKE giros:imp_servicio_fld
+    LOCAL loc_cant_opc            LIKE post:cant_opc
+    LOCAL loc_cos_opc[8]          LIKE post:cos_opc_impre
+    LOCAL loc_ali_opc[8]          LIKE post:AliServUP
+    LOCAL loc_flags_back          LIKE giros:flags_back
+    LOCAL loc_afecta_efectivo     LIKE siaf:afecta_efectivo    
+    LOCAL loc_afecta_efvo_rev LIKE giros:afecta_efectivo_rev
+    LOCAL loc_imp_revalida_rev    LIKE giros:imp_revalida_rev
+    LOCAL loc_serv_aliciva_rev    LIKE giros:serv_aliciva_rev
+
+    /*cgw:Verifico si se genero en PresuDet una transaccion pos venta de giro.
+          De existir: 1) Si la ultima tx journalizada es el inicio de sesion, debo borrar
+                         la PresuDet y Auxiva, para evitar valores en el fin de sesion.                         
+                      2) Si no esiste la AuxIva, se regenera. Esto es porque el RT se cayo
+                         antes de grabar el fin de sesion en la PresuDet.
+    */
+
+    CLEARFIELD giros:es_servicio
+    CDS SELECT FROM DSC:TABPresuDeta BECOMES "PresuDet_giro" \
+    	  WHERE post:fecha == common:system_date && \
+      	  post:op_operator_id == op:op_operator_id && \
+       	  post:PresNro == post:PresNro && \
+       	  siaf:adt_tran_fliatran == "CSM" && \
+       	  giros:es_servicio == "S"
+
+    CDS FINDFIRST "PresuDet_giro" LOCK
+    IF (CDSRETVAL == 0) THEN
+
+        SWAPDUP siaf:codigo_siaf //recupero el valor dupeado
+        l_codigo_siaf = siaf:codigo_siaf        
+        SWAPDUP siaf:codigo_siaf //repongo valor anterior
+        SWAPDUP tlr:jnl_status //recupero el valor dupeado
+        l_jnl_status = tlr:jnl_status
+        SWAPDUP tlr:jnl_status //repongo valor anterior
+
+    	//IF (post:codigo_impre == 99021) THEN
+        IF (l_codigo_siaf == 99021 && l_codigo_siaf == post:codigo_impre) THEN
+    	    /*cgw:Lo ultimo journalizado es un inicio de sesion, verifica si en la PresuDet,
+    	          existe un posventa giro. De existir se borra la PresuDet y la AuxIva,
+    	          para que no genere fin de sesion con valores.
+            */      
+    	    CDS UNLOCK "PresuDet_giro"
+            CDS ENDSELECT "PresuDet_giro"
+            
+            CALL post:MISCborra_PresuDet_g
+            RETURN
+    	END IF
+    	
+    	IF (l_codigo_siaf == post:codigo_impre && l_jnl_status >= 100) THEN
+    	    //actualiza status en la PresuDet.
+            siaf:siaf_status = l_jnl_status
+            CDS APPEND "PresuDet_giro" \
+		siaf:siaf_status
+	    CDS UPDATE "PresuDet_giro" LOCK
+	    //borra AuxIva.
+            CALL post:CDSdelete_AuxIva
+    	END IF
+
+         /*cgw:Verifico si esta generada la AuxIva, de no existir, es porque el rt se cayo
+               luego de borrarla, antes de generar el fin de sesion en la PresuDet.
+               Se volvera a generar AuxIva.
+         */
+         CDS SELECT FROM DSC:TblImpreIva BECOMES DSC:CtxImpreIva  \
+               WHERE (Fld:post:op_operator_id == fld:post:op_operator_id)
+         CDS FINDFIRST DSC:CtxImpreIva LOCK
+         lib:err_retval = CDSRETVAL
+         CDS UNLOCK DSC:CtxImpreIva
+         CDS ENDSELECT DSC:CtxImpreIva
+         IF (lib:err_retval == 0) THEN
+             CDS UNLOCK "PresuDet_giro"
+             CDS ENDSELECT "PresuDet_giro"
+    	     RETURN
+         END IF
+
+    	//Se regenera AuxIva
+    	CDS FINDAGAIN "PresuDet_giro" LOCK
+        CDS EXTRACT "PresuDet_giro" \
+            siaf:adt_tran_afec_efvo    INTO loc_tran_afec_efvo \
+      	    siaf:adt_tran_fliatran     INTO loc_tran_fliatran \
+      	    siaf:codigo_siaf           INTO loc_codigo_siaf \
+      	    siaf:siaf_status           INTO loc_siaf_status \
+      	    post:PreDForFis            INTO loc_PreDForFis \
+      	    giros:es_emision_postal    INTO loc_emision_postal \
+      	    giros:es_emision_tele      INTO loc_emision_tele \
+	    giros:es_envio_WU          INTO loc_envio_WU \
+	    giros:es_emision_inte      INTO loc_emision_inte \
+	    giros:es_emision_correohoy INTO loc_emi_correohoy \
+	    giros:Comision_fld         INTO loc_Comision_fld
+	    
+        CDS EXTRACT "PresuDet_giro" \
+      	    post:adt_serv_aliciva      INTO loc_serv_aliciva \
+      	    post:adt_tarif_fj_aliciva  INTO loc_tarif_fj_aliciva \
+      	    post:adt_tarif_fijo        INTO loc_tarif_fijo \
+            giros:imp_servicio_fld     INTO loc_imp_servicio_fld \
+            post:cant_opc              INTO loc_cant_opc \
+            post:cos_opc               INTO loc_cos_opc \
+            post:ali_opc               INTO loc_ali_opc \
+            giros:flags_back           INTO loc_flags_back \
+            siaf:afecta_efectivo       INTO loc_afecta_efectivo \
+            giros:afecta_efectivo_rev  INTO loc_afecta_efvo_rev \
+            giros:imp_revalida_rev     INTO loc_imp_revalida_rev \
+            giros:serv_aliciva_rev     INTO loc_serv_aliciva_rev
+
+        IF (loc_tran_afec_efvo == "+" || loc_tran_afec_efvo == "-") && \
+           ((cli_tipo == 2) || (cli_tipo == CLIUP) || (cli_tipo == CLIMED)) && \
+           (loc_PreDForFis.NUMCHARS > 0) THEN
+           SobreTasaIva = 0
+           INIT 22,1
+
+           /*Si la transacción es rechazada por el Host, no calculo el Iva*/
+	   // FGB 27.06.2003: agrego condiciones para que no me tome las trx con caida en vuelo,
+	   // si las mismas no fueron aun recuperadas.
+	   IF (loc_siaf_status != HOST_ACCEPTED && loc_siaf_status != MEMO && \
+	       loc_siaf_status != UNPOSTED) THEN
+	       CDS UNLOCK "PresuDet_giro"
+               CDS ENDSELECT "PresuDet_giro"
+               RETURN
+	   END IF	
+           
+           /*
+	   IF (loc_emision_postal == "S" || loc_emision_tele == "S" || \
+	       loc_envio_WU == "S" || loc_emision_inte == "S" || \
+	       loc_emi_correohoy == "S" ) THEN		
+	       CALL post:MISCdesglosaIva(loc_Comision_fld,loc_serv_aliciva,1)
+	       CALL post:CDSUpdate_ImpreIva_g(loc_serv_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva,loc_afecta_efectivo)
+	       IF (loc_emision_tele == "S") THEN
+		   CALL post:MISCdesglosaIva(loc_tarif_fijo,loc_tarif_fj_aliciva,1)
+		   CALL post:CDSUpdate_ImpreIva_g(loc_tarif_fj_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva,loc_afecta_efectivo)
+	       END IF
+           ELSE
+           */
+	   //SC 50170
+	   CALL post:MISCdesglosaIva(loc_imp_servicio_fld, loc_serv_aliciva,1,0)
+	   CALL post:CDSUpdate_ImpreIva_g(loc_serv_aliciva,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva,loc_afecta_efectivo)
+	   //END IF
+	
+	   IF (loc_cant_opc > 0) THEN
+               loc_cuenta = 0
+	       WHILE (loc_cuenta < loc_cant_opc) THEN
+		 loc_importe = loc_cos_opc[loc_cuenta]
+		 loc_tasa = loc_ali_opc[loc_cuenta]
+		 loc_cantidad = 1
+		 //SC 50170
+		 CALL post:MISCdesglosaIva(loc_importe,loc_tasa,loc_cantidad,0)
+		 CALL post:CDSUpdate_ImpreIva_g(loc_tasa,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva,loc_afecta_efectivo)
+		 loc_cuenta = loc_cuenta + 1
+	       END WHILE
+	   END IF 
+	   /*Me fijo si corresponde revalida*/
+	   IF (testflag(loc_flags_back,vencido)) THEN
+	       swapdup loc_afecta_efectivo
+	       loc_afecta_efectivo = loc_afecta_efvo_rev
+	       //SC 50170
+	       CALL post:MISCdesglosaIva(loc_imp_revalida_rev,loc_serv_aliciva_rev,1,0)
+	       CALL post:CDSUpdate_ImpreIva_g(loc_serv_aliciva_rev,post:ImporteSinIva,post:ImporteIva,post:SobreTasaIva,loc_afecta_efectivo)
+	       dupfield loc_afecta_efectivo
+	   END IF
+
+           INIT 22,0
+        END IF
+    END IF
+    CDS UNLOCK "PresuDet_giro"
+    CDS ENDSELECT "PresuDet_giro"
+END SUB
+
+/*******/

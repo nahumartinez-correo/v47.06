@@ -1,0 +1,136 @@
+/****o* Anulación de Documentos/OFB:post:CDSsel_jnl_anul
+* NOMBRE
+*   OFB:post:CDSsel_jnl_anul
+* DESCRIPCION
+* Selecciona del journal todos los registros de FIN SESION de la fecha, con respecto al
+*  operador, siempre y cuando tengan un formulario asociado y no esté reversado
+* Se agrega filtro para que no seleccione las sesiones de Notas de Crédito por Incumplimiento
+* a Clientes Medios, y las sesion de emision de lista de girso
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:PRESanulacion
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsel_jnl_anul
+	LOCAL codigo_siaf_aux LIKE siaf:jnl_codigo_siaf
+	LOCAL sequence_corr_aux LIKE tlr:jnl_sequence_corr
+	LOCAL DocInic_aux LIKE post:DocInic
+	LOCAL Tipo_Formulario_aux LIKE post:Tipo_Formulario
+	LOCAL importe_sesion_aux LIKE post:importe_sesion
+	LOCAL PresNro_aux LIKE post:PresNro
+	LOCAL OperacionNC_aux LIKE post:OperacionNC
+	LOCAL ConsumoAntMon_aux LIKE post:ConsumoAnticipoMon
+
+	/* Selecciona del journal todos los registros de FIN SESION de la fecha, con respecto al
+	   operador, siempre y cuando tengan un formulario asociado y no esté reversado
+	   Gabriel Falciola*/
+	/*Agrego filtro para que no seleccione las sesiones de Notas de Crédito por Incumplimiento
+	  a Clientes Medios - Gabriel Falciola*/	
+
+	/*uso algunos campos para la lista de filtro, por lo tanto resguardo su valor original*/
+	codigo_siaf_aux = siaf:jnl_codigo_siaf
+	siaf:jnl_codigo_siaf = 99023
+	sequence_corr_aux = tlr:jnl_sequence_corr
+	tlr:jnl_sequence_corr = 0
+	DocInic_aux = post:DocInic
+	post:DocInic = 0
+	Tipo_Formulario_aux = post:Tipo_Formulario
+	post:Tipo_Formulario = 3
+	importe_sesion_aux = post:importe_sesion
+	PresNro_aux = post:PresNro
+	post:PresNro = 1
+	OperacionNC_aux = post:OperacionNC
+	post:OperacionNC = 0
+	ConsumoAntMon_aux = post:ConsumoAnticipoMon
+	post:ConsumoAnticipoMon = 0
+	
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE LST:LISTsel_jnl_anul
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	IF (CDSRETVAL != 0) THEN
+  	CDS ENDSELECT DSC:tlr:jnl_context
+  	MSGBOX "No existen Documentos para anular",0x00,"AVISO"
+  	RETURN (-2)
+	END IF
+
+	/*Restauro los valores*/
+	siaf:jnl_codigo_siaf = codigo_siaf_aux
+	tlr:jnl_sequence_corr = sequence_corr_aux
+	post:DocInic = DocInic_aux
+	post:Tipo_Formulario = Tipo_Formulario_aux
+	post:importe_sesion = importe_sesion_aux
+	post:PresNro = PresNro_aux
+	post:OperacionNC = OperacionNC_aux
+	post:ConsumoAnticipoMon = ConsumoAntMon_aux
+	
+  DO
+		post:DocFiscal = ""
+		// Si hay registros, los paso a una tabla auxiliar (TmpDocFis)
+		//venta up
+		CLEARFIELD VentaUP_Diferida
+		CLEARFIELD VentaUP_Excepcion
+		//cliente medio
+		CLEARFIELD ConvenioSesion
+		CLEARFIELD ExcepSesion
+		CLEARFIELD VentaCdcto_CM
+		CLEARFIELD ModalidadAT
+		CLEARFIELD ModalidadCC
+		CLEARFIELD ModalidadCD
+		CLEARFIELD ConsumoAnticipo
+		CLEARFIELD OperacionCob
+		CLEARFIELD Imp_CobroDif
+		CLEARFIELD OperacionInt
+		CLEARFIELD OperacionAut
+		CLEARFIELD ExcepProducto
+		CLEARFIELD post:MPcheque
+		//PED
+		CLEARFIELD es_PED
+		CLEARFIELD DocFisPed
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+		tlr:jnl_operator tlr:jnl_bus_date  \
+		DocFiscal DocInic DocFin CliRaz PresNro importe_sesion tlr:jnl_sequence \
+		adt_Modo VentaUP_Diferida VentaUP_Excepcion ConvenioSesion VentaCdcto_CM \
+		ExcepSesion ModalidadAT ModalidadCC ModalidadCD ConsumoAnticipo \
+		OperacionCob Imp_CobroDif OperacionInt OperacionAut ExcepProducto MPcheque \
+		es_PED DocFisPed
+		
+			//gpb:NI50479 - no se puede anular una NC PED
+			IF (post:DocFisPed.NUMCHARS == 0) THEN
+				IF (post:DocFiscal.NUMCHARS != 0) THEN
+					//Abro el contexto de la tabla auxiliar
+					CDS SELECT FROM DSC:TmpDocFis_table BECOMES DSC:TmpDocFis_context
+					CDS APPEND DSC:TmpDocFis_context \
+					tlr:jnl_operator tlr:jnl_bus_date \
+					DocFiscal DocInic DocFin CliRaz PresNro importe_sesion tlr:jnl_sequence \
+					adt_Modo
+					/*MFM - VENTA UP DIFERIDA - PAGO POR EXCEPCION*/
+					CDS APPEND DSC:TmpDocFis_context VentaUP_Diferida \
+					VentaUP_Excepcion
+					//Tratamiento Cliente Medio
+					CDS APPEND DSC:TmpDocFis_context ConvenioSesion VentaCdcto_CM ExcepSesion \
+						ModalidadAT ModalidadCC ModalidadCD ConsumoAnticipo \
+						OperacionCob Imp_CobroDif OperacionInt OperacionAut ExcepProducto MPcheque \
+						es_PED
+		
+					CDS INSERT DSC:TmpDocFis_context NOLOCK
+					CDS ENDSELECT DSC:TmpDocFis_context
+				END IF
+			END IF		
+			CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+			IF (CDSRETVAL != 0) THEN
+				CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+			END IF
+	LOOP
+END SUB
+
+/*******/

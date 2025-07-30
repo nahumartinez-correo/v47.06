@@ -1,0 +1,697 @@
+/****o* Sesión Correo/OFB:siaf:PRESfecha_hora
+* NOMBRE
+*   OFB:siaf:PRESfecha_hora
+* DESCRIPCION
+*   Rutina que se ejecuta en las rutinas de Predisplay de las tx, realizando una serie de validaciones que determinaran
+*	si se podrá acceder o no a la tX seleccionada.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tlr:JNLout_of_tran,OFB:tlr:PRETProcesoCierre ,OFB:tlr:PRESclose_day,OFB:tes:SVALrecep_cheq
+*	OFB:tes:SVALpase_forz_tes,OFB:tes:SVALorden_no_pagar,OFB:tes:SVALhab_caja_buzon,OFB:tes:SVALdep_cheque_cta
+*	OFB:tes:SVALciefor_suc,OFB:tes:PRETclose_pass_suc,OFB:tes:PRETclose_llave_tes,OFB:tes:PRETcierre_teso
+*	OFB:tes:PRETcierre_suc,OFB:tes:PRETcierre_dia,OFB:tes:PRETArqTes,OFB:tes:PRESrendi_espv,OFB:tes:PRESrendi_caja
+*	OFB:tes:PRESregenera_tesor,OFB:tes:PRESpase_subteso,OFB:tes:PRESpase_forz_tes ,OFB:tes:PRESconsolidado_espv
+*	OFB:tes:PREScons_tesoro,OFB:tes:PREScons_TesEspV,OFB:tes:PREScons_reemp_chrob,OFB:tes:PREScons_ing_egr
+*	OFB:tes:PREScons_ie_tarj,OFB:tes:PREScons_ie_cheq,OFB:tes:PREScons_est_suc,OFB:tes:PREScons_est_cheq,
+*	OFB:tes:PREScons_est_buzon,OFB:tes:PREScons_est_buz_ev,OFB:tes:PREScons_den_suc,
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "siafPRES.h"
+
+SUB siaf:PRESfecha_hora
+	LOCAL l_str LIKE post:label_string
+	
+	IF (drv:INDjnl_rtn != 0) THEN
+		CALL siaf:CDSverifOpenJNLctx
+		IF (CDSRETVAL == -932) THEN
+			MSGBOX "El contexto de journal se encuentra cerrado. Vuelva al inicio de la aplicación\n saliendo de todos los menues e intentelo de nuevo.", 0x00000030, "ERROR"
+			RETURN -1
+		END IF
+	END IF
+    
+	/*cgw: controla si el operador tiene pases pendientes.En este caso no puede continuar
+	con la transaccion hasta ingresar los pases. */
+	CALL post:MISCctrol_ingr_pases
+	IF (RETVAL < 0) THEN
+		//cgw:el operador debe ingresar los pases pendientes.
+		RETURN (-1)
+	END IF
+
+	IF (post:NotaCredito != "S" && siaf:codigo_siaf != 7100) THEN
+		CALL post:CDSadt_presuact_load
+		;PS9795 
+		IF (post:estado_presu == 1 && post:PresNro > 0 && post:Modo != "R") THEN
+			IF (siaf:codigo_siaf != 99099  && siaf:codigo_siaf != 99023)
+				CALL post:MISCfin_TeclaRapida
+				RETURN (-1)
+			END IF
+		END IF
+	END IF
+
+	/* esto para inicializar la hora reentry. Esto es solo modificado por
+	el tlr:JNLreentry_update cuando se manda al host */
+	CLEARFIELD hora_reentry
+	
+	IF (!TESTFLAG(lib:state_flags,scan_mode) || TESTFLAG(tlr:tran_flags,correction)) THEN
+		LET fecha = common:system_date
+		LET hora = common:time_of_day
+		MOVE common:sucursal_activa to siaf:sucursal
+	END IF
+
+	IF (!TESTFLAG(op:op_state_flags,open_day)) THEN
+		/* Solo obliga a abrir el dia si entro por Menu Cajero o
+		Menu Administrativo */
+		IF (drv:dt_app == 2 || drv:dt_app == 3) THEN
+			IF (TESTFLAG(common:menu_flags,AMtlr_auth) || TESTFLAG(common:menu_flags,AMret_auth)) THEN
+				ERRMSG LST:common:errmsg_list,DSC:siaf:ERRabrir_dia
+				RETURN (-1)
+			END IF
+		END IF
+	END IF
+    
+	IF (siaf:codigo_siaf != 0) THEN
+		LET siaf:adt_tran_codigo = siaf:codigo_siaf
+		CLEARFIELD siaf:adt_tran_venta
+		CALL siaf:CDSadt_tran_load
+		
+		IF (siaf:codigo_siaf == 9130 || siaf:codigo_siaf == 8980) THEN
+			siaf:adt_tran_disp = "S"
+		END IF
+		
+		IF ((RETVAL < 0) || (siaf:adt_tran_disp == "N")) THEN
+			ERRMSG LST:common:errmsg_list,siaf:ERRtran_no_disp
+			RETURN (-1)
+		END IF
+		
+		IF (siaf:adt_tran_venta == "S" && post:enSesion == "") THEN
+			CALL post:CDSchqVentasBlq
+			IF (RETVAL == VERDAD) THEN
+				//[PAW] --> Las ventas se encuentran bloqueadas.
+				MSGBOX "Las ventas se encuentran bloqueadas.", OFB_OK, "ERROR"
+				RETURN (-1)
+			END IF
+		END IF
+
+		;[PAW] --> Si el cliente es un cliente UP, se pidió verificar en la tabla de_
+		;          Unidades de negocio si tiene el flag Bonificación ventas UP en S para_
+		;          permitir la transacción.
+		/* MLD Si estoy en una reimpresión de lablels 8560, no hago este control */
+		IF (siaf:adt_tran_fliatran != "USR" && post:estado_presu > 1 \
+			&& siaf:adt_tran_fliatran != "PCL" && siaf:codigo_siaf != 99200 && siaf:codigo_siaf != 99240 \
+			&& siaf:codigo_siaf != 99242 && siaf:codigo_siaf != 8560) THEN
+		
+			IF (post:cli_tipo == CLIUP) THEN
+				//Reingenieria
+				IF (siaf:codigo_siaf != 11000) THEN
+					CALL post:CDSverificaFliaUP(siaf:adt_tran_fliatran)
+					IF (RETVAL == NOTOK) THEN
+						//cgw: NI50244 - Se hace la salvedad de permitir si Adelanto pot Transferencias
+						//     Bancarias, debido a que por parametria es flia "TAV".
+						IF (siaf:codigo_siaf != 99451 && siaf:codigo_siaf != 99453 && siaf:codigo_siaf != 99452 && siaf:codigo_siaf != 99454) THEN
+							MSGBOX "LA TRANSACCION NO PERMITE CLIENTE UP",0x00,"Error"
+							RETURN (-1)
+						END IF
+					END IF
+				END IF
+			END IF
+        
+			//MLD Verifico que no haya una cobranza o facturacion en la sesión
+			//Deben ser únicas en la sesión
+			IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+				CALL post:CDSBuscaTxCM
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene una Cobranza/Facturación. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			END IF
+			
+			//LA transaccion de Envio / Envio HOLD y Pago Hold Internac Debe ser única en la sesión
+			IF (post:estado_presu == 2) THEN
+				CALL giros:CDSbuscaWU_Int
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene un Envio de Transferencia Internacional. No puede hacer más Transacciones.",0x00,"Error"
+					//Se comenta este renglón hasta que salga a produccion lo de TX HOLD
+					//MSGBOX "La Sesión tiene un Envio, Pago Hold, o Envio Hold de Transferencia Internacional. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			END IF			
+            
+			;Verifico que no haya un transacción de contrareembolso *** MDG
+			IF (post:estado_presu == 2) THEN
+				CALL post:CDSBuscaContraReemb
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene una transacción de contrareembolso. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+				
+				IF (siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) THEN
+					CALL post:CDS_trx_count(common:system_date,op:op_operator_id,post:PresNro)
+					IF (RETVAL != -2) THEN
+						MSGBOX "La transacción de contrareembolso debe ser única en el presupuesto.",0x00,"Error"
+						RETURN (-1)    
+					END IF
+				END IF
+					
+				//Verifico que la tx de Registro VAP sea unica en el presupuesto
+				CALL post:CDSbuscaRegVAP
+				IF (RETVAL < 0) THEN
+					MSGBOX "No se puede combinar Registro VAP Manual con otra transacción en el presupuesto.",0x00,"Error"
+					RETURN (-1)
+				END IF
+					//Verifico que la tx de Registro SIMPLE RPP sea unica en el presupuesto
+				CALL post:CDSbuscaRegSRPP
+				IF (RETVAL < 0) THEN
+					MSGBOX "No se puede combinar Registro SIMPLE RPP con otra transacción en el presupuesto.",0x00,"Error"
+					RETURN (-1)
+				END if
+				//Verifico que la tx de Registro RPP sea unica en el presupuesto
+				CALL post:CDSbuscaRegRPP
+				IF (RETVAL < 0) THEN
+					MSGBOX "No se puede combinar Registro RPP con otra transacción en el presupuesto.",0x00,"Error"
+					RETURN (-1)
+				END if
+					//Verifico que la tx de ADMISION RPP sea unica en el presupuesto
+				CALL post:CDSbuscaAdmRPP
+				IF (RETVAL < 0) THEN
+				MSGBOX "No se puede combinar Admsion RPP con otra transacción en el presupuesto.",0x00,"Error"
+					RETURN (-1)
+				END IF
+				//gpb:NI50479 - Verifico que la tx de Imposicion PED sea unica en el presupuesto
+				//            - Verifico que la tx de Refacturacion PED sea unica en el presupuesto
+				IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+					CALL post:CDSbuscaRegPED
+					IF (RETVAL < 0) THEN	
+						//MSGBOX "No se puede combinar Imposicion PED con otra transacción en el presupuesto.",0x00,"Error"
+						MSGBOX "La transaccion debe ser unica en el presupuesto.",0x00,"Error"
+						RETURN (-1)
+					END IF
+				END IF
+
+				;Los pagos o rendición masivo de operativos deben ser únicos del presupuesto *** MDG
+				CALL post:CDSBuscaPagRendMasOp				
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene un Pago o Rendición masiva de operativo. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+				
+				CALL post:CDSleeEsSesPagRenMas				
+				IF (post:esSesionRenPagoMasOp == "S" && siaf:codigo_siaf != 6650 && siaf:codigo_siaf != 6640) THEN
+					MSGBOX "La Sesión es para Pago o Rendición Masivo de Operativos. No puede usarse para otras Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF 
+			END IF
+                    
+			/* MLD Verifico que no haya un reemplazo en la sesion */
+			/* Los reemplazos deben ser únicos en la sesión */
+			IF (siaf:adt_tran_fliatran != "USR" && post:estado_presu > 1 \
+				&& siaf:adt_tran_fliatran != "PCL" && siaf:codigo_siaf != 99200 \
+				&& siaf:codigo_siaf != 99240 && siaf:codigo_siaf != 99242 && siaf:codigo_siaf != 8560) THEN
+			
+				CALL post:CDSBuscaReempUP
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene un Reemplazo. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			
+				;Si la sesión se abrió para reemplazo de cheques puede estar incompleta la información 
+				;del cliente por no solicitarse en el inicio de sesión. Por esta razón se restringe 
+				;el resto de las operaciones *** MDG
+				CALL post:CDSleeEsSesReemPresu
+					
+				IF (post:esSesionReempChq == "S") THEN
+					MSGBOX "La Sesión es para un Reemplazo. No puede usarse para otras Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF 
+			END IF          
+		END IF
+        
+	  //Recupero datos de la presu
+	  CALL post:MISCValidoAdelanto
+	                            
+		/*IF (post:cli_tipo == CLIMED && post:OperacionNC && post:nisDep_CM != common:sucursal_activa && !post:AnulOperNC) THEN
+			ERRMSG common:errmsg_list,"El cliente no pertenece a la sucursal. No podrá realizar una Emisión de Nota de Crédito."
+			RETURN (-1)
+		END IF*/
+		    
+		IF (post:cli_tipo == CLIMED && post:ModalidadAT \
+			&& post:estado_presu == 2 &&  siaf:adt_tran_fliatran != "PCL" && \
+			siaf:codigo_siaf != 99430) THEN 
+			MSGBOX "El cliente solo podrá realizar un Adelanto. No puede hacer más Transacciones.",0x00,"Error"
+			RETURN (-1)
+		END IF 
+		     
+		//50295
+		IF (post:ConsumoAnticipoMon && post:estado_presu == 2 && \
+			siaf:adt_tran_fliatran != "PCL" && siaf:codigo_siaf != 70650) THEN
+			ERRMSG common:errmsg_list,"El cliente informó que desea consumir su Adelanto Monetario.\nSolo podrá realizar Emisión de Listas de Giros."
+			RETURN (-1)
+		END IF
+       
+		//cgw:NI50295 - Verifico que no exista una Importacion de Lista de Giros por confirmar.
+		//Esta situación puede darse en una caida de RT antes de grabar la trx en la PresuDet
+		//La Importacion de Lista de Giros, debe ser única en la sesión. Si cancela sesion luego de
+		//una caida de rt, pasa por (99023) Fin de Sesion.
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 70640 && siaf:codigo_siaf != 99023 && \
+				(TESTFLAG(giros:giros_importacion,proc_imp_lg))) THEN
+				MSGBOX "La Sesión tiene una Importación de Lista de Giros.\nNo puede hacer más Transacciones.",0x00,"Error"
+				RETURN (-1)
+			END IF
+		END IF
+		
+		//gpb:NI50479
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 30010 && siaf:codigo_siaf != 99023 && \
+				(TESTFLAG(post:sesion_ped_flags,proc_importacion_ped))) THEN
+				MSGBOX "La Sesión tiene una Importación de Envios PED.\nNo puede hacer más Transacciones.",0x00,"Error"
+				RETURN (-1)
+			END IF
+		END IF
+
+		//50295 - Se verifica que no exista una Emision de Lista de Giros por confirmar.
+		// La Emision de Lista de Giros, debe ser única en la sesión.
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 70650 && siaf:codigo_siaf != 99099 && siaf:codigo_siaf != 99023 && \
+				siaf:codigo_siaf != 99027 && siaf:codigo_siaf != 99028 && siaf:codigo_siaf != 99029 && \
+				(TESTFLAG(giros:giros_importacion,proc_em_lg))) THEN
+				MSGBOX "La Sesión tiene una Emisión de Lista de Giros.\nNo puede hacer más Transacciones.",0x00,"Error"
+				RETURN (-1)
+			END IF
+		END IF     
+        
+		//cgw:NI50361 Verifico que no haya un Cobro por Cuenta de Terceros en la sesión
+		//Deben ser únicas en la sesión
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 6670 && siaf:codigo_siaf != 99023 && siaf:codigo_siaf != 99099) THEN
+				CALL post:CDSBuscaTxCCT
+				IF (RETVAL < 0) THEN
+					MSGBOX "La Sesión tiene un Cobro por Cuenta de Terceros. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			END IF
+		END IF
+
+		//SC 50364 - Operación WEB deben ser única en la sesión
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 6680 && siaf:codigo_siaf != 99023 && siaf:codigo_siaf != 99099 && siaf:codigo_siaf != 99098) THEN
+				CALL post:CDSverif_web_tmp("ESC")
+				IF (RETVAL == 0) THEN
+					MSGBOX "Se realizó una Operación WEB. No puede hacer más Transacciones.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			END IF
+		END IF
+		
+		//Admision PrePaq no puede combinarse con otras tx
+		IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+			IF (siaf:codigo_siaf != 18901 && siaf:codigo_siaf != 99023 && siaf:codigo_siaf != 99099) THEN
+				CALL post:CDSBuscaTxPrePaq
+				IF (RETVAL < 0) THEN
+					MSGBOX "Este Presupuesto solo puede incluir Admisiones PrePaq.",0x00,"Error"
+					RETURN (-1)
+				END IF
+			END IF
+		END IF
+		
+		IF (post:cli_tipo == CLIMED && post:OperacionInt \
+			&& post:estado_presu == 2 && siaf:adt_tran_fliatran != "PCL" && \
+			siaf:codigo_siaf != 99480) THEN 
+			MSGBOX "La Facturación de Intereses Punitorios debe ser la única transacción del presupuesto.",0x00,"Error"
+			RETURN (-1)
+		END IF      
+  
+		//50244
+		IF (post:cli_tipo == CLIMED && post:ModalidadTB && post:estado_presu == 2 && \
+			siaf:adt_tran_fliatran != "PCL") THEN
+			IF (siaf:codigo_siaf == 99461 || siaf:codigo_siaf == 99453) THEN 
+			ELSE
+				MSGBOX "Las Transferencias Bancarias pueden ser aplicadas solo a Adelantos o a Cobranzas de Facturas.",0x00,"Error"
+				RETURN (-1)
+			END IF
+		END IF
+		
+		//cgw: NI50244 - Adelanto por Transferencias Bancarias.
+		IF (post:cli_tipo == CLIUP && post:ModalidadTB && \
+			post:estado_presu == 2 && siaf:adt_tran_fliatran != "PCL" && \
+			siaf:codigo_siaf != 99453) THEN 
+			MSGBOX "La TX de Adelantos por Transferencias bancarias debe ser la única transacción del presupuesto.",0x00,"Error"
+			RETURN (-1)
+		END IF
+
+		//50316
+		IF (post:ModalidadCTB && post:estado_presu == 2 && siaf:codigo_siaf != 99454 && siaf:codigo_siaf != 99462) THEN
+			MSGBOX "La Cancelación de Transferencia Bancaria debe ser la única transacción del presupuesto.",0x00,"Error"
+			RETURN (-1)
+		END IF 
+		
+		/* Cargo los valores comunes a todas las transacciones que se */
+		/* encuentran en la tabla transac. */
+		LET siaf:posible_off = siaf:adt_tran_posoff
+		LET siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+		LET tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+		LET drv:descrip = siaf:adt_tran_mnemonic
+		LET siaf:nombre_transac = siaf:adt_tran_desc
+		MOVE siaf:adt_tran_afec_efvo TO siaf:afecta_efectivo
+	
+		/* Me fijo si la tx captura medio de pago */
+		LET post:captura_mp = siaf:adt_tran_med_pago
+		LET post:SupMedPago = "N"
+		/*  */
+
+		/* Resguardo flia de transaccion (Unidad de Negocio) */
+		MOVE siaf:adt_tran_fliatran TO post:tipo_transac
+		MOVE siaf:adt_tran_fliatran TO post:jnl_flia_tran
+		/* Asigno valores a los campos que necesito llamar distinto */
+		/* durante las Transacciones Postales. Juan Pablo 8/4/98 */
+		post:tipo_produc = siaf:adt_tran_codprod
+		post:tipo_produc2 = siaf:adt_tran_codpro2
+		/* Asigno valores a los campos que necesito llamar distinto */
+		/* durante las Transacciones Galicia. Maria Laura 19/05/98 */
+		gali:codigo_galicia = siaf:adt_tran_codprod
+	
+		/* MLD Cargo el nro de total que usan las transacciones genericas */
+		post:indice_total = siaf:adt_tran_tot_nro
+	
+		//control de supervision en tx dentro de sesion
+		IF (post:estado_presu != 4)  THEN
+			CLEARFIELD post:supervisor_id   
+		END IF
+		//CLEARFIELD ovr:ovr_sup_id  
+
+		/*Hasta acá, se hace todo lo necesario para Nota de Credito, por lo tanto
+		si está seteado el campo correspondiente, me voy de la rutina - Gabriel Falciola*/
+		IF (post:NotaCredito == "S") THEN
+			RETURN (0)
+		END IF
+	
+		IF (siaf:codigo_siaf != 8560) THEN //Reimpresion de labels 
+			CLEARFIELD ovr:ovr_sup_id 
+		END IF
+        
+		/* Si es una reversa y no esta en modo Transaccion, error */
+		IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+			IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+				ERRMSG LST:common:errmsg_list,post:ERRtran_rever_presu
+				RETURN (-1)
+			END IF
+		ELSE
+			SELECT (post:estado_presu)
+				CASE 1
+					//OJO, se comenta por el momoento a modo de prueba
+					/*
+					IF (testflag(giros:giros_masivos,caida_gir_masivos) && \
+						giros:estado_caida_gm == GM_SIN_SESION && siaf:codigo_siaf != 70610 && siaf:codigo_siaf != 99021 && siaf:codigo_siaf != 99023) THEN
+						IF ( (siaf:codigo_siaf != 0 && siaf:adt_tran_fliatran != "TES" ) || (siaf:codigo_siaf == 8500) ) THEN
+							MSGBOX "DEBERA CONFIRMAR EL PRESUPUESTO DE GIROS MASIVOS.",OFB_OK,"Atencion"
+							RETURN -2
+						END IF
+					END IF
+					*/
+	
+					/*Solicitud 50088 - Evento3 : Bienes de Cambio
+					Para las familias postales se verifica si la transaccion a ejecutar tiene asociada
+					una especie o si usa caja, en la tabla de Servicio. De ser así se setea la 
+					transaccion como si fuera exclusiva de modo presupuesto*/ 
+					IF (siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE") THEN
+						CALL post:CDStiene_BienCbio
+						IF (RETVAL == 0) THEN
+							siaf:adt_tran_modpresu = "E"
+						END IF
+					END IF
+	          
+					IF (siaf:adt_tran_modpresu == "E") THEN
+						//FGB 26.12.2001: el valor de post:Modo era arrastrado con basura. Por las dudas, siendo
+						//una trx. exclusiva en modo sesión, instancio el valor correcto...
+						LET post:Modo = "NR"
+							
+						//PJM 19-08-1998 se agrego que cuando no este
+						//en sesion automaticamente se dispare la transaccion
+						//de Identificacion de cliente
+						//RETURN -2
+						drv:INDcur_tran_aux  = drv:INDcur_tran
+						post:codigo_siaf_aux = siaf:codigo_siaf
+						//PJM 20-08-1998
+						//Despues de un larga lucha con el driver , saque un
+						//As de la Manga
+						drv:stack_cnt = drv:stack_cnt + 1
+						
+						CLEARFIELD post:errorDocIva
+						siaf:tiene_tran_dep = "S"
+						CALL csr:listexec LST:post:TRANidentifica_cli
+						
+						DUPFIELD post:errorDocIva
+						CLEARFIELD siaf:tiene_tran_dep
+						IF (post:errorDocIva == "S") THEN
+							UNGETKEY RT_ESC
+							UNGETKEY RT_ESC
+						END IF
+						//Otro As
+						drv:funct_rest = 0
+						
+						IF (LASTKEY == RT_ESC) THEN
+							ERRMSG LST:common:errmsg_list,post:ERRtran_excl_presu
+						ELSE
+							; Cuando se inicia una sesión desde una transacción se debe incrementar 
+							; el drv:stack_cnt siempre que drv:INDstack_funct[drv:dt_app][drv:stack_cnt],
+							; que depende de este, no este apuntando a cero ya que de incrementarse
+							; cuando se ejecute el procedimiento que llama a la función previa (drv:prev_funct)
+							; encontrará el valor cero y dará un mensaje de error.
+							; Además cuando se salga de la transacción se ejecutarán tantos drv:end_tran
+							; como drv:stack_cnt se hayan acumulado, hasta regresar a la función previa.
+							; Esto último es importante a tener en cuenta ya que de no ejecutarse el 
+							; end_tran de una transacción no se limpiarán los campos que esta haya utilizado.
+							; *** MDG
+							IF (drv:INDstack_funct[drv:dt_app][drv:stack_cnt] != 0)
+								drv:stack_cnt = drv:stack_cnt + 1
+							END IF
+								
+							siaf:codigo_siaf = post:codigo_siaf_aux
+							CALL csr:listexec drv:INDcur_tran_aux
+						END IF
+						RETURN -2
+					ELSE
+						IF (siaf:codigo_siaf == 70030 || siaf:codigo_siaf == 70040 || siaf:codigo_siaf == 70041 || \
+							siaf:codigo_siaf == 70050 || siaf:codigo_siaf == 70060 || siaf:codigo_siaf == 70391) THEN
+							ERRMSG LST:common:errmsg_list, "TRANSACCION EXCLUSIVA MODO PRESUPUESTO"
+							RETURN (-1)
+						END IF
+					END IF
+	        
+	        /*IF ( post:PresNro == 0 && (siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CSP") && \
+	        	siaf:codigo_siaf != 99021  && siaf:codigo_siaf != 99023) THEN*/
+					IF ( post:PresNro == 0 && siaf:codigo_siaf != 99021  && siaf:codigo_siaf != 99023) THEN
+						SELECT ( siaf:adt_tran_fliatran)
+							CASE "TES"
+							CASE "CSM"
+								SELECT (siaf:codigo_siaf)
+									CASE 8500
+									//FGB 19.12.2001: comento las trx's de giros que NO PUEDEN
+									//realizarse por teclas rapidas.
+									;CASE 70030
+									;CASE 70040
+									;CASE 70050
+									;CASE 70060
+									CASE 70090
+									CASE 70110
+									CASE 70120
+									CASE 70140
+									CASE 70141
+									CASE 70152
+									CASE 70153
+									CASE 70160
+									CASE 70161
+									CASE 70172
+									CASE 70173
+									CASE 70180
+									CASE 70181
+									CASE 70192
+									CASE 70193
+									CASE 70200
+									CASE 70201
+									CASE 70212
+									CASE 70213
+									CASE 70220
+									CASE 70221
+									;CASE 70383
+									CASE 70384
+									;CASE 70391
+									CASE 70392
+									CASE 70393
+									CASE 70394
+									CASE 70395
+									CASE 70396
+									CASE 70397
+									CASE 70389 //Pago WU Hold
+									CALL siaf:MISCmodo_rapido
+										RETURN (RETVAL)
+									CASE ELSE
+									BREAK
+								END SELECT
+							BREAK
+							CASE "CSE"
+							CASE "PF"
+							CASE "CSP"
+							CASE "CST"
+								CALL siaf:MISCmodo_rapido
+								RETURN (RETVAL)
+						END SELECT
+					END IF
+	      BREAK
+	      CASE 2      /* Esta en Inicio Presupuesto */
+	      CASE 3      /* Esta en Confirma Presupuesto */
+					//agregado por mad para no permitir realizar otra
+					//si llego a la impresion
+					IF (post:NotaCredito != "S") THEN
+						CALL post:CDSadt_presu_load
+					END IF
+					
+					IF (post:PresEst == 2 && ((siaf:codigo_siaf != 99023 && \
+						siaf:adt_tran_fliatran != "TES") || siaf:codigo_siaf == 8500)) THEN
+						ERRMSG LST:common:errmsg_list,post:ERRpresu_fal_imp
+						RETURN (-1)
+					END IF
+	          
+					IF (post:PresEst == 3) THEN
+						//Paleativo - Si el cliente es 0 y el Estado es 3 hay un error
+						//y se debe dejar continuar, pero no se grabará el fin de sesión
+						//siempre y cuando el incio de sesion tampoco esté journalizado.
+						IF (post:cli_tipo == 0) THEN
+						ELSE
+							ERRMSG LST:common:errmsg_list,post:ERRpresu_impreso
+							RETURN (-1)
+						END IF
+					END IF
+	          
+					IF (post:PresEst == 4) THEN
+						ERRMSG LST:common:errmsg_list,post:ERRpresu_Icancel
+						RETURN (-1)
+					END IF
+	          
+					IF (siaf:adt_tran_modpresu == "N") THEN
+						IF ( siaf:codigo_siaf != 70610) THEN
+						;IF ( siaf:codigo_siaf != 70610 || !testflag(giros:giros_masivos,caida_gir_masivos)) THEN
+							ERRMSG LST:common:errmsg_list,post:ERRtran_no_presu
+							RETURN (-1)
+						END IF
+					END IF
+				BREAK
+				CASE 4
+					//FGB 22.01.2004 - Combos
+					IF (post:combo_nro > 0 && post:adt_concb_cod > 0) THEN
+						post:enCombo = "S"
+						post:esPpalCombo = post:adt_concb_principal
+					ELSE
+						post:enCombo = "N"
+						post:esPpalCombo = "N"
+					END IF
+				
+					IF (post:NotaCredito != "S") THEN
+						CALL post:CDSadt_presu_load
+					END IF
+				
+					CALL post:MISCdisabl_BloqN_Act
+					PDM ENABLEITEM drv:menubar, ALL, 2  //[PAW] --> desactivar menúes.
+				BREAK
+			END SELECT
+	
+			/*MFM (25.04.2002)Controlo que dentro de una sesion UP diferida no se pueda
+			capturar el medio de pago dentro de la propia transacción*/
+			IF ((post:cli_tipo == CLIUP || post:cli_tipo == CLIMED) && post:pago_diferido == "S") THEN
+				siaf:adt_tran_med_pago = "N"
+			END IF
+	
+			//PS 7534 - En una excepción por Producto no permitir la venta de productos que no 
+			//están pactados en la excepción
+			//Cliente Medio Consumo de Anticipo : No permitir vender un mismo producto dos veces
+			//porque de esta manera el cliente se estaría beneficiando con un mejor descuento
+			//que si compra con su convenio común
+			IF (post:cli_tipo == CLIMED && siaf:adt_tran_fliatran != "USR" && \
+				siaf:adt_tran_fliatran != "PCL" && post:estado_presu != 3 && \
+				post:estado_presu != 4) THEN
+				IF (siaf:codigo_siaf != 8820 && siaf:codigo_siaf != 8860 && siaf:codigo_siaf != 8866 && siaf:codigo_siaf != 9910 ) THEN 
+					//pregunto si no estoy en anulacion porque me estaba haciendo la validacion!!
+					IF (post:enAnulacion != "S") THEN
+						IF (post:ExcepProducto) THEN
+							CALL post:MISCEsProd_ExcepCM
+							IF (RETVAL < 0) THEN
+								RETURN -2
+							END IF
+						END IF
+					
+						//Demo 09/10/2003 - Restringir la venta a los productos pactados en el 
+						//convenio cuando se compra en alguna modalidad. Validar que el producto
+						//no haya sido vendido aun.
+						//Solicitud de Cambio Nro 50071 - Eliminar la restriccion del 9/10/2003
+						/*IF (post:ConvenioProducto && \
+							(post:ConsumoAnticipo || post:ModalidadCC || post:ModalidadCD)) THEN
+							CALL post:MISCEsProd_ConvCM
+							IF (RETVAL < 0) THEN
+								RETURN -2
+							END IF
+						END IF*/
+							
+						//Orden de Compra - Restringir la venta a los productos pactados en la OC
+						//Validar que el producto no haya sido vendido aun.
+						IF (post:consulta_ordenCM == "S" && siaf:codigo_siaf != 13100) THEN
+							CALL post:MISCEsProd_OC_CM
+							IF (RETVAL < 0) THEN
+								RETURN -2
+							END IF
+						END IF
+					END IF
+				END IF
+			END IF
+	              
+			IF (TESTFLAG(giros:giros_masivos,proc_gir_masivos) && (post:estado_presu == 2 )) THEN
+			/*
+			IF ((TESTFLAG(giros:giros_masivos,proc_gir_masivos)  || TESTFLAG(giros:giros_masivos,caida_gir_masivos)) && (post:estado_presu == 2 )) THEN
+			*/
+				//Verifica que para la transaccion de giros masivos, no
+				//se puedan incluir otras transacciones.
+				
+				//Valida que si se puedan realizar consultas (de totales)
+				//y pases.
+				
+				IF ( (siaf:codigo_siaf != 0 && siaf:adt_tran_fliatran != "TES" && siaf:codigo_siaf != 70610 && siaf:codigo_siaf != 99099 && siaf:codigo_siaf != 99098  && siaf:codigo_siaf != 99023) || (siaf:codigo_siaf == 8500) ) THEN
+					MSGBOX "DEBERA CONFIRMAR EL PRESUPUESTO DE GIROS MASIVOS.",OFB_OK,"Atencion"
+					RETURN -2
+				END IF
+			END IF
+	
+			IF (post:estado_presu == 2) THEN
+				/*Esta rutina verifica que no haya mas de una transaccion de giros dentro de una sesion
+				si es asi te devuelve un mensaje y te saca de la misma*/
+				IF ((siaf:adt_tran_fliatran == "CSM" || siaf:codigo_siaf == 99124 || siaf:codigo_siaf == 6630) && siaf:codigo_siaf != 70610 ) THEN
+					CALL giros:CDShay_giros
+					IF (RETVAL < 0) THEN
+						RETURN (-2)
+					END IF
+					
+					//Verifica que no haya pago facil con viaje
+					CALL post:CDShay_PFconViaje
+					IF (RETVAL < 0) THEN
+						RETURN (-2)
+					END IF
+		
+					//Verifica que no haya pago on site
+					CALL post:CDShay_PagoOnSite
+					IF (RETVAL < 0) THEN
+						RETURN (-2)
+					END IF                    
+				END IF
+			END IF
+		END IF
+		LET siaf:lineas_pantalla[1] = siaf:adt_tran_desc
+	END IF
+
+END SUB
+
+/*******/

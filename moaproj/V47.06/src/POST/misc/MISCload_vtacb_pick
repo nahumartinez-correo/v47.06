@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:MISCload_vtacb_pick
+* NOMBRE
+*   OFB:post:MISCload_vtacb_pick
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCload_vtacb_pick(prmNIS,prmCli,prmDiscrIva) 
+/*Esta rutina carga el picklists con combos habilitados
+PD: en un where no se puede poner arreglos Manual de Mosaic pag 236. Por lo que se recorre 
+toda la tabla pra verificar condiciones...snif snif */
+    local loc_sucursal		  like common:sucursal_activa
+    local loc_provincia	      like post:adt_rpcb_pcia    
+    local loc_cliente		  like post:cli_tipo
+    local loc_disc_iva		  like post:adt_cativa_discri
+    local loc_giva_idx		  like siaf:idx
+    local loc_string		  like common:csr_string
+
+    /*En esta variable guardo las restricciones que no se dan para ninguno de los combos*/
+    common:csr_string = "NNNNNN"    /*Existencia combos-Pcia-Sucur-Cliente-Iva*/    
+
+    /*Determino Sucursal, provincia, tipo de cliente y grupo de iva a utilizar*/
+    let loc_sucursal = prmNIS
+    let loc_cliente  = prmCli
+    let loc_disc_iva = prmDiscrIva
+    
+    if (loc_disc_iva == "S") then
+	    let loc_giva_idx = 0
+    else
+	    let loc_giva_idx = 1
+    endif
+
+    if (loc_sucursal.NUMCHARS != 5) then
+	    loc_sucursal = common:sucursal_activa
+    endif
+    let loc_string = substr(loc_sucursal,0,1)
+    call csr:rangechk(loc_string,"A-Z","n")
+    if (retval != 0) then
+	    loc_sucursal = common:sucursal_activa
+    endif
+    let loc_string = substr(loc_sucursal,1,4)
+    call csr:rangechk(loc_string,"0000-9999","n")
+    if (retval != 0) then
+	    loc_sucursal = common:sucursal_activa
+    endif
+
+    let loc_provincia = substr(loc_sucursal,0,1)  //cgw:obtengo provincia a considerar
+
+    /*Cargo el Pick de combos: para eso evaluo que cada combo cumpla todos los requisitos*/
+    cant_items_cb = 0 //contador de restricciones por inclusion combos existentes.
+    call csr:f_sadroppl DSC:post:PICcombos_hab
+    call csr:f_sanewpl DSC:post:PICcombos_hab PIC:post:PICcombos_hab
+    IF (RETVAL == 0) THEN
+        CDS SELECT FROM DSC:Combos_tbl BECOMES DSC:Combos_ctx
+        CDS FINDFIRST DSC:Combos_ctx NOLOCK
+        IF (CDSRETVAL == 0) THEN
+            FPRINT common:csr_string "S%s",SUBSTR(common:csr_string,1,4)
+		    WHILE (CDSRETVAL == 0) 
+			   CLEARFIELD post:adt_cb_cod
+			   CLEARFIELD post:adt_cb_desc
+			   CALL csr:cleararray post:adt_cb_cli
+			   CALL csr:cleararray post:adt_cb_giva
+			   CDS EXTRACT DSC:post:Combos_ctx \
+						       post:adt_cb_cod, \
+						       post:adt_cb_desc, \
+							   post:adt_cb_cli[1], \
+							   post:adt_cb_cli[2], \
+							   post:adt_cb_cli[3], \
+							   post:adt_cb_cli[4], \
+							   post:adt_cb_cli[5], \
+							   post:adt_cb_giva[0], \
+							   post:adt_cb_giva[1]
+				/* Verifico que cumpla requisitos.para sucursal y provincia, agrego al picklist*/
+                CALL post:MISCrestr_vtacb_pick(loc_provincia,loc_sucursal,loc_cliente, loc_giva_idx)
+                IF (RETVAL == 0)                   
+			        FPRINT loc_string "%5.5s - %-30.30s" post:adt_cb_cod, post:adt_cb_desc
+			        CALL CSR:f_saaddpl DSC:post:PICcombos_hab loc_string
+			        cant_items_cb = cant_items_cb + 1
+		       END IF
+		       
+			   CDS FINDNEXT DSC:post:Combos_ctx NOLOCK
+		    END WHILE		    
+		END IF
+		CDS ENDSELECT DSC:post:Combos_ctx		
+	END IF
+
+    IF (cant_items_cb == 0) THEN
+        CALL post:MISCErrorCargaCBO /*Usa el common:csr_string*/
+		RETURN (-1)
+	ELSE
+		CALL CSR:PickOp 4 DSC:post:PICcombos_hab "0,4" //Ordeno Picklist por cod.combo    
+    END IF
+    
+RETURN (0)
+
+END SUB
+
+/*******/

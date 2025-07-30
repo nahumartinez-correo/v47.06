@@ -1,0 +1,719 @@
+/****o* Pendientes de agrupación/OFB:drv:driver
+* NOMBRE
+*   OFB:drv:driver
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv.h"
+
+// ========================================================
+//  This is the OFB routine which is usually pointed to by
+//  a DeskTop transaction list, and which does the actual
+//  interpretation, display, and data collect for a TRAN
+// ========================================================
+
+SUB drv:driver
+	LET drv:next_screen = -1
+	LET drv:INDcur_menu = 0
+	drv:display_tabs = -1
+	drv:starting_tab = 0
+	// -----------------------------------------------------------
+	// Specify that we want to disable the corresponding sidebar
+	// button when we are moving on the next screen. Does not make
+	// much sense. But left out for compatablity
+	// -----------------------------------------------------------
+	MOVE SUBSTR(flags,0,13) TO auto_side_bar
+	// ---------------------------------------------------------------
+	// Specify whether we want to display the next screen in the list
+	// when we press SEND key on the current screen.
+	// Transactions involving NoteCards do not care about these flags.
+	// ---------------------------------------------------------------
+	MOVE SUBSTR(flags,13,13) TO auto_next_scr
+	// ------------------------------------------------------
+	// If 0, no collect is done after the screen is displayed
+	// If C, collect is done after the screen gets displayed
+	// ------------------------------------------------------
+	MOVE SUBSTR(flags,26,13) TO data_collect
+	// ----------------------------------------------------
+	// If 1, makes the data colect for the screen required,
+	// before we end the transaction
+	// ----------------------------------------------------
+	MOVE SUBSTR(flags,39,13) TO required
+	MOVE NAME TO name
+	// ---------------------------------------------------------------------
+	// We have to decide whether the to cut the base screen of a notecards
+	// transaction to be cut or not. Sometimes we want leave it to create an
+	// impression that it is the same transaction as the previous one
+	// ---------------------------------------------------------------------
+    CALL drv:SetCutNotes
+	IF (drv:flags.NUMCHARS >= 53) THEN
+	    MOVE SUBSTR(drv:flags,52,1) TO NoteCardsFlag
+	ELSE
+		CLEARFIELD NoteCardsFlag
+	END IF
+	// -----------------------------------------------------------------
+	// S FOR 2,3,4,6 notecards D for Double Row of 4 notecards with
+	// sidebar
+	// A FOR 2,3,4,5,6 notecards without sidebar
+	// X for 12 NOTECARDS, 2 ROWS of 6 each
+	// P for being part of the previous notecards transaction
+	// Please modify SetTabScreens also if you are adding any other kind
+	// -----------------------------------------------------------------
+	SELECT (drv:NoteCardsFlag)
+	     CASE "S"
+	     	SETFLAG drv:mode_flags,notecards_mode
+	     	CALL  drv:notecards
+         BREAK
+	     CASE "A"
+	     	SETFLAG drv:mode_flags,notecards_mode
+	     	CALL  drv:notecards_noside
+         BREAK
+	     CASE "D"
+	     	SETFLAG drv:mode_flags,notecards_mode
+	     	CALL  drv:Dnotecards
+         BREAK
+	     CASE "X"
+	     	SETFLAG drv:mode_flags,notecards_mode
+	     	CALL  drv:notecards_12
+         BREAK
+	     CASE "P"
+			drv:subscreen[drv:dt_app] = "Y"
+    		SETFLAG drv:mode_flags,notecards_mode
+            RESETFLAG drv:mode_flags,cut_notes
+            CALL drv:SetTabScreens
+         BREAK
+	     CASE ELSE
+           	LET drv:subscreen[drv:dt_app] = "N"
+            IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+	    	    RESETFLAG drv:mode_flags,notecards_mode
+            END IF
+	     BREAK
+	END SELECT
+	// ---------------------------------------------------------------
+	// Save the original tab titles. We may change them during the tran.
+	// if the number that can be shown is less than the number we have
+	// in the transaction
+	// --------------------------------------------------------------
+	CALL CSR:proc_list F_COPY LST:LISTtabs LST:LISTtabs_orig
+	// ------------------------------------------------------------------
+	// If we have already started executing the transaction some time ago
+	// and left it and are coming back to execute it now then do this
+	// ------------------------------------------------------------------
+	IF (drv:funct_rest == 1)
+		CALL  OFB:drv:driver_reload
+		IF (RETVAL == -2)
+			LET drv:reload_screen = -1
+			RETURN
+		END IF
+		LET drv:reload_screen = -1
+	ELSE
+		CALL  OFB:drv:driver_load
+		IF (RETVAL == -2)
+			RETURN
+		END IF
+	END IF
+	// --------------------------------------------
+	// If it is a teller transaction set some flags
+	// --------------------------------------------
+	IF ( SUBSTR(header,5,1) == "T") THEN
+    		;CALL CSR:listaddfields tlr:INDtran_parms
+		CALL  tlr:pretran
+		/* Si determina que no puede seguir, cancela la transac. */
+		if (retval < 0 ) then
+			/* Si el estado del presupuesto es de confirmacion debo volverlo atras JLA 14/11/00 */ 
+	        IF (post:estado_presu == 4) THEN
+		        post:estado_presu = 2
+		        CALL post:CDSadt_presuact_save
+	        ENDIF
+			CLEARFIELD INDrun_funct
+			goto by_pass_endcol
+		endif
+	END IF
+	CLEARFIELD INDrun_funct
+	LET drv:funct_rest = 0
+loop:
+	LET drv:last_button = -1
+	// -----------------------------------------------------
+	// Restore the tabs which were saved during the Original
+	// transaction before entering this SubTransaction
+	// -----------------------------------------------------
+	IF (drv:subscreen[drv:dt_app] == "Y") THEN
+        drv:stack_cnt = drv:stack_cnt - 1
+		CALL  drv:restore_tabs
+        drv:stack_cnt = drv:stack_cnt + 1
+	END IF
+	// ----------------------------------------------------------
+	// Attach tabs if in notecards mode and not in SubScreen mode
+	// ----------------------------------------------------------
+	IF (drv:INDscreen[screen_active] != 0) THEN
+	    IF (TESTFLAG(drv:mode_flags,notecards_mode)) && \
+	       (drv:subscreen[drv:dt_app] != "Y") && \
+	       (drv:screen_active != 0) THEN
+	       CALL  drv:attach_tab
+	    END IF
+	    /* Si no es cajero ni administrativo, quedaba la segunda
+		linea de botones con el fondo del desktop */
+		let FLD:drv:INDaux = SCR:drv:menu
+		if (FLD:drv:INDscreen[screen_active] == FLD:drv:INDaux)
+	    /* se utiliza para la aplicacion del modulo tesoro (dt_app = 4)
+	       la misma screen de menu que para caja y retag. - FB 6/6/97 */
+	    /* se utiliza para la aplicacion del modulo sucursal (dt_app = 5)
+	       la misma screen de menu que para caja y retag. - MLD 30/11/97 */
+			if ((drv:dt_app != 2) && (dt_app != 3) && (dt_app != 4) && (drv:dt_app != 5))
+				let FLD:drv:INDaux = SCR:drv:menu1
+				LET FLD:drv:INDscreen[screen_active] = FLD:drv:INDaux
+			end if
+		end if
+	    /* */
+	    LET FLD:drv:INDscr = FLD:drv:INDscreen[screen_active]
+	    LET FLD:drv:INDcur_scr = FLD:drv:INDscreen[screen_active]
+        IF (!TESTFLAG(drv:mode_flags,no_rejoin)) THEN
+			// FGB (reingenieria): si estoy efectivizando las transacciones, entonces 
+			// se muestra una pantalla indicando el pregreso, en vez de las pantallas
+			// de las transacciones.
+			;if (plataf:current_state != CONFIRMATION) then
+	        	JOINSCREEN FLD:drv:INDscr,CURRENTFIELD
+			;endif
+        ELSE
+            RESETFLAG drv:mode_flags,no_rejoin
+        END IF
+	END IF
+	// ------------------------------------------
+	// Attach the BaseScreen if in notecards mode
+	// ------------------------------------------
+	IF ( TESTFLAG(drv:mode_flags,notecards_mode)) && \
+	   ( drv:subscreen[drv:dt_app] != "Y") THEN
+		CALL  drv:attach_notes
+		IF (retval == -2) THEN
+		    RETURN
+		END IF
+	END IF
+	// ---------------------------------------------------------
+	// Initialize all the BUTTON routines on the current screen,
+	// to be executed by the PBcb0,PBcb1 etc... when clicked
+	// ---------------------------------------------------------
+	IF (drv:INDbut_list[screen_active] != 0)
+		IF (SUBSTR(data_collect,screen_active,1) == "C" || \
+		    SUBSTR(data_collect,screen_active,1) == "0")
+			CALL  CSR:listexec drv:INDbut_list[screen_active]
+		END IF
+	ELSE
+		CALL  CSR:listexec LST:drv:LISTbutton_clear
+	END IF
+	// ------------------------------------------------------------------
+	// JOINSCREEN leaves RT_HOME keys in the type ahead buffer. Clear'em.
+	// ------------------------------------------------------------------
+	DO
+		IF (NEXTKEY == RT_HOME)
+			GETKEY
+		ELSE
+			// FGB (reingenieria): por alguna razon magica, cuando llego aca
+			// a traves del buscador, me queda el NEXTKEY con basura. 
+			if (plataf:chosen_codtrn.NUMCHARS > 0 || \
+			    plataf:chosen_lsttrn.NUMCHARS > 0) then
+			    			    			    	
+				IF (NEXTKEY != RT_ESC)
+
+			        if (plataf:chosen_codtrn == 7100 || \
+			            plataf:chosen_codtrn == 99453) then
+			    	    /* cgw:Si a traves del buscador se accede a la anulacion de documentos,
+				               se evita el getkey para que no quede esperando que se presione
+				               una tecla, luego de realizada la anulacion correspondiente.
+                        */
+
+                        //cgw: NI50244 - Igual criterio empleado anteriormente en la Anulacion de
+                        //     Documentos (7100), se aplica a la trx de Adelantos de Transferencias
+                        //     Bancarias (99453), cuando se accede a esta por buscador.
+			    	    break
+			        end if
+
+					let siaf:last_key = LASTKEY
+					init 33,0
+					let LASTKEY = siaf:last_key
+					//while (NEXTKEY)
+						//getkey
+					//end while
+				END IF
+			endif
+			BREAK
+		END IF
+	LOOP
+pre:
+#if BASE_CFIG_HIST == 1
+	CALL  OFB:drv:save_hist
+#endif
+#if DT_DEBUG == 1
+	IF (TESTFLAG(debug_flags,precollect))
+		DPRINT "Debuging In PROC drv:driver\r\n"
+		IF (drv:INDpre_col_rtn == 0)
+			DPRINT "            Pre collect routine = NULL\r\n"
+		ELSE
+			DPRINT "            Calling pre collect routine\r\n"
+		END IF
+		singlestep on
+	END IF
+#endif
+	// ----------------------------------------
+	// Disable SEND PUSH BUTTON if it is a menu
+	// ----------------------------------------
+    CALL  drv:disable_send
+	CALL  FLD:drv:INDpre_col_rtn 	// PreCollect Routine.
+coll:
+#if BASE_CFIG_HIST == 1
+	CALL  OFB:drv:save_hist
+#endif
+	if (drv:dt_app != APP_LOAN)
+#if BASE_CFIG_QUE == 1
+	    CALL  OFB:que:que_info 	// Update Visitor Queue info
+#endif
+	end if
+	CALL  OFB:drv:driver_collect 	// Perform data collect if needed
+#if BASE_CFIG_HIST == 1
+	IF (new_app == APP_HISTORY)
+		LET drv:last_key = 0
+		CALL  OFB:drv:history
+		SELECT (RETVAL)
+			CASE -1
+				GOTO pre
+			BREAK
+			CASE 0
+				GOTO hist_exit
+			BREAK
+			CASE 1
+				IF (drv:INDrun_funct != 0)
+					GOTO exit
+				END IF
+				GOTO by_pass_endcol
+			BREAK
+			CASE 2
+				RETURN
+			BREAK
+		END SELECT
+	END IF
+#endif
+	IF (drv:last_key != 0)
+		LET LASTKEY = drv:last_key
+		LET drv:last_key = 0
+	END IF
+	IF (TESTFLAG(mode_flags,exit_app))
+		GOTO exit_esc_eot
+	END IF
+	IF (LASTKEY == RT_ESC)
+save:
+		// ------------------------------------------------------------
+		// Save the Current Transaction info, if it the INDrun_funct
+		// is altered some procedure and if the new INDrun_funct is
+		// another desktop tran
+		// ------------------------------------------------------------
+		CALL  OFB:drv:driver_save
+		SELECT (RETVAL)
+			CASE 0
+				IF (drv:INDrun_funct != 0)
+					// We want to suspend the current
+					// tran and execute a different one
+					RETURN
+				END IF
+				GOTO by_pass_endcol
+			BREAK
+			CASE -1
+				GOTO coll
+	 			// Go back to the same screen. No PreCol
+			BREAK
+			CASE -2
+				IF (NEXTKEY == RT_SEND || \
+				    NEXTKEY == RT_ESC)
+				    GOTO coll
+				// Go back to the same screen. No PreCol
+				ELSE
+					GOTO pre
+				// Go back to the same screen. Run PreCol
+				END IF
+			BREAK
+			CASE -3
+				GOTO exit_esc_eot
+				// We are going to end the Transaction
+			BREAK
+		END SELECT
+	END IF
+#if DT_DEBUG == 1
+	IF (TESTFLAG(debug_flags,send))
+		DPRINT "Debuging In PROC drv:driver\r\n"
+		IF (drv:INDsend_rtn == 0)
+			DPRINT "            Send = NULL\r\n"
+		ELSE
+			DPRINT "            Calling send routine\r\n"
+		END IF
+		singlestep on
+	END IF
+#endif
+	/* Coloca los campos de pantalla en un vector. Sirve para la linea
+	   de validacion */
+	IF ( SUBSTR(header,5,1) == "T") THEN
+	/* Comentado por ahora OJO !!! Falta compilar rutinas C */
+	/* esta rutina mata el rt - avisar a Freddie */
+		;CALL CSR:list_of_fields siaf:DAUinfo
+	ENDIF
+	/* Aqui invoca al SVAL routine */
+	// ------------------------------------------------
+	// Run The Send Routine if last key pressed is SEND
+	// ------------------------------------------------
+	CALL  FLD:drv:INDsend_rtn
+	// --------------------------------------------------------------------
+	// End the transaction if the retval is -3
+	// If the send routine returns -1 and the drv:new_app remains the same
+	// then stay on the same screen in the same transaction
+	// If the drv:new_app  is set by the send routine and the send routine,
+	// (which obviously should have set the INDrun_funct) returns -1,
+	// save the current transaction info on the stack before switching to
+	// the new app
+	// -------------------------------------------------------------------
+
+	/* EC - Para que si dan esc al colocar la identificacion del supervisor
+           no vuelva al collect de la transaccion 		13/1/97 */
+	if (LASTKEY == RT_ESC && testflag(tlr:tran_flags,correction))
+		ungetkey RT_ESC
+        end if
+	/* */
+
+	IF (RETVAL == -3) THEN
+		GOTO exit_esc_eot
+	END IF
+	IF (RETVAL != 0)
+   		IF (drv:new_app != -1) THEN
+        	drv:last_key = 0
+        	GOTO save
+        END IF
+		LET drv:next_screen = -1
+		CLEARFIELD INDrun_funct
+		IF (SUBSTR(data_collect,screen_active,1) == "C")
+			GOTO coll
+		ELSE
+			GOTO pre
+		END IF
+	END IF
+	/* Ciertas verificaciones necesarias en transacciones caja */
+	IF ( SUBSTR(header,5,1) == "T") THEN
+	/*  Estado 1 -> sin sesion
+		Estado 2 -> inicio presupuesto
+		Estado 3 -> confirmar presupuesto
+		Estado 4 -> fin presupesto */
+		IF (post:estado_presu == 1 || post:estado_presu == 4 || siaf:adt_tran_modpresu == "I")
+              /* Lo de abajo comentado por martin. Se agrego en otro lado por supervision
+                 de firmas 19970730 */
+              /*IF ((siaf:ve_firma == "S") && !TESTFLAG(tlr:tran_flags,correction)) THEN
+      				CALL siaf:MISCfirmas_x_cuenta
+    			ENDIF */
+			CALL siaf:MISClleno_modalidad
+/****************************************************************
+    		IF (TESTFLAG(tlr:tran_flags,correction) && \
+
+ No se quiere cambiar el codigo de transaccion para las reversas
+						- FB 06/06/98 -
+		    ((siaf:codigo_siaf % 10 == 0) || \
+		     (siaf:codigo_siaf % 10 == 2) || \
+		     (siaf:codigo_siaf % 10 == 4) || \
+		     (siaf:codigo_siaf % 10 == 6) || \
+		     (siaf:codigo_siaf % 10 == 8))) THEN
+      			LET siaf:codigo_siaf = siaf:codigo_siaf + 1
+
+    		ENDIF
+****************************************************************/
+			LET siaf:linea_pantalla = siaf:DAUinfo[0]
+			MOVE drv:descrip TO tlr:tran_mnemonic
+			CALL  tlr:JNLtran
+		else
+			// FGB (reingenieria): Las rutinas para linkeditar se ejecutan dentro de la JNLtran,
+			// y esta solo se ejecuta cuando el estado_presu = 4. 
+			// Con esto, agrego la posibilidad de que se ejecuten siempre que uno quiera...
+			if ( SUBSTR(header,6,1) == "L") THEN
+				call plataf:MISClink_tran
+			endif
+		END IF
+	else
+		// FGB (reingenieria): Las rutinas para linkeditar se ejecutaban dentro de la JNLtran,
+		// y esta solo se ejecuta cuando el estado_presu = 4. 
+		// Con esto, agrego la posibilidad de que se ejecuten siempre...
+		if ( SUBSTR(header,6,1) == "L") THEN
+			call plataf:MISClink_tran
+		endif
+	END IF
+	// ---------------------------------------------------------------
+	// Code that handles the navigation if the SEND key is hit when in
+	// transaction that displays the notecards mode
+	// ---------------------------------------------------------------
+	IF (TESTFLAG(drv:mode_flags,notecards_mode)) && \
+	   (drv:subscreen[drv:dt_app] != "Y") && \
+		 (drv:INDrun_funct == 0) THEN
+	     IF (drv:tab_active != drv:next_tab) THEN
+			 IF (drv:skip_seq_scr.NUMCHARS != 0)  THEN
+				LET drv:next_screen = drv:skip_seq_scr
+				CLEARFIELD drv:skip_seq_scr
+			 ELSE
+				 LET drv:next_screen = drv:screen_active + 1
+				 IF (drv:next_screen > 12) THEN
+					 LET drv:next_screen = 1
+					 LET drv:next_tab = 0
+					 LET drv:index = 1
+				 END IF
+			 END IF
+			 IF (INDscreen[drv:next_screen] == 0) THEN
+				 LET drv:next_screen = 1
+				 LET drv:next_tab = 0
+				 LET drv:index = 1
+				 IF (display_tabs != -1) && (drv:starting_tab > 0) THEN
+					drv:starting_tab = 0
+					IF (drv:display_tabs == 4)
+						CALL drv:redraw_tabs_chks(4)
+					ELSE
+						CALL drv:redraw_tabs_chks(6)
+					END IF
+					CALL drv:EnableDisableArrows(drv:display_tabs)
+					REFRESH drv:INDscreen[0]
+				 END IF
+			 ELSE
+		     	IF (drv:next_tab != 0) THEN
+					LET drv:next_tab = drv:tab_active + 1
+			    END IF
+			 END IF
+			 IF (SUBSTR(drv:flags,52,1) == "X") THEN
+			     let drv:index = drv:next_screen
+		    	 IF (drv:screen_active == 6) || \
+					(drv:screen_active == 12) THEN
+					LET drv:next_tab = 0
+					CALL  drv:change_levels_12
+			     END IF
+			 END IF
+             CLEARFIELD drv:levels_altered
+			 LET drv:INDdata = drv:INDscreen[drv:next_screen]
+	     END IF
+	END IF
+	MOVE "1" TO SUBSTR(drv:collect_done,drv:screen_active,1)
+	IF (TESTFLAG(mode_flags,exit_app))
+    		GOTO exit_esc_eot
+	END IF
+	// ---------------------------------------------------------------------
+	// If we are jumping to some other transaction then set the stack fields
+	// ---------------------------------------------------------------------
+	IF (drv:INDrun_funct != 0)
+		IF (TESTFLAG(mode_flags,no_stack_list))
+			GOTO by_pass_endcol
+		ELSE
+
+/*
+#if DT_DEBUG == 1
+	IF (TESTFLAG(debug_flags,save))
+		DPRINT "Debuging In PROC drv:driver\r\n"
+		IF (drv:INDsave_rtn == 0)
+			DPRINT "            Save = NULL\r\n"
+		ELSE
+			DPRINT "            Calling save routine\r\n"
+		END IF
+		singlestep on
+	END IF
+#endif
+*/
+			CALL  FLD:drv:INDsave_rtn
+			CALL  OFB:drv:save_stack
+			RETURN
+		END IF
+	END IF
+	// ------------------------------------------------------
+	// Cut the previous screen (and tab if in notecards mode)
+	// ------------------------------------------------------
+by_pass_endcol:
+    if (siaf:codigo_siaf == 99060 && drv:screen_active == 1)          
+       cutscreen SCR:post:SCRNctacte_cobranza1,NOCURSOR
+       drv:screen_active = 3
+    end if
+
+    if (siaf:codigo_siaf == 9600 && drv:screen_active == 1)
+       cutscreen SCR:tes:SCRNArqueoTesoro1,NOCURSOR
+       drv:screen_active = 2
+    end if
+        
+	IF (drv:INDscreen[screen_active] != 0)
+		// FGB (reingenieria)
+		;if (plataf:current_state == CONFIRMATION) then
+			;let FLD:drv:INDscr = SCR_CONFIRMA
+		;else
+			LET FLD:drv:INDscr = FLD:drv:INDscreen[screen_active]
+		;endif
+		CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+		/* EC - 16-10-96 Me veo obligada a hacer esta truchada
+		si no,no sale de la pantalla cuando el tipo se identifica
+		por tarjeta  por que es con notecards */
+		if (siaf:codigo_siaf == 0089)	/* Ident.Cliente */
+			if (screen_active == 1 && lastkey == RT_SEND)
+				let fld:drv:INDscreen[screen_active] = 0
+			endif
+		endif
+		/* */
+		IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+			IF (drv:tab_active >= 0)
+				IF (drv:next_tab == drv:tab_active) THEN
+					SETFLAG drv:mode_flags,same_tab
+				ELSE
+				    LET FLD:drv:INDscr = FLD:drv:tab_screen[tab_active]
+    		        IF (drv:INDscr != 0)
+				        CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+            		END IF
+				END IF
+			END IF
+            CALL drv:enable_tab
+		END IF
+		IF (SUBSTR(auto_side_bar,screen_active,1) == "1")
+			CALL  OFB:drv:side_bar_pop
+		END IF
+		IF (SUBSTR(auto_next_scr,screen_active,1) == "1" && \
+		    drv:next_screen == -1)
+		    LET drv:next_screen = drv:screen_active + 1
+		    CALL  OFB:drv:check_disabled_scr
+		END IF 
+next_scr:
+	    IF (drv:next_screen != -1)
+			// ----------------------------------------------------
+			// Set the to be attached screen number (and tab number
+			// if in notecards mode)
+			// ----------------------------------------------------
+			LET drv:screen_active = drv:next_screen
+			IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+			    LET drv:tab_active = drv:next_tab
+		    	LET drv:next_tab = -1
+			END IF
+			// --------------------------------------------------
+			// If by accident the drv:screen_active is more than
+			// the maximum
+			// --------------------------------------------------
+			IF (drv:screen_active > 12)
+				GOTO exit
+			END IF
+			
+			IF (drv:INDscreen[screen_active] != 0)
+				IF (SUBSTR(auto_side_bar,screen_active,1) == "1")
+					CALL  OFB:drv:side_bar_push
+				END IF
+				LET drv:next_screen = -1
+				// -------------------------------------------
+				// If the screen is supposed to be a menu then
+				// call menu driver
+				// -------------------------------------------
+				IF (SUBSTR(data_collect,screen_active,1) == "M")
+					CALL  OFB:drv:driver_menu_load
+				END IF
+#if DT_DEBUG == 1
+	IF (TESTFLAG(debug_flags,predisplay))
+		DPRINT "Debuging In PROC drv:driver\r\n"
+		IF (drv:INDpre_dis_rtn == 0)
+			DPRINT "            Predisplay rtn = NULL\r\n"
+		ELSE
+			DPRINT "            Calling pre display routine\r\n"
+		END IF
+		singlestep on
+	END IF
+#endif
+				// --------------------------
+				// Run the PreDisplay Routine
+				// --------------------------
+				CALL  FLD:drv:INDpre_dis_rtn
+				// -------------------------------------------
+				// If the PreDisplay Routine returns -1,
+				// then we will terminate execution of the
+				// current tran
+				// -------------------------------------------
+				IF (RETVAL == -1)
+					CALL  OFB:end_tran
+					IF (drv:INDrun_funct == 0)
+						IF (prev_app != dt_app)
+							CALL OFB:drv:prev_app
+						ELSE
+							CALL OFB:drv:prev_funct
+						END IF
+					END IF
+					RETURN
+				END IF
+		    	GOTO loop
+			END IF
+	    END IF
+	END IF
+exit:
+	IF (SUBSTR(drv:required,screen_active,1) == "1")
+		CALL  OFB:drv:col_done_chk
+		IF (drv:next_screen != -1)
+			GOTO next_scr
+		END IF
+	END IF
+
+exit_esc_eot:
+
+	// FGB (reingenieria): acciones a tomar de acuerdo al estado...
+	call plataf:curstate_action_drv
+
+	siaf:codigo_siaf_tmp = siaf:codigo_siaf
+	CALL  OFB:end_tran
+
+	if (siaf:codigo_siaf_tmp != 99023 && siaf:codigo_siaf_tmp != 99021) // ---------- [A]
+		If (post:Modo  == "R") then // ---------------------------------------------- [B] 
+	      		drv:stack_cnt = drv:stack_cnt + 1
+	      		Call csr:listexec lst:post:TRANimpre_fiscal
+	    else // --------------------------------------------------------------------- [B] 
+			// si estoy volviendo al menu, veo si tengo que calcular impuestos...
+			call plataf:LINKcalcula_impuesto
+		endif // -------------------------------------------------------------------- [B]
+	Endif // ------------------------------------------------------------------------ [A] 
+
+   	// -------------------------------------------------------------------
+	// The Screens were already cut in the end_tran. So skip it
+	// Left the code because I don't know what the history stuff does
+	// - Nagesh
+	// -------------------------------------------------------------------
+	GOTO  after_cut
+#if BASE_CFIG_HIST == 1
+hist_exit:
+#endif
+	IF (drv:INDscreen[screen_active] != 0)
+		LET FLD:drv:INDscr = FLD:drv:INDscreen[screen_active]
+	    CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+	END IF
+after_cut:
+	// ----------------------------------------
+	// Reset the SubScreen mode and cut the tab
+	
+	// ----------------------------------------
+	IF (drv:subscreen[drv:dt_app] == "Y") THEN
+         LET drv:subscreen[drv:dt_app] = "N"
+	     IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+			IF (drv:tab_active >= 0)
+			    LET FLD:drv:INDscr = FLD:drv:tab_screen[tab_active]
+			    IF (drv:INDscr != 0) THEN
+					CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+           			CALL drv:enable_tab
+		    	END IF
+			END IF
+	     END IF
+	END IF
+	IF (drv:INDside_bar_scr != 0)
+	    CUTSCREEN FLD:drv:INDside_bar_scr,CURRENTFIELD
+		CLEARFIELD INDcur_sb_scr
+	END IF
+	// -------------------------------------------------------------------
+	// Go back to the transaction that was getting executed previously,
+	// before we got to this transaction if in the same application unless
+	// the INDrun_funct is not empty
+	// -------------------------------------------------------------------
+	IF (drv:INDrun_funct == 0)
+		CALL  OFB:drv:prev_funct
+	END IF
+END SUB
+
+/*******/

@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:MISCsaveOpeVPI_LOG
+* NOMBRE
+*   OFB:post:MISCsaveOpeVPI_LOG
+* DESCRIPCION
+*   Guarda un registro en la tabla OperacionesVPI
+* ENTRADAS
+*		TES - Test de conexión 
+*		VEN - Venta 
+*		ANV - Anulación de venta 
+*		DEV -	Devolución 
+*		AND - Anulación de devolución 
+*		CIE - Cierre 
+*		ULT - Ultima transacción 
+*		ULC - Ultimo cierre 
+*		IMT -	Reimpresión de ultima transacción 
+*		IMC - Reimpresión de ultimo cierre 
+*		TAR - Obtención de tabla de tarjetas 
+*		PLA - Obtención de tabla de planes 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCvpiPurchase
+* DOCUMENTACION
+*   PS10932 - Log OperacionesVPI
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsaveOpeVPI_LOG(p_operacion)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_operacion LIKE common:csr_string
+	LOCAL l_batchClose LIKE post:adt_opvpi_batchClose 
+	LOCAL l_opvpi_jnlOK LIKE post:adt_opvpi_jnlOK
+	
+	LET l_operacion = p_operacion
+
+	CDS SELECT FROM DSC:post:OpeVPI_LOG_tbl BECOMES DSC:post:OpeVPI_LOG_ctx \
+		WHERE post:log_opvpi_fecha == common:system_date \
+		&& post:log_opvpi_login_id == op:op_login_id \
+		&& post:log_opvpi_PresNro == post:PresNro \
+		&& post:log_opvpi_termi_win == common:window_node \
+		&& post:log_opvpi_comandos == l_operacion \
+		&& post:log_opvpi_codseq_nro == post:adt_vpi_codseq_nro
+		
+	CDS FINDFIRST DSC:post:OpeVPI_LOG_ctx LOCK
+	LET l_retval = CDSRETVAL
+    
+  CDS CLEARBUFFER DSC:post:OpeVPI_LOG_ctx
+  
+	CDS APPEND DSC:post:OpeVPI_LOG_ctx \
+		common:system_date AS post:log_opvpi_fecha \
+		common:time_of_day AS post:log_opvpi_hora \
+		op:op_login_id AS post:log_opvpi_login_id \
+		post:PresNro AS post:log_opvpi_PresNro \
+		common:window_node AS post:log_opvpi_termi_win \
+		post:adt_vpi_codseq_nro AS post:log_opvpi_codseq_nro \
+		siaf:codigo_siaf AS post:log_opvpi_cod_siaf
+
+  SELECT (l_operacion)
+  	CASE "VEN" //Venta
+	  	CDS APPEND DSC:post:OpeVPI_LOG_ctx \
+	  		l_operacion AS post:log_opvpi_comandos
+  	
+  		CALL csr:proc_list(F_COPY, LST:post:LISTvpiPurchaseIn, LST:post:LISTvpiPurchaseInLog)
+			CALL csr:proc_list(F_COPY, LST:post:LISTvpiTrxOut, LST:post:LISTvpiTrxOutLog)
+
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiPurchaseInLog,2)
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiTrxOutLog,2)
+  	BREAK
+  	CASE "ANV" //Anulación de venta
+			CDS APPEND DSC:post:OpeVPI_LOG_ctx \
+				l_operacion AS post:log_opvpi_comandos
+
+  		CALL csr:proc_list(F_COPY, LST:post:LISTvpiVoidIn, LST:post:LISTvpiVoidInLog)
+			CALL csr:proc_list(F_COPY, LST:post:LISTvpiTrxOut, LST:post:LISTvpiTrxOutLog)
+
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiVoidInLog,2)
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiTrxOutLog,2)  	
+  	BREAK
+  	CASE "DEV" //Devolución
+			CDS APPEND DSC:post:OpeVPI_LOG_ctx \
+				l_operacion AS post:log_opvpi_comandos
+
+  		CALL csr:proc_list(F_COPY, LST:post:LISTvpiRefundIn, LST:post:LISTvpiRefundInLog)
+			CALL csr:proc_list(F_COPY, LST:post:LISTvpiTrxOut, LST:post:LISTvpiTrxOutLog)
+			
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiRefundInLog,2)
+			CALL csr:proc_list(F_APPEND,DSC:post:OpeVPI_LOG_ctx ,LST:post:LISTvpiTrxOutLog,2)  	
+  	BREAK
+  END SELECT
+  
+  CDS APPEND DSC:post:OpeVPI_LOG_ctx \
+		post:log_opvpi_VPI_OK
+  
+	IF (l_retval == -801) THEN
+		CDS INSERT DSC:post:OpeVPI_LOG_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:post:OpeVPI_LOG_ctx LOCK
+	END IF
+	CDS UNLOCK DSC:post:OpeVPI_LOG_ctx	
+		
+END SUB
+
+/*******/

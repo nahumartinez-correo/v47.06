@@ -1,0 +1,121 @@
+/****o* Pendientes de agrupación/OFB:post:PBejecutarCarga
+* NOMBRE
+*   OFB:post:PBejecutarCarga
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBejecutarCarga
+	local itemTabla like siaf:i
+	local l_retval like lib:err_retval
+	local l_str like common:csr_string_aux
+	local l_registros like post:mdata_nroRegistros
+	local archivo like common:path_1024
+	local caracter LIKE common:csr_string
+	local caracter2 LIKE common:csr_string
+	local l_directorio like common:path_1024
+    drv:button = 2
+    CALL drv:but_down_disable
+	;cuando se ejecuta esta rutina en modalidad Batch 
+	;no se puede mostrar mensajes emerjentes
+	;"B" - Batch
+	if (post:rep_modalidad != "B") then
+    	MSGBOX "Está usted seguro que desea ejecutar la carga masiva? (Esta accion no se podrá reestablecer)",OFB_YESNO,"Ejecutar carga masiva"
+	end if
+	if (retval == OFB_IDYES || post:rep_modalidad == "B")
+		;La inicialización del log en modo Batch se hace afuera de esta rutina
+		;a fin de poder escribir een él el caso de que no se pueda abrir el
+		;archivo
+		if (post:rep_modalidad != "B") then
+   			call post:MISClogCargaMas_inic(mdata_directorio, mdata_abm)
+   		end if
+		// Obtengo los nombres de tablas de la lista para ir levantando el popup.
+		; Atomizo la actualizacion.
+		CDS BEGINWORK
+		itemTabla = 1
+		if (post:rep_modalidad == "B" && mdata_nroTablas == 0) then
+			fprint l_str, "%e : No se encontró información de carga masiva de sucursales. Verifique la tabla MetaDataTablas.\n", common:time_of_day
+			call post:MISClogCargaMas(mdata_directorio, mdata_abm, l_str)
+			return -2
+		end if
+			
+		while (itemTabla <= mdata_nroTablas && itemTabla > 0)
+			post:mdata_nroRegistros = 0
+			call MISCobtenerTablaI(mdata_detalleArch, itemTabla)
+
+			; pasar a tabla REAL
+			call CDSdescTablaReal(mdata_descTabla)
+			if (post:rep_modalidad == "B") then
+				fprint archivo "%2.2s\\%s\\%s",post:mdata_unidad,mdata_directorio,mdata_archivo
+			else
+				fprint archivo "C:\\%s\\%s",mdata_directorio,mdata_archivo
+			end if
+			call post:MISCprocesaCargaMas(mdata_abm, mdata_tabla, archivo, mdata_descTabla)
+			if (retval != 0)
+				l_directorio = mdata_directorio
+				FPRINT caracter "%s", "\\"
+				FPRINT caracter2 "%s", "/"
+				CALL post:MISCremplazaCaracter(l_directorio,caracter,caracter2)
+				fprint l_str "%e : ERRORES EN LA CARGA MASIVA, para mayor información consulte el log de errores: c:\\%s\\%s.log", common:time_of_day, l_directorio, mdata_abm
+			    ;cuando se ejecuta esta rutina en modalidad Batch 
+			    ;no se puede mostrar mensajes emerjentes
+			    ;"B" - Batch
+			    if (post:rep_modalidad != "B") then
+			    	MSGBOX l_str, OFB_OK, "Error"
+			    end if
+			    drv:button = 2
+			    CALL drv:but_up_enable
+				CDS ROLLBACKWORK
+				clearfield mdata_nroRegistros
+				refresh mdata_nroRegistros
+				return -2
+			endif
+			l_registros = l_registros + post:mdata_nroRegistros
+			itemTabla = itemTabla + 1
+		end while
+		CDS COMMITWORK
+		post:mdata_nroRegistros = l_registros
+		refresh mdata_nroRegistros
+		fprint l_str, "%e : Carga masiva de datos finalizada correctamente. %s registros procesados.\n", common:time_of_day, post:mdata_nroRegistros
+		call post:MISClogCargaMas(mdata_directorio, mdata_abm, l_str)
+		
+	    ;cuando se ejecuta esta rutina en modalidad Batch 
+		;no se puede mostrar mensajes emerjentes
+		;No journalizamos en modo batch
+		;"B" - Batch
+		if (post:rep_modalidad != "B") then
+			call MISCjournalizarCM
+			 MSGBOX "Carga masiva de datos finalizada correctamente",OFB_OK,"Aviso"
+		end if	   
+		;unprotfield directorio_mdata
+		unprotfield mdata_abm
+		drv:button = 0
+		CALL drv:but_enable
+		drv:button = 1
+		CALL drv:but_disable
+		drv:button = 2
+	    CALL drv:but_up_enable
+	    CALL drv:but_disable
+        CALL CSR:proc_list(F_CLEAR,LST:LISTcargaMasiva_flds)
+        CALL CSR:proc_list(F_REFRESH,LST:LISTcargaMasiva_flds)
+        CLEARFIELD post:directorio_mdata
+        refresh post:directorio_mdata
+    else
+	    drv:button = 2
+	    CALL drv:but_up_enable
+	endif
+END SUB
+
+/*******/

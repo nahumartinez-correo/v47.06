@@ -1,0 +1,160 @@
+/****o* Pendientes de agrupación/OFB:post:SENDtarifas_mult
+* NOMBRE
+*   OFB:post:SENDtarifas_mult
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANabm_tarifas_mult
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDtarifas_mult
+    LOCAL loc_tarif LIKE adt_tarif_serv
+    LOCAL indice     LIKE post:Tarif_idx    
+    LOCAL modificada LIKE post:SiNo
+    LOCAL lcod       LIKE post:Tarif_idx
+    LOCAL loc_prec   LIKE post:adt_tarif_precio
+    LOCAL idx_tarm   LIKE post:Tarif_idx    
+
+    loc_tarif = adt_tarif_serv
+    
+    drv:save_button = drv:last_button
+    IF (TESTFLAG(admin:mode_flags,update)) THEN
+        ;SMC Autorizo Modificaciones    
+        call post:MISCAutorizoModif("Tarifas")    
+        if (retval < 0) then
+            drv:button = 25
+            CALL drv:but_enable        
+	        return (-2)
+        endif
+                
+        CALL CDSadt_tarifm_save
+        CALL drv:side_bar_disable
+        RESETFLAG admin:mode_flags,update
+       ;SMC journalizo Modificacion
+       //call post:MISCJournalTablas       
+       
+       drv:INDcur_list = LST:post:TRANabm_tarifas
+       
+       idx_tarm = 0                
+       indice = idx_tarm + PL_GETITEM           
+    
+       WHILE (idx_tarm < tarif_cant_tot)
+           call csr:myPickcontrol(dsc:aux_pic_medios,common:csr_string,indice)        
+           lcod = substr(common:csr_string,0,5)
+           IF (lcod == 99999) /*Es un titulo*/
+               adt_tarif_serv = substr(common:csr_string,6,10)
+               CALL csr:trimfield post:adt_tarif_serv
+           else
+               modificada = substr(common:csr_string,65,1)
+               IF (modificada == "M")     /*La tarifa fue modificada*/                
+                   adt_tarif_dest  = substr(common:csr_string,2,20)                
+                   adt_tarif_desde = substr(common:csr_string,23,13)                            
+                   CALL csr:trimfield post:adt_tarif_dest
+                   CALL csr:trimfield post:adt_tarif_desde                            
+                   CDS SELECT FROM DSC:adt_tarif_table BECOMES DSC:adt_tarif_context WHERE\
+                   adt_tarif_serv  == FLD:adt_tarif_serv && \
+                   adt_tarif_dest  == FLD:adt_tarif_dest && \
+                   adt_tarif_desde == FLD:adt_tarif_desde
+                   CDS FINDFIRST DSC:adt_tarif_context NOLOCK
+                   LET lib:err_retval = CDSRETVAL
+                   CDS EXTRACT DSC:adt_tarif_context ALL
+                   bck_tarif_serv       = adt_tarif_serv
+                   bck_tarif_dest       = adt_tarif_dest
+                   bck_tarif_desde      = adt_tarif_desde
+                   bck_tarif_hasta      = adt_tarif_hasta
+                   bck_tarif_um         = adt_tarif_um
+                   bck_tarif_precio     = adt_tarif_precio
+                   bck_tarif_modo       = adt_tarif_modo
+                   bck_tarif_fijo       = adt_tarif_fijo
+	               bck_tarif_fijo_des   = adt_tarif_fijo_des
+                   bck_tarif_fj_aliciva = adt_tarif_fj_aliciva
+                   bck_tarif_cfenix     = adt_tarif_cfenix
+                   bck_tarif_hasta_eq   = adt_tarif_hasta_eq
+                   bck_tarif_um_eq      = adt_tarif_um_eq
+                   bck_tarif_tipo_caja  = adt_tarif_tipo_caja        
+                   bck_tarif_uneg       = adt_tarif_uneg
+                   adt_tarif_precio = substr(common:csr_string,51,13) //precio modificado
+                   bck_tarif_canal = adt_tarif_canal
+                   CALL csr:trimfield post:adt_tarif_precio                            
+                   CDS ENDSELECT DSC:adt_tarif_context
+                   
+                   Call post:MISCSeteoTablasIND("Tarifas")                                      
+                   ;SMC journalizo Modificacion
+                   call post:MISCJournalTablas                                                        
+                   
+               end if
+           end if
+           idx_tarm = idx_tarm + 1
+           indice = indice + 1
+       END WHILE
+       drv:INDcur_list = LST:post:TRANabm_tarifas_mult
+       
+                                   
+    /*
+    ELSE
+        
+        IF (TESTFLAG(admin:mode_flags,delete)) THEN
+            ;SMC Autorizo Modificaciones    
+            call post:MISCAutorizoModif("Tarifas")    
+            if (retval < 0) then
+                drv:button = 25
+                CALL drv:but_enable        
+	            return (-2)
+            endif
+            
+            RESETFLAG admin:mode_flags,delete
+            CALL lib:adt_delete_verify
+            IF (RETVAL == 0) THEN
+                CALL drv:side_bar_disable
+                CALL CDStipmed_del
+                IF (RETVAL != 0) THEN
+                    drv:button = drv:save_button
+                    CALL drv:but_up_enable
+                    RETURN (-1)
+                ELSE
+                    ;SMC journalizo Modificacion
+                    call post:MISCJournalTablas
+                    CALL CSR:proc_list(170,LST:LISTtarifasm_flds)
+                    CALL CSR:proc_list(190,LST:LISTtarifasm_flds)
+                    RETURN (-1)
+                END IF
+            END IF
+        ELSE
+            IF (TESTFLAG(admin:mode_flags,imprimir)) THEN
+                ;SMC Autorizo Modificaciones    
+                call post:MISCAutorizoModif("Tarifas")    
+                if (retval < 0) then
+                    drv:button = 25
+                    CALL drv:but_enable        
+	                return (-2)
+                endif
+                
+                RESETFLAG admin:mode_flags,imprimir
+                
+                CALL MISCdumptable 
+                CALL CDSdumptable  
+
+                CALL CSR:proc_list(170,LST:LISTtarifasm_flds)
+                CALL CSR:proc_list(190,LST:LISTtarifasm_flds)
+                RETURN (-1)
+            END IF
+        END IF
+        */
+        RETURN (0)
+    END IF
+    ;CALL CSR:proc_list(170,LST:LISTtarifasm_flds)
+    ;CALL CSR:proc_list(190,LST:LISTtarifasm_flds)        
+    RETURN 0   //(-1)
+END SUB
+
+/*******/

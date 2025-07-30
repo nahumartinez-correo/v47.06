@@ -1,0 +1,133 @@
+/****o* Caja Unificada/OFB:post:TRANprint6680_Ecom
+* NOMBRE
+*   OFB:post:TRANprint6680_Ecom
+* DESCRIPCION
+*   Rutina que se llama desde la tx de Registración Web Ecommerce para imprimir el Ticko
+*   toma el valor del campo post:adt_dgralsuc_compOPW de la tabla DGralSuc y lo asigna a
+*   common:cantidad_compOPW en op:TRANlogin
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALimpre_fiscal
+* DOCUMENTACION
+*   PS10853- Ecommerce
+* SOURCE
+*/
+#include "postTRAN.h"
+
+SUB post:TRANprint6680_Ecom
+	LOCAL l_err_retval LIKE lib:err_retval
+	LOCAL campo1 LIKE common:csr_string
+	LOCAL campo2 LIKE common:csr_string
+	LOCAL campo3 LIKE common:csr_string
+	LOCAL campo4 LIKE common:csr_string
+	LOCAL campo5 LIKE common:csr_string
+
+	//inicializo contadores
+	LET post:cant_tot_compOPW = 0
+	LET post:cant_reg_compOPW = 0	
+	LET post:acum_reg_compOPW = 0
+	
+	CDS SELECT FROM DSC:post:web_tmp_tbl BECOMES DSC:post:web_tmp_ctx \
+		WHERE post:web_tmp_fecha == common:system_date \
+		&& post:PresNro == post:PresNro \
+		&& post:web_tmp_operator == op:op_operator_id \
+		&& post:web_tmp_nro_tx_web != 999
+		
+	CDS FINDFIRST DSC:post:web_tmp_ctx NOLOCK	
+	CDS AGGREGATE DSC:post:web_tmp_ctx COUNT post:web_tmp_nro_tx_web AS post:cant_tot_compOPW 
+	CDS EXTRACT DSC:post:web_tmp_ctx post:cant_tot_compOPW	
+		
+	CDS FINDFIRST DSC:post:web_tmp_ctx NOLOCK
+	LET l_err_retval = CDSRETVAL
+	WHILE (l_err_retval == 0)
+		CDS EXTRACT DSC:post:web_tmp_ctx \
+			post:adt_pweb_motivo \
+			post:adt_pweb_nombre \
+			post:web_tmp_adic[0] INTO campo1 \
+			post:web_tmp_adic[1] INTO campo2 \
+			post:web_tmp_adic[2] INTO campo3 \
+			post:web_tmp_adic[3] INTO campo4 \
+			post:web_tmp_adic[4] INTO campo5
+			
+		//campo1 = R.SocVen A(35)-Peso N(5)			    [CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCDDDDD]
+		//campo2 = ID Ven A(30)-Medidas N(9)		    [EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEZZZYYYXXX ]
+		//campo3 = TN A(30)				                  [HHHHHHHHHHHHHH                          ] 	//TN , solo tomo 14 que trae Mercado Libre
+		//campo4 = Servicio N(6) R.Social A(34)			[AAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB]
+		//campo5 = T&T A(13)                        [IIIIIIIIIIIII                           ] 
+		
+		//campo1 = R.SocVend A(35) - Peso N(5)			[LA BUENOS AIRES SOCIEDAD ANONIMA SA03500]
+		//campo2 = ID Vend A(30)   - Medidas N(9)		[330000000000000000000000000033015020005 ]
+	  //campo3 = TN A(30)				                  [90000000000009                          ]  //TN , solo tomo 14 que trae Mercado Libre
+		//campo4 = Servicio N(6) R.Social A(34)     [012101JUAN PEREZ SUPER STAR             ]
+		//campo5 = T&T A(13)                        [CC000000005AR                           ]    
+
+		LET post:web_tmp_ticket[cant_reg_compOPW][0] = campo1
+		LET post:web_tmp_ticket[cant_reg_compOPW][1] = campo2
+		LET post:web_tmp_ticket[cant_reg_compOPW][2] = campo3
+		LET post:web_tmp_ticket[cant_reg_compOPW][3] = campo4
+		LET post:web_tmp_ticket[cant_reg_compOPW][4] = campo5
+		
+		//acumulo los registros a imprimir
+		post:acum_reg_compOPW = post:acum_reg_compOPW + 1
+		
+		LET cant_reg_compOPW = cant_reg_compOPW + 1
+		IF (cant_reg_compOPW == common:cantidad_compOPW) THEN
+			//post:tira_auditora = "S"
+	    post:tira_auditora = "N"
+			PRINTDOC OFB:post:PRT_6680_Ecom,docprt,"(L)IMPRIMIENDO COMPROBANTE VENDEDOR"
+			
+			//gpb:PS10839 
+			CALL post:MISCsleepFactura
+
+
+			//Se comenta por PS 10968 (eliminar comprobante de declaracion de contenido)
+			/*********************************************************************************/
+			//post:tira_auditora = "N"
+			//PRINTDOC OFB:post:PRT_6680_Ecom_Corr,docprt,"(L)IMPRIMIENDO COMPROBANTE CORREO"
+			
+			//gpb:PS10839 
+			//CALL post:MISCsleepFactura
+			/**********************************************************************************/
+
+			//Limpio campos
+			CALL CSR:cleararray (post:web_tmp_ticket)
+			LET cant_reg_compOPW = 0
+		END IF
+
+		CDS FINDNEXT DSC:post:web_tmp_ctx NOLOCK
+		LET l_err_retval = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT DSC:post:web_tmp_ctx
+	
+	//Evaluo si quedaron registros a imprimir
+	IF (cant_reg_compOPW > 0) THEN
+
+		//Se comenta por PS 10968 (eliminar comprobante de declaracion de contenido)
+		/*********************************************************************************/
+		//post:tira_auditora = "N"
+		//PRINTDOC OFB:post:PRT_6680_Ecom_Corr,docprt,"(L)IMPRIMIENDO COMPROBANTE CORREO"	
+		
+		//gpb:PS10839 
+		//CALL post:MISCsleepFactura
+		/*********************************************************************************/
+//		post:tira_auditora = "S"
+    post:tira_auditora = "N"
+		PRINTDOC OFB:post:PRT_6680_Ecom,docprt,"(L)IMPRIMIENDO COMPROBANTE VENDEDOR"				
+			
+		//gpb:PS10839 
+		CALL post:MISCsleepFactura		
+	END IF
+
+	MSGBOX "¿SE IMPRIMIO CORRECTAMENTE EL COMPROBANTE?", OFB_YESNO2, "ATENCION"
+	IF (RETVAL != 6) THEN //NO
+		MSGBOX "DEBERA REIMPRIMIR EL COMPROBANTE DESDE EL JOURNAL.",OFB_OK,"INFORMA"
+	END IF
+
+END SUB
+
+/*******/

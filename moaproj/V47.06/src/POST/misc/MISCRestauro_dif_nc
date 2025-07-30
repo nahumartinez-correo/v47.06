@@ -1,0 +1,215 @@
+/****o* Facturación/OFB:post:MISCRestauro_dif_nc
+* NOMBRE
+*   OFB:post:MISCRestauro_dif_nc
+* DESCRIPCION
+*   Esta rutina restaura diferencias en la NcTable (solo en los registros que NO SE ANULAN)
+*   Las diferencias que restaura son las calculadas en la DifFact y las calculadas en teleg
+*   bloq adic, opc y postales cuando al journalizar se divide.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCmanejoImpre
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRestauro_dif_nc
+LOCAL cont LIKE cant_opc
+LOCAL encontro LIKE post:adt_serv_pesob
+
+    CDS SELECT FROM DSC:NC_TAB BECOMES DSC:NC_CON \
+    where post:jnl_sequence_dire == "D" && \
+          post:jnl_flia_tran != "PCL" && \
+          post:jnl_flia_tran != "CSM"
+    CDS BEGINWORK
+  
+    do
+        encontro = "F"
+        CDS FINDNEXT DSC:NC_CON LOCK
+        If ( CdsRetval != 0 )
+            CDS UNLOCK DSC:NC_CON
+            Cds endselect DSC:NC_CON
+            Break
+        Endif
+        cds extract DSC:NC_CON post:jnl_sequence_dire post:jnl_flia_tran
+        CDS CLEARBUFFER DSC:NC_CON
+            
+            //borro todos los campos que extraje
+            clearfield post:cod_dif_aplicada
+            clearfield post:dif_calculada
+            clearfield post:imp_bloques_siva
+            clearfield tele:imp_siniva_serv
+            clearfield post:GestSinIva
+            clearfield post:EnPol_IvaGestEn
+            clearfield post:PresSinIva
+            clearfield post:EnPol_IvaPresAd
+            clearfield giros:ComisionSinIva_fld
+            clearfield giros:IvaComision_fld
+            clearfield giros:TasaSinIva_fld
+            clearfield giros:IvaTasa_fld
+            clearfield post:dif_calculada_tasa
+            clearfield adt_dump_siniva
+            clearfield post:ImporteIva
+            clearfield post:ImporteSinIva
+            clearfield post:cant_opc
+            call csr:cleararray(siniva_opc)
+            call csr:cleararray(dif_opc)
+            clearfield post:BloqueSinIva_serv
+	    clearfield post:ImpSinIva_serv
+            call csr:cleararray(jnl_dif_opc)
+            clearfield post:jnl_dif_blq
+            clearfield post:jnl_dif_serv
+            
+            cds extract DSC:NC_CON post:cod_dif_aplicada
+            if (post:jnl_flia_tran == "CST") then
+               cds extract DSC:NC_CON post:imp_bloques_siva tele:imp_siniva_serv \
+               post:dif_calculada post:adt_dump_siniva post:jnl_dif_blq post:jnl_dif_serv  
+                
+               if (post:dif_calculada.numchars > 0) then
+                	if (post:cod_dif_aplicada == "BLQ") then
+                    	    post:imp_bloques_siva = post:imp_bloques_siva + post:dif_calculada
+                	endif
+                        if (post:cod_dif_aplicada == "SERV") then
+                 	    tele:imp_siniva_serv = tele:imp_siniva_serv + post:dif_calculada
+	                    adt_dump_siniva = adt_dump_siniva + post:dif_calculada
+        	        endif
+                endif
+                if (post:dif_calculada.numchars > 0 || post:jnl_dif_blq.numchars > 0 || \
+                	post:jnl_dif_serv.numchars > 0 ) then
+                	post:imp_bloques_siva = post:imp_bloques_siva + post:jnl_dif_blq
+               		tele:imp_siniva_serv = tele:imp_siniva_serv + post:jnl_dif_serv
+               		adt_dump_siniva = adt_dump_siniva + post:jnl_dif_serv
+                	//los tengo que appendear vacios!!!!
+                	clearfield post:jnl_dif_blq
+                	clearfield post:jnl_dif_serv
+                	clearfield post:dif_calculada
+                	cds append DSC:NC_CON tele:imp_siniva_serv \
+                	imp_bloques_siva  adt_dump_siniva post:dif_calculada \
+                	post:jnl_dif_blq post:jnl_dif_serv 
+                	encontro = "V"
+                endif
+            endif
+            /*if (post:jnl_flia_tran == "CSP" || post:jnl_flia_tran == "CSE") then
+            	cds extract DSC:NC_CON post:BloqueSinIva_serv post:ImpSinIva_serv \
+                post:dif_calculada post:adt_dump_siniva post:jnl_dif_blq post:jnl_dif_serv
+                if (post:dif_calculada.numchars > 0) then
+                	if (post:cod_dif_aplicada == "BLQ") then
+                    		post:BloqueSinIva_serv = post:BloqueSinIva_serv + post:dif_calculada
+                	endif
+                        if (post:cod_dif_aplicada == "SERV") then
+                	    post:ImpSinIva_serv = post:ImpSinIva_serv + post:dif_calculada
+                    	    post:adt_dump_siniva = post:adt_dump_siniva + post:dif_calculada
+               		endif
+               	endif
+               	if (post:dif_calculada.numchars > 0 || post:jnl_dif_blq.numchars > 0 || \
+                	post:jnl_dif_serv.numchars > 0 ) then
+                	post:BloqueSinIva_serv = post:BloqueSinIva_serv + post:jnl_dif_blq
+               		post:ImpSinIva_serv = post:ImpSinIva_serv + post:jnl_dif_serv
+               		adt_dump_siniva = adt_dump_siniva + post:jnl_dif_serv
+                	//los tengo que appendear vacios!!!!
+                	clearfield post:jnl_dif_blq
+                	clearfield post:jnl_dif_serv
+                	clearfield post:dif_calculada
+                	cds append DSC:NC_CON post:ImpSinIva_serv \
+                	BloqueSinIva_serv  post:adt_dump_siniva post:dif_calculada \
+                	post:jnl_dif_blq post:jnl_dif_serv 
+                	encontro = "V"
+                 endif
+            endif*/
+            if (post:jnl_flia_tran == "CST" || post:jnl_flia_tran == "CSP" || \
+                post:jnl_flia_tran == "CSE") then
+                cont = 0
+             
+                cds extract dsc:NC_CON post:cant_opc
+                WHILE (cont < cant_opc)
+                    cds extract DSC:NC_CON post:siniva_opc[cont] post:dif_opc[cont] post:jnl_dif_opc[cont]
+                    if (post:dif_opc[cont].numchars > 0 || post:jnl_dif_opc[cont].numchars > 0) then
+                    	siniva_opc[cont] = siniva_opc[cont] + dif_opc[cont] + post:jnl_dif_opc[cont] 
+	                //los tengo que appendear vacios!!!!
+        	         clearfield post:jnl_dif_opc[cont]
+                	 clearfield post:dif_opc[cont]
+                    	cds append DSC:NC_CON siniva_opc[cont] post:jnl_dif_opc[cont] dif_opc[cont]
+                    	encontro = "V"
+                    endif
+                    cont = cont + 1
+                END WHILE
+            endif
+            if (post:jnl_flia_tran == "TAV") then
+                cds extract DSC:NC_CON post:GestSinIva post:EnPol_IvaGestEn \
+                post:PresSinIva post:EnPol_IvaPresAd post:dif_calculada adt_dump_siniva
+                if (post:dif_calculada.numchars > 0) then
+                    if (post:cod_dif_aplicada == "GEST") then
+                        post:GestSinIva = post:GestSinIva + post:dif_calculada
+                        post:EnPol_IvaGestEn = post:EnPol_IvaGestEn - post:dif_calculada
+                         clearfield post:dif_calculada
+                        cds append DSC:NC_CON GestSinIva EnPol_IvaGestEn  post:dif_calculada
+                    endif
+                    if (post:cod_dif_aplicada == "PRES") then
+                        post:PresSinIva =  post:PresSinIva + post:dif_calculada
+                        post:EnPol_IvaPresAd = post:EnPol_IvaPresAd - post:dif_calculada
+                        clearfield post:dif_calculada
+                        cds append DSC:NC_CON PresSinIva EnPol_IvaPresAd post:dif_calculada
+                    endif
+                    adt_dump_siniva = adt_dump_siniva + post:dif_calculada
+                    cds append DSC:NC_CON adt_dump_siniva
+                    encontro = "V"
+                endif
+            endif
+            
+            /*if (post:jnl_flia_tran == "CSM") then
+                cds extract DSC:NC_CON giros:ComisionSinIva_fld giros:IvaComision_fld \
+                giros:TasaSinIva_fld giros:IvaTasa_fld post:dif_calculada_tasa \
+                post:dif_calculada adt_dump_siniva
+                
+                if (post:dif_calculada.numchars > 0) then
+                    giros:ComisionSinIva_fld = giros:ComisionSinIva_fld + post:dif_calculada
+                    adt_dump_siniva = adt_dump_siniva + dif_calculada
+                    giros:IvaComision_fld = giros:IvaComision_fld - post:dif_calculada
+                    clearfield post:dif_calculada
+                     cds append DSC:NC_CON giros:ComisionSinIva_fld giros:IvaComision_fld \
+                    post:dif_calculada adt_dump_siniva
+                    encontro = "V"
+                endif
+                
+                if (post:dif_calculada_tasa.numchars > 0) then
+                    giros:TasaSinIva_fld = giros:TasaSinIva_fld + post:dif_calculada_tasa
+                    giros:IvaTasa_fld = giros:IvaTasa_fld - post:dif_calculada_tasa
+                    clearfield post:dif_calculada_tasa
+                    cds append DSC:NC_CON giros:TasaSinIva_fld giros:IvaTasa_fld \
+                    post:dif_calculada_tasa
+                    encontro = "V"
+                endif
+            endif*/
+						//PS 10953 -  Se agrega Flia VAP al tratamiento de Redondeo
+            if (post:jnl_flia_tran == "CME" || post:jnl_flia_tran == "CSV" || post:jnl_flia_tran == "TES" || \
+            	post:jnl_flia_tran == "SVC" || post:jnl_flia_tran == "VAP") then
+                    cds extract DSC:NC_CON post:ImporteIva post:ImporteSinIva post:dif_calculada adt_dump_siniva
+                    if (dif_calculada.numchars > 0) then
+                        post:ImporteSinIva = post:ImporteSinIva + dif_calculada
+                        adt_dump_siniva = adt_dump_siniva + dif_calculada
+                        post:ImporteIva = post:ImporteIva - dif_calculada
+                        clearfield post:dif_calculada
+                        cds append DSC:NC_CON post:ImporteSinIva post:ImporteIva post:dif_calculada adt_dump_siniva
+                    	encontro = "V"
+                    endif
+            endif
+            if (encontro == "V") then
+            	clearfield post:cod_dif_aplicada
+            	cds append DSC:NC_CON post:cod_dif_aplicada
+            	CDS FINDAGAIN DSC:NC_CON LOCK
+            	cds UPDATE DSC:NC_CON LOCK
+            endif
+        //endif
+    loop        
+   CDS COMMITWORK
+
+
+END SUB 
+
+/*******/

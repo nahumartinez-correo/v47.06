@@ -1,0 +1,152 @@
+/****o* Pendientes de agrupación/OFB:post:TOTSlistUP
+* NOMBRE
+*   OFB:post:TOTSlistUP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "posttots.h"
+
+SUB post:TOTSlistUP
+	LOCAL l_dir like common:csr_string
+	LOCAL l_doc like common:csr_string
+	LOCAL FECHA like post:adt_fecha
+
+	if (siaf:pantalla_impreso == "I")
+		post:idx = 1
+		CALL siaf:MISCopen_tot
+	endif
+
+	/* Variables para uso local */
+	common:trap_reset = OFB:lib:KEYSreset_esc
+
+	siaf:pick_titulo = "Listado de Cheques depurados"
+	CALL CSR:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	common:csr_string = "B"
+	if (siaf:adt_sucur_codigo.numchars > 0)
+		CDS SELECT FROM DSC:cliocaUP_tbl BECOMES DSC:cliUP_ctx WHERE \
+        (CliUP_Nis == "" || CliUP_Nis == siaf:adt_sucur_codigo) \
+		sort "ClOxRazo"
+	else
+  		CDS SELECT FROM DSC:cliocaUP_tbl BECOMES DSC:cliUP_ctx \
+		sort "ClOxRazo"
+	endif
+	CDS FINDFIRST DSC:cliUP_ctx NOLOCK
+	if (cdsretval == 0)
+		CDS EXTRACT DSC:cliUP_ctx ALL
+	end if
+
+	call post:MISCencab_UP
+	while (cdsretval == 0)
+		retval = 0
+		call post:CDSTiDoc_load
+		if (retval == -2)
+			l_doc = ""
+		else
+			l_doc = CloTipDoc_desc
+		endif
+		call post:CDSadt_cloprov_load
+		post:CloCalle = substr(post:CloCalle, 0, 36)
+		call csr:trimfield(post:CloCalle)
+		fprint l_dir, "%s %s %s" post:CloCalle post:CloNroDir post:CloPiso
+		IF (siaf:pantalla_impreso != "P") THEN
+			FPRINT common:csr_string, \
+			"Razon Social: %-32.32e  Nis UP: %5.5s                            Sucursal: %s", \
+			post:CloRazon post:NisUP, post:CliUP_Nis
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Dom: %-42.42s Loc: %-29.29s       Provincia: %-29.29e", \
+			l_dir, post:CloLoc post:adt_pcia_desc
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Telefono: %-20.20e                  Codigo Postal: %-8.8e  Vence: %8e  Credito: %1.1e", \
+			post:CloTelefono, post:CloCodPost, post:CliUP_FechaFin, post:CliUP_credito
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Bonificacion %%: %6.6e                          Bonificación Fija: %-15.15e       Inscripto IB: %1.1s", \
+			CliUP_Porcentaje, CliUP_Importe, post:CloInscripto
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Tipo de Documento: %-28.28s Numero: %-11.11e                      Categoria de Iva: %-5e ", \
+			l_doc, post:CloCuit, post:IvaCod
+		else
+			FPRINT common:csr_string, \
+			"Raz Soc:%-30.30e Nis UP:%5.5s        Suc:%s", \
+			post:CloRazon post:NisUP, post:CliUP_Nis
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Domicilio :%-48.48s", l_dir
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Loc.:%-30.30s    Provincia:%-30.30e", post:CloLoc post:adt_pcia_desc
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Tel:%-20.20e               CP:%-8.8e  Venc:%8e  Credito:%1.1e", \
+			post:CloTelefono, post:CloCodPost, post:CliUP_FechaFin, post:CliUP_credito
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Bonificacion %%:%6.6e                  Bon Fija:%-10.10e Insc. IB:%1.1s", \
+			CliUP_Porcentaje, CliUP_Importe, post:CloInscripto
+			CALL MISCwrite_listUP
+
+			FPRINT common:csr_string, \
+			"Tipo Doc:%-29.29s Num:%-11.11e     Cat Iva:%-3e ", \
+			l_doc, post:CloCuit, post:IvaCod
+		endif
+		CALL MISCwrite_listUP
+		FPRINT common:csr_string, \
+		"------------------------------------------------------------------------------------------------------------------------"
+		CALL MISCwrite_listUP
+		CDS FINDNEXT DSC:cliUP_ctx NOLOCK
+		if (cdsretval == 0)
+			CDS EXTRACT DSC:cliUP_ctx ALL
+		end if
+	end while
+
+	IF (siaf:pantalla_impreso != "P") THEN
+		while (siaf:i < 56)
+		    common:csr_string = " "
+			CALL MISCwrite_listUP
+		end while
+		CALL siaf:MISCclose_tot
+	END IF
+
+	IF (siaf:pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+	    ;LMB - PS 9780 - 18.06.2008
+	    ;FPRINT common:csr_string,"/te mp/totales.lis"
+	    FPRINT common:csr_string, "%s%s", common:dirTemporal, "totales.lis"
+    	KEYDEF PUSH
+	    CALL siaf:KEYSdefine_tots_oper
+    	CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+	    KEYDEF POP
+	ELSE
+	    FYIMSG LST:common:fyimsg_list,"(L) SE ESTA IMPRIMIENDO EL LISTADO. "
+    	;LMB - PS 9780 - 18.06.2008
+	    ;CALL siaf:MISCfile_prt_apai("\\te mp\\totales.lis","predeterminada")
+	    FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "totales.lis"
+	    CALL siaf:MISCfile_prt_apai(common:tmpDirTemporal, "predeterminada")
+	    EXEC common:csr_string
+	END IF
+	CDS ENDSELECT DSC:cliUP_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:post:CDSclient_save
+* NOMBRE
+*   OFB:post:CDSclient_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSclient_save
+	LOCAL ErrorCds LIKE lib:err_retval
+
+	CDS SELECT FROM DSC:clioca_tbl BECOMES DSC:clioca_ctx WHERE CloTipDoc == FLD:CloTipDoc && CloCuit == FLD:CloCuit
+	CDS FINDFIRST DSC:clioca_ctx LOCK
+	ErrorCds = CDSRETVAL
+
+	//gpb:PS10686
+	IF (ErrorCds == -803) THEN
+		MSGBOX "Registro lockeado por otro operador",OFB_OK,"Atención"
+		CDS UNLOCK DSC:clioca_ctx
+		CDS ENDSELECT DSC:clioca_ctx
+		RETURN -1
+	END IF
+	
+	CloSucAlt = op:op_branch_id
+	CloFecAct = common:system_date
+	REFRESH CloFecAct
+	REFRESH CloSucAlt
+
+	CliMed_tipo = post:climed_tipo 
+	
+	//preguntar por la categoria de iva (es decir si tiene dig. verificador), si es CUIT o CUIL entonces no mando el 
+	//tipo de documento, caso contrario lo concateno y lo mando.
+	CALL post:CDScli_dig_verif
+	IF (RETVAL == 0) THEN
+		post:CliMed_numero = post:CloCuit
+	ELSE
+		FPRINT post:CliMed_numero,"%2.2s%-9.9s",post:CloTipDoc,post:CloCuit
+	END IF
+
+	post:climed_numero = post:CliMed_numero    
+
+	CDS CLEARBUFFER DSC:clioca_ctx
+
+	//gpb:PS10460
+	IF (CloPersonaJuridica == "S") THEN
+		CLEARFIELD CloApellido 
+		CLEARFIELD CloNombre 
+	ELSE
+		CLEARFIELD CloRazon
+	END IF
+
+	CDS APPEND DSC:clioca_ctx \
+		FLD:CliMed_tipo \
+		FLD:CliMed_numero \
+		FLD:CloTipDoc \
+		FLD:CloCuit \
+		FLD:CloRazon \
+		FLD:CloApellido \
+		FLD:CloNombre \
+		FLD:IvaCod \
+		FLD:CloSucAlt \
+		FLD:CloFecAct \
+		FLD:CloCalle \
+		FLD:CloNroDir \
+		FLD:CloPiso \
+		FLD:CloCodPost \
+		FLD:CloTelefono \
+		FLD:CloProvin \
+		FLD:CloLoc \
+		FLD:CloPartido \
+		FLD:CloCatCodIB \
+		FLD:CloNroInb \
+		FLD:CloInscripto \
+		FLD:esExentoRG3337 \
+		FLD:porcExentoRG3337 \
+		FLD:CatGCod \
+		FLD:CatECod \
+		FLD:CloRegistral \
+		FLD:CloOcupacion \
+		FLD:CloOtraOcupacion \
+		FLD:CloPersonaJuridica \
+		FLD:CloMail
+
+	IF (ErrorCds == -801) THEN
+		CDS INSERT DSC:clioca_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:clioca_ctx LOCK
+	END IF
+	CDS UNLOCK DSC:clioca_ctx
+	CDS ENDSELECT DSC:clioca_ctx
+END SUB
+
+/*******/

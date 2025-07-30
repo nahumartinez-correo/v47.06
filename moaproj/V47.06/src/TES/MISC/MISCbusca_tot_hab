@@ -1,0 +1,136 @@
+/****o* Reportes/OFB:tes:MISCbusca_tot_hab
+* NOMBRE
+*   OFB:tes:MISCbusca_tot_hab
+* DESCRIPCION
+*   Esta rutina arma el reporte que muestra la informacion del FONDO DE HABILITACION que sale en el listado ESTADO DE LA SUCURSAL
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:MISCimpri_inf_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCbusca_tot_hab
+    local moneda_ant    like siaf:moneda
+    local importe_buzon like siaf:importe
+
+    local i              like siaf:i
+    local total_inic     like siaf:aux_suma_monto
+    local total_entradas like siaf:aux_suma_monto
+    local total_salidas  like siaf:aux_suma_monto
+    local loc_err        like lib:err_retval
+    local indice         like siaf:i
+    local loc_imp_pases  like siaf:aux_suma_monto
+    local loc_imp_fisico like siaf:aux_suma_monto
+    local total_final    like siaf:aux_suma_monto
+    local cant_deno 	 like siaf:aux
+
+
+    ;let common:csr_string = "INFORMACION DE FONDO HABILITACION"
+    
+    call op:CDSnombre_fondo
+    fprint common:csr_string "  INFORMACION DE FONDO HABILITACION             OPERADOR: %5s-%s",op:aux_operator_id,op:adt_login_tesoro
+
+
+
+    call MISCwrite_file1(5,fld:common:csr_string)
+    move "  " to common:csr_string
+    call MISCwrite_file1(5,fld:common:csr_string)
+	
+    let total_inic     = 0
+    let total_entradas = 0
+    let total_salidas  = 0
+    let total_final    = 0
+    clearfield subtes_tot_salida
+    clearfield subtes_tot_entrada
+    clearfield subtes_tot_inic
+    clearfield subtes_total
+
+    cds select from dsc:subteso_table becomes dsc:subteso_context where \
+    tes:subtes_suc_id == op:op_branch_id && \
+    tes:subtes_moneda == post:adt_mp_cod
+    
+    cds findfirst dsc:subteso_context nolock
+
+    if (cdsretval == 0)
+        cds extract dsc:subteso_context all
+    else
+        clearfield subtes_fecha
+    end if
+
+    move "  " to common:csr_string
+    call MISCwrite_file1(5,fld:common:csr_string)
+
+    /* saco los totales */
+    if (siaf:fecha_proceso != tes:subtes_fecha) then
+       /* Si no abrio el dia el tesoro copio los valores */
+       let tes:subtes_tot_inic = tes:subtes_total
+       clearfield tes:subtes_tot_entrada
+       clearfield tes:subtes_tot_salida
+    end if
+    
+    let total_inic     = subtes_tot_inic
+    let total_entradas = subtes_tot_entrada
+    let total_salidas  = subtes_tot_salida
+    let total_final    = subtes_total
+	 /* Imprimo el Total del Tesoro */
+	//NI 50183
+	move " --------------------------------------------------------------------------------" to common:csr_string
+	call MISCwrite_file1(5,fld:common:csr_string)
+	let common:csr_string = "             SALDO INICIAL     ENTRADAS         SALIDAS       SALDO FINAL  "
+	call MISCwrite_file1(5,fld:common:csr_string)
+	move " --------------------------------------------------------------------------------" to common:csr_string
+	call MISCwrite_file1(5,fld:common:csr_string)
+	
+    if (post:adt_mp_adm == "G")  /*EFVO*/
+        call tes:CDSpases_pend(common:sucursal_activa, "", tes:tes_moneda, "F")
+    end if
+  
+    loc_imp_pases  = siaf:importe
+    siaf:importe   = siaf:importe + total_final
+    loc_imp_fisico = siaf:importe
+	
+	
+    let siaf:importe_total = siaf:importe_total + total_final
+    ;let common:csr_string = " ------------------------------------------------------------------------"
+    ;call MISCwrite_file1(5,fld:common:csr_string)
+    fprint common:csr_string " TOTAL DISP.%13.13e   %13.13e   %13.13e   %13.13e" total_inic,total_entradas,total_salidas,total_final
+    call MISCwrite_file1(5,fld:common:csr_string)
+    fprint common:csr_string " TOTAL EN PASES                                             %13.13e" loc_imp_pases
+    call MISCwrite_file1(5,fld:common:csr_string)
+    fprint common:csr_string " TOTAL FISICO                                               %13.13e" loc_imp_fisico
+    call MISCwrite_file1(5,fld:common:csr_string)
+
+   /**************************************************************************/
+   /* Se carga en la matriz la información del dinero de la sucursal.        */
+   /* Esta matriz funciona de la siguiente manera: cada fila es la moneda y  */
+   /* cada columna significa:                                                */
+   /* - col 0 : Efectivo Tesoro                                              */
+   /* - col 1 : Cheques  Tesoro                                              */
+   /* - col 2 : Efectivo Cajas                                               */
+   /* - col 3 : Cheques  Cajas                                               */
+   /* - col 4 : Efectivo Buzon                - Andrea -                     */
+   /* - col 5 : Cheques  Buzon												 */
+   /* - col 6 : Fondo Habilitacion Efvo                                      */  
+   /**************************************************************************/
+
+   /* Efectivo */
+   if (post:adt_mp_adm == "G") && (post:adt_mp_monet == "S")
+      matriz_dinero[post:adt_mon_cod][6] = total_final + matriz_dinero[post:adt_mon_cod][6] 
+   endif
+   
+   /* Fin de carga de la matriz */
+
+   cds endselect dsc:subteso_context
+
+
+End Sub
+
+/*******/

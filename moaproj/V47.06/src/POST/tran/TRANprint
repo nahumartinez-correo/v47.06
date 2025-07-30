@@ -1,0 +1,518 @@
+/****o* Impresiones/OFB:post:TRANprint
+* NOMBRE
+*   OFB:post:TRANprint
+* DESCRIPCION
+*   IMPRESION DE LABELS DE TRANSACCIONES POSTALES EN LA       
+*   IMPRESORA ZEBRA A300. TIENE INSERTADO CODIGOS DE CONTROL
+*   DE LA IMPRESORA. CUIDADO AL MODIFICARLO (JPM)               
+*   IMPRIME TAMBIEN EL TICKET 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANgral; LST:post:TRAN_GestionesVs; LST:post:TRANalmac_internac; LST:post:TRANalmac_nac;
+*   LST:post:TRANcontra_reemb; LST:post:TRANentrega_pieza; LST:post:TRANpresAd_EncEnt; LST:post:TRANpresAd_PieEnt;   
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "posttran.h"
+
+SUB post:TRANprint
+    LOCAL x LIKE post:cantidad
+    LOCAL importe_uni LIKE siaf:importe
+    LOCAL label_temp LIKE post:label_string
+    LOCAL peso_g LIKE post:peso_en_grs
+    LOCAL peso_k LIKE post:peso_en_kgs
+    LOCAL fecha_jul1 LIKE common:time_of_day
+    LOCAL fecha_jul2 LIKE common:time_of_day
+    LOCAL cant_label LIKE post:cantidad
+    local cont_label like post:cantidad
+    LOCAL cant_label_aux LIKE post:cantidad
+    LOCAL peso LIKE post:adt_tarif_hasta
+    LOCAL ley_modalidadCC LIKE adt_serv_nemonico
+    local tt_reimpre LIKE corte_op
+    local mensaje1 like common:csr_string
+    local mensaje2 like common:csr_string
+    local l_po like common:csr_string
+
+    //gpb 23-11-2016: Orientacion default - ajuste por Toshiba!!!
+    l_po = "^PON"
+
+     //11104 = Carta documento telegrafica
+IF (usa_franqueadora != "S" && siaf:codigo_siaf != 11104) && \
+    (!OperacionCob) && (!OperacionAut) then // En cobracion u Operacion automatica no imprimo
+    cont_label = 1
+
+      /****************************************************************/
+      /* Establezco la cantidad de labels a imprimir según si   */
+      /* es una impresión común o una reimpresión de labels.*/
+      /*****************************************************************/
+      IF (!TESTFLAG (lib:state_flags,scan_mode)) THEN
+            /* MLD Si no estoy reimprimiendo inicializo los contadores
+            de impresión de bienes de cambio. Tienen la cantidad que se
+            vende y se van decrementando a medida que se imprime */
+            cant_label = post:cant_aux
+            if (post:prod_serv.numchars > 0) then
+                post:contador_bc1 = cant_label - post:cant_caja_prev
+            end if
+            if (post:codesp_prod.numchars > 0) then
+                post:contador_bc2 = cant_label - post:cant_cinta_prev
+            end if
+      ELSE
+            /* Para el caso de reimpresion, sale un solo label y se imprime
+            o no según el contador que se journalizó */
+            ;Se carga la variable con la cantidad de labels que se desean reimprimir AUT - 2223
+            cant_label = post:cantidad
+            label_produc = post:tipo_produc
+      END IF
+
+      /****************************************************************/
+      /* Armo la fecha Juliana la cual voy a incluir cuando     */
+      /* imprima el Código de Barras.                       */
+      /****************************************************************/
+      CALL csr:day_of_year(common:system_date)
+      fecha_jul1 = RETVAL
+      CALL csr:year_of(common:system_date)
+      fecha_jul2 = RETVAL
+      fecha_jul2 = SUBSTR(fecha_jul2,3,3)
+      FPRINT fecha_jul1 "%s%s",fecha_jul1,fecha_jul2
+
+      /****************************************************************/
+      /* Determino el Valor Facial del Label y lo guardo en la  */
+      /* Variable Local importe_uni.                            */
+      /****************************************************************/
+      if (cli_tipo == 1) then
+            // FGB (SAP) 5.10.2000: Ahora existe algunos casos en que los clientes
+            // de Ctas/Ctes imprimen labels . En ese caso, el importe del label se
+            // guardo en el campo tarifa_label_cc (ver MISCactualizo_tarifa)
+            if (sap_prod_franq == "S") then
+                importe_uni = post:tarifa_label_cc
+            else
+                clearfield importe_uni
+            end if
+      elseif (enCombo == "S") then
+            importe_uni = post:tarifa_label_cc
+      else
+      ;el importe total de las etiqueta se divide por el número de todas las etiquetas impresas originalmente - AUT - 2223
+            importe_uni = (post:tarifa + post:valor_ar + post:valor_csar - post:descuento + post:imp_bloques) / cant_label
+      endif
+
+	IF (TESTFLAG (lib:state_flags,scan_mode)) THEN
+      		cant_label = post:cant_reimpre
+      ENDIF
+      
+      /* Si tiene bienes de cambio los tengo que imprimir por separado porque son distintos
+      uno de otro */
+      if (post:prod_serv.numchars > 0 || post:codesp_serv.numchars > 0 || \
+          post:codesp_prod.numchars > 0) then
+          cant_label_aux = 1
+      else
+        /* Si no tiene bienes de cambio, imprimo de la misma forma que siempre
+        mando una sale vez y muchas copias */
+          cant_label_aux = cant_label
+          cont_label = cant_label
+      end if
+
+ 
+      do
+        if (cont_label > cant_label) then
+            break
+        end if
+
+        /****************************************************************/
+        /* Armo el Cuerpo Principal del Label.                  */
+        /****************************************************************/
+        
+        //gpb 10-03-2016: Se cambia ^JZN por ^JZY para que imprima despues de que haya ocurrido un error
+        //FPRINT post:label_string "^XA^JZN^JUS^XZ"
+        FPRINT post:label_string "^XA%s^JZY^JUS^XZ",l_po
+        
+        IF (post:label_produc != 11113) THEN
+            IF (post:cliente_interno != "S") THEN
+                /*********************************************************************/
+                /* No es una Carta Documento Laboral ni una Pieza de uso    */
+                /* interno. Entonces debe figurar el Valor Facial del Label     */
+                /*********************************************************************/
+                //gpb 10-03-2016: Se cambia ^JZN por ^JZY para que imprima despues de que haya ocurrido un error
+                //FPRINT post:label_string "^XA^JZN^MD9^FO95,18^PQ%d,1,1,Y^ADN,40,16^FD$ %-8.8e^FS",cant_label_aux,importe_uni
+                //Se modifica el tipo de letra y el tamaño
+                FPRINT post:label_string "^XA%s^JZY^MD9^FO95,18^PQ%d,1,1,Y^ABN,30,12^FD$%-10.10e^FS",l_po,cant_label_aux,importe_uni
+
+            ELSE
+                /***************************************************************/
+                /* Es una Pieza de uso interno. Entonces debe figurar   */
+                /* la leyenda Uso Interno.                          */
+                /***************************************************************/
+                //gpb 10-03-2016: Se cambia ^JZN por ^JZY para que imprima despues de que haya ocurrido un error
+                //FPRINT post:label_string "^XA^MD9^FO95,18^PQ%d,1,1,Y^ADN,40,16^FDUso Int ^FS",cant_label_aux
+                FPRINT post:label_string "^XA%s^JZY^MD9^FO95,18^PQ%d,1,1,Y^ADN,40,16^FDUso Int ^FS",l_po,cant_label_aux
+            END IF
+        ELSE
+        /*******************************************************************/
+        /* Es Carta Documento Laboral entonces no debe figurar  */
+        /* el Valor Facial del Label y si la leyenda Ley 23789      */
+        /*******************************************************************/
+        //gpb 10-03-2016: Se cambia ^JZN por ^JZY para que imprima despues de que haya ocurrido un error
+        //FPRINT post:label_string "^XA^MD9^FO95,18^PQ%d,1,1,Y^ADN,40,16^FDLey ^FS",cant_label_aux
+        FPRINT post:label_string "^XA%s^JZY^MD9^FO95,18^PQ%d,1,1,Y^ADN,40,16^FDLey ^FS",l_po,cant_label_aux
+        
+        FPRINT post:label_string "%s^FO95,65^ADN,40,16^FD23789^FS",\
+            post:label_string
+        END IF
+
+        FPRINT post:label_string "%s^FO300,25^ADN,16,8^FD%-10.10e^FS",\
+        	post:label_string,\
+        	common:system_date
+        
+        
+        /*******************************************************************/
+        /* Si tiene Bienes de Cambio Asociados deben salir en el laberl*/
+        /* Se imprime como leyenda el campo de abrev                   */
+        /********************************************************************/
+
+        /* Las especies asociadas al servicio siempre se imprimen */
+        IF (post:codesp_serv.numchars > 0)  THEN
+            FPRINT post:label_string "%s^FO265,70^ADN,16,8^FD%-4.4s$%8.8e^FS",\
+            post:label_string,\
+            post:abrev_bc1, \
+            post:importe_bc1
+
+        END IF
+
+
+        /* Imprimo el producto, si no se agotaron los label vendidos */
+        IF (post:prod_serv.numchars > 0) && (post:contador_bc1 > 0) THEN
+            FPRINT post:label_string "%s^FO265,95^ADN,16,8^FD%-4.4s$%8.8e^FS",\
+            post:label_string,\
+            post:abrev_bc2,\
+            post:importe_bc2
+        END IF
+
+        // SC 50185: Reimpresion de Labels: Se pide imprimir una "R" y el codigo de T&T (compuesto por
+        // los dos primeros caracteres y los tres ultimos numeros) cuando se trata de una reimpresion.
+        IF (es_reimpre == "S")
+            If (post:track_trace.numchars == 0)
+                FPRINT post:label_string "%s^FO0,240^ADN,28,16^FDR^FS",\
+                post:label_string
+            else
+                FPRINT post:label_string "%s^FO0,240^ADN,28,16^FDR^FS",\
+                post:label_string
+                FPRINT tt_reimpre,"%2.2s%3.3s",SUBSTR(track_trace,0,2),SUBSTR(track_trace,8,3)
+                FPRINT post:label_string "%s^FO353,120^ADN,16,8^FD%-13.13s^FS",\
+                post:label_string,tt_reimpre
+            end if
+        END IF
+        CLEARFIELD es_reimpre
+                
+       /*********************************************************************/
+        /* El nemónico del Servicio va debajo del Importe.             */
+        /* Si es una Pieza de Uso Interno va debajo de la leyenda.     */
+        /* Si el despacho de la pieza está en BH2 entonces se imprime  */
+        /* la leyenda de "BLOCK HORARIO 2" debajo del nemónico - MFM - */
+        /**********************************************************************/
+
+        /*IF (post:cliente_interno != "S") THEN */
+            /*Cargo valores por default, en caso de que algun campo este vacio*/
+            IF (post:adt_tarif_imp_nemo.NUMCHARS == 0) THEN
+                post:adt_tarif_imp_nemo = "S"
+            END IF
+            IF (post:adt_tarif_imp_dest.NUMCHARS == 0) THEN
+                post:adt_tarif_imp_dest = "N"
+            END IF
+            IF (post:adt_tarif_imp_peso.NUMCHARS == 0) THEN
+                post:adt_tarif_imp_peso = "S"
+            END IF
+
+            IF (adt_tarif_imp_nemo == "S") THEN
+                //FPRINT post:label_string "%s^FO95,55^ADN,28,16^FD%-3.3s^FS"
+				//Se modifica el tipo de letra y el tamaño
+				  FPRINT post:label_string "%s^FO95,55^ABN,30,12^FD%-3.3s^FS",\
+                post:label_string,\
+                post:adt_serv_nemonico
+            ELSE
+                FPRINT post:label_string "%s^FO95,65^ADN,16,8^FD%-12.12s^FS",\
+                post:label_string,\
+                post:adt_serv_desc_corta
+            END IF
+
+            //Leyenda para CLiente Medio con Modadlidad de Facturacion Diferida
+            IF (cli_tipo == CLIMED )
+                IF (ModalidadCC)
+                    ley_modalidadCC = "CMC"
+                ELSE
+                    ley_modalidadCC = "CM"
+                END IF
+                
+								//gpb:NI50479
+								IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+                	ley_modalidadCC = "PED"
+                END IF
+                
+                FPRINT post:label_string "%s^FO265,45^ADN,18,8^FD%-3.3s^FS",\
+                    post:label_string,ley_modalidadCC
+            ELSE
+                //para reimpresion
+                SELECT (post:modalidad_CM)
+                    CASE "C"
+                        ley_modalidadCC = "CMC"
+                        BREAK
+                    CASE "D"
+                    CASE "S"
+                        ley_modalidadCC = "CM"
+                        break
+                    CASE ELSE
+                        ley_modalidadCC = ""
+                        BREAK
+                END SELECT
+                
+                
+								//gpb:NI50479
+								IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+                	ley_modalidadCC = "PED"
+                END IF
+                
+                FPRINT post:label_string "%s^FO265,45^ADN,18,8^FD%-3.3s^FS",\
+                    post:label_string,ley_modalidadCC
+            END IF
+
+            
+            //END IF
+
+            IF (adt_tarif_imp_dest == "S") THEN
+                /*Obtengo las descipciones del destibo*/
+                CDS SELECT FROM DSC:adt_dest_table BECOMES DSC:adt_dest_context \
+                WHERE adt_dest_dest == FLD:destino
+                CDS FINDFIRST DSC:adt_dest_context NOLOCK
+                IF (CDSRETVAL == 0) THEN
+                    CDS EXTRACT DSC:adt_dest_context \
+                    adt_dest_desc_corta1 \
+                    adt_dest_desc_corta2
+                END IF
+                CDS ENDSELECT DSC:adt_dest_context
+
+                FPRINT post:label_string "%s^FO95,90^ADN,16,8^FD%-12.12s^FS",\
+                post:label_string,adt_dest_desc_corta1
+                FPRINT post:label_string "%s^FO95,115^ADN,16,8^FD%-12.12s^FS",\
+                post:label_string,adt_dest_desc_corta2
+            END IF
+
+            IF (jnl_servicio_en_bh2 == "S") THEN
+                /* cgw:
+                FPRINT post:label_string "%s^FO95,145^ADN,16,8^FDBLOCK HORARIO 2^FS",\
+                post:label_string
+                */
+                FPRINT post:label_string "%s^FO95,145^ADN,16,8^FDBLK.HORARIO 2^FS",\
+                post:label_string
+        END IF
+
+        /* ELSE
+
+            FPRINT post:label_string "%s^FO95,112^ADN,32,16^FD%-3.3s^FS",\
+            post:label_string,\
+            post:adt_serv_nemonico
+            IF (jnl_servicio_en_bh2 == "S") THEN
+                //FPRINT post:label_string "%s^FO95,170^ADN,16,8^FDBLOCK HORARIO 2^FS",\
+                //post:label_string
+
+                FPRINT post:label_string "%s^FO95,145^ADN,16,8^FDBLOCK HORARIO 2^FS",\
+                post:label_string
+
+            END IF
+        END IF */
+
+        /*******************************************************************/
+        /* El Importe del Valor Declarado solo debe estar impreso */
+        /* si es mayor a Cero (es decir cuando tiene V.D.)            */
+        /********************************************************************/
+        IF (post:tiene_vd == "S") THEN
+            FPRINT post:label_string "%s^FO265,145^ADN,16,8^FDVD$%10.10e^FS",\
+            post:label_string,\
+            post:valor_dec
+        END IF
+
+        IF (post:peso_en_grs > 0 || post:peso_en_kgs > 0) THEN
+        /**************************************************************/
+        /* Hago esta pregunta para que no se imprima 0 grs. */
+        /**************************************************************/
+            IF (post:adt_Modo == "NR") THEN
+                /***********************************************/
+                /* Hay diferencia en la leyenda según si */
+                /* estamos en sesión o en modo rápido  */
+                /***********************************************/
+                IF (post:adt_serv_umstd == "GMS") THEN
+                    IF (adt_tarif_imp_peso == "S") THEN
+                        peso_g = post:peso_en_grs
+                        FPRINT post:label_string "%s^FO95,170^ADN,16,8^FD%5.5e grs^FS",\
+                        post:label_string,\
+                        peso_g
+                    END IF
+                ELSE
+                    IF (adt_tarif_imp_peso == "S") THEN
+                        peso_k = peso_en_kgs
+                        FPRINT post:label_string "%s^FO95,170^ADN,16,8^FD%9.9e kgs^FS",\
+                        post:label_string,\
+                        peso_k
+                    END IF
+                END IF
+            ELSE
+                /**********************************************************************/
+                /* Estamos haciendo la Transacción sin Sesión, entonces   */
+                /* debe figurar la leyenda Hasta antes del Peso del envío       */
+                /***********************************************************************/
+                IF (post:adt_serv_umstd == "GMS") THEN
+                    peso_g = post:peso_en_grs
+                    FPRINT label_temp "%s %s grs",\
+                    "Hasta ",\
+                    peso_g
+
+                    IF (adt_tarif_imp_peso == "S") THEN
+                        FPRINT post:label_string "%s^FO70,170^ADN,16,8^FD%15.15s^FS",\
+                        post:label_string,\
+                        label_temp
+                    END IF
+                ELSE
+                    peso_k = peso_en_kgs
+                    IF (adt_tarif_imp_peso == "S") THEN
+                        FPRINT post:label_string "%s^FO95,170^ADN,16,8^FD%9.9e kgs^FS",\
+                        post:label_string,\
+                        peso_k
+                    END IF
+                END IF
+            END IF
+        END IF
+
+        /*********************************************************************/
+        /* El Importe del Contra Reembolso solo debe estar impreso  */
+        /* si es mayor a Cero (es decir cuando tiene Contra Reemb)  */
+        /*********************************************************************/
+        IF (post:tiene_cre == "S") THEN
+            FPRINT post:label_string "%s^FO265,170^ADN,16,8^FDCR$%10.10e^FS",\
+            post:label_string,\
+            post:valor_cre
+        END IF
+
+    FPRINT label_temp "%s %s",\
+    common:sucursal_activa,\
+    common:br_bank_name
+    FPRINT post:label_string "%s\
+^FO95,195 ^ADN,16,8 ^FD%-27.27s ^FS",\
+    post:label_string,\
+    label_temp
+
+        /****************************************************************/
+        /* Si el Envío incluye el Opcional Aviso de Recibo, hay */
+        /* que imprimir en el Label el texto AR a la derecha del    */
+        /* Código de Barras.                                    */
+        /****************************************************************/
+        IF (post:tiene_ar == "S") THEN
+            FPRINT post:label_string "%s^FO406,232^ADN,24,8^FDAR^FS",\
+                post:label_string
+        END IF
+        
+        //Opcional Confronte y Sellado + AR
+        IF (post:tiene_csar == "S") THEN
+            FPRINT post:label_string "%s^FO265,120^ADN,16,8^FDCySyAR^FS",\
+            post:label_string
+        END IF      
+        
+        
+        /****************************************************************/
+        /* Si el Cliente es un Cuenta Correntista tengo que         */
+        /* imprimir en el Label un asterisco a la derecha del       */
+        /* Código de Barras.                                    */
+        /****************************************************************/
+        IF (post:cli_tipo == 1) THEN
+            FPRINT post:label_string "%s^FO403,254^ADN,40,32^FD*^FS",\
+                post:label_string
+        END IF
+        /*****************************************************/
+        /* Imprimo el Código de Barras conteniendo la*/
+        /* siguiente información :                  */
+        /* - Centro Emisi¢n de Comprobantes.        */
+        /* - Operador.                              */
+        /* - Fecha Juliana.                         */
+        /* - Hora.                                  */
+        /* - Firma Electrónica.                     */
+        /*****************************************************/
+
+     call post:CDSleeMsgLabel(mensaje1,mensaje2)
+     
+
+    ;SC50233 Se reemplaza el código de barra (dejando el arabigo) por dos líneas de 30 caracteres
+     FPRINT post:label_string "%s\
+^FO20,226^ADN,16,8^FD%30s^FS",\
+    post:label_string,\
+    mensaje1
+
+     FPRINT post:label_string "%s\
+^FO20,251^ADN,16,8^FD%30s^FS",\
+    post:label_string,\
+    mensaje2
+
+;     FPRINT post:label_string "%s\
+;^FO20,226^BY2,2^B2,50,^FD%4s%5s%6s%6s%4s^FS^XZ",\
+
+    
+     FPRINT post:label_string "%s\
+^FO50,280^ADN,16,8^FD%4s%5s%6s%6s%4s^FS^XZ",\
+    post:label_string,\
+    common:br_CEC,\
+    op:op_operator_id,\
+    fecha_jul1,\
+    common:time_of_day,\
+    "03012"
+    
+        /**********************************************************************/
+        /* Imprimo tantos Labels como Productos se envían.      */
+        /* Si el importe es 0 y no es una Pieza de Uso Interno no   */
+        /* imprimo el Label.                                    */
+        /* Si es una Pieza de Uso Interno imprimo el label a pesar  */
+        /* de que el importe es cero.                           */
+        /* Si es una Carta Documento Laboral imprimo el label a     */
+        /* pesar de tener un importe igual a cero.              */
+        /**********************************************************************/
+
+        IF (importe_uni != 0 || post:tipo_produc == 11113 || \
+            post:cliente_interno == "S") THEN
+                
+                
+                
+              PRINTDOC PDOClabel,roblp,imp_label
+        END IF
+        cont_label = cont_label + 1
+        if (contador_bc1 > 0) then
+            contador_bc1 = contador_bc1 - 1
+        end if
+        if (contador_bc2 > 0) then
+            contador_bc2 = contador_bc2 - 1
+        end if
+
+    loop
+END IF
+
+// FGB 25.07.2003: aseguro que no se imprima el ticket en la reimpresion de label
+if (!testflag(tlr:tran_flags,correction) && !testflag(lib:state_flags,scan_mode)) then
+    /*******************************************************************/
+        /* Agregado por María Laura Duek para imprimir el Ticket */
+        /* si la Transacción se está  haciendo en modo Rápido    */
+        /*******************************************************************/
+        // PJM 27-11-98 Se retoco para que salga ticket para todo encomienda y postal
+        IF (siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CST")
+            // JPM 07-06-2000 El Ticket Postal no debe emitirse cuando el importe es cero
+            IF (post:estado_presu == 1 && post:importe_acum != 0) THEN
+                // PJM 18-08-98  Tira Auditora
+                post:tira_auditora = "N"
+                PRINTDOC OFB:post:PRT_Ticket_Postal,docprt,"Imprimiendo Ticket"
+            end if
+        END IF
+endif
+
+CLEARFIELD tlr:INDdocs_list
+
+END SUB
+
+/*******/

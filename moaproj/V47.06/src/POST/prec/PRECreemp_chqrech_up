@@ -1,0 +1,164 @@
+/****o* Tratamiento de Cheques/OFB:post:PRECreemp_chqrech_up
+* NOMBRE
+*   OFB:post:PRECreemp_chqrech_up
+* DESCRIPCION
+*   Pre-Collect de la transacción Remplazo cheques Rechazado/observados
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   TRAN99200
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1151
+* SOURCE
+*/
+#include "postprec.h"
+
+SUB post:PRECreemp_chqrech_up    
+LOCAL l_CloNombre like CloNombre
+LOCAL l_CloApellido like CloApellido
+LOCAL l_CloPersonaJuridica like CloPersonaJuridica
+	CALL csr:proc_list(F_PROTECT,LST:LISTchk_a_reemp)  
+
+	// FGB 09.09.2003
+	call post:CDSobt_cli_tipo
+	if (retval > 0) then
+		let post:cli_tipo = retval
+	else
+		errmsg lst:common:errmsg_list "Tipo de Cliente Desconocido"
+		return (-2)
+	endif
+
+//  	CDS SELECT FROM DSC:TABPresuActi BECOMES DSC:CONPresuActi WHERE  \
+//    	post:op_operator_id == fld:op:op_operator_id
+//    CDS FINDFIRST DSC:CONPresuActi NOLOCK
+
+	SELECT (cli_tipo)
+		CASE CTACTE
+			tablaCli = dsc:ctacte_tbl
+			contextoCli = dsc:ctacte_ctx
+			break
+		CASE OCASIONAL
+			tablaCli = dsc:clioca_tbl
+			contextoCli = dsc:clioca_ctx
+			break
+		CASE CLIUP
+			tablaCli = dsc:cliocaUP_tbl
+			contextoCli = dsc:cliUP_ctx
+			break
+		CASE CLIMED
+			// FGB 09.09.2003 
+			call post:CDSpresu_climed_load 
+			cds select from dsc:TABCliMed becomes dsc:CONCliMed \
+				where 	post:CliMed_tipo == climed_tipo && CliMed_numero == climed_numero
+			cds findfirst dsc:CONCliMed nolock
+			if (cdsretval == 0) then
+				cds extract dsc:CONCliMed post:CloRazon into post:CliUP
+			else
+				errmsg lst:common:errmsg_list "No se pudo obtener Cliente"
+				return (-2)
+			end if
+			cds endselect dsc:CONCliMed
+			post:Recep_CliTipo = CLIMED
+			break
+		CASE else
+			clearfield	tablaCli
+			clearfield  contextoCli
+			errmsg lst:common:errmsg_list "No se pudo obtener Cliente"
+			return (-2)
+	end select
+
+
+	if (cli_tipo != CLIMED) then
+		//cds select from dsc:cliocaUP_tbl becomes dsc:cliUP_ctx where \
+		// post:NisUP == post:NisUP && \
+
+		cds select from fld:tablaCli becomes fld:contextoCli where \
+		post:CloTipDoc == post:CloTipDoc && \
+		post:CloCuit == post:CloCuit
+		
+		cds findfirst fld:contextoCli nolock
+		if (cdsretval == 0) then
+		    CLEARFIELD l_CloNombre
+		    CLEARFIELD l_CloApellido
+		    CLEARFIELD l_CloPersonaJuridica
+			cds extract fld:contextoCli post:CloRazon into post:CliUP \
+			CloNombre into l_CloNombre \
+			CloApellido into l_CloApellido \
+			CloPersonaJuridica into l_CloPersonaJuridica
+			
+			if (l_CloPersonaJuridica == "N" )
+                fprint post:CliUP "%s %s", CloNombre, CloApellido
+            end if
+
+			
+		else
+			errmsg lst:common:errmsg_list "No se pudo obtener Cliente"
+			return (-2)
+		end if
+		cds endselect fld:contextoCli
+		clearfield post:Recep_CliTipo
+/*	else
+		// FGB 09.09.2003 
+		call post:CDSpresu_climed_load 
+
+		cds select from dsc:TABCliMed becomes dsc:CONCliMed where \
+		post:CliMed_tipo == climed_tipo && CliMed_numero == climed_numero
+		
+		cds findfirst dsc:CONCliMed nolock
+		if (cdsretval == 0) then
+			cds extract dsc:CONCliMed post:CloRazon into post:CliUP
+		else
+			errmsg lst:common:errmsg_list "No se pudo obtener Cliente"
+			return (-2)
+		end if
+		cds endselect dsc:CONCliMed
+		post:Recep_CliTipo = CLIMED
+*/
+	end if
+		
+	if (post:estado_presu == 3) then
+		protfield post:CliUP
+		protfield post:NisUP
+
+		call post:MISCRest_Reemp
+	end if
+		
+    if (post:estado_presu == 2) then
+	    CALL CSR:proc_list(F_PROTECT,LST:LISTreemp_cheque_up)
+	 	CALL CSR:proc_list(F_PROTECT,LST:LISTccte_cobza_flds3)    
+	    ;unprotfield tipo_mpago
+	    unprotfield siaf:moneda
+	    protfield siaf:importe2
+	    protfield siaf:importe_chq
+	    ;CLEARFIELD NisUP
+	    ;REFRESH NisUP
+	    ;CLEARFIELD CliUP
+	    ;REFRESH CliUP    
+	    ;PROTFIELD CliUP
+	    protfield PicDescrip2
+	
+		drv:button = 2
+		call drv:but_disable
+		drv:button = 3
+		call drv:but_disable
+		drv:button = 4
+		call drv:but_disable
+		/* MGI 10-08-11 AUT-1151 al ingresar a la transacción Remplazo cheques 
+		Rechazado/observados, ademas de inhabilitarse los botones de agregar, borrar y 
+		modificar, se inhabilita el botón que despliega el picklist de medios de pago*/
+		drv:button = 5
+		call drv:but_disable	
+	end if
+	
+	drv:button = 10
+    CALL drv:but_disable //deshabilito boton banco
+
+    disablecontrol drv:PBcb6
+  
+END SUB
+
+/*******/

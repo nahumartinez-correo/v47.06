@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:post:PBctacte_comp_add
+* NOMBRE
+*   OFB:post:PBctacte_comp_add
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBctacte_comp_add
+
+/////////////////////////////////////////////////////////////////////
+// Agrego el comprobante al picklist luego de validarlo contra SAP //
+/////////////////////////////////////////////////////////////////////
+
+local varl_idx		like siaf:idx
+local varl_picstr	like common:csr_string
+local varl_tipo		like post:tipo_comprobante
+local varl_req_val	like common:csr_string
+
+LET drv:button = drv:last_button
+CALL drv:but_up_enable
+CALL drv:but_redraw
+
+// me aseguro que esten todos los datos
+call MISCcc_comp_inflds
+if (retval < 0) then
+    return (-2)
+end if
+
+// tengo que ver que no haya sido agregado ya al picklist
+let varl_idx = PL_GETITEM
+call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+while (retval == 0) 
+    if (substr(varl_picstr,0,3) == tipo_comprobante) then
+        if (substr(varl_picstr,4,1) == letra_comprobante) then
+            if (substr(varl_picstr,6,4) == cec_comprobante) then
+                if (substr(varl_picstr,11,8) == num_comprobante) then
+                    errmsg common:errmsg_list,"Comprobante ya ingresado"
+                    nextfield tipo_comprobante
+                    return (-2)
+                end if
+            end if
+        end if
+    end if
+    let varl_idx = varl_idx + 1
+    // veo que no se agreguen mas comprobantes que los que entran en los arrays
+    if ((varl_idx - PL_GETITEM) == SAP_CANT_MAX_COMP) then
+        errmsg common:errmsg_list,"Cantidad maxima de comprobantes alcanzada"
+        return (-2)
+    end if
+    call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+end while
+
+// controlo que agregando el comprobante no me quede la sumatoria en negativo
+// (caso NCR que resta al total de comprobantes)
+if (siaf:signo == "-") then
+    if (imp_comprobante > siaf:importe2) then
+       errmsg common:errmsg_list,"TOTAL DE COMPROBANTES NO PUEDE SER NEGATIVO"
+       return (-2)
+    end if
+end if
+
+// una vez que tengo los datos, valido contra SAP 
+// (si el comprobante lo requiere)
+pickverify tipo_comprobante,PIC:post:TipoComprobante
+varl_req_val = substr(common:csr_string,34,1)
+
+            //ENVIAR UN VIAJE DE CONSULTA POR CADA COMPROBANTE QUE LO REQUIERA!!
+           	
+      		//solo envio la consulta si el tipo de comprobante lo requiere
+      		if (varl_req_val == "S") then 
+      		/***********ENVIA EL VIAJE DE CONSULTA DE COMPROBANTE**********************/
+      		/*Input Solicitante:post:CliCod, Nro de Comprobante(cec_comprobante,*******/
+      		/*letra_comprobante,num_comprobante),Tipo de Comprobante: tipo_comprobante*/ 
+      		/*Output Codigo de error: sap_error_cod, Tipo de Error: sap_error_type*****/
+      		/*Output Texto de Error: sap_error_desc************************************/
+      		  
+    		  //enviar el mensaje.
+      			call post:OFBvalida_comp_cc
+	  	endif
+    	 
+    	 // una vez verificados todos los posibles problemas (por lo menos hasta ahora)
+	 // agrego el comprobante a la lista...
+
+clearfield varl_picstr
+fprint varl_picstr "%3.3s %1.1s %4.4d-%8.8d %16.16e %1.1s" tipo_comprobante, \
+                                                     letra_comprobante, \
+                                                     cec_comprobante, \
+                                                     num_comprobante, \
+                                                     imp_comprobante, \
+                                                     varl_req_val
+call csr:f_saaddpl "comprobantes" varl_picstr
+if (retval == 0) then
+    // sumo al total de comprobantes
+    let varl_tipo = substr(varl_picstr,0,3)
+    pickverify FLD:varl_tipo,PIC:post:TipoComprobante
+    let siaf:signo = substr(common:csr_string,32,1)
+    if (siaf:signo == "+") then
+        let siaf:importe2 = siaf:importe2 + imp_comprobante
+    else 
+        let siaf:importe2 = siaf:importe2 - imp_comprobante
+    end if
+    refresh FLD:siaf:importe2
+    // limpio los campos de entrada para un nuevo comprobante
+    call csr:proc_list F_CLEAR LST:post:LISTccte_cobza_flds2
+    call csr:proc_list F_REFRESH LST:post:LISTccte_cobza_flds2
+    // si todo salio bien, ordeno el picklist
+    call csr:PickOp 4 "comprobantes" "0,20,ascii,asc" 
+    // si ya se agrego al menos un comprobante, dejo que pase de pantalla al
+    // presionar [ENTER]
+    ;setvaldone tipo_comprobante
+    ;setvaldone letra_comprobante
+    ;setvaldone cec_comprobante
+    ;setvaldone num_comprobante
+    ;setvaldone imp_comprobante
+else
+    // todo mal! Aviso pa' que sepa
+    msgbox "Imposible Agregar Comprobante", OFB_OK, "Error de Aplicacion"
+end if
+nextfield post:tipo_comprobante
+END SUB
+
+/*******/

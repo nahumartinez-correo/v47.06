@@ -1,0 +1,203 @@
+/****o* Oficios Judiciales/OFB:siaf:MISClst_RepOJU
+* NOMBRE
+*   OFB:siaf:MISClst_RepOJU
+* DESCRIPCION
+*   Cuerpo del reporte de Oficios Judiciales
+* ENTRADAS
+*   link_num = canal de comunicacion de acceso a archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:MISCrep_oju
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1692
+*		SC50368
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISClst_RepOJU(link_num) 
+	LOCAL l_fecha_ant LIKE post:fecha
+	LOCAL l_registro LIKE common:csr_string
+	LOCAL l_registro_ant LIKE common:csr_string
+	LOCAL l_cant LIKE adt_oju_cant
+	LOCAL l_cant_tot LIKE adt_oju_cant
+	LOCAL l_importe LIKE siaf:importe2
+	LOCAL l_importe_tot LIKE siaf:importe2
+	LOCAL l_sub_total LIKE common:csr_string
+	LOCAL l_total_gral LIKE common:csr_string
+	LOCAL l_importe_anul LIKE common:csr_string
+	LOCAL split LIKE common:csr_string
+	LOCAL l_presnro LIKE post:PresNro
+	LOCAL l_sequence_corr LIKE tlr:jnl_sequence_corr
+	LOCAL l_sequence LIKE tlr:jnl_sequence
+	LOCAL l_linea LIKE common:csr_string
+	LOCAL item LIKE siaf:idx
+	LOCAL l_nro_ctrol_act LIKE siaf:adt_oju_nro_ctrol
+	
+	LET l_importe = 0
+	LET l_importe_tot = 0
+	LET l_cant = 0
+	LET l_cant_tot = 0
+	LET l_fecha_ant = ""
+	LET split = "----------------------------------------------------------------------------------------------------"
+	LET l_importe_anul = "*******"
+
+	CDS FINDFIRST DSC:OfiJudi_ctx NOLOCK
+	
+	LET lib:err_retval = CDSRETVAL
+	
+	IF (lib:err_retval == -801) THEN 
+	  CDS ENDSELECT DSC:OfiJudi_ctx
+	    //si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "No se efectuaron cobros de Oficios Judiciales para el período solicitado",0x00,"Aviso"
+		END IF   
+		RETURN (-2)
+	END IF 
+	
+  CALL csr:f_sadroppl "OfiJudi"
+  CALL csr:f_sanewpl "OfiJudi" pic:PICofijudi
+
+	WHILE (lib:err_retval == 0)
+
+		CDS EXTRACT DSC:OfiJudi_ctx tlr:jnl_date INTO siaf:adt_oju_fecha \
+				siaf:adt_oju_nro_ctrol \
+				post:PresNro INTO l_presnro \
+			  siaf:adt_oju_autos \
+			  siaf:adt_oju_importe \
+			  tlr:jnl_operator INTO siaf:adt_oju_operator_id \
+			  tlr:jnl_sequence_corr INTO l_sequence_corr \
+			  tlr:jnl_sequence INTO l_sequence
+			  
+		CALL siaf:CDSbuscoFactOJU(l_presnro) 
+			   
+		CLEARFIELD l_linea
+		
+		//para que no salga la tx que reverso la directa
+		IF (l_sequence_corr.NUMCHARS == 0 || l_sequence < l_sequence_corr) THEN
+			FPRINT l_linea,"%8.8s %8.8s %7.7s %30.30s %14.14s %5.5s %4.4s %4.4s %14.14s ",siaf:adt_oju_fecha,siaf:adt_oju_nro_ctrol,l_presnro,siaf:adt_oju_autos,siaf:adt_oju_importe,siaf:adt_oju_operator_id,l_sequence_corr,l_sequence,siaf:adt_oju_fact
+			CALL csr:f_saaddpl "OfiJudi" l_linea
+		END IF
+		
+		CDS FINDNEXT DSC:OfiJudi_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+	END WHILE		
+	
+	CDS UNLOCK DSC:OfiJudi_ctx
+	CDS ENDSELECT DSC:OfiJudi_ctx 	  
+
+	//Ordeno por fecha , nro de ctrol y secuencia
+	CALL csr:PickOp 4 "OfiJudi" "0,8" "9,8" "83,4" 
+
+	LET item = PL_GETITEM + 0
+	CLEARFIELD l_linea
+    
+  DO
+    CALL csr:myPickcontrol "OfiJudi" l_linea item 
+    IF (RETVAL < 0) THEN
+        BREAK
+    END IF
+    
+    siaf:adt_oju_fecha = substr(l_linea,0,8)
+    siaf:adt_oju_nro_ctrol = substr(l_linea,9,8)
+    l_presnro = substr(l_linea,18,7)
+    siaf:adt_oju_autos = substr(l_linea,26,30) 
+    siaf:adt_oju_importe = substr(l_linea,57,14)
+    siaf:adt_oju_operator_id = substr(l_linea,72,5)
+    l_sequence_corr = substr(l_linea,78,4)
+    l_sequence = substr(l_linea,83,4)
+    siaf:adt_oju_fact = substr(l_linea,88,14)
+
+		//si no tiene factura asociada limpio el campo
+		IF (siaf:adt_oju_fact == "00000000000000") THEN
+		 CLEARFIELD siaf:adt_oju_fact
+		END IF
+		
+		IF (l_nro_ctrol_act.NUMCHARS == 0) THEN
+			l_nro_ctrol_act = siaf:adt_oju_nro_ctrol
+		END IF
+	
+		IF (l_nro_ctrol_act != siaf:adt_oju_nro_ctrol) THEN
+			CALL siaf:MISCwrite_file_oju (link_num,l_registro)
+			l_nro_ctrol_act = siaf:adt_oju_nro_ctrol
+		END IF
+		
+		IF (l_cant == 0 ) THEN
+			l_fecha_ant = siaf:adt_oju_fecha
+		END IF
+		
+		IF (l_sequence_corr > 0) THEN
+			LET siaf:adt_oju_reversa = "S"
+		ELSE
+			LET siaf:adt_oju_reversa = "N"
+		END IF
+		
+		IF (siaf:adt_oju_reversa == "S") THEN
+			IF (siaf:adt_oju_fact.NUMCHARS > 0) THEN
+				FPRINT l_registro ,"  %10.10e %8.8e  %-30.30s  %17.17e %14.14e %5.5e  ANULADO",siaf:adt_oju_fecha ,siaf:adt_oju_nro_ctrol ,siaf:adt_oju_autos ,siaf:adt_oju_fact ,l_importe_anul ,siaf:adt_oju_operator_id
+			ELSE
+				FPRINT l_registro ,"  %10.10e %8.8e  %-30.30s  %17.17s %14.14e %5.5e  ANULADO",siaf:adt_oju_fecha ,siaf:adt_oju_nro_ctrol ,siaf:adt_oju_autos ,siaf:adt_oju_fact ,l_importe_anul ,siaf:adt_oju_operator_id
+			END IF
+		ELSE
+			IF (siaf:adt_oju_fact.numchars == 0) THEN
+				FPRINT l_registro ,"  %10.10e %8.8e  %-30.30s  %17.17s %14.14e %5.5e  -------",siaf:adt_oju_fecha ,siaf:adt_oju_nro_ctrol ,siaf:adt_oju_autos ,siaf:adt_oju_fact ,siaf:adt_oju_importe ,siaf:adt_oju_operator_id 
+			ELSE
+				FPRINT l_registro ,"  %10.10e %8.8e  %-30.30s  %17.17e %14.14e %5.5e  -------",siaf:adt_oju_fecha ,siaf:adt_oju_nro_ctrol ,siaf:adt_oju_autos ,siaf:adt_oju_fact ,siaf:adt_oju_importe ,siaf:adt_oju_operator_id
+			END IF
+		END IF
+
+		IF (l_fecha_ant != siaf:adt_oju_fecha) THEN
+
+			IF (siaf:pantalla_impreso == "I") THEN
+				FPRINT l_sub_total,"<txS>85</txS><st>1</st>                  Total transacciones según rendición: %s  Importe Total: %14.14e",l_cant,l_importe
+				FPRINT l_total_gral,"<txS>85</txS><st>1</st>                      Total general de transacciones : %s  Total General: %14.14e",l_cant_tot,l_importe_tot
+		  ELSE
+				FPRINT l_sub_total,"                  Total transacciones según rendición: %s  Importe Total: %14.14e",l_cant,l_importe
+				FPRINT l_total_gral,"                      Total general de transacciones : %s  Total General: %14.14e",l_cant_tot,l_importe_tot
+		  END IF
+		  
+			CALL siaf:MISCwrite_file_oju (link_num," ")
+			CALL siaf:MISCwrite_file_oju (link_num,l_sub_total)
+			CALL siaf:MISCwrite_file_oju (link_num,split,"S")
+			
+			l_fecha_ant = siaf:adt_oju_fecha
+			l_cant = 0
+			l_importe = 0
+			
+		END IF
+			
+		//solo acumulo los que no fueron reversados
+		IF (siaf:adt_oju_reversa == "N") THEN
+			l_cant = l_cant + 1
+			l_cant_tot = l_cant_tot + 1
+			l_importe = l_importe + siaf:adt_oju_importe
+			l_importe_tot = l_importe_tot + siaf:adt_oju_importe
+		END IF
+
+    item = item + 1
+	LOOP
+	
+	CALL siaf:MISCwrite_file_oju (link_num,l_registro)
+	
+  CALL csr:f_sadroppl "OfiJudi"
+	
+	IF (siaf:pantalla_impreso == "I") THEN
+		FPRINT l_sub_total,"<txS>85</txS><st>1</st>                  Total transacciones según rendición: %s  Importe Total: %14.14e",l_cant,l_importe
+		FPRINT l_total_gral,"<txS>85</txS><st>1</st>                      Total general de transacciones : %s  Total General: %14.14e",l_cant_tot,l_importe_tot
+  ELSE
+		FPRINT l_sub_total,"                  Total transacciones según rendición: %s  Importe Total: %14.14e",l_cant,l_importe
+		FPRINT l_total_gral,"                      Total general de transacciones : %s  Total General: %14.14e",l_cant_tot,l_importe_tot
+  END IF
+  
+	CALL siaf:MISCwrite_file_oju (link_num," ")
+	CALL siaf:MISCwrite_file_oju (link_num,l_sub_total)
+
+	CALL siaf:MISCwrite_file_oju (link_num,split,"S")
+	CALL siaf:MISCwrite_file_oju (link_num,l_total_gral)
+  
+END SUB
+
+/*******/

@@ -1,0 +1,314 @@
+/****o* Apertura de Sucursal/OFB:tes:SVALaper_suc
+* NOMBRE
+*   OFB:tes:SVALaper_suc
+* DESCRIPCION
+*   Apertura de Sucursal
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRANapertura_suc
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALaper_suc
+	LOCAL i LIKE siaf:i
+	LOCAL loc_err_retval LIKE lib:err_retval
+	LOCAL FlagCierre LIKE tes:suc_marca_cierre
+	LOCAL fecha_cierre LIKE post:adt_sucur_dia_dump
+
+	tes:estado_aper_cier = "APERTURA"
+	
+	/*crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+	CALL siaf:MISCSuc_CapImagen   
+	if (RETVAL != -2) THEN // SI no se pudo realizar la consulta o dio un error nuevo no se continua con el proceso.
+		//crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+ 		 CALL post:CDSConsulta_Imagen("T")
+  ENDIF*/
+  
+  //CONSULTA PIEZAS CON PALABRA CLAVE
+	CALL post:MISCPzas_Pal_Clave
+	/*NO SE FRENA LA APERTURA POR ESTO
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END if*/
+	
+  
+	//gpb:CRQ-20394 - MENSAJE DE PIEZAS VENCIDAS
+	CALL post:MISCRepPzasVencidas
+	
+	//NI 5052 - PIEZAS CON IMPOSICION Y ENTREGA EN MISMA SUCURSAL
+	CALL post:MISCPzasMismaSucPend
+	
+	
+	//consulta PED
+	IF (common:br_admitePED == "S" || common:br_imponePED == "S") THEN
+		IF (giros:adt_dgralsuc_fec_PED == common:system_date) THEN 
+			//no se debe realizar la consulta al host
+			CLEARFIELD hcomm:INDhost_sndrt
+			CLEARFIELD hcomm:INDhost_rcvrt
+		ELSE
+			//Mensaje de Consulta al Centralizado PED para obtener todas las piezas pendientes de la suc
+			CALL post:OFBconsMult_PEDpend
+			IF (RETVAL == 0) THEN
+				//Se graba la fecha del dia en la DGralSuc para que no se vuelva a realizar la consulta del maestro de clientes
+				CALL giros:CDSgrabo_fec_PED 
+			END IF
+			RESETFLAG giros:tran_send_mode,consulta_simple
+			RESETFLAG giros:tran_send_mode,consulta_multiple
+			CLEARFIELD post:climed_ult_item
+		END IF
+	END IF    
+
+/******************************************************************************************************************/
+;;  //gpb:CRQ26491-Eliminar reportes de Clientes Medios en la Apertura de la Sucursal    
+;;	CALL post:OFBclimed_deudor_ape
+;;	IF (RETVAL < 0) THEN
+;;		//gbp:NI50479 Fuerzo para que imprima (si tiene) piezas ped robadas o piezas ped pendientes de recepcion
+;;		CALL post:MISClst_estPED_cli
+;;		
+;;		CALL csr:f_sadroppl(DSC:post:facturas_cliente)
+;;		CALL csr:f_sadroppl(DSC:post:clientes_deuda)
+;;		CALL post:CDSborrar_deuda
+;;		CALL csr:f_sadroppl(DSC:post:adelantos)
+;;		CALL csr:f_sadroppl(DSC:post:remitos)
+;;		CALL csr:f_sadroppl(DSC:post:facturas)
+;;		CALL csr:f_sadroppl(DSC:post:bloqueos)
+;;		CALL csr:f_sadroppl(DSC:post:intereses)
+;;		//50244 - TRANSFERENCIAS BANCARIAS
+;;		CALL csr:f_sadroppl(DSC:post:transf_banc)
+;;		CLEARFIELD post:monto_TB
+;;		//50249 - NOTAS DE CREDITO POR INCUMPLIMIENTO
+;;		CALL csr:f_sadroppl(DSC:post:nc_pend_cm)
+;;		CLEARFIELD post:modalidad_CM
+;;		CLEARFIELD post:climed_numero 
+;;		CLEARFIELD post:CloCuit
+;;		CLEARFIELD post:CliRaz
+;;		CLEARFIELD post:subcuentaDesc_CM
+;;		CLEARFIELD post:inicio_facturacion
+;;		CLEARFIELD post:facturacion_CM
+;;		CLEARFIELD post:bloqueo_CM
+;;		CLEARFIELD post:anticipo_CM
+;;		MSGBOX "POR FAVOR INTENTE OBTENER EL LISTADO DE CLIENTES MEDIOS DEUDORES NUEVAMENTE.",OFB_OK,"Atencion"
+;;	END IF
+/******************************************************************************************************************/
+
+	//Se verifica con parametro de la DGralSuc si la consulta al Maestro de Clientes fue realizada con exito en el día
+	//Se verifica tambien si la consulta de las piezas pendientes PED fue hecha en el dia
+	CALL giros:CDSconsulta_fec_CCT
+	//consulta CCT
+	IF (giros:adt_dgralsuc_fec_CCT == common:system_date) THEN
+		//no se realiza la consulta al host.
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+	ELSE
+		CALL post:OFBconsulta_CCT_CREM
+		IF (RETVAL < 0) THEN
+			RESETFLAG giros:tran_send_mode,consulta_simple
+			RESETFLAG giros:tran_send_mode,consulta_multiple
+			CLEARFIELD post:climed_ult_item
+		ELSE
+			//Se graba la fecha del dia en la DGralSuc para que no se vuelva a realizar la consulta del maestro de clientes
+			CALL giros:CDSgrabo_fec_CCT 
+		END IF
+	END IF
+
+	//usado para sequenciadores
+	giros:codigo_procesamiento = 998001
+   
+	;tes:estado_aper_cier = "APERTURA"
+	
+	;SMC Actualizo tabla profiles con los Identificadores de Seguridad NT
+	;(SID) de los operadores.
+	; Esta rutina solo se ejecuta una vez. Deja una marca en la
+	; sucur_act para no volver a ejecutarse.
+	CALL op:MISCAll_UserSID
+
+	/* actualizo la fecha de la tabla */
+	CLEARFIELD tes:suc_marca_cierre
+	CLEARFIELD tes:suc_fecha
+
+	CDS SELECT FROM DSC:tes:DiaSuc_table becomes DSC:tes:DiaSuc_context WHERE \
+		tes:suc_br_id == op:op_branch_id
+	CDS FINDFIRST DSC:tes:DiaSuc_context LOCK
+	LET loc_err_retval = CDSRETVAL        
+	LET tes:err_retval = CDSRETVAL // reservo en tes:err_retval para poder usarla en tes:MISCtermino_apertura
+        
+	SELECT (loc_err_retval)
+		CASE 0
+			CDS EXTRACT DSC:DiaSuc_context ALL
+			IF (tes:suc_marca_cierre == "") THEN
+				ERRMSG LST:common:errmsg_list, "Sucursal Abierta"
+				CDS UNLOCK DSC:DiaSuc_context
+				CDS ENDSELECT DSC:DiaSuc_context
+				CALL tlr:APPLterm
+				//deslockeo TranDtat
+				IF (drv:descrip != "REOPENSU") THEN
+					CALL post:CDSTranStatUnLock("6000")
+				END IF
+				RETURN (-2)
+			END IF
+		BREAK
+		CASE -803
+			ERRMSG LST:common:errmsg_list, "Otro Operador se encuentra abriendo la Sucursal"
+			CDS UNLOCK DSC:DiaSuc_context
+			CDS ENDSELECT DSC:DiaSuc_context
+			CALL tlr:APPLterm
+			RETURN (-2)
+		BREAK
+	END SELECT
+
+	FlagCierre = "N"
+	fecha_cierre = post:adt_sucur_dia_dump
+
+  CALL siaf:CDSadt_sucur_load
+
+	IF (drv:descrip != "REOPENSU") && (tes:suc_fecha != 0) THEN
+		IF (siaf:adt_sucur_cierre_dia == "N") THEN
+			CALL tes:MISCciefor_dia
+			IF (RETVAL == 0) THEN
+				// Se hizo cierre forzado de dia
+				FlagCierre = "S"
+				/*MFM - Actualizo la condicion de Block Horario 2 de la Tabla de Despachos
+				el campo adt_despacho_bh2 = "N"
+				CALL post:CDSAct_DespBH2       */  
+			END IF
+		END IF
+	END IF
+
+	SETFLAG op:op_state_flags,tesoro_abierto
+	//se borra la tabla teso_mov  si es apertura (no si es reapertura)
+	IF (drv:descrip != "REOPENSU") THEN
+		//MLD Journalizo nuevamente las transacciones de retiro de piezas
+		//que se hayan quedado del dia anterior posterior al cierre del dia
+		
+		// Si hubo cierre forzado de dia, no es necesario revisar.
+		// Ya que se mando todo.
+
+		/*******************************************************
+		PARA QUE SIRVE ESTA RUTINA??
+		CALL post:MISCretiros_pend(FlagCierre,fecha_cierre)
+		********************************************************/
+		
+		CALL tes:CDSsave_mov_pend
+		//CALL CDSclear_teso_mov
+		//CALL CDSborra_TesEspVMov // Especies valorizadas
+		// PJM 04-08-1998 se agrego para controlar la secuencialidad de las
+		// Facturas
+
+		CALL CDSclear_Chk_mov /* Giros Borra los movimientos de cheques */
+		// CALL CDSclear_cheques_mov // Borra los movimientos de cheques
+
+		CALL tes:CDSborra_PForzTes // Borra los pases forzados de dinero
+		CALL giros:CDSDepura_ChqGir
+	END IF
+    
+	// desprotejo y limpio campos
+	CALL tlr:SENDopen_day
+	LET tlr:bus_date = common:system_date // la fecha se pierde en el SEND
+	;siaf:adt_sucur_codigo   = common:sucursal_activa
+	;post:adt_sucur_dia_dump = tlr:set_bus_date
+
+	;siaf:adt_sucur_cierre_dia = "N"
+	;CALL siaf:CDSadt_sucur_save
+
+	IF (drv:descrip != "REOPENSU") THEN//solo si es apertura, no reapertura
+		CALL post:MISCinit_secuen
+	END IF
+
+  CALL tes:MISCclear_AnteTM //mensualmente se limpia la tabla AnteTM
+    
+	IF (drv:descrip != "REOPENSU") THEN //solo si es apertura, no reapertura
+		; PS9951 cuando la sucursal inicializaba la caja
+		; y no abria la sucursal, al día siguiente quedaba la marca tes:inic_caj = s
+		; esto probocaba que la sucursal no inicializara las cajas en ese nuevo día.
+		; Esto generaba problemas con los saldos de depósitos en cta propia. A fin de
+		; que la marca se corresponda con el día se reemplaza tes:inic_caj por
+		; tes:inic_caj_date *** MDG
+		IF (tes:inic_caj_date != common:system_date) THEN
+			/* Copia el saldo inicial para Especies Valorizadas en la tab la UltMovEspv */       
+			CALL CDSum_espv_aper(op:op_branch_id)
+			CALL tes:MISCsave_inic_caj
+			CALL tes:MISCsave_inic_tes /* graba el inicial del tesoro */
+			/* Al asignarle codigo de transaccion a las otras pierdo
+			el de la apertura */
+			/*Saco los iniciales de la cuenta */
+			CALL CDSiniciales_cta
+			/*Se acreditan los cheques de fechas anteriores */
+			CALL CDSCredito_Cheques
+			CALL CDSdepuro_ctas
+          
+			/* MLD Limpio las reservas que pudieron quedar de los productos
+			Merchandising por sesiones no cerradas del día anterior */
+			CALL post:CDSreserva_merch
+			
+			/* marca que hizo el inicio de caja en sucur_act */
+			CALL tes:MISCmarca_inic_caj
+			IF (RETVAL < 0) THEN              
+				CDS UNLOCK DSC:DiaSuc_context
+				CDS ENDSELECT DSC:DiaSuc_context
+				CALL tlr:APPLterm
+				//deslockeo TranDtat
+				IF (drv:descrip != "REOPENSU") THEN
+					CALL post:CDSTranStatUnLock("6000")
+				END IF
+				RETURN (-2)         
+			END IF           
+		END IF                   
+
+		LET siaf:codigo_siaf = 6000
+		LET siaf:nombre_transac = "APERTURA DE DIA DE SUCURSAL"
+		CLEARFIELD siaf:importe
+		CLEARFIELD siaf:moneda
+		CLEARFIELD post:medio_pago_desc     
+		/* Calculo el total en caja buzon para luego journalizarlo */
+		CALL tes:MISCcalc_tots_buzon
+		
+		/* Calculo el total en el fondo de habilitación para journalizarlo */
+		CALL tes:CDStotales_subteso
+	
+	END IF
+
+	/* Setea campos indirectos para hacer SEND y RCVE */
+	drv:INDhcomm_rtn = OFB:SENDapertura_suc
+	drv:INDspc_rtn[1] = OFB:RCVEapertura_suc        
+    
+	/* verifico si hace apertura manual */
+	CALL tes:MISCapertura_manual
+	IF (RETVAL < 0) THEN
+		CDS UNLOCK DSC:DiaSuc_context
+		CDS ENDSELECT DSC:DiaSuc_context
+		CALL tlr:APPLterm
+		//deslockeo TranDtat
+		IF (drv:descrip != "REOPENSU") THEN
+			CALL post:CDSTranStatUnLock("6000")
+		END IF
+		RETURN (-2)
+	END IF                  
+            
+	/* limpio tlr:jnl_status, ya que este no queda inicializado */
+	CLEARFIELD tlr:jnl_status
+	
+	//Borro las marcas de borrado en la stockpUP_pend por si quedaron algunas perdidas...
+	CALL post:CDSdel_marca_pend
+	
+	/*Se borra fisicamente aquellos operadores que fueron marcados con el 
+	borrado logico - Gabriel Falciola*/
+	IF (drv:descrip != "REOPENSU") THEN //solo si es apertura, no reapertura
+		CALL op:CDSDel_BajaLogica 
+		
+		//Blanqueo la marca de Clasificacion UP al cierre de contenedor
+		CALL op:CDSact_op_clasifUP("","AperSuc")
+		//deslockeo TransStat
+		CALL post:CDSTranStatUnLock("6000")
+	END IF
+    
+END SUB
+
+/*******/

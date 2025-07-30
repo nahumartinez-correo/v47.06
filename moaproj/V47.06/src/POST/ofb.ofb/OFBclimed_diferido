@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:OFBclimed_diferido
+* NOMBRE
+*   OFB:post:OFBclimed_diferido
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBclimed_diferido
+
+	/*********************************************************************************
+	Se realiza la consulta simple al host para la Excepcion de Cliente Medio por Pago,
+	Diferido donde se traen los datos de la excepcion seleccionada.
+	Segun el/los campo/s BULK/'s de retorno (105,106,107) de datos se borran al inicio
+	y luego se van grabando los productos/rangos/cheques segun corresponda al tipo de
+	excepcion . 
+	PROC_CODI : 997025
+	*********************************************************************************/
+
+	setflag    giros:tran_send_mode,consulta_simple
+	resetflag  giros:tran_send_mode,consulta_multiple 
+	
+	call post:CDSobtiene_secuen("STAN")
+	giros:codigo_procesamiento = 997025
+		
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+
+	hcomm:INDhost_sndrt = OFB:SENDclimed_id_excep
+	hcomm:INDhost_rcvrt = OFB:RCVEclimed_id_excep
+
+	call hcomm:COMM_stat_init
+	call siaf:CDSchk_trxs_caidas
+    	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+    			clearfield hcomm:INDhost_sndrt 
+    			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    	elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    		clearfield hcomm:INDhost_sndrt
+    		clearfield hcomm:INDhost_rcvrt
+    	end if
+
+    	call giros:OFBdisable_bt_msg
+        call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    	call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh    lib:stat_message
+	refresh    statusline
+
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+		clearfield post:excepCM_autorizadas
+		refresh post:excepCM_autorizadas
+		return -2
+	end if
+
+	call csr:trimfield BulkFld_105
+	call csr:trimfield BulkFld_106
+	call csr:trimfield BulkFld_107
+
+	if (BulkFld_105.NUMCHARS != 0)
+		call MISCclimed_diferido(BulkFld_105,Longitud_105)
+		if (retval < 0 )
+			clearfield post:excepCM_autorizadas
+			refresh post:excepCM_autorizadas
+			return -2
+		end if
+	end if
+
+	if (BulkFld_106.NUMCHARS != 0)
+		call MISCclimed_diferido(BulkFld_106,Longitud_106)
+		if (retval < 0 )
+			clearfield post:excepCM_autorizadas
+			refresh post:excepCM_autorizadas
+			return -2
+		end if
+	end if
+
+	if (BulkFld_107.NUMCHARS != 0)
+		call MISCclimed_diferido(BulkFld_107,Longitud_107)
+		if (retval < 0 )
+			clearfield post:excepCM_autorizadas
+			refresh post:excepCM_autorizadas
+			return -2
+		end if
+	end if
+END SUB
+
+/*******/

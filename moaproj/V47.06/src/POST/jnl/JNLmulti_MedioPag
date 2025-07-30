@@ -1,0 +1,88 @@
+/****o* Pendientes de agrupación/OFB:post:JNLmulti_MedioPag
+* NOMBRE
+*   OFB:post:JNLmulti_MedioPag
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLmulti_MedioPag
+
+	CDS APPEND DSC:tlr:CONjnl_write  \
+		siaf:moneda AS post:codigo_medio_pago \
+		post:DescripMedPag \
+		siaf:importe \
+		post:Tipo_Adm \
+		siaf:importe AS Total_importe \
+		post:codigo_interno \
+		post:montoEntregado \
+		post:montoVuelto
+		 
+	//Agregar todos los datos que se captura!!!!
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write ,LST:post:LISTtarjeta,2)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write ,LST:post:LISTcheque,2)
+
+	IF (siaf:moneda == "06") THEN
+		//gpb:NI50546 Mercado Pago 
+		IF (post:codigo_interno == 130410) THEN
+			CLEARFIELD post:jnl_opmp_codseq_nro
+			CALL csr:proc_list(F_CLEAR,DSC:tlr:CONjnl_write ,LST:post:LISTjnl_opmp_order,2)
+			CALL csr:proc_list(F_CLEAR,DSC:tlr:CONjnl_write ,LST:post:LISTjnl_opmp_orderQR,2)
+			CALL csr:proc_list(F_CLEAR,DSC:tlr:CONjnl_write ,LST:post:LISTjnl_opmp_payment,2)
+			
+			CALL post:MISCjnlOperacionMP
+		ELSE
+			//gpb:NI50525 POS Integrado
+			CLEARFIELD post:jnl_opvpi_codseq_nro
+			CALL csr:proc_list(F_CLEAR,DSC:tlr:CONjnl_write ,LST:post:LISTjnlOpPurchaseIn,2)
+			CALL csr:proc_list(F_CLEAR,DSC:tlr:CONjnl_write ,LST:post:LISTjnlOpTrxOut,2)
+		
+			CALL post:MISCjnlOperacionVPI		
+		END IF
+	ELSE	
+		/****************************************************************************************/
+	  //NO debe journalizar los campos cuando el medio de pago NO es tarjeta 
+	  //Quitar cuando se haga el cambio en INTERFAZ!!!	
+	
+		//Journalizo la operacion
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:jnl_opvpi_codseq_nro
+		
+		CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write ,LST:post:LISTjnlOpPurchaseIn,2)
+		CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write ,LST:post:LISTjnlOpTrxOut,2)
+		/****************************************************************************************/
+	END IF
+
+	CALL JNLcamp_nota_credito
+	
+	CALL JNLvtaUP_diferida
+
+	CALL JNLfechaPoliza
+	CALL post:MISCcampos_reporte(0,1,siaf:importe,NO_TARIFA)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:post:LISTreporte,0)
+
+	/* cgw:
+	En Reemplazos de cheques de cliente cuentacorrentista y cuyo medio de pago
+	es de tipo cheque, la captura tiene codigo 99097. En este caso se journaliza un campo
+	especial para la moneda corporativa con supresion de ceros a izquierda.
+	*/
+	IF (siaf:codigo_siaf == 99097) THEN
+		FPRINT siaf:moneda_corp "%d",siaf:moneda
+		CDS APPEND DSC:tlr:CONjnl_write \
+			siaf:moneda_corp
+	END IF	
+		
+END SUB
+
+/*******/

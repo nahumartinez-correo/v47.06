@@ -1,0 +1,152 @@
+/****o* Clientes Medios/OFB:post:CDSGrabar_PresuDetOC
+* NOMBRE
+*   OFB:post:CDSGrabar_PresuDetOC
+* DESCRIPCION
+*   Esta rutina graba o actualiza la TX 99350 (Descuento Orden de Compra CM) en la PresuDet
+* ENTRADAS
+*   desc_factura: descripcion del item de la OC.
+*   familia:familia del producto al que se le aplica el descuento OC.
+*   codigo: nro de tx del producto al que se le aplica el descuento OC.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCAcumPresuDetOC,OFB:post:MISCagregTrnInt
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGrabar_PresuDetOC(desc_factura,familia,codigo)
+
+LOCAL l_cdsretval LIKE lib:err_retval
+LOCAL l_cont LIKE post:cantidad
+LOCAL l_PreDNroTrn LIKE post:PreDNroTrn
+LOCAL l_punitario  LIKE post:precio_unitario
+
+	CDS SELECT FROM DSC:PresuDetOC_TBL BECOMES DSC:PresuDetOC_CTX \
+	WHERE post:fecha == common:system_date && \
+	post:op_operator_id == op:op_operator_id && \
+	post:PresNro == post:PresNro && \
+	siaf:codigo_siaf == codigo && \
+	post:item_desc_factura == desc_factura
+	
+	CDS FINDFIRST DSC:PresuDetOC_CTX LOCK
+	LET l_cdsretval = CDSRETVAL
+    
+    CDS CLEARBUFFER DSC:PresuDetOC_CTX
+	
+	if (l_cdsretval == -801) then
+		if (codigo == "99160") then
+			CDS FINDAGAIN DSC:CONPresuDeta	LOCK
+			Call CSR:copy_record(DSC:CONPresuDeta,DSC:PresuDetOC_CTX)
+		else
+			CDS FINDAGAIN DSC:PRESUDET_CTX	NOLOCK
+			CDS EXTRACT DSC:PRESUDET_CTX post:PreDNroTrn into l_PreDNroTrn 
+			if (familia != "TAV" && familia != "PCL") then
+				CDS EXTRACT DSC:PRESUDET_CTX \
+				post:item_importe_oc into l_punitario
+			endif
+			Call CSR:copy_record(DSC:PRESUDET_CTX,DSC:PresuDetOC_CTX)
+		endif
+	endif
+
+	if (familia != "TAV" && familia != "PCL" && l_cdsretval == 0) then
+
+	
+   		CDS APPEND DSC:PresuDetOC_CTX siaf:importe \
+   		siaf:ImporteConIva siaf:ImporteSinIva post:ImpServUP \
+   		post:ImporteSinIvaOC post:ImporteConIvaOC
+   		
+		if (familia == "CST" || familia == "CSP" || familia == "CSE")
+
+    			CDS APPEND DSC:PresuDetOC_CTX post:tarifa post:costo_opc \
+    			post:cantidad post:imp_bloques post:imp_bloques_siva post:cant_bloq \
+    			post:leyencor_bloq post:leyenlar_bloq post:imp_bloques_siva4
+    		
+	   		l_cont = 0
+    			while (l_cont < 6) 
+
+	   		 	CDS APPEND DSC:PresuDetOC_CTX post:cod_opc[l_cont] \
+	   		 	post:cos_opc[l_cont] post:siniva_opc[l_cont] \
+	   		 	post:siniva_opc4[l_cont]
+	   		 	l_cont = l_cont + 1
+    			end while
+	   		l_cont = 0
+			while (l_cont < 20)
+
+    	 			CDS APPEND DSC:PresuDetOC_CTX post:impciva_vec[l_cont] \
+    	 			post:impsiva_vec[l_cont]
+    	 			l_cont = l_cont + 1
+    			end while
+    		
+		endif	    	
+		
+	   	if (familia == "CSP" || familia == "CSE") then
+	    		CDS APPEND DSC:PresuDetOC_CTX post:valor_dec post:valor_cre \
+	    		post:valor_ar post:valor_csar post:ImpSinIva_serv
+	    		CDS APPEND DSC:PresuDetOC_CTX \
+	    		siaf:ImporteConIva as post:ImporteConIva \
+   			siaf:ImporteSinIva as post:ImporteSinIva \
+   			siaf:ImporteConIva as post:ImporteConIvaNeto \
+   			siaf:ImporteSinIva as post:ImporteSinIvaNeto \
+	    		post:ImporteSinIva_bis
+    		endif
+   		
+		if (familia == "CME") then
+	    		CDS APPEND DSC:PresuDetOC_CTX post:ImporteConIva post:ImporteSinIva \
+	    		post:ImporteIva post:cantidad2 \
+	    		post:ImporteConIva as post:ImporteConIvaOC \
+	    		post:ImporteSinIva as post:ImporteSinIvaOC \
+	    		siaf:importe_tot_serv \
+	    		post:ImporteSinIva_bis
+		endif
+    		if (familia == "CST") then
+    			CDS APPEND DSC:PresuDetOC_CTX tele:importe_tot_serv_tel
+	   	endif
+	    	
+    	else
+		if (familia == "CST" || familia == "CSP" || familia == "CSE") then
+			CDS APPEND DSC:PresuDetOC_CTX post:PresNro as post:PresNro_tt \
+    			l_PreDNroTrn as post:NroTrn_tt
+			Call csr:update_record(DSC:PresuDetOC_CTX,"post","modelo_suc",common:br_modelo,1)
+		endif
+		if (familia == "CSP" || familia == "CSE") then
+			CDS APPEND DSC:PresuDetOC_CTX post:importe_acum \
+			post:ConvenioSesion as post:TTcargado
+		endif
+		//PS 9683:Cuando existe un item con bloq adicional que es unico dentro de la facturacion
+		// (por lo tanto no se acumula) entonces el post:cant_bloq no se actualiza como corresponde
+		if (familia == "CST") then
+		  //no está grabando el cant_bloq en la presudetoc, por este motivo se comentan estas lineas
+		  //  Call csr:delete_field(dsc:PresuDetOC_CTX, "post", "cant_bloq", 1)
+                 //   CDS APPEND DSC:PresuDetOC_CTX post:cant_bloq
+		    //Call csr:update_record(DSC:PresuDetOC_CTX,"post","cant_bloq",post:cant_bloq,1)
+		    Call csr:update_record(DSC:PresuDetOC_CTX,"post","leyenlar_bloq",post:leyenlar_bloq,1)
+		    Call csr:update_record(DSC:PresuDetOC_CTX,"post","leyencor_bloq",post:leyencor_bloq,1)
+		endif
+		// SC 50170
+		if (familia != "TAV" && familia != "PCL") then
+			Call csr:delete_field(dsc:PresuDetOC_CTX, "post", "precio_unitario", 1)
+			CDS APPEND DSC:PresuDetOC_CTX l_punitario AS post:precio_unitario
+		endif
+		
+    		CDS INSERT DSC:PresuDetOC_CTX LOCK    
+    		CDS UNLOCK  DSC:PresuDetOC_CTX 
+		CDS ENDSELECT DSC:PresuDetOC_CTX 
+		RETURN 0
+    	endif	
+    
+   
+    IF (l_cdsretval == 0) THEN
+    	CDS UPDATE DSC:PresuDetOC_CTX LOCK    
+    ELSE
+    	CDS INSERT DSC:PresuDetOC_CTX LOCK    
+    ENDIF
+    CDS UNLOCK  DSC:PresuDetOC_CTX 
+    CDS ENDSELECT DSC:PresuDetOC_CTX 
+END SUB
+
+/*******/

@@ -1,0 +1,131 @@
+/****o* Mensajería/OFB:post:MISCgetresponseHost2
+* NOMBRE
+*   OFB:post:MISCgetresponseHost2
+* DESCRIPCION
+*   Esta OFB toma del buffer de comunicaciones con el host2 el mensaje que viene formado por tags.
+*	Desmenuza el mensaje y coloca en una variable el código de respuesta.
+*	Esta OFB se ejecuta en el evento recibe hcomm:COMM_rcv_event_HOST2
+* ENTRADAS
+*   No tiene parametros de entrada
+* SALIDAS
+*   post:CodRespuesta_host2 (código de respuesta)
+*	common:csr_string_4096 (mensaje recibido)	
+* IMPACTOS
+*   La respuesta es utilizada en la ofb:post:MISCresponseMsgHost2(pWait) donde el 
+*   parámetro pWait puede ser true o false. En el caso de ser true se quedará en un
+*   loop infinito esperando un mensaje de esta ofb (post:MISCgetresponseHost2)
+*   La modificación erronea puede producir que no se ejecuten los scripts
+* REFERENCIADO POR
+*   tes:MISCenv_esp_total, post:MISCverif_bloqNovTT, post:MISCenv_stockHist
+*	post:MISCenv_NovTT, post:MISCenv_merch_total, post:MISCenv_jnl_total
+*	post:MISCenv_Excep, tes:MISCLanzaProceso
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postmisc.h"
+SUB post:MISCgetresponseHost2
+LOCAL INDICE_INF LIKE post:cantidad
+LOCAL INDICE     LIKE post:cantidad
+LOCAL l_cantidad     LIKE post:cantidad
+LOCAL l_valor LIKE common:csr_string
+LOCAL l_subcadenaAux LIKE common:csr_string_4096
+LOCAL l_tags  LIKE common:csr_string
+LOCAL l_EncontroCaracter LIKE siaf:i
+	
+	clearfield common:csr_string_4096
+	comm get common:csr_string_4096 from msg type ASCII
+	;ej
+	;common:csr_string_4096 = "<msgout><resp>0</resp></msgout>"
+	
+	CALL csr:f_sadroppl "Etiquetas"								
+	CALL csr:f_sanewpl  "Etiquetas", PIC:post:pic_valmsg
+	
+	l_subcadenaAux = common:csr_string_4096
+	
+	do
+		INDICE_INF = 0
+		CALL csr:str_search (l_subcadenaAux,"<",INDICE,INDICE_INF)
+		l_EncontroCaracter = retval == 0
+		if (l_EncontroCaracter) then
+			l_cantidad = INDICE - INDICE_INF
+			l_valor = SUBSTR(l_subcadenaAux,0,l_cantidad)
+			INDICE = INDICE + 1
+			INDICE_INF = l_subcadenaAux.numchars - INDICE
+			l_subcadenaAux = SUBSTR(l_subcadenaAux,INDICE,INDICE_INF)
+			INDICE_INF = 0
+				
+			CALL csr:str_search (l_subcadenaAux,">",INDICE,INDICE_INF)
+			l_EncontroCaracter = retval == 0
+			if (l_EncontroCaracter) then
+				l_cantidad = INDICE - INDICE_INF
+				l_tags = SUBSTR(l_subcadenaAux,0,l_cantidad)
+			
+				INDICE = INDICE + 1
+				INDICE_INF = l_subcadenaAux.numchars - INDICE
+				l_subcadenaAux = SUBSTR(l_subcadenaAux,INDICE,INDICE_INF)
+			else
+				break
+			end if
+		else
+			break
+		end if
+	
+		select (l_tags)
+			case "msgout"
+			case "resp"
+			case "respdesc"
+				;cargar en picklist
+				call  csr:f_saaddpl "Etiquetas"  l_tags
+				break
+			case "/resp"
+				CodRespuesta_host2 = l_valor
+				;borrar del picklist
+				l_tags = "resp"
+				call csr:PickOp PICKOP_SEARCH "Etiquetas" l_tags
+				idx = RETVAL
+				if (idx >= 0)
+					CALL CSR:myPickdelete("Etiquetas",common:csr_string,idx)
+				else
+				
+				end if
+				break
+			case "/msgout"
+				;borrar del picklist
+				l_tags = "msgout"
+				call csr:PickOp PICKOP_SEARCH "Etiquetas" l_tags
+				idx = RETVAL
+				if (idx >= 0)
+					CALL CSR:myPickdelete("Etiquetas",common:csr_string,idx)
+				else
+				
+				end if
+				break
+			case "/respdesc"
+				;campodescripción = l_valor
+				;borrar del picklist
+				l_tags = "respdesc"
+				call csr:PickOp PICKOP_SEARCH "Etiquetas" l_tags
+				idx = RETVAL
+				if (idx >= 0)
+					CALL CSR:myPickdelete("Etiquetas",common:csr_string,idx)
+				else
+				
+				end if
+				break
+			case else
+				;tags no reconocido
+		end select
+	loop	
+	
+	;Verifico que el mensaje se haya recibido correctamente
+	INDICE = PL_GETITEM
+	CALL csr:myPickcontrol("Etiquetas",l_tags,INDICE)	
+	IF (RETVAL < 0) THEN
+		;Aca controlo que el msg estaba completo
+	end if
+	CALL csr:f_sadroppl "Etiquetas"
+END SUB
+
+/*******/

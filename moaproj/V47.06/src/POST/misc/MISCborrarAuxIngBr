@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:post:MISCborrarAuxIngBr
+* NOMBRE
+*   OFB:post:MISCborrarAuxIngBr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCborrarAuxIngBr
+/*Actualiza la tabla AuxIngBr cuando se borra una Transacción de la Sesión - Gabriel Falciola*/
+local ImpConIva_anterior like siaf:ImporteConIva
+local ImpSinIva_anterior like siaf:ImporteSinIva
+LOCAL ind LIKE siaf:i
+
+	if (PreDForFis.numchars == 0)
+		EstadoFormu = SIN_FORM
+	else
+		EstadoFormu = CON_FORM
+	end if
+	ImpConIva_anterior = siaf:ImporteConIva
+	ImpSinIva_anterior = siaf:ImporteSinIva
+	if (fliatran_vec[0].numchars != 0)
+		if (siaf:codigo_siaf != 99020)
+		/*TRATAMIENTO CON VECTORES*/
+			ind = 0
+			while (ind < MAX_VEC_INGBR && fliatran_vec[ind].NUMCHARS != 0)
+				call CDSAcumImpSes(impciva_vec[ind],impsiva_vec[ind],0,0,fliatran_vec[ind],siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+				ind = ind + 1
+			end while	
+		end if
+	else
+		/*TRATAMIENTO CON CAMPOS*/
+		/*La transacciones de esta familia deben acumularse de acuerdo a la familia del motivo*/
+		if (siaf:adt_tran_fliatran == "CSV")
+			/*Si es una tran. de Templates se hace otro tratamiento*/
+			if (siaf:codigo_siaf != 6900)
+				//gpb:SC50368 AUT-1692 
+				if (siaf:codigo_siaf != 7210) then
+					call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,0,0,siaf:adt_mot_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+			  else
+			  	call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,0,0,siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+			  end if
+			end if
+		else
+	        if (siaf:codigo_siaf != 99020)
+		    	call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,0,0,siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+	        end if
+		end if
+	end if
+
+	/*TRATAMIENTO PARA VENTAS UP*/
+	/*Se acumula en la tabla AuxIvaUP los importes de los Servicios, Opcionales y Monto Fijo
+	por Operador, Presupuesto, Familia y Alicuota*/
+	if	(cli_tipo == CLIUP)
+		/*Se acumula el Servicio*/
+		if (siaf:adt_tran_fliatran == "CSV")
+			/*Se acumulan en rutinas particulares de la transacción*/
+			if (siaf:codigo_siaf != 6900)
+				call CDSAcumImpUP(ImpServUP,0,siaf:adt_mot_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)
+			end if
+		else
+			/*Se acumulan en rutinas particulares de la transacción*/
+	        if (siaf:codigo_siaf != 99020 && siaf:codigo_siaf != 8500)
+				call CDSAcumImpUP(ImpServUP,0,siaf:adt_tran_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)
+			end if
+		end if
+	
+		/*Se acumulan los Opcionales*/
+		ind = 0
+		while (ind < MAX_VEC_OPC && flia_opc[ind].NUMCHARS != 0)
+			call CDSAcumImpUP(cos_opc[ind],0,flia_opc[ind],ali_opc[ind],siaf:adt_tran_afec_efvo,PresNro)
+	    	ind = ind + 1
+    	end while
+		
+		/*Se acumula el Monto Fijo*/
+		if (adt_tarif_fijo > 0)
+			call CDSAcumImpUP(adt_tarif_fijo,0,post:adt_tarif_uneg,adt_tarif_fj_aliciva,siaf:adt_tran_afec_efvo,PresNro)
+		end if
+	end if
+END SUB
+
+/*******/

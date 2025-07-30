@@ -1,0 +1,220 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpn_peso
+* NOMBRE
+*   OFB:post:FVALpn_peso
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpn_peso
+
+    LOCAL x LIKE post:cantidad
+    LOCAL peso_limi LIKE peso_en_grs
+    LOCAL peso_hasta LIKE post:adt_tarif_hasta
+    LOCAL peso_desde LIKE post:adt_tarif_desde
+    LOCAL l_cant_opc like post:cant_opc
+    LET peso_desde = 0.001
+
+    /*Se agregan estas validaciones para que cargue los datos en la imposicion con el siguiente
+    orden: tipo de caja, destino, cantidad, peso. Diego Priore 23/02/2000*/
+
+     /* Se elimina la pregunta por codigos de servicios y a partir de ahora se realizará de acuerdo
+    ala marca en la tabla servicio del campo adt_serv_usa_caja. Si esta en S la carga del tipo
+    de caja es obligatoria antes que el destino - Maricel 6/7/2000 */
+    
+
+    IF (post:adt_serv_usa_caja == "S") THEN
+
+        IF (post:tipo_caja.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL TIPO DE CAJA.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+        IF (post:destino.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO EL DESTINO.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+        IF (post:cantidad.numchars == 0) THEN
+            MSGBOX "DEBE SELECCIONAR PRIMERO LA CANTIDAD.",OFB_OK,"Error"
+            RETURN (-2)
+        END IF
+    END IF
+
+
+    IF ((currentfield.id == peso_en_grs.id || currentfield.id == peso_en_kgs.id) && currentfield == 0)
+        MSGBOX "DEBE PESAR EL ENVIO",0x00,"ERROR"
+        RETURN (-2)
+    ELSE
+        
+        /*Antes de entrar a buscar el precio por el peso, controlo la tolerancia que
+         tiene el servicio para descontarla del peso y obtener la tarifa adecuada.
+         Solamente esto es valido para aquellos productos ENCOMIENDAS que tienen como unidad de
+         medida KGS, por eso utilizo el campo peso_en_kgs y no en grs. Diego Priore 25/02/2000*/
+
+        ;LET peso_temp = peso_en_kgs //Para no perder el valor del peso y muestre el desc. de la tolerancia en pantalla
+        LET post:adt_serv_tole = 0
+        
+        CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx WHERE \
+        post:adt_serv_serv == adt_serv_serv
+        CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+        IF (CDSRETVAL == 0)
+             CDS EXTRACT DSC:Servicio_ctx post:adt_serv_tole
+        END IF
+        
+        IF (adt_serv_req_ad == "S" && common:br_aduana == "N") THEN
+              peso_limi = post:adt_serv_max_serv * 1000
+        ELSE
+             peso_limi = post:adt_serv_limite * 1000
+        ENDIF
+
+        /* Calculo tolerancia - Maricel 6/7/2000 */
+        peso_limi = peso_limi + ((peso_limi * adt_serv_tole) / 100)
+
+        IF (post:adt_serv_umstd == "KGS" || post:adt_serv_umstd == "CMS" || \
+            post:adt_serv_umstd == "UNI") THEN
+            /*****************************************************/
+            /* Si la Unidad de Medida del Servicio es Kilos     */
+            /* paso el peso de la pieza a Gramos.           */
+            /*****************************************************/
+            post:peso_en_grs = post:peso_en_kgs * 1000
+        END IF
+
+        //determino peso máximo permitido para estos productos
+        /*********************50076************************************/
+        /*IF ((siaf:codigo_siaf == 21401 || siaf:codigo_siaf == 21501 || \
+            siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) && \
+            adt_servcaja_peso > 0)*/
+        IF (post:adt_serv_calc_rv == "S" && adt_servcaja_peso > 0)    
+            CALL post:MISCrest_peso_cprop(peso_en_kgs)
+            if (retval < 0)
+                CLEARFIELD peso_en_grs
+                CLEARFIELD peso_en_kgs
+                REFRESH peso_en_grs
+                REFRESH peso_en_kgs
+                return -2
+            end if
+        ELSE
+            IF (post:peso_en_grs > peso_limi) THEN
+                MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+               /* Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009*/
+                CLEARFIELD peso_en_grs
+                CLEARFIELD peso_en_kgs
+                REFRESH peso_en_grs
+                REFRESH peso_en_kgs             
+                RETURN (-2)
+            END IF
+        END IF
+        /****************fin 50076 *************************************/
+    END IF
+    
+    call post:MISCactualizo_tarifa
+    if (retval < 0) then
+        ; Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009
+        CLEARFIELD peso_en_grs
+        CLEARFIELD peso_en_kgs
+        REFRESH peso_en_grs
+        REFRESH peso_en_kgs
+        return -2
+    end if
+    
+    CDS ENDSELECT DSC:Servicio_ctx
+
+    //CLIENTE MEDIO
+    if (cli_tipo == CLIMED) then
+        //Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+        if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+            post:bonificaCM = "S"
+        endif
+
+        If (bonificaCM == "S") Then
+            CALL MISCTratamientoCM
+            if (retval < 0) then
+                return -2
+            end if
+        else
+            if (ExcepProducto) then
+                //chequeo que la cantidad sea la pactada
+                call CDSSelExcep_Producto (post:cantidad)
+                if (retval < 0) then
+                    return -2
+                endif
+                /*o directamente no dejo vender?
+                MSGBOX "El servicio-rango no admite bonificacion. No se permite la venta.",0X00,"AVISO"
+                RETURN -2*/
+            end if
+            clearfield post:Dcto_CliMed
+            refresh  post:Dcto_CliMed
+        endif
+        ;Si post:Dcto_CliMed > 0 porque se acaba de actualizar, hay que limpiar
+        ;las bonificaciones locales y actualizar los totales.
+        call post:MISCaplicaBonif(TIPO_SERVICIO)
+        IF (post:aplica_bonif_serv == "N") THEN
+            promo_imp_srv_tot = 0
+            CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+            clearfield promoSrvTipoBon
+            clearfield promo_srv_bon
+            clearfield promo_cod
+            clearfield promo_inhibeUpServ
+            clearfield promo_imp_srv_ind
+            clearfield promo_imp_srv
+            clearfield promo_imp_srv_tot
+            clearfield promo_imp_tot_ind
+        END IF
+        if (post:cant_opc > 0)
+            l_cant_opc = post:cant_opc
+            post:cant_opc = 1
+            WHILE (post:cant_opc < (l_cant_opc + 1))
+                x = post:cant_opc - 1
+                call post:CDSopcBonifCM_load(siaf:codigo_siaf,post:cod_opc[x])
+                call post:MISCaplicaBonif(TIPO_OPCIONAL)
+                IF (post:aplica_bonif_opc == "N") THEN
+                    if (promo_imp_opc_tot[x] > 0) then
+                        call post:MISCRestaBonifOpc(x)
+                        clearfield promo_imp_opc[x]
+                        clearfield promo_imp_opc_tot[x]
+                        clearfield promo_imp_opc_ind[x]
+                        clearfield promo_opc_bon[x]
+                    end if
+                ELSE
+                    if (!(promo_imp_opc_tot[x] > 0)) then
+                        post:calculaBonifOpc = "S"
+                        CALL post:MISCSumaBonifOpc()
+                    end if
+                END IF
+                post:cant_opc = post:cant_opc + 1
+            END WHILE
+            post:cant_opc = l_cant_opc
+        END IF
+        promo_tot_Serv = promo_imp_blq_tot + promo_imp_tot_opc + promo_imp_srv_tot
+        if (promo_tot_Serv == 0)
+            clearfield promo_desc
+        end if
+        /*Calcula la tarifa total del servicio*/
+        CALL MISCact_tarif_serv
+    end if
+
+
+     /*COMBOS:Valido que el peso ingresado sea validado para los inrtervalos
+       configurados para el combo.NBA*/
+    CALL post:CDScheckRangoCombo (post:peso_en_grs)
+    IF (RETVAL != 0)
+        RETURN (-2)
+    ENDIF
+    setvaldone post:peso_en_kgs
+    setvaldone post:peso_en_grs
+    RETURN (0)
+
+END SUB
+
+/*******/

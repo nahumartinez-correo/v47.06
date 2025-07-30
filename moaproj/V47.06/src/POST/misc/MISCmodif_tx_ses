@@ -1,0 +1,258 @@
+/****o* Sesión Correo/OFB:post:MISCmodif_tx_ses
+* NOMBRE
+*   OFB:post:MISCmodif_tx_ses
+* DESCRIPCION
+*  Esta rutina lee los datos de la PresuDet que son necesarios para 
+*  verificar la posibilidad de modificar una transaccion.           
+*  TODOS los campos que sea necesario chequear deben ser cargados   
+*  en campos temporales y no hacerse el extract de los mismo        
+*  Repito TODOS LOS CAMPOS
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCset_tx_a_modif
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+//////////////////////////////////////////////////////////////////////
+// Esta rutina lee los datos de la PresuDet que son necesarios para //
+// verificar la posibilidad de modificar una transaccion.           //
+// TODOS los campos que sea necesario chequear deben ser cargados   //
+// en campos temporales y no hacerse el extract de los mismo        //
+// Repito TODOS LOS CAMPOS!!!!                                      //
+//////////////////////////////////////////////////////////////////////
+
+SUB post:MISCmodif_tx_ses
+	// FGB:
+	// todos los campos que se chequean deben ser extraidos y cargados en campos locales!!
+	LOCAL l_PreDEst	LIKE post:PreDEst
+	LOCAL l_PrePEst	LIKE post:PrePEst
+	LOCAL l_codigo_siaf	LIKE siaf:codigo_siaf
+	LOCAL l_tran_original	LIKE post:tran_original
+	LOCAL l_cod_agrupacion	LIKE post:cod_agrupacion
+	LOCAL l_PreDNroTrn	LIKE post:PreDNroTrn
+	LOCAL l_adt_tran_fliatran	LIKE siaf:adt_tran_fliatran
+	LOCAL l_es_envio_wu	LIKE giros:es_envio_WU
+	LOCAL l_es_emision_postal	LIKE giros:es_emision_postal
+	LOCAL l_es_emision_tele	LIKE giros:es_emision_tele
+	LOCAL l_MODIFICA	LIKE common:br_modTP
+	LOCAL l_combo_nro	LIKE post:combo_nro /*para combos de productos NBA*/
+
+	//Rutina que modifica la tx elegida en la grilla
+	CALL CDSload_PresuDet_ses
+	IF (RETVAL < 0) THEN
+		MSGBOX "No se puede encontrar la Transacción a Modificar",0x00,"Error"
+		RETURN -2
+	END IF
+
+	l_MODIFICA = "S"
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	// todos los campos que se chequean deben ser extraidos y cargados en campos locales!! //
+	/////////////////////////////////////////////////////////////////////////////////////////
+
+	//se realizo el select dentro de la CDSload_PresuDet_ses
+	CDS EXTRACT DSC:CONPresuDeta post:PreDEst	INTO l_PreDEst \
+		post:PrePEst INTO l_PrePEst \
+		siaf:codigo_siaf INTO l_codigo_siaf \
+		post:PreDNroTrn INTO l_PreDNroTrn \
+		siaf:adt_tran_fliatran INTO l_adt_tran_fliatran \
+		post:combo_nro INTO l_combo_nro
+
+	;CDS ENDSELECT DSC:CONPresuDeta
+
+	//esta variable me indica si estoy borrando o modificando una transacción
+	CLEARFIELD post:tran_presu_est
+	IF (l_PreDEst == ACEPTADO) THEN
+		MSGBOX ERROR_MODIFICADO,OFB_OK,"Aviso"
+		;plataf:verify_session = "N"
+	ELSE
+		IF (l_PrePEst != 1) THEN
+			//Creo que para Reingeniería es obsoleto
+			MSGBOX "Medio de Pago Confirmado, No puede Modificarse Transaccion",OFB_OK,"Aviso"
+			l_MODIFICA = "N"
+		ELSE
+			/////////////////////////////////////////////////////////////////////////////////////////
+			// todos los campos que se chequean deben ser extraidos y cargados en campos locales!! //
+			/////////////////////////////////////////////////////////////////////////////////////////
+
+			/*NBA No puede modificarse los combos de productos*/
+			IF (l_combo_nro > 0) THEN
+				MSGBOX "No se puede modificar un COMBO.",OFB_OK,"Aviso"
+				LET drv:button = drv:last_button
+				CALL drv:but_up_enable
+				CALL drv:but_redraw
+				l_MODIFICA = "N"
+			END IF
+
+			/*MLD No dejo modificar transacciones asociadas a una original */
+			IF (l_codigo_siaf == 40002) THEN
+				CDS EXTRACT DSC:CONPresuDeta post:tran_original INTO l_tran_original
+			END IF
+			
+			IF (l_codigo_siaf == 8500 || (l_codigo_siaf == 40002 && l_tran_original == "N")) THEN
+				CDS EXTRACT DSC:CONPresuDeta post:cod_agrupacion INTO l_cod_agrupacion
+
+				IF (l_cod_agrupacion != 0) THEN
+					MSGBOX "No se Puede Modificar. Transacción asociada a Otra",OFB_OK,"Aviso"
+					LET drv:button = drv:last_button
+					CALL drv:but_up_enable
+					CALL drv:but_redraw
+					l_MODIFICA = "N"
+				END IF
+			END IF
+			
+			IF (l_codigo_siaf == 8500) THEN
+				tes:adt_evaux_prestran = l_PreDNroTrn
+				CALL post:CDSevaux_aceptada
+				IF (RETVAL < 0) THEN
+					;msgbox "La Transaccion no puede ser modificada",OFB_OK,"Aviso"
+					MSGBOX ERROR_MODIFICADO,OFB_OK,"Aviso"
+					LET drv:button = drv:last_button
+					CALL drv:but_up_enable
+					CALL drv:but_redraw
+					l_MODIFICA = "N"
+				END IF
+			END IF
+			
+			IF (l_codigo_siaf == 99120) THEN
+				post:adt_pmaux_presu = post:PresNro
+				CALL post:CDSpmaux_aceptada
+				IF (RETVAL < 0) THEN
+					;MSGBOX "La Transaccion no puede ser modificada",OFB_OK,"Aviso"
+					MSGBOX ERROR_MODIFICADO,OFB_OK,"Aviso"
+					LET drv:button = drv:last_button
+					CALL drv:but_up_enable
+					CALL drv:but_redraw
+					l_MODIFICA = "N"
+				END IF
+			END IF
+
+			//Estas trx's no se pueden ver ni modificar
+			IF (l_codigo_siaf == 70610 || l_codigo_siaf == 70620 || \
+				l_codigo_siaf == 70630 || l_codigo_siaf == 99300 || \
+				l_codigo_siaf == 6690 || l_codigo_siaf == 6890 || \
+				l_codigo_siaf == 6860 || l_codigo_siaf == 99095 || \
+				l_codigo_siaf == 70640 || l_codigo_siaf == 70650 || \
+				l_codigo_siaf == 99458 || l_codigo_siaf == 30300) THEN
+				//70610  Trx.Giros Masivos.
+				//70620  Faltante  de Cheq.Acreditado para giros masivos.
+				//70630  Excedente de Cheq.Acreditado para giros masivos.
+				//70640  Tx de Importacion de lista de giros.
+				//70650  Tx de Emision de lista de giros.
+				//99458 TX de Consumo de Anticipo monetario (NI 50295)
+				//30300 desc climed ped
+				MSGBOX "La Transaccion no puede Modificarse",OFB_OK,"Aviso"
+				l_MODIFICA = "N"
+			END IF
+
+			//Estas no se pueden modificar, pero se pueden ver...
+			IF (l_codigo_siaf == 99024 || l_codigo_siaf == 99025 || \
+				l_codigo_siaf == 99027 || l_codigo_siaf == 99028 || \
+				l_codigo_siaf == 99029 || l_codigo_siaf == 99019 || \
+				l_codigo_siaf == 99160 || l_codigo_siaf == 99410 || \
+				l_codigo_siaf == 99006 || l_codigo_siaf == 99007 || \
+				l_codigo_siaf == 99130) THEN				
+				//99024 Autorizacion tarjeta
+				//99025 captura cheque
+				//99027  Ingresos brutos
+				//99028 percepc y acrec
+				//99029 impuestos sellados
+				//99019 bvonif ventas UP
+				//99160 intereses por financiacion
+				//99300 desc cli med
+				//99410 uso excepc climed
+				MSGBOX "La Transaccion no puede Modificarse",OFB_OK,"Aviso"
+				post:tran_presu_est = "M"
+				;CALL post:CDSadt_presuact_save
+				LET drv:INDrun_funct = tlr:INDtran_name
+				CALL drv:do_mode
+				l_MODIFICA = "M" // solo muestra
+				//RETURN -2
+			ELSE
+				/////////////////////////////////////////////////////////////////////////////////////////
+				// todos los campos que se chequean deben ser extraidos y cargados en campos locales!! //
+				/////////////////////////////////////////////////////////////////////////////////////////
+
+				//FGB 13.6.2001: Como las transacciones de giros no siguen la misma logica que las postales, antes
+				//de modificar una emision, no solo verifico el estado, sino hasta donde llego a ejecutarse
+				IF (l_adt_tran_fliatran == "CSM") THEN
+					CDS EXTRACT DSC:post:CONPresuDeta \
+						giros:es_envio_WU INTO l_es_envio_wu \
+						giros:es_emision_postal INTO l_es_emision_postal \
+						giros:es_emision_tele	INTO l_es_emision_tele
+	
+					IF (l_es_envio_wu == "S" || l_es_emision_postal == "S" || l_es_emision_tele == "S") THEN
+						CDS EXTRACT DSC:post:CONPresuDeta giros:checkpoint_emision
+						IF (CDSRETVAL == 0) THEN
+							CALL giros:MISCverif_checkpoint(giros:checkpoint_emision)
+							IF (RETVAL < 0) THEN
+								MSGBOX "No se puede modificar una operacion que ya realizó el viaje!!!",OFB_OK,"Aviso"
+								LET drv:button = drv:last_button
+								CALL drv:but_up_enable
+								CALL drv:but_redraw
+								l_MODIFICA = "N"
+							END IF
+						END IF
+					END IF // si es emision
+				END IF // si es de giros
+			END IF
+			//Las transacciones de Cobranza Cliente Medio (ella y sus correspondidas)
+			//No pueden verse ni modificarse
+			IF (l_MODIFICA == "S") THEN
+				CALL post:CDSflagsCob_load
+				IF (post:OperacionCob || post:OperacionAut || post:OperacionInt) THEN
+					MSGBOX "La Transaccion no puede Modificarse",OFB_OK,"Aviso"
+					l_MODIFICA = "N"
+				END IF
+			END IF
+		END IF
+	END IF
+
+	LET drv:button = drv:last_button
+	CALL drv:but_up_enable
+	CALL drv:but_redraw
+
+	SELECT (l_MODIFICA)
+		CASE "S"
+			MSGBOX "Modifica la Transaccion?",OFB_YESNO,"Aviso"
+			IF (RETVAL == 6) THEN  /*si*/
+				CDS EXTRACT DSC:CONPresuDeta tlr:INDtran_name
+				CDS ENDSELECT DSC:CONPresuDeta
+				LET drv:INDrun_funct = tlr:INDtran_name
+				CALL drv:do_mode
+				
+				post:tran_presu_est = "M"
+				;CALL post:CDSadt_presuact_upd
+				;LET drv:INDrun_funct = tlr:INDtran_name
+				;CALL drv:do_mode
+				RETURN (0)
+			END IF
+			//invoco a la transaccion a modificar...
+			RETURN (-2)
+		BREAK
+		CASE "M"
+			CDS EXTRACT DSC:CONPresuDeta tlr:INDtran_name
+			CDS ENDSELECT DSC:CONPresuDeta
+			LET drv:INDrun_funct = tlr:INDtran_name
+			CALL drv:do_mode
+			
+			post:tran_presu_est = "M"
+			;CALL post:CDSadt_presuact_upd
+			RETURN (0)
+		BREAK
+		CASE ELSE
+			CDS ENDSELECT DSC:CONPresuDeta
+			CLEARFIELD drv:INDrun_funct
+			RETURN (-2)
+	END SELECT
+END SUB
+
+/*******/

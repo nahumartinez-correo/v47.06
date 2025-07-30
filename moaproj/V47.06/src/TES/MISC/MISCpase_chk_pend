@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:test:MISCpase_chk_pend
+* NOMBRE
+*   OFB:tes:MISCpase_chk_pend
+* DESCRIPCION
+*   Esta rutina verifica que el operador logueado no tenga chequeras pendientes de recepción.
+* ENTRADAS
+*   
+* SALIDAS
+*   Retval = 0 : no tiene chequeras pendientes de aceptacion
+*   Retval = -2: chequeras pendientes de aceptacion
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  tes:MISCmarca_ciefor_caj
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2316
+* SOURCE
+*/
+#include "tesmisc.h"
+
+SUB tes:MISCpase_chk_pend(p_operator_id)
+    LOCAL l_cuenta LIKE siaf:i
+    LOCAL l_cdsretval LIKE lib:err_retval
+    LOCAL l_retval LIKE lib:err_retval
+    LOCAL l_operator_id LIKE op:op_operator_id    
+    LOCAL l_adt_chk_op_orig LIKE tes:adt_chk_op_orig
+    LOCAL l_adt_chk_orig LIKE tes:adt_chk_orig
+    LOCAL l_adt_chk_suc LIKE tes:adt_chk_suc
+    LOCAL l_adt_chk_serie LIKE tes:adt_chk_serie
+    LOCAL l_adt_chk_nrogiro LIKE tes:adt_chk_nrogiro    
+
+    l_cuenta = 0
+    l_operator_id = p_operator_id    
+    
+    CDS SELECT from DSC:TesChkMov BECOMES DSC:TesChkMov \
+        WHERE tes:adt_chk_suc == op:op_branch_id && \
+             (tes:adt_chk_op_dest == l_operator_id || tes:adt_chk_op_orig == l_operator_id ) && \
+              tes:adt_chk_marca_ing == "P"
+    
+    CDS FINDFIRST DSC:TesChkMov LOCK 
+    LET l_cdsretval = CDSRETVAL
+    IF (l_cdsretval == -801) THEN
+        CDS ENDSELECT DSC:TesChkMov
+        RETURN 0
+    END IF
+    
+    DO
+        IF (l_cdsretval != 0) THEN
+            BREAK
+        END IF
+        CDS EXTRACT DSC:TesChkMov ALL
+
+        l_adt_chk_op_orig = tes:adt_chk_op_orig
+        l_adt_chk_orig    = tes:adt_chk_orig
+        l_adt_chk_suc     = tes:adt_chk_suc
+        l_adt_chk_serie   = tes:adt_chk_serie
+        l_adt_chk_nrogiro = tes:adt_chk_nrogiro
+                            
+        CALL giros:CDSbusco_RecepChk(l_adt_chk_suc, l_adt_chk_serie, l_adt_chk_nrogiro)
+        IF (giros:adt_chk_usado != (tes:adt_chk_cantid - tes:adt_chk_libres)) then
+            MSGBOX "DIFIERE CANTIDAD DE CHEQUES ORIGINALES" OFB_OK "Error"
+            RETURN -3
+        END IF
+
+        //NAM:Se invierten origen a destino y viceversa en TesChkMov
+        //para que la chequera vuelva al TESORO en el cierre forzado de caja
+        IF (tes:adt_chk_marca_ing == "P") && (tes:adt_chk_op_dest == l_operator_id) THEN
+            tes:adt_chk_dest = l_adt_chk_orig
+            tes:adt_chk_op_dest = l_adt_chk_op_orig                     
+            tes:adt_chk_orig = op:op_login_id
+            tes:adt_chk_op_orig = l_operator_id 
+        END IF
+        tes:adt_chk_marca_ing = "T"   
+        tes:adt_chk_tesoro = "S"
+
+        //NAM:Se asigna el nro de operador origen de cuando se hizo el pase en RecepChk.
+        giros:adt_chk_op = l_adt_chk_op_orig
+        giros:adt_chk_estado = 0
+        giros:adt_chk_tesoro = tes:adt_chk_tesoro
+        giros:adt_chk_fecha = tes:adt_chk_fecha
+        giros:adt_chk_hora = tes:adt_chk_hora
+        
+        CALL tes:CDSbuscaPerfil_hab  
+
+        //Actualiza la tabla RecepChk)        
+        CALL tes:CDSRecepChk_actu(l_adt_chk_suc, l_adt_chk_serie, l_adt_chk_nrogiro)   
+
+        //Actualizo la tabla TesChkMov)
+        CDS CLEARBUFFER DSC:TesChkMov
+        CDS APPEND DSC:TesChkMov adt_chk_marca_ing adt_chk_orig \
+                             adt_chk_op_orig adt_chk_dest \
+                             adt_chk_op_dest adt_chk_fecha adt_chk_hora \
+                             adt_chk_proxim adt_chk_libres adt_chk_tesoro
+        CDS UPDATE DSC:TesChkMov LOCK
+        CDS UNLOCK DSC:TesChkMov        
+        
+        CDS FINDNEXT DSC:TesChkMov LOCK
+        LET l_cdsretval = CDSRETVAL
+        l_cuenta = l_cuenta + 1 
+    LOOP
+    CDS ENDSELECT DSC:TesChkMov
+    
+    IF (l_cuenta > 0) THEN
+        MSGBOX "Se detectaron chequeras transferidas PENDIENTES de aceptación,\n para realizar el cierre se devolverán al TESORO.",0x00,"AVISO"
+    END IF
+    
+    RETURN -2
+    
+END SUB      
+
+/*******/

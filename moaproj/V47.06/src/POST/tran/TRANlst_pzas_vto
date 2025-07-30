@@ -1,0 +1,164 @@
+/****o* Reportes/OFB:post:TRANlst_pzas_vto
+* NOMBRE
+*   OFB:post:TRANlst_pzas_vto
+* DESCRIPCION
+*   Rutina de impresion de Reporte de PIEZAS CON VTO. PROXIMO
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:MISClist_cieforsuc,OFB:tes:MISClist_cierre_suc
+* DOCUMENTACION
+*   NI50572 Digitalizacion de Reportes   
+* SOURCE
+*/
+#include "posttran.h"
+
+SUB post:TRANlst_pzas_vto
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	
+	LET copias_aux = 1
+    
+	/* Veo si tengo que crear el picklist */
+	LET siaf:pick_titulo = "est_suc"
+	IF (siaf:pantalla_impreso ==  "P") THEN
+		CALL csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	ELSE
+		;LMB - PS 9780 - 17.06.2008
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+		CALL tes:MISCopen_file(common:tmpDirTemporal, 5)
+	END IF
+    
+	LET siaf:lineas_cl = 0
+	/* pongo encabezado */
+	LET siaf:indica_calcu = 0 // inicializa cant. de hojas
+	LET FLD:tes:INDsheet_header = OFB:post:MISCenc_pzas_vto
+	CALL post:MISCenc_pzas_vto
+
+	/* Genero el listado */
+	CALL post:MISCwri_pzas_vto // LISTADO
+	SELECT (RETVAL)
+		CASE -2
+			LET common:csr_string = "(L) Error realizando listado"
+			ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+			;LMB - PS 9780 - 17.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+			CALL tes:MISCclose_file(common:tmpDirTemporal,5)
+			RETURN (-2)
+		BREAK
+		CASE -1
+			; No hubo movimientos
+			;LMB - PS 9780 - 17.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+			CALL tes:MISCclose_file(common:tmpDirTemporal, 5)
+			//  NI50572 Digitalizacion de Reportes
+			//IF (siaf:pantalla_impreso == "I") THEN  
+			IF (siaf:pantalla_impreso != "P") THEN 
+				FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+				CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+				EXEC post:linea_spvCM          
+			END IF
+			RETURN (-2)
+		BREAK
+	END SELECT
+
+	/* Salida segun opcion del usuario */
+	IF (siaf:pantalla_impreso == "P") THEN
+		CALL csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+	ELSE
+		FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+		CALL tes:MISCclose_file(common:tmpDirTemporal, 5)
+    
+		//NI50572 Digitalizacion de Reportes
+		CALL tes:MISCflowPDF("lispzavto.lis")   
+		IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+			//Genero el PDF y lo imprimo
+			CALL tes:MISCcrearPDF("lispzavto.lis")
+		END IF  
+		
+		//MFM 2019 - Agrego para que borre el .lis
+		FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+		CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+		EXEC post:linea_spvCM   
+	END IF
+	
+  UNDISPLAY siaf:SCRNcomo_lista 
+
+;;    /* Salida segun opcion del usuario */
+;;    if (siaf:pantalla_impreso == "P") then
+;;        call csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+;;    else
+;;       ;LMB - PS 9780 - 17.06.2008
+;;       ;call tes:MISCclose_file("\\te mp\\lispzavto.lis",5)
+;;       fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+;;       call tes:MISCclose_file(common:tmpDirTemporal, 5)
+;;       /*Esta rutina se encarga de imprimir tantas copias como se elijan, luego borra el archivo. 
+;;       Diego Priore 16/02/2000*/
+;;       IF ((siaf:codigo_siaf_list == 9550) || (siaf:codigo_siaf_list == 9540)) THEN
+;;           //NI50572 Digitalizacion de Reportes
+;;       			CALL tes:MISCflowPDF("lispzavto.lis")
+;;		       //Si es impresion o si fallo la creacion del PDF entonces fuerzo la impresion
+;;		      IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+;;              WHILE (copias_aux <= siaf:nro_copias)
+;;			            ;LMB - PS 9780 - 17.06.2008
+;;		       			;call siaf:MISCfile_print2("\\te mp\\lispzavto.lis","predeterminada")
+;;		       			fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+;;			          call siaf:MISCfile_print2(common:tmpDirTemporal, "predeterminada")
+;;			          LET copias_aux = copias_aux + 1
+;;			     	 END WHILE
+;;	   		 	ENDIF
+;;		      ;FPRINT common:csr_string "cmd /c del %-s","\\te mp\\lispzavto.lis"
+;;	        FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "lispzavto.lis"
+;;	        CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+;;       END IF
+;;	
+;;	   IF ((siaf:codigo_siaf_list != 9550) && (siaf:codigo_siaf_list != 9540)) THEN	
+;;          if (siaf:nro_copias == 2) then
+;;             ;LMB - PS 9780 - 17.06.2008
+;;             ;FPRINT LineaComando "cmd /c copy %-s %-s","\\te mp\\lispzavto.lis","\\te mp\\lispzavto.txt"
+;;             FPRINT LineaComando "cmd /c copy %-s%-s %-s%-s", common:dirTemporal, "lispzavto.lis", common:dirTemporal, "lispzavto.txt"
+;;             CALL csr:create_process LineaComando,SW_HIDE ,CSR_NOWAIT
+;;             ;FPRINT LineaComando "cmd /c copy %-s %-s","\\te mp\\lispzavto.lis","\\te mp\\lispzavto2.lis"
+;;             FPRINT LineaComando "cmd /c copy %-s%-s %-s%-s", common:dirTemporal, "lispzavto.lis", common:dirTemporal, "lispzavto2.lis"
+;;             CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+;;          end if
+;;   
+;;           //NI50572 Digitalizacion de Reportes
+;;		        CALL tes:MISCflowPDF("lispzavto.lis")
+;;      		 //Si es impresion o si fallo la creacion del PDF entonces fuerzo la impresion
+;;        		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN 
+;;		          ;LMB - PS 9780 - 17.06.2008  
+;;		          ;call siaf:MISCfile_print("\\te mp\\lispzavto.lis","predeterminada") 
+;;		          fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+;;		          call siaf:MISCfile_print(common:tmpDirTemporal, "predeterminada")
+;;		        ENDIF
+;;          if (siaf:nro_copias == 2) then
+;;             ;LMB - PS 9780 - 17.06.2008  
+;;          	 ;call tes:MISCclose_file("\\te mp\\lispzavto.lis",5)
+;;             ;call siaf:MISCfile_print("\\te mp\\lispzavto.lis","predeterminada")   
+;;          		 fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "lispzavto.lis"
+;;           	 call tes:MISCclose_file(common:tmpDirTemporal, 5)
+;;            
+;;             //NI50572 Digitalizacion de Reportes
+;;		        CALL tes:MISCflowPDF("lispzavto.lis")
+;;      		 //Si es impresion o si fallo la creacion del PDF entonces fuerzo la impresion
+;;        		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+;;                call siaf:MISCfile_print(common:tmpDirTemporal, "predeterminada")
+;;            ENDIF
+;;             
+;;          end if
+;;          //MFM 2019 - Agrego para que borre el .lis
+;;		       fprint post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+;;           CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+;;           exec post:linea_spvCM   
+;;       END IF
+;;                
+;;    end if
+;;    undisplay siaf:SCRNcomo_lista
+END SUB
+
+/*******/

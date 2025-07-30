@@ -1,0 +1,302 @@
+/****o* Lista de Giros/OFB:giros:OFBproceso_lg
+* NOMBRE
+*   OFB:giros:OFBproceso_lg
+* DESCRIPCION
+*  Tratamiento de Envio de Giros Postales y Telegraficos de Lista de Giros.
+*  Se valida limites diarios de Emision
+*  Se valida que el saldo disponible de adelanto monetario sea suficiente para emitir los giros.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:PBEnvio_Post_LG,giros:PBEnvio_Teleg_LG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1204
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBproceso_lg(tipo_giro,sesion_nro)
+	LOCAL varl_tipo_giro LIKE giros:tipo_giro_fld
+	LOCAL varl_sesion_lg LIKE giros:nro_sesion_lg
+	LOCAL varl_mensaje2 LIKE common:csr_string
+	LOCAL varl_mensaje LIKE common:csr_string
+	LOCAL loc_retval LIKE lib:err_retval
+	LOCAL loc_importe LIKE siaf:importe
+	LOCAL l_SaldoAdelMon LIKE post:AdelMon_CM
+	LOCAL cant_int LIKE siaf:i
+	LOCAL rec_caidas LIKE siaf:i
+	LOCAL l_TipoDocEmis_fld LIKE giros:TipoDocEmis_fld
+	LOCAL l_NroDocEmis_fld LIKE giros:NroDocEmis_fld
+	LOCAL l_ImpTotal_Percep LIKE giros:ImporteTotal_fld
+	
+	l_SaldoAdelMon = post:AdelMon_CM - giros:EmisAdelMon
+
+	FPRINT varl_tipo_giro,"%s",tipo_giro
+	FPRINT varl_sesion_lg,"%s",sesion_nro
+
+	CALL giros:CDSbuscar_trx_lg(varl_tipo_giro,varl_sesion_lg)
+	IF ( RETVAL == -801) THEN
+		RETURN 4
+	ELSE
+		IF (RETVAL != 0) THEN
+			MSGBOX "Error al obtener los datos para emitir.",OFB_OK,"Atencion"
+			RETURN -2
+		END IF
+	END IF
+	
+	//SE DEBE VALIDAR QUE LOS GIROS NO SUPEREN EL LIMITE DIARIO DE EMISION CORRESPONDIENTE
+	CALL giros:CDSlimite_diario_lg(varl_tipo_giro,varl_sesion_lg)
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	END IF
+	
+	//SE DEBE VERIFICAR SI EL SALDO DE ADEL MONETARIO ALCANZA PARA EL ENVIO DE TODOS LOS GIROS SELECCIONADOS
+	//NO IMPIDE EL ENVIO, SOLO EMITE MENSAJE DE ADVERTENCIA SI NO ES SUFICIENTE
+	CALL CDSlimite_adel_lg(varl_tipo_giro,varl_sesion_lg,l_SaldoAdelMon)
+	
+	MSGBOX "¿Desea emitir los giros?",OFB_YESNO2,"Atencion"
+	IF ( RETVAL == 7 ) THEN // no
+		RETURN 0
+	END IF
+	
+	//MFM-Tratamiento Previo al Envio del Giro Postal
+	CALL giros:MISCtrat_post_lg(varl_tipo_giro)
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	ENDIF
+	
+	//AUT-1204 (MEJORA)
+	IF (varl_tipo_giro == "P") THEN
+		//AUT-1304/1305 
+		//ESTE QUERY ES VALIDO YA SEA SI SE PRODUJO UNA CAIDA O NO
+		CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONses_lg WHERE \
+    	(giros:nro_sesion_lg == varl_sesion_lg && \
+    	giros:tipo_giro_fld == varl_tipo_giro && \
+    	giros:estado_lg == "I" && \
+    	giros:a_emitir == "S" && \
+    	giros:Serie_fld != "") SORT "primary"
+    ELSE
+    	CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONses_lg WHERE \
+	    	giros:nro_sesion_lg == varl_sesion_lg && \
+	    	giros:tipo_giro_fld == varl_tipo_giro && \
+	    	giros:estado_lg == "I" && \
+	    	giros:a_emitir == "S" \
+		    SORT "primary"
+	END IF
+		
+	CDS FINDFIRST DSC:CONses_lg  LOCK
+	lib:err_retval = CDSRETVAL
+		
+	DO
+		IF (lib:err_retval == -801) THEN
+			BREAK 
+		ENDIF
+
+		CALL CSR:proc_list(F_CLEAR,LST:LISTlg_post)
+		CALL CSR:proc_list(F_CLEAR,LST:LISTlg_tele)
+		CALL CSR:proc_list(F_CLEAR,LST:LISTemis_flds)
+		CALL CSR:proc_list(F_CLEAR,LST:LISTbenef_flds)
+    CALL csr:cleararray post:cos_opc
+    CALL csr:cleararray post:ali_opc
+    CALL csr:cleararray post:texto_opc
+
+		CDS EXTRACT DSC:CONses_lg  ALL
+		
+		//SE DEBE VALIDAR QUE EL GIRO A ENVIAR NO SUPERE EL SALDO DE ADELANTO MONETARIO
+		//gpb:PS10778
+		l_ImpTotal_Percep = giros:ImporteTotal_fld + post:ImpTotRG3337
+		IF (l_SaldoAdelMon >= l_ImpTotal_Percep) THEN
+		//IF (l_SaldoAdelMon >= giros:ImporteTotal_fld) THEN
+			//l_SaldoAdelMon = l_SaldoAdelMon - giros:ImporteTotal_fld
+		ELSE
+			//msgbox "El Saldo de Adelanto Monetario disponible no es suficiente para realizar la emisión del giro.",OFB_OK,"ATENCION"
+			FPRINT varl_mensaje,"El Saldo de Adelanto Monetario disponible no es suficiente para realizar la emisión del giro con importe $ %e. No se podrá realizar su envío.",giros:ImporteNeto
+			MSGBOX varl_mensaje,OFB_OK,"ERROR"
+			BREAK
+		END IF
+
+		//Si es persona fisica y tipo de documento CUIT, para el viaje, se utiliza el tipo y nro documento
+		//cargados en la importacion y grabados en la tabla Climed (en memoria)
+		IF (!TESTFLAG(pjurid_benef_flag,persona_juridica) && giros:TipoDocEmis_fld == 80) THEN
+	    l_TipoDocEmis_fld = giros:TipoDocEmis_fld
+	    l_NroDocEmis_fld = giros:NroDocEmis_fld
+	    giros:TipoDocEmis_fld = giros:TipoDocEmisLG_FCuit
+	    giros:NroDocEmis_fld = giros:NroDocEmisLG_FCuit
+		END IF
+
+		//TRATAMIENDO DE ENVIO DE GIROS POSTALES/TELEGRAFICOS Y ANULACIONES DE CHEQUES POSTALES
+		//este while se hace para reintentar el envio 2 veces mas en caso de que haya una caida en vuelo
+		cant_int = 0
+		WHILE (cant_int < 3)
+			CALL giros:OFBenvio_lg(varl_tipo_giro)
+			IF (RETVAL < 0 ) THEN
+				loc_retval = -2
+				BREAK
+			END IF
+			SELECT (hcomm:tran_status)
+				CASE HOST_ACCEPTED
+					CDS BEGINWORK
+					cant_int = 3
+					IF (giros:lg_cheque != "AN")
+						//Si es != de AN esto sirve para giros postales y telegraficos
+						giros:EstadoGiro_fld = "EM"
+						//actualizo la tabla sesion_lg 
+						CALL giros:CDSupdate_trx_lg("E",varl_tipo_giro)
+						//actualizo valores de pantalla
+						//call giros:MISCcontadores_LG2(0)
+						//Obtengo el importe total de los giros emitidos
+						CALL CDStotLG_emitidos(giros:nro_sesion_lg)						
+						//actualizo cabec_lg
+						CALL giros:MISCact_cabec_lg
+						//actualizar saldo Adelanto Monetario en la Presu
+						//no lo reseteo nunca porque puede haber una caida del rt.
+						giros:EmisAdelMon = giros:EmisAdelMon +  giros:ImporteTotal_fld
+						//guardarlo en la presu
+						CALL CDSsave_cons_adel_lg
+						//actualizo el saldo local
+						l_SaldoAdelMon = l_SaldoAdelMon - giros:ImporteTotal_fld
+						//actualizar consumo en la tabla Giros_Limites
+						CALL giros:CDSupd_glimite_cons(varl_tipo_giro)
+						IF (varl_tipo_giro == "P") THEN
+							//actualiza el giro como emitido en RecepChk
+							CALL giros:CDSavanza_cheq("EM")
+						END IF
+					ELSE
+						//anulo el cheque en la RecepChk
+						//CALL giros:CDSavanza_cheq("AN")		
+						//actualizo la sesion_lg para que el giro quede disponible para una futura emision
+						//blanquear campos de  estado del cheque, y nro de giro y demas
+						CALL CDSupd_ChqAnul_ok
+					END IF
+					CDS COMMITWORK
+					BREAK
+				CASE HOST_REJECTED
+					CDS BEGINWORK
+					cant_int = 3
+					IF (varl_tipo_giro == "P") THEN
+						//actualiza el giro como emitido en RecepChk
+					    CALL giros:CDSavanza_cheq("AN")
+					END IF
+					//Esta condicion, sirve tanto para postal no anulados, como para telegraficos
+					//ya que para estos,el campo giros:lg_cheque estará vacio.
+					IF (giros:lg_cheque != "AN")
+						//actualizo la tabla sesion_lg para que el giro quede como disponible
+						CALL giros:CDSupdate_trx_lg("I",varl_tipo_giro)							
+						
+						//Como el giro debe quedar disponible no se actualizan los contadores ni la cabec_lg
+						//actualizo valores de pantalla
+						//call giros:MISCcontadores_LG2(0)
+						//actualizo cabec_lg
+						//call giros:MISCact_cabec_lg
+						
+						IF (varl_tipo_giro == "P") THEN
+						   FPRINT varl_mensaje,"%s : %s-%s-%s %s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",\
+						   giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld, \
+						   "\nDESTRUYA EL CHEQUE MANUALMENTE."
+						   MSGBOX varl_mensaje,OFB_OK,"Atencion"
+						END IF   
+						IF (varl_tipo_giro == "P") THEN  
+							MSGBOX "Error en envio de operaciones",OFB_OK,"Atencion"
+						END IF
+					ELSE
+					  //solo postales anulados.
+						FPRINT varl_mensaje,"%s : %s-%s-%s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld
+						MSGBOX varl_mensaje,OFB_OK,"Atencion"
+						CALL CDSupd_ChqAnul_ok
+					END IF
+					CDS COMMITWORK
+					CDS UNLOCK DSC:CONses_lg
+					CDS ENDSELECT DSC:CONses_lg
+					IF (varl_tipo_giro == "P") THEN
+						//Verifico en la sesion_lg si quedan cheques vivos y/o anulados para emitir y los anulo
+						//en el host y en la RecepChk
+						CALL MISCanul_chq_vivos(varl_tipo_giro,varl_sesion_lg)
+					END IF
+					RETURN -1
+				BREAK
+				CASE ELSE //caida en vuelo
+					rec_caidas = 0
+					//intento 3 veces recuperar la caida
+					WHILE (rec_caidas < 3)
+						FYIMSG drv:fyimsg_list,\
+							"Proceso de Recuperacion de Transacciones Caidas en Vuelo"						
+						CALL giros:CDSchk_caidas_lg
+						IF (RETVAL < 0) THEN
+							//hubo una caida en la recuperacion de caida
+							rec_caidas = rec_caidas + 1
+						ELSE
+							//pudo recuperar correctamente la caida
+							rec_caidas = 4
+						END IF
+						FYIMSG CLEAR
+					END WHILE
+					IF (rec_caidas == 4 && cant_int < 2) THEN
+						//Recupero correctamente la caida de la recuperacion de caida
+						//Entonces intento mandar nuevamente el giro
+						cant_int = cant_int + 1
+					ELSE
+						//rec_caidas != 4 - luego de intentar 3 veces no pudo recuperar la caida de la 
+						//recuperacion de caida por lo que se aborta el proceso de envios
+						//cant_int = 2 pudo recuperar la caida pero ya hizo todos los intentos 
+						//de envíos posibles (no va a volver a intentar el envio)  por lo que se aborta el proceso 
+						//y se cancela el cheque para que este no quede como "HA" en la RecepChk y existan cheques posteriores
+						// anulados
+						IF (varl_tipo_giro == "P") THEN
+							CALL giros:CDSavanza_cheq("AN")
+							IF (giros:lg_cheque != "AN") THEN
+							   FPRINT varl_mensaje,"%s : %s-%s-%s %s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",\
+							   giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld, \
+							   "\nDESTRUYA EL CHEQUE MANUALMENTE."
+							ELSE
+								FPRINT varl_mensaje,"%s : %s-%s-%s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld
+							END IF
+							MSGBOX varl_mensaje,OFB_OK,"Atencion"
+							//actualizo la sesion_lg para que el giro quede disponible para una futura emision
+							//blanquear campos de  estado del cheque, y nro de giro y demas
+							CALL CDSupd_ChqAnul_ok						
+							CDS UNLOCK DSC:CONses_lg
+							CDS ENDSELECT DSC:CONses_lg
+							
+							//Verifico en la sesion_lg si quedan cheques vivos y/o anulados para emitir y los anulo
+							//en el host y en la RecepChk
+							CALL MISCanul_chq_vivos(varl_tipo_giro,varl_sesion_lg)
+							
+						END IF
+						RETURN -3
+					END IF
+					BREAK
+			END SELECT
+		END WHILE
+
+		//Si es persona fisica y tipo de documento CUIT, para el viaje se utilizo el tipo y nro documento
+		//cargados en la importacion y grabados en la tabla Climed (en memoria). Deben recuperarse los
+		//valores del Inicio de Sesion
+		IF (!TESTFLAG(pjurid_benef_flag,persona_juridica) && l_TipoDocEmis_fld == 80) THEN
+			giros:TipoDocEmis_fld = l_TipoDocEmis_fld
+			giros:NroDocEmis_fld = l_NroDocEmis_fld
+		END IF
+				
+		CDS FINDNEXT DSC:CONses_lg  LOCK
+		lib:err_retval = CDSRETVAL
+
+	LOOP
+
+	CDS UNLOCK DSC:CONses_lg
+	CDS ENDSELECT DSC:CONses_lg
+	
+	IF (loc_retval != -2) THEN
+		//Proceso de envio de anulaciones de cheques inutilizados de una planca
+		CALL OFBproceso_AnulChq
+		RETVAL = loc_retval
+	END IF
+	
+	RETURN loc_retval
+END SUB
+
+/*******/
+

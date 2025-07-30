@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSadt_br_seltipo
+* NOMBRE
+*   OFB:tes:CDSadt_br_seltipo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSadt_br_seltipo
+    local LineaPick like common:csr_string
+    local LIndice like common:csr_string
+    local LRetVal like lib:err_retval
+    local LBranch like admin:adt_br_branch
+
+	SETFLAG drv:mode_flags,picklist_mode
+
+    LIndice = 0
+    LRetVal = 0
+    
+    MOVE admin:adt_br_branch TO admin:adt_br_branch_tmp
+
+    ;SMC Genero El PickList
+    CALL  CSR:f_sanewpl DSC:admin:PickSucursales PIC:admin:PickSucursales 330 550
+	CDS FINDFIRST DSC:admin:adt_br_context NOLOCK
+
+	WHILE (CDSRETVAL == 0)
+		CDS EXTRACT DSC:admin:adt_br_context \
+        admin:adt_br_branch,\
+        admin:adt_br_bank_name,\
+        admin:adt_br_address,\
+        admin:adt_br_city,\
+        admin:adt_br_partido, admin:adt_br_zip
+      
+        ;SMC Agrego en el Pick List
+        fprint FLD:LineaPick "%-5.5s %-25.25s" admin:adt_br_branch, admin:adt_br_bank_name
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+        fprint FLD:LineaPick "    %-30.30s %-25.25" admin:adt_br_address, admin:adt_br_city
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+        fprint FLD:LineaPick "    %-25.25s %-8.8" admin:adt_br_partido, admin:adt_br_zip
+        CALL  CSR:f_saaddpl DSC:admin:PickSucursales FLD:LineaPick
+
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:admin:adt_br_context NOLOCK
+	END WHILE
+	CDS ENDSELECT DSC:admin:adt_br_context
+	
+    ;SMC restauro datos originales
+    if (admin:adt_br_branch_tmp != "" && admin:adt_br_branch_tmp != admin:adt_br_branch) then
+        let admin:adt_br_branch = admin:adt_br_branch_tmp
+        CALL  OFB:admin:CDSadt_br_load
+    endif
+
+    clearfield LineaPick
+    ;SMC Muestro Pick List
+	SETFLAG drv:mode_flags,picklist_mode
+    CALL drv:MISCf_sacombopl (DSC:admin:PickSucursales,FLD:LineaPick,drv:button)
+    ;CALL CSR:f_sadopl (DSC:admin:PickSucursales,FLD:LineaPick)
+    LRetVal = retval
+	RESETFLAG drv:mode_flags,picklist_mode
+    CALL CSR:proc_list(F_CLEAR,LST:admin:LISTbr_flds)    
+
+    if (LRetVal >= 0) then
+        let admin:adt_br_branch = substr(FLD:LineaPick,0,5)
+        CALL  OFB:admin:CDSadt_br_load
+    else
+        if (admin:adt_br_branch_tmp.numchars != 0) then
+            MOVE admin:adt_br_branch_tmp TO admin:adt_br_branch
+            CALL  OFB:admin:CDSadt_br_load
+        endif
+        let LRetVal = -2
+    endif
+    CALL CSR:proc_list(F_REFRESH,LST:admin:LISTbr_flds)
+    
+    ;SMC Destruyo PickList
+    CALL  csr:f_sadroppl DSC:admin:PickSucursales
+	
+	RESETFLAG drv:mode_flags,picklist_mode
+    if (LIndice == 0) then
+        ERRMSG LST:common:errmsg_list,"NO SE ENCONTRARON SUCURSALES"
+    endif
+    if (LRetVal < 0) then
+		RETURN (-2)
+	END IF
+    ;CALL  drv:side_bar_enable
+	RETURN (0)
+END SUB
+
+/*******/

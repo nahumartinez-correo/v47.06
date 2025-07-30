@@ -1,0 +1,130 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcons_mov_dep_chq
+* NOMBRE
+*   OFB:tes:MISCcons_mov_dep_chq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcons_mov_dep_chq
+    Local total_importe like siaf:importe
+    LOCAL desc LIKE tes:chqra_stat_desc
+
+    let siaf:lineas_cl = 0 // pone a cero el conteo de lineas
+    siaf:indica_calcu = 0
+
+    /* Veo si tengo que crear el picklist */
+    let siaf:pick_titulo = "est_cheq"
+    if (siaf:pantalla_impreso ==  "P") then
+       call csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+    else
+       ;LMB - PS 9780 - 12.06.2008
+       ;call MISCopen_file("\\te mp\\est_cheq.lis",5)
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCopen_file(common:tmpDirTemporal,5)
+      
+    end if
+
+
+
+    if (fecha_valor.numchars != 0)
+       cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx  \
+       where (teso_cheq_suc     == FLD:common:sucursal_activa) && \
+             (teso_cheq_id      == FLD:banco_codigo)           && \
+             (teso_cheq_tipocta == FLD:tipo_cuenta)            && \
+             (teso_cheq_nrocta  == FLD:nro_cuenta)             && \
+             (teso_cheq_fdep    == FLD:tes:fecha_valor)        && \
+             (teso_cheq_boleta  == FLD:tes:boleta_deposito)    && \
+             (teso_cheq_estado  == "P")
+    else
+       cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx  \
+       where (teso_cheq_suc     == FLD:common:sucursal_activa) && \
+             (teso_cheq_id      == FLD:banco_codigo)           && \
+             (teso_cheq_tipocta == FLD:tipo_cuenta)            && \
+             (teso_cheq_nrocta  == FLD:nro_cuenta)             && \
+             (teso_cheq_freg    == FLD:siaf:fecha_proceso)     && \
+             (teso_cheq_boleta  == FLD:tes:boleta_deposito)    && \
+             (teso_cheq_estado  == "P")
+    end if
+
+    CDS FINDFIRST TesoCheq_ctx NOLOCK
+    IF (cdsretval != 0)
+       return (-2)
+    end if
+
+    total_importe = 0
+    /*Encabezado*/
+    CALL MISCdep_chqCBPr_enc
+
+
+    While (cdsretval == 0)
+          cds extract TesoCheq_ctx ALL
+
+          /*Obtener la descripcion del banco*/
+          CALL tes:CDSbanco_load(teso_cheq_id)
+
+          /*Obtener la descripcion del estado del cheque*/
+          select (teso_cheq_acred)
+               case "S"
+                    desc = "ACREDITADO"
+                    break
+               case "N"
+                    desc = "NO ACREDITADO"
+                    break
+               case "R"
+                    desc = "RECHAZADO"
+                    break
+               case else
+                    clearfield desc
+                    break
+          end select
+
+
+          fprint common:csr_string "%3.3e  %-30.30e  %8.8e  %13.13e  %3.3e  %-15.15e",teso_cheq_id,siaf:adt_banco_desc,teso_cheq_nro,teso_cheq_importe,teso_cheq_clearing,desc
+          call MISCwrite_file(5,fld:common:csr_string)
+
+          total_importe = total_importe + teso_cheq_importe
+          cds findnext TesoCheq_ctx nolock
+    End While
+    cds endselect TesoCheq_ctx
+
+    fprint common:csr_string "  "
+    call MISCwrite_file(5,fld:common:csr_string)
+    fprint common:csr_string "  "
+    call MISCwrite_file(5,fld:common:csr_string)
+
+    fprint common:csr_string "TOTAL DEPOSITADO............................................  %-13.13e",total_importe
+    call MISCwrite_file(5,fld:common:csr_string)
+
+    fprint common:csr_string "  "
+    call MISCwrite_file(5,fld:common:csr_string)
+    call MISCwrite_file(5,fld:common:csr_string)
+
+    CALL tes:MISCtotal_hojas1
+
+    /* Salida segun opcion del usuario */
+    if (siaf:pantalla_impreso == "P") then
+       call csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+    else
+       ;LMB - PS 9780 - 12.06.2008
+       ;call MISCclose_file("\\te mp\\est_cheq.lis",5)
+       ;call siaf:MISCfile_print("\\te mp\\est_cheq.lis","predeterminada")
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCclose_file(common:tmpDirTemporal,5)
+       call siaf:MISCfile_print(common:tmpDirTemporal,"predeterminada")
+   end if
+
+END SUB
+
+/*******/

@@ -1,0 +1,7 @@
+#include "ofbdefs.h"
+#include "drv.h"
+#include "color.h"
+#include "base.h"
+#include "desktop.h"
+#include "giros.h"
+#include "sucuvirt.h"

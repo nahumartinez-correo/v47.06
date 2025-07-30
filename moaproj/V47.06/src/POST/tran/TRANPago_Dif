@@ -1,0 +1,104 @@
+/****o* Mensajería/OFB:post:TRANPago_Dif
+* NOMBRE
+*   OFB:post:TRANPago_Dif
+* DESCRIPCION
+*   Esta rutina se llama al confirmar el inicio de sesión y envía los siguientes viajes al host:
+*   1-Consulta para UP si admite pago con cheque diferido, si el flag correspondiente está seteado y si no es una consulta por excepcion.
+*   2-Consulta para CM los convenios segun la modalidad del cliente.
+*   3-Cliente Minorista que paga con cheque diferido lo da de Alta en el Host.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANidentifica_cli
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+* SOURCE
+*/
+#include "postTRAN.h"
+
+SUB post:TRANPago_Dif
+	LOCAL l_INDcur_list LIKE drv:INDcur_list
+
+	//gpb:NI50479
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN	
+		//hay que tener cargados los campos
+		//post:cod_tx = codigo del servicio, por ej "12101"
+		//post:desc_tx = descripcion del servicio, por ej "ENCOMIENDA CORREO CLASICA"
+		LET drv:INDrun_funct = LST:post:TRANgral
+	ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+		LET drv:INDrun_funct = LST:post:TRAN30050	
+	ELSE
+		IF (cli_tipo == CLIUP) THEN
+			/*Esta rutina realiza un viaje al switch en el caso de que el flag
+			de pago con cheque diferido esté activado*/ 
+			;SC50200 se pregunta por el flag chq_dif_al_dia
+			;IF (consulta_excepcion != "S" && (!TESTFLAG (cheque_dif, chq_dif_al_dia))) THEN
+			IF (consulta_excepcion != "S") THEN
+				CALL post:MISCUPpago_dif	
+			ELSE
+				pago_diferido = "S"
+				CALL CDSUP_PagoDif_save
+			END IF
+		ELSE
+			IF (post:cli_tipo == CLIMED) THEN
+				SELECT (post:estado_consulta)
+					CASE RECH_CONS_CLIMED
+						LET drv:INDrun_funct = LST:post:TRANclimed_rech_cons
+					BREAK
+					CASE ACEP_CONS_CLIMED
+						CALL post:MISCconvenioSucursal
+						//El convenio no debe consultarse cuando el cliente no pertenece a la sucrusal,
+						//cuando está bloqueado	o cuando el campo PagoContado está en FALSO
+						//(indica que el cliente tiene una modalidad pero decide pagar en efectivo)
+						IF (RETVAL == 0 && bloqueo_CM == "N" && !PagoContado && !post:ModalidadTB && !post:ConsumoAnticipoMon) THEN
+							LET drv:INDrun_funct = LST:post:TRANclimed_convenio
+
+							//gpb:PS10775 - Inicio
+							l_INDcur_list = LST:post:TRANidentifica_cli
+							IF (l_INDcur_list != drv:INDcur_list) THEN
+								//El convenio no debe consultarse cuando el cliente no pertenece a la sucrusal,
+								//cuando está bloqueado	o cuando el campo PagoContado está en FALSO
+								//(indica que el cliente tiene una modalidad pero decide pagar en efectivo)
+								IF (RETVAL == 0 && bloqueo_CM == "N" && !PagoContado && !post:ModalidadTB && !post:ConsumoAnticipoMon) THEN 
+									CALL post:OFBclimed_convenio
+								ELSE
+									//borro las tablas de convenios
+									CALL post:CDSborrar_conv_prod
+									CALL post:CDSborrar_conv_vtas
+								END IF
+							END IF
+							//gpb:PS10775 - Fin
+						ELSE
+							//borro las tablas de convenios
+							CALL post:CDSborrar_conv_prod
+							CALL post:CDSborrar_conv_vtas
+						END IF
+					BREAK
+				END SELECT
+		
+				IF (TESTFLAG (cheque_dif, UPpago_dif)) THEN
+					pago_diferido = "S"
+					CALL CDSUP_PagoDif_save
+				ELSE
+					pago_diferido = "N"
+					CALL CDSUP_PagoDif_save
+				END IF
+			ELSE
+				IF ((post:cli_tipo == OCASIONAL) && (TESTFLAG(MPcheque,MPpago_cheque) || TESTFLAG(cheque_dif, UPpago_dif))) THEN			
+					CALL post:OFBsesion_alta_cli
+				ELSE
+					pago_diferido = "N"
+					CALL CDSUP_PagoDif_save
+				END IF
+			END IF
+		END IF
+	END IF
+
+END SUB
+
+
+/*******/

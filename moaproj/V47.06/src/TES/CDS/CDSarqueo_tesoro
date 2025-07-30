@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSarqueo_tesoro
+* NOMBRE
+*   OFB:tes:CDSarqueo_tesoro
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSarqueo_tesoro
+    LOCAL idx1 LIKE siaf:i
+    LOCAL idx2 LIKE siaf:i
+
+    CDS SELECT from DSC:tes:tesoro_table BECOMES DSC:tes:tesoro_context \
+        WHERE   tes:tes_moneda == siaf:moneda && \
+                tes_suc_id == op:op_branch_id && \
+                tes_tes_id == op:op_tesoro_id
+    CDS FINDFIRST DSC:tes:tesoro_context LOCK
+    let lib:err_retval = cdsretval
+    select (lib:err_retval)
+    case -801
+       call csr:cleararray(tes_importes)
+       call csr:cleararray(tes_entrada)
+       call csr:cleararray(tes_salida)
+       call csr:cleararray(tes_sdoinic)
+
+       clearfield tes:tes_total
+       clearfield tes:tes_tot_entrada
+       clearfield tes:tes_tot_salida
+       clearfield tes:tes_tot_inic
+
+       CDS APPEND DSC:tes:tesoro_context \
+       common:sucursal_activa as tes:tes_suc_id \
+       op:op_tesoro_id as tes:tes_tes_id \
+       common:system_date as tes:tes_fecha \
+       siaf:moneda as tes:tes_moneda \
+       array tes:tes_salida \
+       array tes:tes_entrada \
+       array tes:tes_sdoinic \
+	   array tes:tes_importes \
+       tes:tes_tot_salida \
+       tes:tes_tot_entrada\
+       tes:tes_tot_inic \
+       tes:tes_total
+
+       /* Para la primera vez grabo el registro  también en la teso_bak */
+       call CDSgrabo_teso_bak(siaf:moneda)
+       break
+    case 0
+       CDS EXTRACT DSC:tes:tesoro_context ALL
+       break
+    case else
+       fprint common:csr_string "No Se Pudo Sumar al Tesoro \n %-s",common:Cds_error_message
+       errmsg lst:common:errmsg_list, fld:common:csr_string
+
+       /* Guardo el Log con los datos del lockeo */
+       dprint " %s %s %s\r\n",op:op_operator_id,common:time_of_day,common:Cds_error_message
+       cds endselect dsc:tesoro_context
+       return (-2)
+       break
+    end select
+
+	tes:tes_marca_arqueo = "S"
+	CALL tes:MISCimp_cant_jnl
+	
+	/*Poner los importes en posiciones correlativas*/
+	call csr:cleararray importes_pase
+	idx1 = 0
+	while (idx1 < MAX_DEN)
+	    importes_pase[idx1] = tes_arqueo[idx1]
+	    idx1 = idx1 + 1
+	end while
+	call csr:cleararray tes_arqueo
+	idx1 = 0
+	idx2 = 0
+	while (idx1 < MAX_DEN && idx2 < MAX_DEN)
+	    if (!at_importes[idx1][tipo_mon].protected)	
+	        tes_arqueo[idx2] = importes_pase[idx1]
+	        idx2 = idx2 + 1
+	    end if
+	    idx1 = idx1 + 1
+	end while
+			 		
+	
+    CDS APPEND DSC:tes:tesoro_context \
+        FLD:tes_arqueo[00] FLD:tes_arqueo[01] FLD:tes_arqueo[02] \
+        FLD:tes_arqueo[03] FLD:tes_arqueo[04] FLD:tes_arqueo[05] \
+        FLD:tes_arqueo[06] FLD:tes_arqueo[07] FLD:tes_arqueo[08] \
+        FLD:tes_arqueo[09] FLD:tes_arqueo[10] FLD:tes_arqueo[11] \
+        FLD:tes_arqueo[12] FLD:tes_arqueo[13] \
+        tes:tes_marca_arqueo
+
+    if (lib:err_retval == 0) then
+        CDS UPDATE DSC:tes:tesoro_context lock
+    else
+        cds insert dsc:tes:tesoro_context lock
+    end if
+    CDS UNLOCK DSC:tes:tesoro_context
+    CDS ENDSELECT DSC:tes:tesoro_context
+END SUB
+
+/*******/

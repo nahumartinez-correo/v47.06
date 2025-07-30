@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrptcomercial
+* NOMBRE
+*   OFB:post:MISCrptcomercial
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrptcomercial
+LOCAL indice LIKE post:cantidad
+LOCAL l_hora LIKE common:csr_string
+;EN ESTA RUTINA SE ARMA EL ARCHIVO A LISTAR *** MDG
+	;SI LA MODALIDAD ES BATCH SETEO VALORES
+	IF (post:rep_modalidad == "B" ) THEN
+		siaf:pantalla_impreso = "A"
+		;post:mdata_directorio = "temp"
+		l_hora = substr(common:time_of_day,0,4)		
+		FPRINT post:mdata_archivo "G%s%s%s", common:sucursal_activa, common:system_date,l_hora
+		post:rep_nivel_det = "S"
+		SETFLAG post:Rep_Comercial, RPcliente_todos
+		CALL post:MISCopenFilerptComer
+		IF (RETVAL < 0) THEN
+			;SI EL RETVAL ES -1 SE PRODUJO UN ERROR AL ABRIR EL ARCHIVO
+			RETURN RETVAL
+		END IF
+	ELSE
+		CALL post:MISCopenFilerptComer
+		IF (RETVAL == -1) THEN
+			;SI EL RETVAL ES -1 SE PRODUJO UN ERROR AL ABRIR EL ARCHIVO
+			RETURN RETVAL
+		END IF
+		;CABECERA DEL REPORTE
+		;DETERMINA EL TITULO DEL LISTADO
+		CALL post:MISCrptComDetalleTit
+		;IMPRIMO CABECERA DEL LISTADO
+		FLD:siaf:INDencab_lis = OFB:post:MISCencabez_apai
+		CALL FLD:siaf:INDencab_lis
+		IF (RETVAL == -2) THEN
+			;SI EL RETVAL ES -2 SE PRODUJO UN ERROR AL GRABAR EL ARCHIVO
+			RETURN RETVAL
+		END IF
+	END IF
+	;INIT 22,1
+	;GENERO UN PICKLIST DINAMICO CON LOS TIPOS DE CLIENTES
+	;EL PICKLIST SE LLAMMA DSC:post:tiposDeClientes Y LA CANTIDAD DE
+	;TIPOS DE CLIENTES LA DEVUELVE EN post:cant_cli_tipo *** MDG
+	CALL post:MISCpicklistCli_tipo
+	;SELECCIONO EL TIPO DE LISTADO
+	;C - CONSOLIDADO
+	;G - GLOBAL
+	;D - DETALLADO
+	;B - PROCESO BATCH
+	SELECT (post:rep_modalidad)
+		CASE "C"
+		CASE "G"
+		CASE "B"
+			CALL post:MISCrptComer
+			IF (RETVAL == -2) THEN
+				;SI EL RETVAL ES -2 SE PRODUJO UN ERROR AL GRABAR EL ARCHIVO
+				RETURN RETVAL
+			END IF
+			BREAK
+		CASE "D"
+			;EN ESTE LISTADO SE HACE UN CORTE DE CONTROL POR CLIENTE CUANDO
+			;EL DETALLADO ES PARA TODOS LOS TIPOS DE CLIENTE *** MDG
+			IF (TESTFLAG(post:Rep_Comercial, RPcliente_todos))THEN
+				indice = PL_GETITEM
+				if (post:cant_cli_tipo > 0)
+					call csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+				endif
+				WHILE ((indice - PL_GETITEM) < post:cant_cli_tipo )
+					post:cli_tipo = SUBSTR(common:csr_string,0,1)
+        			post:cli_tipo_desc = SUBSTR(common:csr_string,2,20)
+					CALL post:MISCrptComer
+					;ESTA RUTINA COMPLETA LA ULTIMA HOJA DE UN LISTADO
+					;E INICIALIZA EL NUMERO DE PAGINA PARA QUE COMIENCE LA SIGUIENTE *** MDG
+					CALL post:MISCrptComStartlist
+					indice = indice + 1
+					call csr:myPickcontrol(DSC:post:tiposDeClientes,common:csr_string,indice)
+				END WHILE
+			ELSE
+				PICKVERIFY post:cli_tipo, PIC:cli_tipo
+				IF (retval >= 0)
+					post:cli_tipo_desc = SUBSTR(common:csr_string,2,20)
+					CALL post:MISCrptComer
+				END IF
+			END IF
+			BREAK
+	END SELECT
+	CALL csr:f_sadroppl DSC:post:tiposDeClientes
+	CALL CSR:file_flush(1)
+	CALL post:MISCclose_reporte
+	IF (RETVAL < 0) THEN
+		;SI EL RETVAL ES -3 SE PRODUJO UN ERROR AL CERRAR EL ARCHIVO
+		RETURN RETVAL
+	END IF
+	;INIT 22,0
+END SUB	
+
+/*******/

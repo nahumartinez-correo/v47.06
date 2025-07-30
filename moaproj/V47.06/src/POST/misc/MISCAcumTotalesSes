@@ -1,0 +1,279 @@
+/****o* Pendientes de agrupación/OFB:post:MISCAcumTotalesSes
+* NOMBRE
+*   OFB:post:MISCAcumTotalesSes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCAcumTotalesSes
+	local ImpConIva like siaf:ImporteConIva
+	local ImpSinIva like siaf:ImporteConIva
+	local ImpConIva_anterior like siaf:ImporteConIva
+	local ImpSinIva_anterior like siaf:ImporteSinIva
+
+	LOCAL fliatran_aux[MAX_VEC_INGBR] like siaf:adt_tran_fliatran
+	LOCAL impciva_aux[MAX_VEC_INGBR] like siaf:ImporteConIva
+	LOCAL impsiva_aux[MAX_VEC_INGBR] like siaf:ImporteSinIva
+
+	LOCAL fliatran_ant[MAX_VEC_INGBR] like siaf:adt_tran_fliatran
+	LOCAL impciva_ant[MAX_VEC_INGBR] like siaf:ImporteConIva
+	LOCAL impsiva_ant[MAX_VEC_INGBR] like siaf:ImporteSinIva
+
+	LOCAL ind LIKE siaf:i
+	
+	LOCAL ImporteUP_anterior like post:ImpServUP
+	LOCAL AliServUP_anterior like post:AliServUP
+	LOCAL fliaUP_ant[MAX_VEC_OPC] like siaf:adt_tran_fliatran
+	LOCAL impUP_ant[MAX_VEC_OPC] like ImpServUP
+	LOCAL aliUP_ant[MAX_VEC_OPC] like AliServUP
+	LOCAL MFijoUP_anterior like post:adt_tarif_fijo
+	LOCAL ImporteUP_aux like post:ImpServUP
+	LOCAL AliServUP_aux like post:AliServUP
+	LOCAL fliaUP_aux[MAX_VEC_OPC] like siaf:adt_tran_fliatran
+	LOCAL impUP_aux[MAX_VEC_OPC] like ImpServUP
+	LOCAL aliUP_aux[MAX_VEC_OPC] like AliServUP
+	
+/*Acumulo por Transacción valores necesarios para los cálculos de la Sesión. Esto es un intento
+  de evitar que al final de la Sesión recorra muchas veces la PresuDet y cada vez que se
+  desarrolle una nueva Transacción deba agregarse en una cantidad numerosas de rutinas.
+  La finalidad es que esta rutina sea de uso general y que se vayan acumulando los valores
+  necesarios a medida que se van ejecutando las Transacciones en la Sesión.
+  Gabriel Falciola*/
+/*Se agrega el tratamiento para Ventas UP*/
+
+	//if (post:estado_presu == 1 || post:estado_presu == 4)
+	if ((estado_presu == 1) || (post:estado_presu == 4 && plataf:verify_session != VALUE_CHANGED)) then
+		return (0)
+	end if
+
+	/*Se agrega un campo que indica si la transacción en cuestión tiene formulario asociado.
+	Este punto es fundamental para saber si se debe acumular los importes o no. Puede suceder
+	que se modifique la transacción y cambie esta situación. Es por eso que se evalúan las 
+	distintas situaciones y se le asigna el estado correspondiente:
+	Valores: 
+	SIN_FORM (Sin formulario antes ni ahora)
+	CON_FORM_ANT (Con formulario anteriormente, pero no ahora)
+	CON_FORM_DES (Con formulario ahora pero no antes)
+	CON_FORM (Con formulario antes y ahora)*/
+	if (PreDForFis.numchars == 0)
+		EstadoFormu = SIN_FORM
+	else
+		EstadoFormu = CON_FORM
+	end if
+
+	monedaNC = siaf:moneda
+	post:imp_d = 0
+
+	ImpConIva = siaf:ImporteConIva
+	ImpSinIva = siaf:ImporteSinIva
+	ImpConIva_anterior = 0
+	ImpSinIva_anterior = 0
+	
+  /*Si estoy modificando la Transacción, voy a buscar el registro en la PresuDet para obtener
+    los valores anteriores*/
+	//if (post:estado_presu == 3)
+	if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED)) then
+		ind = 0
+		while (ind < MAX_VEC_INGBR && fliatran_vec[ind].NUMCHARS != 0)
+			fliatran_aux[ind] = fliatran_vec[ind]
+			impciva_aux[ind] = impciva_vec[ind]
+			impsiva_aux[ind] = impsiva_vec[ind]
+			ind = ind + 1
+		end while
+		
+		if	(cli_tipo == CLIUP)
+			ImporteUP_aux = post:ImpServUP
+			AliServUP_aux = post:AliServUP
+			ind = 0
+			while (ind < MAX_VEC_OPC && flia_opc[ind].NUMCHARS != 0)
+				fliaUP_aux[ind] = flia_opc[ind]
+				impUP_aux[ind] = cos_opc[ind]
+				aliUP_aux[ind] = ali_opc[ind]
+				ind = ind + 1
+			end while
+		end if
+						
+		call CDSBuscoValAnterior
+		ImpConIva_anterior = siaf:ImporteConIva
+		ImpSinIva_anterior = siaf:ImporteSinIva
+		ind = 0
+		while (ind < MAX_VEC_INGBR && fliatran_vec[ind].NUMCHARS != 0)
+			fliatran_ant[ind] = fliatran_vec[ind]
+			impciva_ant[ind] = impciva_vec[ind]
+			impsiva_ant[ind] = impsiva_vec[ind]
+			ind = ind + 1
+		end while
+		//
+		call csr:cleararray(fliatran_vec)
+		call csr:cleararray(impciva_vec)
+		call csr:cleararray(impsiva_vec)
+		//
+		ind = 0
+		while (ind < MAX_VEC_INGBR && fliatran_aux[ind].NUMCHARS != 0)
+			fliatran_vec[ind] = fliatran_aux[ind]
+			impciva_vec[ind] = impciva_aux[ind]
+			impsiva_vec[ind] = impsiva_aux[ind]
+			ind = ind + 1
+		end while
+
+		if	(cli_tipo == CLIUP)
+			ImporteUP_anterior = post:ImpServUP
+			AliServUP_anterior = post:AliServUP
+						
+			post:ImpServUP = ImporteUP_aux
+			post:AliServUP = AliServUP_aux
+			
+			ind = 0
+			while (ind < MAX_VEC_OPC && flia_opc[ind].NUMCHARS != 0)
+				fliaUP_ant[ind] = flia_opc[ind]
+				impUP_ant[ind] = cos_opc[ind]
+				aliUP_ant[ind] = ali_opc[ind]
+				ind = ind + 1
+			end while
+			call csr:cleararray(flia_opc)
+			call csr:cleararray(cos_opc)
+			call csr:cleararray(ali_opc)
+			ind = 0
+			while (ind < MAX_VEC_OPC && fliaUP_aux[ind].NUMCHARS != 0)
+				flia_opc[ind] = fliaUP_aux[ind]
+				cos_opc[ind] = impUP_aux[ind]
+				ali_opc[ind] = aliUP_aux[ind]
+				ind = ind + 1
+			end while		
+		end if
+	end if
+
+	/*Acumulo el el Importe Total con y sin IVA en la Tabla AuxIngBr*/
+	/*Pueden realizarse dos tipos de tratamientos:
+	1) Se acumula el total de la transacción de acuerdo a los campos siaf:ImporteConIva y
+	siaf:ImporteSinIva.
+	2) Se acumula según las distintas familias que participan en la transacción 
+	de acuerdo al los vectores utilizados para tal fin*/
+	if (fliatran_vec[0].numchars != 0 || fliatran_ant[0].numchars != 0)
+		if (siaf:codigo_siaf != 99020 && siaf:codigo_siaf != 6900)
+			/*TRATAMIENTO CON VECTORES*/
+			/*Si es una modificación, primero resto los valores anteriores*/
+			
+			//if (post:estado_presu == 3)
+			if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED)) then
+				ind = 0
+				while (ind < MAX_VEC_INGBR && fliatran_ant[ind].NUMCHARS != 0)
+					call CDSAcumImpSes(impciva_ant[ind],impsiva_ant[ind],0,0,fliatran_ant[ind],siaf:adt_tran_afec_efvo,PresNro,monedaNC,monedaNC)
+					ind = ind + 1
+				end while	
+			end if
+			ind = 0
+			while (ind < MAX_VEC_INGBR && fliatran_vec[ind].NUMCHARS != 0)
+				call CDSAcumImpSes(0,0,impciva_vec[ind],impsiva_vec[ind],fliatran_vec[ind],siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+		    	ind = ind + 1
+	    	end while
+		end if
+	else
+	/*TRATAMIENTO CON CAMPOS*/
+		/*Las transacciones de esta familia deben acumularse de acuerdo a la familia del motivo*/
+		if (siaf:adt_tran_fliatran == "CSV")
+			/*Para templates se usa otro tratamiento*/
+			if (siaf:codigo_siaf != 6900)
+				;if (siaf:adt_mot_fliatran != fliatran_anterior)
+				
+				//if (post:estado_presu == 3 && (siaf:adt_mot_fliatran != fliatran_anterior)) then
+				if (((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED)) && (siaf:adt_mot_fliatran != fliatran_anterior)) then
+					//gpb:SC50368 AUT-1692 
+					if (siaf:codigo_siaf != 7210) then
+						call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,0,0,fliatran_anterior,siaf:adt_tran_afec_efvo,PresNro,monedaNC,monedaNC)
+						call CDSAcumImpSes(0,0,ImpConIva,ImpSinIva,siaf:adt_mot_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+					else
+						call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,ImpConIva,ImpSinIva,siaf:adt_mot_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,monedaNC)
+					end if
+				else
+					call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,ImpConIva,ImpSinIva,siaf:adt_mot_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,monedaNC)
+				end if
+			end if
+		else
+	        if (siaf:codigo_siaf != 99020)
+				call CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,ImpConIva,ImpSinIva,siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,monedaNC)
+			end if
+		end if
+	end if
+
+	/*Dejo sólo el valor de la transación para journalizarla y grabarla en la PresuDet*/
+	siaf:ImporteConIva = ImpConIva
+	siaf:ImporteSinIva = ImpSinIva
+
+	/*TRATAMIENTO PARA VENTAS UP*/
+	/*Se acumula en la tabla AuxIvaUP los importes de los Servicios, Opcionales y Monto Fijo
+	por Operador, Presupuesto, Familia y Alicuota*/
+	if	(cli_tipo == CLIUP)
+		/*Se acumula el Servicio*/
+		if (siaf:adt_tran_fliatran == "CSV")
+			/*Se acumulan en rutinas particulares de la transacción*/
+			if (siaf:codigo_siaf != 6900)
+				;if ((siaf:adt_mot_fliatran != fliatran_anterior) || (AliServUP_anterior != AliServUP))
+				//if ((post:estado_presu == 3 && ((siaf:adt_mot_fliatran != fliatran_anterior) || (AliServUP_anterior != AliServUP))))
+				
+				if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED) && ((siaf:adt_mot_fliatran != fliatran_anterior) || (AliServUP_anterior != AliServUP)))
+				
+					call CDSAcumImpUP(ImporteUP_anterior,0,fliatran_anterior,AliServUP_anterior,siaf:adt_tran_afec_efvo,PresNro)
+					call CDSAcumImpUP(0,ImpServUP,siaf:adt_mot_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)				
+				else
+					call CDSAcumImpUP(ImporteUP_anterior,ImpServUP,siaf:adt_mot_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)
+				end if
+			end if
+		else
+			/*Se acumulan en rutinas particulares de la transacción*/
+	        if (siaf:codigo_siaf != 99020 && siaf:codigo_siaf != 8500)
+	        	
+	        	//if (post:estado_presu == 3 && AliServUP_anterior != AliServUP)
+				if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED) && (AliServUP_anterior != AliServUP))
+					call CDSAcumImpUP(ImporteUP_anterior,0,siaf:adt_tran_fliatran,AliServUP_anterior,siaf:adt_tran_afec_efvo,PresNro)
+					call CDSAcumImpUP(0,ImpServUP,siaf:adt_tran_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)				      		
+				else
+					call CDSAcumImpUP(ImporteUP_anterior,ImpServUP,siaf:adt_tran_fliatran,AliServUP,siaf:adt_tran_afec_efvo,PresNro)
+				end if
+			end if
+		end if
+	
+		/*Se acumulan los Opcionales*/
+		/*Si es una modificación, primero resto los valores anteriores*/
+		//if (post:estado_presu == 3)
+		if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED))
+			ind = 0
+			while (ind < MAX_VEC_OPC && fliaUP_ant[ind].NUMCHARS != 0)
+				call CDSAcumImpUP(impUP_ant[ind],0,fliaUP_ant[ind],aliUP_ant[ind],siaf:adt_tran_afec_efvo,PresNro)
+				ind = ind + 1
+			end while	
+		end if
+		ind = 0
+		while (ind < MAX_VEC_OPC && flia_opc[ind].NUMCHARS != 0)
+			call CDSAcumImpUP(0,cos_opc[ind],flia_opc[ind],ali_opc[ind],siaf:adt_tran_afec_efvo,PresNro)
+	    	ind = ind + 1
+    	end while
+		
+		/*Se acumula el Monto Fijo*/
+		if (adt_tarif_fijo > 0)
+			//if (post:estado_presu == 3)
+			if ((estado_presu == 3) || (post:estado_presu == 4 && plataf:verify_session == VALUE_CHANGED))
+				call CDSAcumImpUP(adt_tarif_fijo,adt_tarif_fijo,post:adt_tarif_uneg,adt_tarif_fj_aliciva,siaf:adt_tran_afec_efvo,PresNro)
+			else
+				call CDSAcumImpUP(0,adt_tarif_fijo,post:adt_tarif_uneg,adt_tarif_fj_aliciva,siaf:adt_tran_afec_efvo,PresNro)
+			end if
+		end if
+	end if
+	clearfield post:aux_cantidad
+	/*Acumulo Medios de Pago*/
+	call MISCActMedPago
+END SUB
+
+/*******/

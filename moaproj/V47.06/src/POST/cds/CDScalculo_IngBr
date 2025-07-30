@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:post:CDScalculo_IngBr
+* NOMBRE
+*   OFB:post:CDScalculo_IngBr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScalculo_IngBr()
+   LOCAL loc_sucur_cod LIKE common:sucursal_activa
+   local impCalculo like siaf:importe
+   local cotaInf like siaf:importe
+
+   /*Antes de comenzar a realizar el cálculo comparo el Coeficiente de Participación
+   en la Provincia del Cliente con el Coeficiente Mínimo de Aplicación. Si el primero
+   es menor al segundo no se calcula Ingresos Brutos - Gabriel Falciola*/
+	if (CloCoefPartProv < adt_prvta_coefmincat)
+		return (0)
+	end if
+
+	/*Busco la descripción de la Provincia*/
+	adt_pcia_cod = CloProvin
+	call post:CDSadt_pcia_load
+
+	post:PresIngExe = 0
+	post:PresIngGra = 0
+
+	loc_sucur_cod = CloProvin
+
+	/*Busco el atributo correspondiente a la Inscripción que
+	indica qué importe debo tomar para calcular Ingresos Brutos
+	(Importes con IVA o con el IVA desglosado) - Gabriel Falciola*/
+	call CDSTipoCalcIB_Iva
+
+	CALL post:CDStotalIngBr(post:op_operator_id)						// [PAW] ---> calculo el total.
+	impCalculo = siaf:importe2
+
+	/*Obtengo el importe de la Bonoficiones UP y se lo resto al total acumulado
+	Gabriel Falciola*/
+	call CDSobtengo_impUP(post:op_operator_id)
+	impCalculo = impCalculo - siaf:importe2
+	
+	/*Ahora que tengo el Total Vendido obtengo el porcentaje que debo imponer*/
+	impCalculo = (adt_prvta_base_imp * impCalculo)/100
+
+	CALL post:CDScotaInfIngBr(post:op_operator_id, loc_sucur_cod)	// [PAW] ---> calculo cota inferior.
+	cotaInf = siaf:importe2
+	siaf:importe = 0
+   	if (impCalculo > cotaInf)
+		/*Saco la Tasa según la Categoría de Ingresos Brutos*/
+		adt_TasCatIB_prov = CloProvin
+		adt_TasCatIB_catib = CloCatCodIB
+		adt_TasCatIB_cattas = IngBCod
+		call post:CDSTasCatIB_load
+		PresIngTas = adt_TasCatIB_tasa
+		post:PresIngGra = impCalculo
+		INIT 22,1
+		siaf:importe = (PresIngTas * impCalculo)/100
+		INIT 22,0
+   	end if
+
+	if (siaf:importe > 0 && NotaCredito == "S" )
+   		/****************************************************************
+   		Esta pregunta se agrega para saber si debo journalizar Ing.Brutos
+   		cuando estoy en Nota de Credito. Esto se hace aca porque una vez
+   		que salgo, se limpia el campo siaf:importe y no puedo saber si
+   		debo journalizar. La variable NotaCredito se setea para saber si
+   		estoy anulando transacciones y solo en este caso se realiza la
+   		journalizacion por aca - Gabriel Falciola
+   		****************************************************************/
+    	call post:CDSsumoTranIngBrut
+    	Call MISCjournal99027
+	endif
+
+	if (NotaCredito != "S") then
+    	CDS APPEND DSC:CONPresu post:PresIngExe \
+                            post:PresIngGra
+    	CDS UPDATE DSC:CONPresu LOCK
+	endif
+
+	if (NotaCredito != "S" )
+		/*Se actualiza en la PresuDet y en la PresuPag si hay Transacción de
+		Ingresos Brutos - Gabriel Falciola*/
+		call post:CDSsumoTranIngBrut
+	end if
+END SUB
+
+/*******/

@@ -1,0 +1,219 @@
+/****o* Facturación Giros/OFB:giros:MISCimprimo_detalle
+* NOMBRE
+*   OFB:giros:MISCimprimo_detalle
+* DESCRIPCION
+*   Rutina que imprime en la factura y NC el detalle de los giros emitidos (vale giros masivos y emision de lista de giros)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCimprimo_serv
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1290
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCimprimo_detalle
+	LOCAL valor LIKE lib:err_retval
+	LOCAL TotalTasa LIKE siaf:importe
+	LOCAL DescTasa LIKE post:desc_impre
+	LOCAL PRECIO_UNITARIO LIKE post:importe_impre
+	LOCAL PRECIO_UNITARIO4 LIKE giros:ImporteGiros4_fld
+	LOCAL x LIKE siaf:i
+	LOCAL TotalOpcLG LIKE siaf:importe
+    
+	TotalTasa = 0
+	TotalOpcLG = 0
+	post:entraEnUnaPag = "S" //se setea siempre en S ya que en la Impresora Termica se imprime todo de corrido
+	CDS SELECT FROM DSC:post:TblImpreTmp BECOMES "Detalle" \
+		WHERE post:adt_serv_serv == FLD:post:adt_serv_serv \
+		&& post:adt_tarif_desde == FLD:post:adt_tarif_desde \
+		&& post:adt_tarif_hasta == FLD:post:adt_tarif_hasta \
+		&& post:op_operator_id == FLD:op:op_operator_id 
+
+	CDS FINDFIRST "Detalle" Nolock
+	valor = CDSRETVAL
+	DO 
+		IF (valor == -801) THEN
+			BREAK 
+		ELSE 
+			CDS EXTRACT "Detalle" ALL 
+			IF (giros:anexo != "S") THEN
+				//CALL post:PRTcortePagina(giros:indice, Total, PAGE_FACTURA_CUERPO, 1)
+			END IF 
+			
+			IF (post:adt_cativa_discri == "S") THEN
+				//SC 50170
+				//post:importe_impre = post:importe_impre - post:importeIva_impre
+			//SUC-964:Resolución General N° 5614/2024: solo aplica para mostar el iva Contenido al final de la facturas B
+				if (post:IvaCod !=  TICKFACTB &&  post:IvaCod != TICKFACTB2   &&  post:IvaCod != TICKFACTB3) 
+						post:importe_impre = post:importeSinIva_impre
+				endif
+			END IF 
+      	
+			/*Modificado para giros*/
+			SELECT (post:tipo_impre)
+				CASE SERVGIROS
+					// CSZ 29.1.2000: comenta (se pone debajo de la pregunta por el anexo para que si se imprime
+					// anexo, no salga en la factura)
+					/*cuando el importe del giro es calculado por Porcentaje
+					debe aparecer la formula de calculo*/
+					/*IF (post:formuCalc.NUMCHARS > 0 && post:adt_tarif_modo == "P") THEN
+						CLEARFIELD common:csr_string
+						FPRINT common:csr_string "%11.11s%-50.50s\n"," ",post:formuCalc
+						CALL post:MISCprt2laser(common:csr_string)
+					END IF*/
+					// FIN CSZ comenta.
+			
+					IF (giros:anexo == "S") THEN
+						FPRINT common:csr_string  "    %s\n",desc_impre2
+						CALL post:MISCprt2laser(common:csr_string)
+						indice = indice + 1
+
+						/*cuando el importe del giro es calculado por Porcentaje
+						debe aparecer la formula de calculo*/
+						IF (post:formuCalc.NUMCHARS > 0 && post:adt_tarif_modo == "P") THEN
+							CLEARFIELD common:csr_string
+							FPRINT common:csr_string "%4.4s%-50.50s\n"," ",post:formuCalc
+							CALL post:MISCprt2laser(common:csr_string)
+							indice = indice + 1
+						ELSE
+							/*CSZ - Si tiene formula de calculo no imprime la linea que tiene
+							el importe porque el mismo se detalla en la formula */
+							FPRINT common:csr_string,"%s",desc_impre3
+							CALL post:MISCprt2laser(common:csr_string)
+							indice = indice + 1				
+						END IF  
+					ELSE
+						IF (post:entraEnUnaPag == "S") THEN
+							x = 0
+							WHILE (x < 10)
+								IF (desc_impre[x].NUMCHARS > 0) THEN
+									FPRINT common:csr_string,"       %s\n",desc_impre[x]
+									CALL post:MISCprt2laser(common:csr_string)
+									indice = indice + 1
+								ELSE
+									BREAK
+								END IF
+								x = x + 1
+							END WHILE
+	  				
+							FPRINT common:csr_string,"       %s\n",desc_impre2
+							CALL post:MISCprt2laser(common:csr_string)
+							indice = indice + 1
+
+							/*cuando el importe del giro es calculado por Porcentaje
+							debe aparecer la formula de calculo*/
+							IF (post:formuCalc.NUMCHARS > 0 && post:adt_tarif_modo == "P") THEN
+								CLEARFIELD common:csr_string
+								FPRINT common:csr_string "%11.11s%-35.35s\n"," ",post:formuCalc
+								CALL post:MISCprt2laser(common:csr_string)
+								indice = indice + 1
+							ELSE
+								/*CSZ - Si tiene formula de calculo no imprime la linea que tiene
+								el importe porque el mismo se detalla en la formula */
+								IF (desc_impre3.NUMCHARS > 0) THEN
+									FPRINT common:csr_string,"%s",desc_impre3
+									CALL post:MISCprt2laser(common:csr_string)					
+									indice = indice + 1
+								END IF
+					    
+								x = 0
+								WHILE (x < 10)
+									IF (formuCalc[x].NUMCHARS > 0) THEN
+										FPRINT common:csr_string "%7.7s%-35.35s\n"," ",formuCalc[x]
+										CALL post:MISCprt2laser(common:csr_string)
+										indice = indice + 1
+									ELSE
+										BREAK
+									END IF
+									x = x + 1
+								END WHILE
+							END IF
+						END IF
+					END IF
+		    	
+				BREAK
+				CASE OPCGIROS
+					//AUT-1290, si es una facturacion de giros masivos o lista de giros 
+					//los opcionales se muestran al final acumulados (por igual rango de servicio)
+					IF ((TESTFLAG(giros:giros_importacion,proc_em_lg) || TESTFLAG(giros:giros_masivos,proc_gir_masivos)) \
+						&& ( giros:anexo != "S" )) THEN
+						TotalOpcLG = TotalOpcLG + post:importe_impre
+						//actualizar la descripcion del opcional
+						CALL giros:CDS_OpcDesc_ServFact
+						BREAK
+					ELSE
+						PRECIO_UNITARIO  = post:importe_impre
+						PRECIO_UNITARIO4 = giros:ImporteGiros4_fld
+ 			
+						IF (giros:anexo != "S") THEN
+							//cgw:se estaba desfazando el importe del opcional del giro con 2 digitos.
+							//FPRINT common:csr_string, "           %-35.35s                   %8.8e %14.14e\n", post:adt_opc_desc,PRECIO_UNITARIO4,post:importe_impre
+							//se desglosa en dos lineas
+							FPRINT common:csr_string, "       %-35.35s\n", post:adt_opc_desc
+							CALL post:MISCprt2laser(common:csr_string)
+							indice = indice + 1
+							//2da linea
+					    FPRINT common:csr_string  "%12.12s%8.8e%12.12s  %14.14e\n", "       P.U: ",PRECIO_UNITARIO4," ", post:importe_impre
+					    CALL post:MISCprt2laser(common:csr_string)
+						ELSE
+							FPRINT post:desc_impre " %s%s", post:codigo_impre, post:desc_impre
+							FPRINT common:csr_string  "   %-32.32s\n", post:desc_impre
+							CALL post:MISCprt2laser(common:csr_string)
+						END IF
+						Total = Total  + post:importe_impre
+						indice = indice + 1
+					END IF
+			
+				BREAK				
+				CASE TASAGIROS
+					IF (giros:anexo != "S") THEN
+						DescTasa = post:desc_impre		
+						TotalTasa = TotalTasa + post:importe_impre			
+					END IF
+					Total = Total  + post:importe_impre
+					//indice = indice + 1
+				BREAK				
+			END SELECT
+			CDS FINDNEXT "Detalle" NOLOCK
+			valor = CDSRETVAL
+		END IF 
+	LOOP 
+     
+	//AUT-1290, si es una facturacion de giros masivos o lista de giros 
+	//los opcionales se muestran al final acumulados (por igual rango de servicio)
+	IF (TESTFLAG(giros:giros_importacion,proc_em_lg) || TESTFLAG(giros:giros_masivos,proc_gir_masivos)) THEN
+		IF (TotalOpcLG > 0) THEN
+			CALL giros:CDSBuscoOpcAgrup
+		END IF
+	END IF
+    
+	//imprime la tasa acumulada //PROBAR!!
+	IF (TotalTasa > 0 ) THEN
+		IF (post:entraEnUnaPag == "S") then
+			FPRINT common:csr_string, "       %-40.40s\n",post:desc_impre
+			indice = indice + 1
+			CALL post:MISCprt2laser(common:csr_string)
+			//termica se desdobla en dos renglones
+		FPRINT common:csr_string, "       %8.8e %14.14e\n",giros:ImporteGiros4_fld,TotalTasa
+
+		else
+		//por aca no deberia entrar nunca
+			FPRINT common:csr_string, "          %-52.52s   %8.8e %14.14s\n",post:desc_impre,giros:ImporteGiros4_fld,TotalTasa
+		END IF
+	
+		CALL post:MISCprt2laser(common:csr_string)
+		TotalTasa = 0
+		indice = indice + 3 
+	END IF 
+	
+	CDS ENDSELECT "Detalle" 
+    
+END SUB 
+
+/*******/

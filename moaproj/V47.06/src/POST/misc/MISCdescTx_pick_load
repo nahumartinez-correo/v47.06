@@ -1,0 +1,65 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdescTx_pick_load
+* NOMBRE
+*   OFB:post:MISCdescTx_pick_load
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdescTx_pick_load
+
+	//Cargo un piklist con el nombre de las transacciones postales y encomiendas
+	//ordenadas alfabéticamente para ser usada por el buscador en la Tx de
+	// Venta Postal
+
+	local Lerror_flag		like siaf:cant
+	local Lerror_message	like common:csr_string
+	
+	clearfield  Lerror_flag 
+	fyimsg common:fyimsg_list,"Cargando descripcion de transacciones..."
+	CDS SELECT UNIQUE siaf:adt_tran_desc FROM DSC:siaf:adt_tran_table BECOMES \
+		DSC:siaf:adt_tran_context WHERE \
+		(siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE") && \
+		(siaf:adt_tran_jer_vtaPost != 999) SORT "NombreTx"
+	if (cdsretval == 0) then
+		CDS FINDFIRST DSC:siaf:adt_tran_context NOLOCK
+		if (cdsretval == 0) then
+			call csr:f_sadroppl DSC:DescVtaPostal
+			call csr:f_sanewpl DSC:DescVtaPostal,PIC:DescTran_list
+			while (cdsretval == 0)
+				CDS EXTRACT DSC:siaf:adt_tran_context FLD:siaf:adt_tran_desc 
+				if (cdsretval == 0) then
+					call csr:f_saaddpl DSC:post:DescVtaPostal siaf:adt_tran_desc
+					if (retval != 0) then
+						let Lerror_flag = 2
+					endif
+				endif
+				CDS FINDNEXT DSC:siaf:adt_tran_context NOLOCK
+			end while 
+		else	
+			let Lerror_flag = 1
+		endif
+	endif
+	if (Lerror_flag) then
+		fprint Lerror_message "Problemas al cargar las descripciones (ERR %d)" Lerror_flag
+		errmsg common:errmsg_list,FLD:Lerror_message
+		msgbox "La busqueda por descripcion puede no funcionar correctamente" \
+				OFB_ICONEXCLAMATION,"Buscar"
+	endif
+	CDS ENDSELECT DSC:siaf:adt_tran_context
+	fyimsg clear
+	
+END SUB
+
+/*******/

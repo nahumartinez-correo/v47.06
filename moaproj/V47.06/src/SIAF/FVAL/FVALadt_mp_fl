@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:siaf:FVALadt_mp_fl
+* NOMBRE
+*   OFB:siaf:FVALadt_mp_fl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafFVAL.h"
+
+SUB siaf:FVALadt_mp_fl
+    /* No ingresa ningún valor en adt_monfl_sucursal, da TAB y hace un multidisplay
+    de la tabla de monedas */
+    IF (CURRENTFIELD.NUMCHARS == 0) THEN
+        CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX    	
+        drv:button = 0
+        CALL drv:but_disable
+        drv:button = 1
+        CALL drv:but_disable   
+        drv:button = 5
+        CALL drv:but_disable
+        ;=========================
+        CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+        if (cdsretval < 0) then //error al intentar acceder a la tabla
+	       CDS ENDSELECT DSC:post:MEDIOS_CTX
+	       FPRINT ,common:csr_string "MEDIO DE PAGO INVALIDO."
+		   MSGBOX common:csr_string ,OFB_OK,"Error"
+	       return (-2)
+        end if
+		
+		;CALL CSR:f_sanewpl("medioDEpago",PIC:siaf:ImpConcepto)
+		CALL CSR:f_sanewpl("medioDEpago",PIC:PICmedio_pago)
+        Do
+           if (CDSRETVAL != 0)
+               break
+           end if
+           CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+           fprint common:csr_string "%2.2e  %-30.30s",post:adt_mp_cod,post:adt_mp_desc
+           CALL csr:f_saaddpl("medioDEpago",common:csr_string)
+           CDS FINDNEXT DSC:post:MEDIOS_CTX NOLOCK
+        Loop
+        fprint common:csr_string "99  MONEDA BASE"
+        CALL csr:f_saaddpl("medioDEpago",common:csr_string)
+        
+        CALL csr:f_sadopl("medioDEpago",common:csr_string)
+        lib:err_retval = RETVAL
+        
+        IF (retval >= 0)  //Selecciono ningun Item
+           fprint post:adt_mp_cod  "%2.2d" substr(common:csr_string,0,2)
+           fprint post:adt_mp_desc "%s" substr(common:csr_string,4,30)
+        EndIf
+        call csr:f_sadroppl("medioDEpago")
+        ;=========================
+        /* Salio con Esc (no eligió nada) */
+        IF (lib:err_retval < 0) THEN 
+    	    drv:button = 0
+            CALL drv:but_up_enable
+            drv:button = 1
+            CALL drv:but_enable
+            drv:button = 5
+            CALL drv:but_enable           
+            return (-2)
+        ELSE
+         /* eligió un valor del multidisplay de la tabla de monedas */
+            adt_monfl_moneda = post:adt_mp_cod
+            drv:button = 0
+            CALL drv:but_up_enable
+            drv:button = 1
+            CALL drv:but_enable
+            drv:button = 5
+            CALL drv:but_enable  
+        END IF
+    ELSE
+     /* Ingresa a mano un valor para el campo moneda */      
+        post:adt_mp_cod = CURRENTFIELD
+        if (adt_monfl_moneda == 99)    
+           post:adt_mp_desc = "MONEDA BASE"    
+        else
+           /*PREGUNTAR!!!  esta CDS busca si existe el Medio de pago por 
+           transaccion y sucursal, porque antes esos eran sucu campos claves, ahora como es?*/
+           CALL post:CDSadt_MedPago_load
+           IF (CDSRETVAL < 0) THEN
+              ERRMSG LST:common:errmsg_list,"Medio de Pago Inexistente"
+               RETURN (-2)
+           END IF 
+        end if
+    END IF
+    let desc_moneda = post:adt_mp_desc
+    refresh adt_monfl_moneda
+    refresh desc_moneda
+      
+ /* Busca en la tabla de Limites de Sup. si existe el registro con los
+    datos de los campos que arman la clave */    
+    CALL CDSadt_monfl_load
+    IF (RETVAL < 0) THEN
+        CLEARFIELD adt_monfl_monto 
+        CALL CSR:cleararray(adt_monfl_pesos)
+        CALL ABMadt_monfl_refresh
+        CALL post:MISCset_sidebar(0,0,1,0) 
+    ELSE 
+        IF (RETVAL == 0) THEN
+            CALL post:MISCset_sidebar(1,1,0,0)           
+            CALL ABMadt_monfl_refresh
+        END IF 
+    END IF 
+    SETVALDONE adt_monfl_moneda 
+END SUB
+
+/*******/

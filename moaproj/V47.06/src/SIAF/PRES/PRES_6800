@@ -1,0 +1,164 @@
+/****o* Pendientes de agrupación/OFB:siaf:PRES_6800
+* NOMBRE
+*   OFB:siaf:PRES_6800
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafPRES.h"
+
+SUB siaf:PRES_6800
+    nombre_transac.HIGHLITE = 0
+/* MLD 16/07/1998 por problemas cuando se trabaja en modo presupuesto
+hago una lista aparte de transacciones de ingresos y egresos varios.
+Si la transacción se hace desde cajas y se confirma la sesión desde
+merchandising journaliza mal el código_siaf */
+
+;    IF (drv:dt_app == 2) THEN
+      codigo_siaf = 6800
+;    ELSE
+;      IF (drv:dt_app == 3) THEN
+;        codigo_siaf = 6810
+;        drv:INDspc_rtn[0] = LST:TOTS6810
+;      END IF
+;    END IF
+    restr_otra_casa = "N"
+    linea_validacion = "S"
+    exhibe_pantalla = "S"
+    imprime_comprobante = "D"
+
+    /*MFM - Borro de memoria los datos del picklist*/
+    CALL csr:f_sadroppl "MOTIVOS HAB"
+    /*MFM - Genero picklist dinámico con motivos habilitados*/
+    ;CALL MISCMotivos_Hab(6800)
+    INDhost_snd_fv = drv:INDspc_rtn[6]
+    /* El importe se va a ingresar en el campo impoerte2, luego se calculará
+    la sobretasa de iva y se incrementará en importe.
+	Por eso el campo queda protegido */
+    /* se saca el calculo de la sobretasa de iva
+    protfield post:SobreTasaIva
+    protfield importe
+    clearfield post:SobreTasaIva */
+    /* */
+    CALL PRESfecha_hora
+    IF (RETVAL < 0) THEN
+      RETURN (-1)
+    END IF
+    ;MOVE "INGRESOS VARIOS" TO DAUtitulo1
+
+    /*MLD: Armo el picklist acá porque ya tengo el tipo de cliente*/
+    if (!testflag(tlr:tran_flags,correction))
+     	CALL MISCMotivos_Hab(6800)
+    end if
+    MOVE siaf:nombre_transac TO DAUtitulo1
+
+    post:INDPresuD_Dat = OFB:CDSTRAN6600_append
+    CALL post:MISCLeo_PresDet
+    //cliente medio
+    refresh post:Dcto_CliMed
+    clearfield post:Dcto_CliMedAux
+    /*if (post:cli_tipo == CLIMED && post:estado_presu == 3 && post:tran_presu_est == "M") then
+    	//resguardo el descuento para saber si luego tengo que borrarlo
+    	post:Dcto_CliMedAux = post:Dcto_CliMed
+    	if (post:Dcto_CliMedAux > 0) then
+    		//actualizo las tablas auxiliares :AuxIva (no), PresuPag, AuxIngBr, sacandoles el descuento
+    		call post:CDSSacoDctoCM(siaf:adt_mot_fliatran,siaf:adt_mot_aliciva,"+")
+    	end if
+    end if*/
+
+   	/*Limpio el campo que contiene el Grupo de IVA del cliente, ya que se saca de la PresuAct
+	y si no hay una Sesión debe estar vacío - Gabriel Falciola*/
+	if (post:estado_presu == 1)
+		clearfield post:PresGrupoIva
+	end if
+
+    CALL post:MISCprotege(LST:fld6600protege,LST:fld6600desprotege)
+    ;RETURN (RETVAL)
+    /****************************************************************/
+    /* Si tiene captura de medio de pago protejo el campo Medio de  */
+    /* pago. Hernán.     17/10/2000                                 */
+    /****************************************************************/
+    if (!testflag(tlr:tran_flags,correction)) then
+    	if (post:estado_presu == 2 || post:estado_presu == 3 || post:estado_presu == 1) then
+        
+       		if (siaf:adt_tran_med_pago != "S") then
+     	    	post:captura_mp = siaf:adt_tran_med_pago
+     	    	protfield siaf:moneda
+     	    	siaf:moneda = 99
+     	    	clearfield post:medio_pago_desc
+     	    	DISABLECONTROL drv:PBcb1
+       		else	    
+     	    	; Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+       		end if
+    	end if   
+
+		IF (post:estado_presu == 3)
+			//Si estoy modificando no puedo modificar el motivo por el tema de la cotizacion
+			PROTFIELD motivo
+			DISABLECONTROL drv:PBcb0
+			PROTFIELD siaf:motivo_desc
+		END IF
+    	
+    	IF (post:estado_presu == 3 && adt_mot_cotiza == "S")
+    		UNPROTFIELD coti_moneda
+    		UNPROTFIELD imp_a_cotizar
+    		ENABLECONTROL drv:PBcb4    	
+    		PROTFIELD ImporteSinSello
+    	ELSE 
+	   		PROTFIELD coti_moneda
+    		PROTFIELD imp_a_cotizar
+    		DISABLECONTROL drv:PBcb4
+    	END IF
+    	
+    end if
+ /********** Me dijo PM que en Teclas Rápidas para Ingr. Varios todo esto no va ******/    
+     /* Agrego también que si estoy en teclas ráìdas y tiene curso legal protejo el 
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+       
+    ; if (post:estado_presu == 1) then           
+       
+         ;Busco el medio de pago que tenga captura de CL	
+    ; 	    call post:CDSMPago_Clegal_load
+     ;	    if (retval == 0) then
+     ;	    	siaf:moneda = post:adt_mp_cod
+     ;	        protfield siaf:moneda
+     ;	        DISABLECONTROL drv:PBcb1
+     ;	    else
+     ;	       errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+     ;        return (-2)
+      
+     ;     end if    
+       
+     ; end if   
+  /************************************************************************************/    
+  
+      if (post:estado_presu == 4) then    	 
+      	protfield siaf:moneda
+        DISABLECONTROL drv:PBcb1 
+      end if 
+     
+      //cgw:Se deshabilita el boton de seleccion de comision para todos los clientes.
+      //if (post:cli_tipo == 4) then
+	  //	ENABLECONTROL drv:PBcb3 
+      //else
+      DISABLECONTROL drv:PBcb3 
+      //end if
+      
+      
+      call post:MISCTranCap_MP
+      
+	  RETURN (RETVAL)     
+END SUB      
+
+/*******/

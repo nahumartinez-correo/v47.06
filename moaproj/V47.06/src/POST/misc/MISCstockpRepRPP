@@ -1,0 +1,132 @@
+/****o* Registro RPP/OFB:post:MISCstockpRepRPP
+* NOMBRE
+*   OFB:post:MISCstockpRepRPP
+* DESCRIPCION
+*   Tratamiento de Querys segun filtros del Reporte de Piezas de RPP
+* ENTRADAS
+*   p_fec_d = fecha DESDE de Piezas RPP
+*   p_fec_a = fecha HASTA de Piezas RPP
+*   p_piezaRPP = track and trace
+* SALIDAS
+*   RETURN (-2): No Existen datos para el Reporte.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:MISCcargoRepRPP
+* DOCUMENTACION
+*   NI50569
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCstockpRepRPP(p_fec_d, p_fec_a,p_piezaRPP)
+	LOCAL l_err_cds LIKE lib:err_retval
+	LOCAL l_err_cds2 LIKE lib:err_retval
+  LOCAL l_fec_d LIKE common:csr_string
+  LOCAL l_fec_a LIKE common:csr_string
+  LOCAL l_piezaRPP LIKE post:track_trace
+
+  LET l_fec_d = p_fec_d
+  LET l_fec_a = p_fec_a    
+  LET l_piezaRPP = p_piezaRPP  
+
+	//Si no es busqueda por track and trace
+	IF (!TESTFLAG (pieza_rpp_rep, pieza_rpp)) THEN
+		//Lo invoca el Cierre/Cierre Forzado de Sucursal
+		IF (l_fec_d.NUMCHARS == 0) THEN
+			CDS SELECT \
+			FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+			WHERE post:adt_stockp_recepfech <= l_fec_a && \
+						post:adt_stockp_destino == "RTA POSTAL PAGA"	&& \
+						post:adt_stockp_rpp_corp  != "S"			
+		ELSE
+			CDS SELECT \
+			FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+			WHERE post:adt_stockp_recepfech >= l_fec_d && post:adt_stockp_recepfech <= l_fec_a && \
+						post:adt_stockp_destino == "RTA POSTAL PAGA" 		&& \
+						post:adt_stockp_rpp_corp  != "S"			
+		END IF
+	ELSE
+		CDS SELECT \
+		FROM DSC:post:stockp_tbl BECOMES DSC:post:stockp_ctx \
+		WHERE post:adt_stockp_pieza == l_piezaRPP && \
+					post:adt_stockp_destino == "RTA POSTAL PAGA"			&& \
+					post:adt_stockp_rpp_corp  != "S"			
+	END IF
+	
+	CDS FINDFIRST DSC:post:stockp_ctx NOLOCK
+	LET l_err_cds = CDSRETVAL
+	
+	IF (l_err_cds == -801) THEN
+		CDS ENDSELECT DSC:post:stockp_ctx 
+		RETURN (-2)
+	END IF
+	
+	WHILE (l_err_cds == 0)	
+		//limpio campos
+		CLEARFIELD post:rpp_rep_pieza 
+		CLEARFIELD post:rpp_rep_recepfech 
+		CLEARFIELD post:rpp_rep_recephora 
+		CLEARFIELD post:rpp_rep_recepop 
+		CLEARFIELD post:rpp_rep_entrega_f 
+		CLEARFIELD post:rpp_rep_entrega_h 
+		CLEARFIELD post:rpp_rep_entrega_o
+		CLEARFIELD post:rpp_rep_modlist 
+		CLEARFIELD post:rpp_rep_modlist 
+		CLEARFIELD post:rpp_rep_CliRaz
+		CLEARFIELD post:rpp_rep_abonado
+	
+		CDS EXTRACT DSC:post:stockp_ctx \
+			post:adt_stockp_pieza INTO post:rpp_rep_pieza \
+			post:adt_stockp_recepfech INTO post:rpp_rep_recepfech \
+			post:adt_stockp_recephora INTO post:rpp_rep_recephora \
+			post:adt_stockp_recepop INTO post:rpp_rep_recepop \
+			post:adt_stockp_entrega_f INTO post:rpp_rep_entrega_f \
+			post:adt_stockp_entrega_h INTO post:rpp_rep_entrega_h \
+			post:adt_stockp_entrega_o INTO post:rpp_rep_entrega_o \
+			post:stockp_modlist INTO post:rpp_rep_modlist \
+			post:stockp_modlist INTO post:rpp_rep_modlist \
+			post:CliRaz_stockp INTO post:rpp_rep_CliRaz \
+			post:adt_stockp_abon_apar INTO post:rpp_rep_abonado
+
+			
+		//proceso los datos
+		CALL post:MISCprocesoRepRPP
+		
+		CDS SELECT FROM DSC:post:rpp_rep_tbl BECOMES DSC:post:rpp_rep_ctx \
+		WHERE post:rpp_rep_pieza == post:rpp_rep_pieza && post:rpp_rep_recepfech == post:rpp_rep_recepfech
+		
+		CDS FINDFIRST DSC:post:rpp_rep_ctx LOCK
+		l_err_cds2 = CDSRETVAL
+		IF (l_err_cds2 == -801) THEN
+			CDS CLEARBUFFER DSC:post:rpp_rep_ctx
+			
+			CDS APPEND DSC:post:rpp_rep_ctx \
+				post:rpp_rep_pieza \
+				post:rpp_rep_recepfech \
+				post:rpp_rep_recephora \
+				post:rpp_rep_recepop \
+				post:rpp_rep_modlist \
+				post:rpp_rep_reg_rpp \
+				post:rpp_rep_entrega_f \
+				post:rpp_rep_entrega_h \
+				post:rpp_rep_entrega_o \
+				post:rpp_rep_cobrado \
+				post:rpp_rep_entregado \
+				post:rpp_rep_CliRaz \
+				post:rpp_rep_abonado
+
+			CDS INSERT DSC:post:rpp_rep_ctx LOCK
+		ENDIF
+		CDS UNLOCK DSC:post:rpp_rep_ctx 
+		CDS ENDSELECT DSC:post:rpp_rep_ctx 
+ 
+ 		CDS FINDNEXT DSC:post:stockp_ctx NOLOCK
+		LET l_err_cds = CDSRETVAL
+	END WHILE
+
+	CDS ENDSELECT DSC:post:stockp_ctx
+
+END SUB
+
+/*******/

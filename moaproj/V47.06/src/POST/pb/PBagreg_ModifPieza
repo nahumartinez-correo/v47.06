@@ -1,0 +1,117 @@
+/****o* Modificación de Piezas/OFB:post:PBagreg_ModifPieza
+* NOMBRE
+*   OFB:post:PBagreg_ModifPieza
+* DESCRIPCION
+*   Rutina que se ejecuta cuando se presiona el botón de Agregar de la pantalla de la TX
+*   de Modificación de Piezas.
+*   Agrega los datos de la Pieza (los de pantalla) en un picklist, previa validacion de los mismos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:PBmodif_ModifPieza,OFB:post:PBnew_ModifPieza,OFB:post:PBtotalPiezasModif
+* REFERENCIADO POR
+*   SCR:post:SCRNModif_Pieza
+* DOCUMENTACION
+*   SC50211.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619898&
+*   http://jira.sibs.net/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBagreg_ModifPieza
+	
+	call csr:trimfield(Pieza)	
+	IF (Pieza.numchars == 0)
+		UNPROTFIELD Pieza
+		MSGBOX "DEBE INGRESAR UNA PIEZA",0X00,"ERROR"
+		RETURN -2                                                                                                                                    
+	ENDIF
+   //Verifico si la pieza existe en la tabla temporal
+   	CALL CDSModPieza_tmp_ver
+	If (RETVAL < 0) Then //Si No existe en la tabla temporal, busco si existe en la stockp
+        //controlo STOCKP
+   		CALL CDSselPiezaModif
+		IF (RETVAL < 0)
+			IF (retval == -1)
+				msgbox "Pieza Inexistente.",0x00,"Error"
+			END IF
+			CALL post:PBnew_ModifPieza
+			RETURN (-2)
+		END IF
+    	
+    	IF (es_CDD == "N")
+	    	//controlo VD
+	    	CALL csr:trimfield stockp_vd_imp
+	    	NEXTFIELD stockp_vd_imp
+	    	if (! stockp_vd_imp.PROTECTED) then
+	    		CALL post:FVALvd_importe
+	    		if (retval < 0) then
+	    			return -2
+	    		endif
+	    	endif
+    		//controlo contrareembolso
+	    	CALL csr:trimfield stockp_crem_imp
+	    	NEXTFIELD stockp_crem_imp
+	    	call MISCes_TT(stockp_pieza)
+	        if (retval == 0) then
+	    		if (substr(stockp_pieza,0,2) == "CO" || substr(stockp_pieza,0,2) == "EO") then /* || \
+	       			substr(stockp_pieza,0,2) == "GO") then*/
+		       		If (stockp_crem_imp == 0) Then
+		   	   			MSGBOX "IMPORTE CONTRAREEMBOLSO REQUERIDO",0x00,"AVISO"
+	    	   			RETURN -2
+		    	   	Endif
+	    		endif
+	    	endif
+	    	if (! stockp_crem_imp.PROTECTED) then
+	    		CALL post:FVALcrem_importe
+	    		if (retval < 0) then
+	    			return -2
+	    		endif
+	    	endif
+	    	
+	    	//controlo devol RTTE
+	    	CALL csr:trimfield stockp_en_devol
+	    	NEXTFIELD stockp_en_devol
+		    CALL FVALmodif_en_devol
+	    	If (RETVAL < 0) Then
+	      		If (currentfield.ID != post:stockp_en_devol.ID) Then
+			        UNGETKEY RT_TAB
+	      		End If
+	      		RETURN -2
+	    	End If
+    	
+	    	//control franqueo incompleto
+	    	CALL csr:trimfield stockp_franq_inc
+	    	NEXTFIELD stockp_franq_inc
+	    	CALL FVALstockp_franq_inc
+	    	If (RETVAL < 0) Then
+		        UNGETKEY RT_TAB
+	    	    RETURN -2
+	    	End If
+    	
+	    	if (!stockp_laboral.PROTECTED) then
+	    		IF (stockp_laboral != "N" && stockp_laboral != "S") THEN
+		        	MSGBOX "POR FAVOR, INGRESE S o N.",0X00,"ERROR"
+		        	RETURN -2
+		   		END IF
+	    	endif  
+    	
+    	END IF
+    	
+    	//Grabo en la tabla temporal
+    	CALL CDSModPieza_tmp_save
+    	
+		//actualizar contador
+		contador = contador + 1
+		refresh contador
+	ELSE
+		MSGBOX "LA PIEZA HA SIDO INGRESADA PREVIAMENTE.",0X00,"ERROR"
+	ENDIF
+
+	CALL post:PBnew_ModifPieza
+    
+END SUB
+
+/*******/

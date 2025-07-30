@@ -1,0 +1,281 @@
+/****o* Facturación/OFB:post:PRT_Ticket_Postal
+* NOMBRE
+*   OFB:post:PRT_Ticket_Postal
+* DESCRIPCION
+*   Impresión del ticket en Teclas Rapidas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCjnl_gral
+*   post:TRANprint
+*   post:PRESgral
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2387
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Ticket_Postal
+
+LOCAL cont_imp LIKE cantidad
+Local SUBTOTAL like siaf:importe
+//local PRECIO_UNITARIO like post:importe_impre
+local PRECIO_UNITARIO like post:precio_unitario
+
+local INDICE like post:cantidad /* indice que cuentas las lineas del cuerpo */
+local cx like siaf:idx
+local cant_vend	like post:cantidad
+local imp_auxi like siaf:importe_tot_serv
+
+	imp_auxi = siaf:importe - fld_promo_imp
+//	imp_auxi = siaf:importe
+	call post:MISCobtiene_empresa(dsc:post:CorreoArgentino)
+
+/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(SETEODEFAULT)
+
+	INDICE = 0
+// Comienazo del Encabezado
+    Call  post:PRT_Hdr_Ticket
+ 	//call MISCprt2laser(common:csr_string)
+    //busco la direccion de la sucursal activa
+/*MGI:AUT-2387 Esta información ahora se muestra en el encabezado
+	CALL MISCdireccion_suc       
+    Fprint common:csr_string "%-5.5s-%s\n",op:op_branch_id,common:csr_string_171
+    Call PRTtransparent(common:csr_string)
+*/
+    Fprint common:csr_string "Nro de Recibo : %e\n",post:nro_impre
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%s %s\n",FLD:common:emp_leyenIB,post:adt_emp_ingbru /*Dsc:IngBrut_Correo,post:adt_emp_ingbru. Norma*/
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%21s %10e\n",Dsc:Inic_Actividad,post:adt_emp_inicact
+    Call PRTtransparent(common:csr_string)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+	call MISCprt2laser(LINEANUEVA)
+
+    Fprint common:csr_string "%-9.9e%-13.13e %s\n",DSC:Cuit_Clie,post:adt_emp_cuit,"IVA-RESP.INSC."
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%-20.20s %s\n"," ","A CONSUMIDOR FINAL"
+    Call PRTtransparent(common:csr_string)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+//  Fin del Encabezado
+
+// Comienzo del Cuerpo del Ticket
+
+    //cgw:se pasa a una variable local (precio unitario) de 4 decimales para utilizar en la impresion.    
+    PRECIO_UNITARIO = post:adt_tarif_precio
+    Fprint common:csr_string  "%-4.4s %9.9s\n",cant_aux,PRECIO_UNITARIO
+    //Fprint common:csr_string  "%-4.4s %8.8s\n",cant_aux,PRECIO_UNITARIO
+    //Fprint common:csr_string  "%-4.4s %6.6s\n",cant_aux,adt_tarif_precio
+    
+    
+    Call PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+    Fprint common:csr_string  "%-28.28s %9.9s \n",siaf:nombre_transac,tarifa
+    Call PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+    Fprint common:csr_string  "%-18.18s\n",post:destino
+    Call PRTtransparent(common:csr_string)
+	INDICE = INDICE + 1
+
+    /* Impresion del opcional */
+    let cx = 0
+	do
+		if (cod_opc[cx].numchars == 0) then
+        	break
+       	endif
+       	let adt_opc_opci = cod_opc[cx]
+       	call CDSopc_desc_load
+       	let desc_impre = adt_opc_desc
+       	//cos_opc[cx] = cos_opc[cx] * cant_aux
+       	Fprint common:csr_string  "%-29.29s %8.8s \n",desc_impre,cos_opc[cx]
+       	Call PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+       	let cx = cx + 1
+	loop
+
+    /* Imprimo el descuento */
+    if (tipo_descto.numchars != 0) then
+    	let adt_descto_cod = tipo_descto
+       	call CDSdesco_desc_load
+       	let desc_impre = adt_descto_desc
+       	Fprint common:csr_string "(%e)", descuento
+       	Fprint common:csr_string  "Dsc:%-24.24s %10.10s\n",desc_impre,common:csr_string
+       	Call PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+	end if
+
+    if (fld_promo_imp.numchars != 0) then
+       	Fprint common:csr_string "(%e)", fld_promo_imp
+       	Fprint common:csr_string  "%-28.28s %10.10s\n", promo_desc, common:csr_string
+       	Call PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+	end if
+
+     /* Imprimo Bloques Adicionales. DP 23/5/2000*/
+    IF (post:cant_bloq > 0)
+		clearfield common:csr_string
+       	FPRINT  common:csr_string "%-20.20s  %12.12s", post:adt_bloque_desc,imp_bloques
+       	//FPRINT  common:csr_string "%-26.26s  %10.10s", post:adt_bloque_desc,imp_bloques
+       	Call PRTtransparent(common:csr_string)
+	END IF
+
+	// FGB: Modifico para Transaccion Telegrafica... al igual que se imprimen los T&T en las
+	//		postales, en la trx. telegrafica se debe imprimir el nro. de telegrama. Este nro
+	//		quedo grabado en la tabla cod_ctrl en el caso de que cantidad > 1
+	IF (adt_serv_piezacont == "T" || siaf:adt_tran_fliatran == "CST") then
+    	IF (cant_aux > 1)
+			if (siaf:adt_tran_fliatran == "CST") then
+				CDS SELECT FROM DSC:cod_ctrl_tbl BECOMES TT_CTX WHERE \
+        			fecha == common:system_date && \
+        			operador_tt == op:op_operator_id && \
+        			PresNro_tt == PresNro && \
+        			NroTrn_tt == PreDNroTrn
+			else
+				CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+        			fecha == common:system_date && \
+        			operador_tt == op:op_operator_id && \
+        			PresNro_tt == PresNro && \
+        			NroTrn_tt == PreDNroTrn
+			endif
+        	CDS FINDFIRST TT_CTX LOCK
+        	LET lib:err_retval = CDSRETVAL
+        	WHILE (lib:err_retval != -801)
+        		CDS EXTRACT TT_CTX ALL
+				// en el campo cod_ctrol esta el nro. de telegrama...
+				if (siaf:adt_tran_fliatran == "CST") then
+        			Fprint common:csr_string  "%10.10s %17.17s\n"," ",cod_ctrol
+				else
+        			Fprint common:csr_string  "%-13.13s %13.13s\n",cp,track_trace
+				endif
+        		Call PRTtransparent(common:csr_string)
+        		INDICE = INDICE + 1
+				CDS FINDNEXT TT_CTX LOCK
+				LET lib:err_retval = CDSRETVAL
+			END WHILE
+			CDS ENDSELECT TT_CTX
+		ELSE
+			if (siaf:adt_tran_fliatran == "CST") then
+				Fprint common:csr_string  "%10.10s %17.17s\n"," ",tele:tele_nro_telegrama
+			else
+				Fprint common:csr_string  "%-13.13s %13.13s\n",cp,track_trace
+			endif
+         	Call PRTtransparent(common:csr_string)
+         	INDICE = INDICE + 1
+		END IF
+	END IF
+
+	/*Si tiene especie asociada la imprime*/
+	if (codesp_serv.numchars > 0) then
+		tes:adt_espv_cod = codesp_serv
+    	tes:adt_espv_subcod = subcod_serv
+    	CALL tes:CDSadt_esp_load
+
+		call MISCprt2laser(LINEANUEVA)
+       	FPRINT  common:csr_string "%-20.20s",post:codesp_serv
+       	Call PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+
+       	tarifa = cant_aux * tes:adt_espv_valor
+       	;siaf:importe_tot_serv = siaf:importe_tot_serv + tarifa
+       	imp_auxi = imp_auxi + tarifa
+       	fprint common:csr_string "%-10.10s      %7.7e  %13.13s \n",subcod_serv,cant_aux,tarifa
+       	Call PRTtransparent(common:csr_string)
+       	INDICE = INDICE + 1
+	end if
+	/*Si tiene producto asociado y se vendio, lo imprime*/
+	if (prod_serv.numchars > 0)
+		if (cant_caja_prev < cant_aux) then
+    		adt_prodvs_cod = prod_serv
+    		CALL post:CDSprodvs_load
+
+		    call MISCprt2laser(LINEANUEVA)
+		    cant_vend = cant_aux - cant_caja_prev
+		    Fprint common:csr_string  "%-4.4s %9.9s\n",cant_vend,adt_prodvs_tarifa
+		    Call PRTtransparent(common:csr_string)
+		    INDICE = INDICE + 1
+
+			tarifa = cant_vend * adt_prodvs_tarifa
+			;siaf:importe_tot_serv = siaf:importe_tot_serv + tarifa
+			imp_auxi = imp_auxi + tarifa
+		    Fprint common:csr_string  "%-28.28s %9.9s \n",adt_prodvs_desc,tarifa
+		    Call PRTtransparent(common:csr_string)
+		    INDICE = INDICE + 1
+		end if
+		/*Si el producto asociado al servicio, tiene una especie asociada y esta se vendio la imprime*/
+		if (codesp_prod.numchars > 0 && cant_cinta_prev < cant_aux) then
+			tes:adt_espv_cod = codesp_prod
+	    	tes:adt_espv_subcod = subcod_prod
+	    	CALL tes:CDSadt_esp_load
+
+			call MISCprt2laser(LINEANUEVA)
+	       	FPRINT  common:csr_string "%-20.20s",post:codesp_prod
+	       	Call PRTtransparent(common:csr_string)
+	       	INDICE = INDICE + 1
+
+	       	cant_vend = cant_aux - cant_cinta_prev
+	       	tarifa = cant_vend * tes:adt_espv_valor
+	       	;siaf:importe_tot_serv = siaf:importe_tot_serv + tarifa
+	       	imp_auxi = imp_auxi + tarifa
+	       	fprint common:csr_string "%-10.10s      %7.7e  %13.13s \n",subcod_prod,cant_vend,tarifa
+	       	Call PRTtransparent(common:csr_string)
+	       	INDICE = INDICE + 1
+		end if
+	end if
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    Call PRTtransparent(LINE_GUIONES)
+    //Fprint common:csr_string  "TOTAL %33.33s\n",siaf:importe
+    ;Fprint common:csr_string  "TOTAL %33.33s\n",siaf:importe_tot_serv
+
+    Fprint common:csr_string  "TOTAL %33.33s\n",imp_auxi
+    Call PRTtransparent(common:csr_string)
+    Call PRTtransparent(LINE_GUIONES)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = INDICE + 4
+    //Fprint common:csr_string  "%-30.30s %8.8s\n",medio_pago_desc,siaf:importe
+    ;Fprint common:csr_string  "%-30.30s %8.8s\n",medio_pago_desc,siaf:importe_tot_serv
+   ;Fprint common:csr_string  "%-29.29s %8.8s \n",medio_pago_desc,imp_auxi
+		Fprint common:csr_string  "%-29.29s %9.9s \n",medio_pago_desc,imp_auxi
+    Call PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+     Fprint common:csr_string "%40.40s%s" common:emp_desc,"\n"
+    //Call PRTtransparent(PIETICKET1)
+    Call PRTtransparent(common:csr_string)
+    Call PRTtransparent(PIETICKET2)
+    Call PRTtransparent(PIETICKET3)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = INDICE + Retval + 6
+    // la guillotina esta ubicada antes que el rodillo de impresion por lo tanto
+    //hay lineas impresas abajo de esta.
+    // para solucionar el problema hay que avanzar un par de lineas
+    Call post:MISCavaz_linea_imp(INDICE)
+    // se agradece la colaboracion del Super Equipo de Galicia
+    Call post:PRT_Ticket_Corte
+
+END SUB
+
+/*******/

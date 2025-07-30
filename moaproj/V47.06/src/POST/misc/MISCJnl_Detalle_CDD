@@ -1,0 +1,139 @@
+/****o* Rendición Piezas CDD/OFB:post:MISCJnl_Detalle_CDD
+* NOMBRE
+*   OFB:post:MISCJnl_Detalle_CDD
+* DESCRIPCION
+*   Esta rutina journaliza los detalles de la TX de Rendicion de Piezas CDD (99092)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SENDRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCJnl_Detalle_CDD
+	LOCAL l_cct_comitente LIKE post:adt_cct_comitente 
+	LOCAL l_CDD_CtaOM LIKE post:adt_CDD_CtaOM 
+	LOCAL l_climay_razon LIKE post:adt_climay_razon
+
+	CDS SELECT FROM DSC:StockpCDD_tbl BECOMES DSC:StockpCDD_ctx \
+			WHERE (adt_CDD_recep_op == op:op_operator_id && \
+						post:adt_CDD_plan_fecha == post:CDD_plan_fecha && \
+						post:adt_CDD_plan_nro  ==  post:CDD_plan_nro) 
+	
+	CDS FINDFIRST DSC:StockpCDD_ctx LOCK
+	
+	IF (CDSRETVAL == -801) THEN
+		CDS UNLOCK DSC:StockpCDD_ctx
+		CDS ENDSELECT DSC:StockpCDD_ctx
+		RETURN -2
+	END IF
+
+	DO
+	
+		clearfield Pieza
+		clearfield CDD_crem_imp 
+		clearfield CDD_ctaOM
+		clearfield CDD_rtte_TipoDoc
+		clearfield CDD_rtte_NumDoc
+		clearfield adt_CDD_es_grancl
+		//gpb:AUT-1977
+		//gpb:AUT-1978
+		clearfield adt_cct_rend_fis
+		clearfield adt_cct_def_cupon
+		clearfield adt_cct_cod_serv
+		clearfield adt_cct_nis_liq
+		
+		CDS EXTRACT DSC:StockpCDD_ctx \
+			post:CDD_plan_fecha \
+			post:CDD_plan_nro \
+			post:adt_CDD_pieza into Pieza \
+			post:adt_CDD_crem_imp into CDD_crem_imp \
+			post:adt_CDD_CtaOM into CDD_ctaOM \
+			post:adt_CDD_TipoDoc into CDD_rtte_TipoDoc \
+			post:adt_CDD_NumDoc into CDD_rtte_NumDoc \
+			post:adt_CDD_es_grancl
+		
+		//Si es CREM y gran cliente se deba grabar la cupon y la cupon_rep
+		IF (adt_CDD_es_grancl == "T") THEN	
+		  //gpb:SC 50190 - SC 50361	
+	    //extraigo campos para grabar en la cupon_rep
+			CDS EXTRACT DSC:StockpCDD_ctx \
+				post:adt_cct_comitente INTO post:id_comitente_CCT \
+				post:adt_CDD_CtaOM INTO post:cupon_cta_om \
+				post:adt_climay_razon INTO post:comitente_CCT \
+				post:id_cupon_CCT 
+				
+			//gpb:AUT-1977
+			//gpb:AUT-1978
+			CDS EXTRACT DSC:StockpCDD_ctx \
+				post:adt_CDD_crem_imp INTO post:importe_CCT \
+				post:adt_cct_rend_fis \
+				post:adt_cct_def_cupon \
+				post:adt_cct_cod_serv \
+				post:adt_cct_nis_liq
+				
+		END IF
+			
+		siaf:adt_tran_codigo = 99092
+		siaf:codigo_siaf = 99092
+		siaf:importe = post:CDD_crem_imp
+		post:importe_origen = siaf:importe
+		tlr:tran_mnemonic = "SVTTRP"
+		siaf:nombre_transac = "DETALLE DE PIEZAS RENDIDAS A CDD"
+		//drv:INDcur_tran = LST:TRANRendicionCDD_Det
+		drv:INDspc_rtn[0] = LST:TOTS_RendicionCDD
+		drv:INDscr = SCR:SCRNDet_CDD
+		drv:INDjnl_rtn = OFB:JNLDet_CDD
+       		
+    	MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+    	siaf:secuencia_aux = tlr:sequence + 1
+    	siaf:hora = common:time_of_day //Linea Nueva
+
+    	CALL tlr:JNLtran
+    
+		//Si es CREM y gran cliente se deba grabar la cupon y la cupon_rep
+		IF (adt_CDD_es_grancl == "T") THEN
+    
+				//cgw:Se instancian campos que se necesitan grabar en la tabla cupon
+				//para que puedan impactar en el Host durante el proceso de RTBatch.
+				post:cupon_def_cupon = post:adt_cct_def_cupon
+				post:cupon_cod_serv = post:adt_cct_cod_serv
+				post:cupon_nis_liq = post:adt_cct_nis_liq
+				post:adt_cupon_pieza = post:Pieza
+				
+    		//cgw:AUT-1926
+    		post:cupon_rend_fis = post:adt_cct_rend_fis
+    		
+			//gpb:SC 50190 - SC 50361
+			//grabar en la tabla cupon el cupon CREM ingresado para que viaje al Host por RT BATCH	
+			CALL post:CDScupon_save("1","D","CREM")
+	
+			//grabar en la tabla cupon el cupon_rep CREM ingresado.
+			//Esta tabla se graba para ser recorrida en el Reporte de .	
+			CALL post:CDScupon_rep_save("CREM")
+		
+		END IF
+	
+		UNGETKEY RT_SEND
+		
+		CDS FINDNEXT DSC:StockpCDD_ctx LOCK
+		IF (CDSRETVAL == -801) THEN
+			BREAK
+		END IF
+  LOOP
+   
+  CDS UNLOCK DSC:StockpCDD_ctx
+  CDS ENDSELECT DSC:StockpCDD_ctx
+  
+  CALL post:MISCclear_campos_jou
+
+END SUB
+
+/*******/

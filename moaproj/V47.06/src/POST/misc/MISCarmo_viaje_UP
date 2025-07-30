@@ -1,0 +1,200 @@
+/****o* Tratamiento de Cheques/OFB:post:MISCarmo_viaje_UP
+* NOMBRE
+*   OFB:post:MISCarmo_viaje_UP
+* DESCRIPCION
+*   Esta rutina se ejecuta en caso de ser una venta diferida y envía el mensaje al switch
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:SVAL99430
+* REFERENCIADO POR
+*   OFB:post:MISCjournaliz_mult
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCarmo_viaje_UP
+
+	local varl_importe like common:csr_string
+	local varl_tipo_adel   like post:consumo_operacion
+	
+	// MFM - FGB : refresco los valores de venta a UP de la Presu
+	call post:MISCRecup_DatosDif
+	
+	//Esta rutina se llama de la SVAL de la journalizacion Múltiple de Capturas en caso de ser
+	//venta UP diferida y envía el mensaje al switch
+
+	IF (adt_mp_viaje == "S" && post:es_diferido == "D")
+
+		//Seteo el flag de VentaUP_diferida para saber que se va a mandar un viaje
+		SETFLAG giros:tran_send_mode,ventaUP_diferida
+		//Seteo la leyenda de Pago diferido para diferenciar de las demás capturas
+		if (post:cli_tipo == CLIUP )
+			IF (consulta_excepcion == "S") THEN
+				reg_up_dif = "Venta UP - Registro Pago por Excepción"
+			ELSE
+				reg_up_dif = "Venta UP - Registro Pago Diferido"
+			END IF
+		else
+			if (post:cli_tipo == CLIMED )
+				reg_up_dif = "Cliente Medio - Registro Pago Diferido"
+			end if
+		end if
+
+	
+		IF (!Testflag(tlr:controla_firma,cancelacion))
+			Call post:CDSobtiene_secuen("STAN")
+			giros:hora_viaje = siaf:hora
+			giros:dia_viaje = siaf:fecha			
+		END IF
+		
+		if ( post:cli_tipo == CLIUP )
+			if (!post:ConsumoAnticipo) then
+				If (consulta_excepcion != "S") Then
+					giros:codigo_procesamiento = 997002 //Registro del pago diferido
+				ELSE
+					giros:codigo_procesamiento = 997003 //Registro de pago por excepción
+				END IF
+
+				//Asigno las rutinas de mensajeria a los campos indirectos correspondientes
+				drv:INDhcomm_rtn = OFB:post:SENDPago_Cancel_UP
+				//Se journaliza como hcomm:INDhos_sndrt
+				drv:INDspc_rtn[1] = OFB:post:RCVEPago_Cancel_UP
+				//Se journaliza como hcomm:INDhost_rcvrt
+			else
+				
+				giros:codigo_procesamiento = 997030
+				varl_importe = post:anticipo_CM * 100
+				fprint post:consumo_operacion,\
+				"%s",CLIMED_RESTA
+				call post:MISCcm_armar_adel
+				if ( retval < 0 )
+					return -2
+				end if
+				fprint post:datos_msg108,"%-3.3s%1.1s%015.15s%012.12s",\
+				post:TipoIdentFact,"",post:SeqIdentFact,varl_importe
+				
+				drv:INDhcomm_rtn = OFB:post:SENDclimed_anticipo
+				drv:INDspc_rtn[1] = OFB:post:RCVEclimed_anticipo
+			endif
+			
+				
+		else
+			if (post:cli_tipo == CLIMED)
+				
+				call post:CDSpresu_climed_load
+				giros:hora_viaje = common:time_of_day
+				giros:dia_viaje = common:system_date
+
+				if (post:consulta_excepcionCM == "S" && post:pago_diferido == "S" ) then
+					//Estaba quedando mal journalizado.
+					post:jnl_iva_int_dif = \
+					(post:jnl_interes_diferido * post:iva_Porcentaje )
+					if (post:Cheques.numchars != 0 )
+						post:consulta_pagodif = 0
+						giros:codigo_procesamiento = 997026
+						drv:INDhcomm_rtn = OFB:post:SENDclimed_mult_cheq
+						drv:INDspc_rtn[1] = OFB:post:RCVEclimed_mult_cheq
+					end if
+				else
+					
+					if (post:ConsumoAnticipo || post:ModalidadAT || post:OperacionCob )
+						if (post:OperacionCob )
+							giros:codigo_procesamiento = 997040
+							varl_importe = CobAnticipo_CM * 100
+							fprint post:consumo_operacion,"%s",\
+							CLIMED_RESTA
+
+							call post:MISCclimed_ingr_fact(99460)
+
+							//PS
+							varl_importe = (post:total_cobranza - post:resta_saldoCM) * 100
+							fprint post:financiado_operacion,\
+							"%s%012.12s",CLIMED_RESTA,varl_importe
+
+							drv:INDhcomm_rtn = OFB:post:SENDclimed_ingr_fact
+							drv:INDspc_rtn[1] = OFB:post:RCVEclimed_ingr_fact
+						else	
+							;ADELANTO/CONSUMO
+							
+							if (post:ConsumoAnticipo )
+								giros:codigo_procesamiento = 997030
+								varl_importe = post:anticipo_CM * 100
+								fprint post:consumo_operacion,\
+								"%s",CLIMED_RESTA
+
+								call post:MISCcm_armar_adel
+								if ( retval < 0 )
+									return -2
+								end if
+
+								fprint post:datos_msg108,"%-3.3s%1.1s%015.15s%012.12s",\
+								post:TipoIdentFact,"",post:SeqIdentFact,varl_importe
+								
+								drv:INDhcomm_rtn = OFB:post:SENDclimed_anticipo
+								drv:INDspc_rtn[1] = OFB:post:RCVEclimed_anticipo
+							else
+								giros:codigo_procesamiento = 997032
+								
+								if (siaf:motivo == "ADEMO") then
+										CALL post:MISCacredito_adel
+										varl_importe = imp_adel_mon * 100
+								else
+									varl_importe = post:anticipo_CM * 100
+								
+								endif
+								
+								//varl_importe = post:anticipo_CM * 100
+							/*	fprint post:consumo_operacion,\
+								"%s",CLIMED_SUMA*/
+								//50295
+								fprint post:consumo_operacion,"%s","A" //ALTA
+
+								//call post:MISCcm_armar_adel
+								if (siaf:motivo == "ADEMO") then
+									varl_tipo_adel = "M" //monetarios
+									post:cheq_acreditado = "N"
+								else
+									varl_tipo_adel = "A"
+									post:cheq_acreditado = "S"
+								endif
+          						call post:MISCcm_armar_consumo(varl_tipo_adel)		
+								if ( retval < 0 )
+									return -2
+								end if
+								//PS10218:Aunque el cheque no se acredite en el momento el importe del comprobante no puede quedar en cero.
+	  							varl_importe = siaf:importe * 100
+	  							fprint post:datos_msg108,"%-3.3s%1.1s%015.15s%012.12s",\
+	  							"REC","",post:nro_recibo,varl_importe
+	  							
+	  							drv:INDhcomm_rtn = OFB:post:SENDclimed_consumo
+								drv:INDspc_rtn[1] = OFB:post:RCVEclimed_consumo
+							end if
+							
+						end if
+					else
+						post:consulta_pagodif = 0
+						giros:codigo_procesamiento = 997002
+						drv:INDhcomm_rtn = OFB:post:SENDclimed_pagodif
+						drv:INDspc_rtn[1] = OFB:post:RCVEclimed_pagodif
+					end if
+				
+				end if
+				
+			end if
+		end if
+
+	else
+		//las limpio para que no las utilice la próxima captura a journalizar
+		CLEARFIELD reg_up_dif 
+		CLEARFIELD drv:INDhcomm_rtn
+		CLEARFIELD drv:INDspc_rtn[1]
+		RESETFLAG giros:tran_send_mode,ventaUP_diferida
+    End if
+END SUB
+
+/*******/

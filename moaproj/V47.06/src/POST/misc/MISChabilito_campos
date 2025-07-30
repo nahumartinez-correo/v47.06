@@ -1,0 +1,111 @@
+/****o* Pendientes de agrupación/OFB:post:MISChabilito_campos
+* NOMBRE
+*   OFB:post:MISChabilito_campos
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISChabilito_campos
+	LOCAL LReemp LIKE lib:err_retval
+	LOCAL Lindice LIKE siaf:idx
+	
+	PROTFIELD siaf:moneda
+	PROTFIELD codigo_interno
+	
+	CALL post:MISCprotec_tot
+	DISABLECONTROL drv:PBcb9
+	DISABLECONTROL drv:PBcb10
+	DISABLECONTROL drv:PBcb11
+	//gpb:NI50525 POS Integrado
+	DISABLECONTROL drv:PBcb14
+	DISABLECONTROL drv:PBcb15
+
+	CALL post:CDScargo_reemp
+	LET LReemp = RETVAL
+	IF (LReemp == 0) THEN
+		CALL MISCBusco_MP_Reemp(Lindice)
+	END IF
+
+	//Estilo Cheque
+	IF (adt_mp_adm == "I" && adt_mp_admban == "S") THEN
+		/*Si es Pago Diferido para una Sesión UP, ya tengo los datos cargados y no dejo
+		modificarlos - Gabriel Falciola*/
+		IF (LReemp == 0) THEN
+			post:cod_banco = post:BancoPago[Lindice]
+			post:cuenta = post:Bco_Cuenta[Lindice]
+			//FPRINT post:nro_cheque "%d",post:NumCuenta[Lindice]
+			//cgw:se ajusta formato para que muestre los 8 digitos.
+			FPRINT post:nro_cheque "%8.8s",post:NumCuenta[Lindice]
+			post:fec_d = post:Valor_Fecha[Lindice]
+			post:fec_e = post:Emision_Fecha[Lindice]
+			tes:clearing = post:chq_clearing[Lindice]
+		ELSE
+			IF (siaf:moneda == 2 && post:pago_diferido == "S") THEN
+				IF (cli_tipo == CLIUP || cli_tipo == CLIMED) THEN
+					//no debo desproteger los campo
+					CALL CDSdatos_pago_dif
+				ELSE
+					CALL post:MISCunprot_tip_cheq
+					ENABLECONTROL drv:PBcb10
+					ENABLECONTROL drv:PBcb11    			
+				END IF
+				//NextField importe_origen
+			ELSE
+				CALL post:MISCunprot_tip_cheq
+				ENABLECONTROL drv:PBcb10
+				ENABLECONTROL drv:PBcb11    			
+			END IF
+		END IF
+	END IF
+
+	//Estilo Tarjeta
+	IF (adt_mp_adm == "I" && adt_mp_auto == "S") THEN
+		IF (LReemp == 0) THEN
+			/*VERRR NroTransac*/
+			UNPROTFIELD NroTransac
+			post:NroCompPago2 = post:NumCuenta[Lindice]
+		ELSE
+			//gpb:NI50525 POS Integrado
+			CALL post:MISCunprot_tip_tarj
+			ENABLECONTROL drv:PBcb14
+		END IF
+		//NextField importe_origen
+	END IF
+
+	//Codigo Interno
+	IF (adt_mp_int == "S") THEN
+		IF (LReemp == 0) THEN
+			post:codigo_interno = post:Bco_Cuenta[Lindice]
+			REFRESH post:codigo_interno
+		ELSE
+			//ClearField  codigo_interno
+			UNPROTFIELD codigo_interno
+			NEXTFIELD codigo_interno
+			ENABLECONTROL drv:PBcb9
+		END IF
+	END IF
+
+	CALL post:CDSadt_MedPago_load
+	IF (adt_mp_diferido != "S") THEN
+		CLEARFIELD post:fec_d
+		REFRESH fec_d
+		PROTFIELD post:fec_d
+	END IF
+	
+	CALL MISCrefresh_tot
+
+END SUB
+
+/*******/

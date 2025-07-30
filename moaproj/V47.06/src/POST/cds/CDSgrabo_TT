@@ -1,0 +1,187 @@
+/****o* Carga T&T/OFB:post:CDSgrabo_TT
+* NOMBRE
+*   OFB:post:CDSgrabo_TT
+* DESCRIPCION
+*   Esta rutina recupera de la tabla TTaux aquellos presupuesto que tienen pendiente la carga de sus T&T.
+*   Pueden ser de sesiones de cliente mayorista o cliente medio con modalidad facturacion diferida.
+*   Luego accede al journal para grabar el T&T en los registros correspondientes y genera el scaneo O de imposicion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:PBcar_TT
+* DOCUMENTACION
+*   PS9761.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=631846&
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSgrabo_TT
+	local Len_journal	like siaf:i
+	LOCAL Lerr_retval LIKE lib:err_retval
+	local l_sap like post:adt_novtt_sap
+	
+	/*Accedo a la tabla de track_trace  para rescatarlo y journalizarlo*/
+	// FGB (11.9.2000) - SAP - Como en la TTaux pueden haber operaciones de dias
+	// anteriores, busco en la track_trace por la fecha del sistema (porque se 
+	// graban en dicha tabla con la fecha en que fueron cargadas, o sea, hoy hace
+	// dos minutos atras) 
+	CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+  		fecha == common:system_date && \
+  		operador_tt == adt_jnl_operator && \
+  		PresNro_tt == adt_jnl_presnro && \
+  		NroTrn_tt == adt_jnl_NroTrn
+	// FGB fin
+
+	CDS FINDFIRST TT_CTX LOCK
+	LET Lerr_retval = CDSRETVAL
+	IF (Lerr_retval == -801) THEN
+        CDS ENDSELECT DSC:TT_CTX		
+		RETURN (-2)
+  	END IF
+	// fgb agrego pa' que quede ma' mejo
+	fyimsg common:fyimsg_list,"Resgistrando Track & Trace"
+        
+
+	let Len_journal = 1
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		tlr:jnl_branch == post:adt_jnl_branch && \
+		tlr:jnl_operator == post:adt_jnl_operator && \
+		tlr:jnl_date == post:fechaux && \
+		tlr:jnl_bus_date == post:adt_jnl_bus_date && \
+		post:PresNro == post:adt_jnl_presnro && \
+		post:adt_PreDNroTrn == post:adt_jnl_NroTrn
+	CDS FINDFIRST DSC:tlr:jnl_context LOCK
+	LET lib:err_retval = CDSRETVAL
+    IF (lib:err_retval == -801) THEN
+		// FGB 9.9.2000: Si no encuentra las operaciones en el journal va
+		// a buscarlas en la tabla CC_pedidos (pero solo para enganchar el
+		// T&T al registro (no se genera expedicion por esto)
+		CDS ENDSELECT DSC:tlr:jnl_context
+		CDS SELECT FROM DSC:tlr:TABjnl_sap_cc BECOMES DSC:tlr:jnl_context WHERE \
+			tlr:jnl_branch == post:adt_jnl_branch && \
+			tlr:jnl_operator == post:adt_jnl_operator && \
+			tlr:jnl_date == post:fechaux && \
+			tlr:jnl_bus_date == post:adt_jnl_bus_date && \
+			post:PresNro == post:adt_jnl_presnro && \
+			post:adt_PreDNroTrn == post:adt_jnl_NroTrn
+      	    if (cdsretval == 0) then
+      	        CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+      	        if (cdsretval == -801) then
+      	            // FGB: tampoco esta en la tabla auxiliar de ctas/ctes.
+      	            //      Me voy, como que aca no ha pasado nada...
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    CDS ENDSELECT DSC:TT_TAB
+      	            RETURN (-2)
+      	        end if
+	        	LET lib:err_retval = CDSRETVAL
+                // marco que la trx. no esta mas en el journal
+                let Len_journal = 0
+                msgbox "LAS OPERACIONES YA NO SE ENCUENTRAN EN EL JOURNAL", \
+                       OFB_OK,"Advertencia"
+                msgbox \
+        		"LOS T&T SERAN CARGADOS, PERO NO ENTRARAN EN EL CIRCUITO DE EXPEDICION"\
+                      OFB_OK,"Aviso"
+      	    end if
+  	END IF
+ 
+ 	WHILE (Lerr_retval != -801) && ( lib:err_retval == 0 )
+		
+		cds findagain TT_CTX LOCK 
+		
+		/*extraigo tt y datos de ips de la tabla de track_trace*/
+		CDS EXTRACT TT_CTX \
+			post:track_trace \
+			post:cp \
+			post:jnl_ips_pais_cod \
+			post:jnl_ips_cont_cod \
+			post:jnl_ips_pais \
+			post:jnl_ips_cont 
+		
+		/*MFM - Verifico se la pieza es prioritaria o no*/
+		CALL MISCverif_prior (track_trace)
+		
+		/*append del tt en la tabla del journal*/
+		CDS FINDAGAIN tlr:jnl_context LOCK
+   	 	
+   	 	/* MFM - Agosto 2000 - Recupero los datos necesarios para hacer los filtros
+   	 	en la expedición*/
+   	 	CLEARFIELD tlr:jnl_sequence
+   	 	CLEARFIELD tlr:jnl_time
+   	 	CLEARFIELD tlr:jnl_date
+   	 	CLEARFIELD post:tiene_ar
+   	 	CLEARFIELD post:tiene_csar
+   	 	CLEARFIELD post:jnl_corteop_cod
+   	 	CLEARFIELD post:jnl_corteop_apert
+   	 	CLEARFIELD post:jnl_corteop_guiacont
+   	 	CLEARFIELD post:jnl_corteop_saca
+   	 	CLEARFIELD post:jnl_corteop_despacho
+   	 	CLEARFIELD post:jnl_grucorte_cod
+   	 	
+   	 	/*MFM - Extraigo el campo de block horario 2*/
+   	 	CLEARFIELD post:jnl_servicio_en_bh2
+   	 	CDS EXTRACT DSC:tlr:jnl_context post:jnl_servicio_en_bh2
+   	 	
+   	 	CDS EXTRACT DSC:tlr:jnl_context post:jnl_flia_tran tlr:jnl_operator \
+        tlr:jnl_sequence tlr:jnl_time tlr:jnl_date post:tiene_ar \
+        post:jnl_corteop_cod jnl_apertura_cod post:jnl_corteop_guiacont \
+        post:jnl_corteop_saca post:jnl_corteop_despacho post:jnl_grucorte_cod post:tiene_csar
+   	 	/*post:jnl_corteop_apert*/
+   	 	
+   	 	//PS 9957
+   	 	CDS CLEARBUFFER DSC:tlr:jnl_context 
+   	 	
+   	 	CDS APPEND DSC:tlr:jnl_context \
+   	 		FLD:post:track_trace \
+   	 		FLD:post:cp \
+   	 		FLD:post:es_prioritaria \
+   	 		FLD:post:jnl_ips_pais_cod \
+   	 		FLD:post:jnl_ips_cont_cod \
+   	 		FLD:post:jnl_ips_pais \
+   	 		FLD:post:jnl_ips_cont
+   	 	CDS UPDATE DSC:tlr:jnl_context LOCK
+       	
+       	/*MFM - Grabo el scaneo O correpondiente a dicha imposicion*/
+    	if (Len_journal) then
+    	   /*MFM - Req 3621*/
+    	   //adt_novtt_cliente = "99999999"
+    	   /*MFM - Req 4289- Anula al 3621
+    	   adt_novtt_cliente = post:CliCod
+    	   FPRINT adt_novtt_cliente,"%010.10s",adt_novtt_cliente*/
+	   
+	   //PS 9761 Desde V26 se está completando el CliCod con 0 adelante, hay que recuperar
+	   //los ultimos 5 caracteres.
+	   fprint post:CliCod "%010.10s", post:CliCod
+    	   l_sap = substr(post:CliCod,5,5)
+	   /*MFM (5.11.2001) Se crea un nuevo campo para informar el número de cliente cuenta 			correntista*/
+    	   adt_novtt_sap = l_sap
+    	   
+    	   CALL MISCverif_ScaneoO
+    	end if
+
+
+		/*proximo registro de la tabla de track_trace*/
+		CDS FINDNEXT TT_CTX LOCK
+	    LET Lerr_retval = CDSRETVAL
+        
+        /*proximo registro de la tabla del journal*/
+    	CDS FINDNEXT DSC:tlr:jnl_context LOCK
+    	LET lib:err_retval = CDSRETVAL
+		
+
+
+	END WHILE
+	// fgb agrego pa' que quede ma' mejo
+    fyimsg clear
+
+	CDS ENDSELECT TT_CTX
+	CDS ENDSELECT DSC:tlr:jnl_context
+
+
+END SUB
+
+/*******/

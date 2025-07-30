@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:op:CDSop_marca_cien
+* NOMBRE
+*   OFB:op:CDSop_marca_cien
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "adtutlcds.h"
+#include "hcommstd.h"
+
+
+SUB op:CDSop_marca_cien
+
+    IF (post:show_msg_rech == "N")
+        return
+    END IF
+
+    if ( post:cm_msg_update == 1) // || siaf:codigo_siaf == 99060)
+        ;EN MSG CLIENTE MEDIO (ACTUALIZACION FACTURA) o Cobranza cuenta corriente
+        ;NO GRABAR TRX EN JNL_CAIDAS
+        return 0
+    end if
+
+    if ( (!testflag(tlr:controla_marca,cancel) && hcomm:tran_status > HOST_REJECTED) && \
+          testflag(giros:giros_masivos,proc_gir_masivos) ) then
+        CALL giros:CDSjnl_caidas_gm
+        return 0
+    end if
+
+    if ( (!testflag(tlr:controla_marca,cancel) && hcomm:tran_status > HOST_REJECTED) && \
+          testflag(giros:giros_importacion,proc_em_lg)) then
+        CALL giros:CDSjnl_caidas_lg
+        return 0
+    end if
+
+    if ( (hcomm:tran_status > HOST_REJECTED) && \
+        testflag(post:pagos_masivos,proc_pagos_masivos) ) then
+        tlr:jnl_status = hcomm:tran_status
+        CALL post:CDSjnl_caidas_pm
+        return 0
+    end if
+
+    
+    /* Tabla auxiliar para la recuperación de las caidas en vuelo */
+    if ((!testflag(tlr:controla_marca,cancel) && hcomm:tran_status > HOST_REJECTED) || \
+         (testflag(tlr:controla_marca,cancel) && hcomm:tran_status > HOST_REJECTED && \
+          giros:flia_giro_fld == "I" && siaf:codigo_siaf == 70540 ) ) then
+
+        CALL giros:CDSgen_jnl_caidas
+    
+    end if
+
+
+    /* Actualizo la marca de caida en vuelo del operador */
+    cds select from dsc:op:adt_op_table  becomes  dsc:op:adt_op_context \
+        where op:op_operator_id == fld:op:op_operator_id
+
+    cds findfirst dsc:op:adt_op_context lock
+    if (cdsretval == 0 )
+        if ( hcomm:tran_status > HOST_REJECTED || testflag(tlr:controla_marca,mayor_cien)) then
+            cds extract dsc:adt_op_context tlr:controla_marca
+            setflag tlr:controla_marca,mayor_cien
+        else
+            cds extract dsc:adt_op_context tlr:controla_marca
+            resetflag tlr:controla_marca,mayor_cien
+        end if
+        cds append dsc:adt_op_context tlr:controla_marca
+        cds update dsc:adt_op_context lock
+    end if
+    cds endselect dsc:adt_op_context
+END SUB 
+
+/*******/

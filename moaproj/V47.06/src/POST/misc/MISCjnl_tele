@@ -1,0 +1,339 @@
+/****o* Servicios Telegráficos/OFB:post:MISCjnl_tele
+* NOMBRE
+*   OFB:post:MISCjnl_tele
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_tele
+    /*journaliza n cantidad de transacciones cdo el campo cantidad es > 1*/
+    LOCAL cont LIKE cant_opc
+    LOCAL l_cont_aux LIKE cant_opc
+    LOCAL x LIKE cant_opc
+    LOCAL j LIKE cant_opc
+    LOCAL mensaje LIKE common:csr_string
+    LOCAL l_preCantidad LIKE post:cant_aux
+    LOCAL l_debeAcumular LIKE lib:err_retval
+    local pasado like ctrol_ult_tt
+    local cant_esp like post:cant_aux
+    local tot_opc_esp like post:promo_imp_tot_opc
+    LOCAL l_retval LIKE lib:err_retval
+    LOCAL l_bloq_acum_iva LIKE post:imp_bloques_siva
+    LOCAL l_serv_acum_iva LIKE tele:imp_siniva_serv
+    LOCAL l_serv_acum_iva4 LIKE post:ImporteSinIva_bis
+    LOCAL l_sin_iva like post:ImporteSinIva
+    LOCAL l_sin_iva4 like post:ImporteSinIva_bis
+    LOCAL l_iva like post:ImporteIva
+    LOCAL l_iva4 like post:ImporteIva_bis
+    
+    //cont_jnl = 0
+    /*para que no se llame a la rutina que verifica que sea la ultima transaccion del presupuesto*/
+    IF (post:estado_presu == 4) THEN
+        ctrol_ult_tt = "S"
+    END IF
+    tarifa = tarifa_aux / cant_aux
+    siaf:importe = (imp_aux - costo_opc_uni) / cant_aux  + costo_opc_uni //imp del opc que se cobra una sola vez
+
+    costo_opc = ((costo_opc - costo_opc_uni) / cant_aux) + costo_opc_uni
+    descuento = descuento / cant_aux
+    valor_ar = valor_ar / cant_aux
+    
+    cant_esp = 0
+	x = 0
+	l_retval = 0
+	l_preCantidad =  cant_aux
+	while (x < 8)
+		promo_imp_opc_tot[x] = promo_imp_opc_ind[x]
+		;PS9490
+        CALL post:MISCopcCantPart(cod_opc[x], post:tipo_produc, cant_esp)
+        if (retval == 1) then
+           l_retval = retval
+        end if
+ 		tot_opc_esp = tot_opc_esp + promo_imp_opc_ind[x]
+		x = x + 1
+	end while	
+	   
+	if (l_retval == 1)
+	   promo_imp_tot_opc = tot_opc_esp
+    else
+       promo_imp_tot_opc = promo_imp_tot_opc / cant_aux
+    end if    
+     
+     
+	promo_imp_srv_tot = promo_imp_srv_tot / cant_aux
+	promo_imp_blq_tot = promo_imp_blq_tot / cant_aux
+	
+	//promo_imp_tot_opc = promo_imp_tot_ind - promo_imp_srv_tot - promo_imp_blq_tot
+	promo_tot_Serv = promo_imp_blq_tot + promo_imp_tot_opc + promo_imp_srv_tot
+	fld_promo_imp = promo_tot_Serv
+	//Calculo importe del servicio
+	tele:imp_serv_tele = post:tarifa
+	INIT 22,1
+	tele:imp_siniva_serv = (post:tarifa * 100 ) / (post:adt_serv_aliciva + 100 )
+	//SC 50170 - Acumulo el importe sin iva total de 2 decimales del servicio,para luego
+	// calcular diferencias con respecto al importe total de 4 decimales .
+	l_serv_acum_iva = tele:imp_siniva_serv * cant_aux
+	//desgloso el l_serv_acum_iva para obtener el de 4 decimales
+	//resguardo
+	l_sin_iva = post:ImporteSinIva
+	l_sin_iva4 = post:ImporteSinIva_bis
+	l_iva = post:ImporteIva
+	l_iva4 = post:ImporteIva_bis
+	CALL MISCdesglosaIva(tele:imp_serv_tele,post:adt_serv_aliciva,1,0)
+	//restauro el init que se apagó en la MISCdesglosaIva!!!
+	INIT 22,1
+	l_serv_acum_iva4 = post:ImporteSinIva_bis * cant_aux
+	//restauro
+	post:ImporteSinIva = l_sin_iva
+	post:ImporteSinIva_bis = l_sin_iva4
+	post:ImporteIva = l_iva
+	post:ImporteIva_bis = l_iva4
+	/*fin SC50170*/
+    /* Agrego lo de bloques - Maricel 25/7/2000*/
+    imp_bloques = imp_bloques / cant_aux
+    imp_bloques_siva = imp_bloques_siva / cant_aux
+       /*SC 50170 - FACTURACION Acumulo los importe sin iva del bloque
+       de 2 decimales y los de 4 decimales. Esto es para,  antes de journalizar ,
+        detectar si hubo diferencias y aplicarlas solo a la primera TX que se journaliza*/
+        l_bloq_acum_iva =  imp_bloques_siva * cant_aux
+        /*fin sc 50170*/
+    //Ventas UP
+    ImpServUP = ImpServUP / cant_aux
+    //Ingresos Brutos
+    ;ImporteSinIva = ImporteSinIva / cant_aux
+	ImporteSinIva = tele:imp_siniva_serv + post:imp_bloques_siva
+    cant_aux = l_preCantidad
+    WHILE (cont < cant_opc)
+    	;PS9490
+    	CALL post:MISCopcCantPart(cod_opc[cont], post:tipo_produc, cant_aux)
+    	if (retval)
+    		headOrBodyTele = "H"
+    	end if
+        cos_opc[cont] = cos_opc[cont] / cant_aux
+        siniva_opc[cont] = siniva_opc[cont] / cant_aux
+        
+        /*SC 50170 - FACTURACION Acumulo los importe total sin iva del opcional
+        de 2 decimales y los de 4 decimales. Esto es para,  antes de journalizar ,
+        detectar si hubo diferencias y aplicarlas solo a la primera TX que se journalice.
+        Lo tengo que hacer si o si despues de que divide para que me redondee!!!*/
+        opc_acum_iva[cont]  = siniva_opc[cont] * cant_aux
+        opc_acum_iva4[cont] = siniva_opc4[cont]
+        /*fin SC 50170*/
+	ImporteSinIva = ImporteSinIva + siniva_opc[cont]
+        cont = cont + 1
+        cant_aux = l_preCantidad
+    END WHILE
+	INIT 22,0
+	cont = 0
+	WHILE (cont < MAX_VEC_INGBR)
+	    /*Divido los importes por la cantidad de imposiciones*/
+	    impciva_vec[cont] = (impciva_vec[cont] - post:coniva_opc_uni[cont]) / cant_aux + post:coniva_opc_uni[cont]
+	    impsiva_vec[cont] = (impsiva_vec[cont] - post:siniva_opc_uni[cont]) / cant_aux + post:siniva_opc_uni[cont]
+	    cont = cont + 1
+	END WHILE
+	
+	//Solic 50088: Resguardo el campo post:tarifa porque para Clientes Medios con Modalidad Dif
+	//se limpia el valor y totaliza los telegramas, siempre como NO laborales
+	ImporteAbonado = post:tarifa
+	
+    WHILE (cont_jnl < cant_aux)
+		
+		//select (cont_jnl)
+			//case 1
+		IF (pasado != "S" && cont_jnl > 0)
+				pasado = "S"
+				promo_imp_tot_opc = promo_imp_tot_opc - promo_opc_uni
+				promo_imp_tot_ind = promo_imp_tot_ind - promo_opc_uni
+				costo_opc = costo_opc - costo_opc_uni
+				siaf:importe = siaf:importe - costo_opc_uni
+				if (headOrBodyTele == "H")
+					headOrBodyTele = "B"
+				end if
+				cont = 0
+				WHILE (cont < MAX_VEC_INGBR)
+				    impciva_vec[cont] = impciva_vec[cont] - post:coniva_opc_uni[cont]
+				    impsiva_vec[cont] = impsiva_vec[cont] - post:siniva_opc_uni[cont]
+				    cont = cont + 1
+				END WHILE
+				cont = 0
+				cant_aux = l_preCantidad
+				WHILE (cont < cant_opc)//elimina los opc que se cobran una sola vez
+    				;PS9490
+                    CALL post:MISCopcCantPart(cod_opc[cont], post:tipo_produc, cant_aux)
+    				l_debeAcumular = retval
+    				if (l_debeAcumular)
+    					ImporteSinIva = ImporteSinIva - siniva_opc[cont]
+    					IF (cont_jnl == 1) //se hace este para el tratamiento de contingencia de caidas del rt en telegramas multiples
+    						ImporteConIva = ImporteConIva - cos_opc[cont]
+    					END IF
+    					fld_promo_imp = fld_promo_imp - promo_imp_opc_tot[cont]
+    					promo_tot_Serv = promo_tot_Serv - promo_imp_opc_tot[cont]
+    					x = cont
+    					while (x < cant_opc)
+    						j = x + 1
+    						if (j < 6)
+    							cod_opc[x] = cod_opc[j]
+								cos_opc[x] = cos_opc[j]
+								cor_opc[x] = cor_opc[j]
+								vec_opc2[x] = vec_opc2[j]
+								ali_opc[x] = ali_opc[j]
+								inf_opc[x] = inf_opc[j]
+								comb_opc[x] = comb_opc[j]
+								flia_opc[x] = flia_opc[j]
+    			    			siniva_opc[x] = siniva_opc[j]
+    			    			tele:nemonic_sap_opc[x] = tele:nemonic_sap_opc[j]
+    			    			promo_imp_opc_tot[x] = promo_imp_opc_tot[j]
+								promo_imp_opc_ind[x] = promo_imp_opc_ind[j]
+								promo_opc_bon[x] = promo_opc_bon[j]
+								promoOpcTipoBon[x] = promoOpcTipoBon[j]  
+								post:cod_opc_aux[x] = post:cod_opc_aux[j]
+								tele:OpcInd_vec[x][0] = tele:OpcInd_vec[j][0]
+							else
+								clearfield cod_opc[x]
+							    clearfield cos_opc[x]
+							    clearfield cor_opc[x]
+							    clearfield vec_opc2[x]
+							    clearfield ali_opc[x]
+							    clearfield inf_opc[x]
+							    clearfield comb_opc[x]
+							    clearfield flia_opc[x]
+							    clearfield siniva_opc[x]
+							    clearfield tele:OpcInd_vec[x][0]
+							    clearfield tele:nemonic_sap_opc[x]
+							    clearfield promo_imp_opc_tot[x]
+							    clearfield promo_imp_opc_ind[x]
+							    clearfield promo_opc_bon[x]
+							    clearfield post:cod_opc_aux[x]
+							end if
+    			    		x = x + 1
+    			    	end while
+    			    	post:cant_opc = post:cant_opc - 1
+    			    	l_cont_aux = 1
+					end if
+    			    cont = cont + 1 - l_cont_aux
+    			    l_cont_aux = 0
+    			    cant_aux = l_preCantidad
+    			END WHILE
+    			cont = 0
+		END IF
+				//break
+		//end select
+		siaf:i = 0
+		do
+			if (siaf:i > (post:cant_opc - 1))
+				break
+			end if
+			post:adt_opc_opci = post:cod_opc_aux[siaf:i]
+			Call post:CDSbuscoOpcional
+			fprint tele:OpcInd_vec[siaf:i][0],"%-4.4s - %-40.40s",post:cod_opc_aux[siaf:i],post:adt_opc_desc
+			refresh tele:OpcInd_vec[siaf:i][0]
+			siaf:i = siaf:i + 1
+		loop
+
+        /*Cuando se esta en la ultima journalizacion se limpia la vble para que se llame a la rutina*/
+        /*que verifica que sea la ultima transaccion del presupuesto*/
+        IF (cont_jnl == cant_aux - 1) THEN
+            CLEARFIELD ctrol_ult_tt
+        END IF
+        /*si requiere nivel superv. journaliza c/u con el numero de supervisor y la leyenda corresp.*/
+        IF (niv_sup_aux == "S") THEN
+            SETFLAG tlr:tran_flags, supovr_granted
+        END IF
+
+        IF (cli_tipo == 1)
+            CLEARFIELD track_trace
+            CLEARFIELD cp
+        END IF
+        Anula_tt = "N"
+
+        ;CLEARFIELD drv:INDspc_rtn[2]
+        cantidad = 1/*se pone en uno el campo cantidad porque se journalizan por separado*/
+
+		//Si el telegrama es multiple no calcula en nro de telegrama
+		//lo calcula antes por unica vez
+       	/* En Operacion de cobranza u automatica no se imprime */
+        //Imprimo Nro de Telegrama
+        if (!OperacionCob && !OperacionAut) then
+			if (tele:adt_cattel_serv_sm != "M")
+				Call post:CDSobtiene_secuen(post:adt_serv_codseq)
+	        	tele:tele_nro_telegrama = post:adt_codseq_nro
+				fprint tele:tele_nro_telegrama,"%5.5s-%4.4s-%06.6s",common:sucursal_activa,substr(common:system_date,0,4),tele:tele_nro_telegrama
+			end if
+
+			tt_journalizado = "N"
+
+			// grabo en una tabla auxiliar los Nros. de Telegrama para el Ticket/Factura.
+			CALL CDSsave_nroTeleg
+
+			// FGB 1302.2004 - Combos -
+	   		call CDScb_prt_aux_save(adt_serv_nemonico,tele:tele_nro_telegrama)
+
+		end if
+
+		/*Eliminar validación en las siguientes transacciones:· TELEGRAMAS (número de telegrama	
+
+		if (cont_jnl > 0) 
+	       	// En Operacion de cobranza u automatica no se imprime 
+	        //Imprimo Nro de Telegrama antes de la jnl a partir del segundo por si se cae el sistema
+	     if (!OperacionCob && !OperacionAut && tele:adt_cattel_serv_sm == "S") then
+				fprint mensaje "Coloque el Formulario para el Telegrama (%s)" tele:tele_nro_telegrama
+				msgbox FLD:mensaje,OFB_OK,"Impresion"
+				fprint common:csr_string_tmp "%50.50s%17.17s" SPACES,tele:tele_nro_telegrama
+				PRINTDOC OFB:tele:PRTtele_nro,docprt,"Imprimiendo Numero de Telegrama"
+			end if
+		end if */
+		
+		//Solicitud 50088 - Evento 8:
+		//Si los telegramas que se journalizan tienen importe cero se totalizan con otro descriptor
+		IF (ImporteAbonado == 0)
+			fld:drv:INDspc_rtn[0] = LST:tele:TOTS_teleLab
+			fld:tlr:INDtots_append = LST:tele:TOTS_teleLab
+		ELSE
+			fld:drv:INDspc_rtn[0] = LST:tele:TOTS_tele
+			fld:tlr:INDtots_append = LST:tele:TOTS_tele
+		END IF
+	
+	//SC 50170 - FACTURACION
+	CALL post:MISCaplico_dif_mult(l_bloq_acum_iva,imp_bloques_siva4,l_serv_acum_iva,l_serv_acum_iva4)
+		
+        CALL tlr:JNLtran
+       
+    /*Eliminar validación en las siguientes transacciones:· TELEGRAMAS (número de telegrama	
+if (cont_jnl == 0)
+        	//imprimo el primer nro de telegrama luego de journalizarse por si se cae el sistema 
+    
+      if (!OperacionCob && !OperacionAut && tele:adt_cattel_serv_sm == "S") then
+				fprint mensaje "Coloque el Formulario para el Telegrama (%s)" tele:tele_nro_telegrama
+				msgbox FLD:mensaje,OFB_OK,"Impresion"
+				fprint common:csr_string_tmp "%50.50s%17.17s" SPACES,tele:tele_nro_telegrama
+				PRINTDOC OFB:tele:PRTtele_nro,docprt,"Imprimiendo Numero de Telegrama"
+			end if
+    end if
+*/       
+       cont_jnl = cont_jnl + 1
+       
+    END WHILE
+       
+/*Eliminar validación en las siguientes transacciones:· TELEGRAMAS (número de telegrama	
+if (!OperacionCob && !OperacionAut && tele:adt_cattel_serv_sm == "M") then
+		//si es telegrama multiple se imprime una sola vez.
+		fprint mensaje "Coloque el Formulario para el Telegrama (%s)" tele:tele_nro_telegrama
+		msgbox FLD:mensaje,OFB_OK,"Impresion"
+		fprint common:csr_string_tmp "%50.50s%17.17s" SPACES,tele:tele_nro_telegrama
+		PRINTDOC OFB:tele:PRTtele_nro,docprt,"Imprimiendo Numero de Telegrama"
+	end if*/
+END SUB
+
+/*******/

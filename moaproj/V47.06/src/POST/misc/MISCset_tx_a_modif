@@ -1,0 +1,96 @@
+/****o* Sesion Correo/OFB:post:MISCset_tx_a_modif
+* NOMBRE
+*   OFB:post:MISCset_tx_a_modif
+* DESCRIPCION
+*   Rutina genérica que se llama en cada PB de la grilla de Presupuesto para modificar la tx elegida
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:PBdel_txs_sel,OFB:post:PBitem_1_ses,OFB:post:PBitem_2_ses,OFB:post:PBitem_3_ses
+*   OFB:post:PBitem_4_ses,OFB:post:PBitem_5_ses,OFB:post:PBitem_6_ses,OFB:post:PBitem_7_ses
+*   OFB:post:PBitem_8_ses,OFB:post:PBitem_9_ses
+* REFERENCIADO POR
+*   OFB:post:PBitem_0_ses
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCset_tx_a_modif(pos)
+
+#if CORREO_DEBGUG == CORREO_ON
+	local loc_string_deb	like common:csr_string
+	fprint loc_string_deb "MISCset_tx_a_modif(%s)" pos
+	call post:MISClogMenues(loc_string_deb)
+#endif
+
+	//Rutina genérica que se llama en cada PB de la grilla para modificar la tx elegida
+	
+	//Verifico si la grilla está cargada
+	if (est_ses_vec[pos][0].numchars != 0 && !testflag(lib:state_flags,scan_mode))
+
+		//Si la transaccion esta marcada para borrar, no se la puede modificar
+		//Este control se hace acá puesto que cada vez que se marca una tx para ser borrada
+		// se hace un control en la PresuDet para saber si está en condiciones y si
+		// se la modifica puede pasar a estar en otro estado, imposible de borrar
+		//Verifico si la tx ha sido marcada
+		call MISCestado_tx_ses(pos)
+		if (retval == 0)
+			MSGBOX "La transacción ha sido previamente marcada para borrar. Debe desmarcarla para modificarla",0x00,"Advertencia"
+			RETURN -2
+		end if	
+		
+		//SC 50364 - Caja unificada
+		if (post:es_WEB == "X") then
+			msgbox "NO SE PUEDE MODIFICAR UNA TX DE OPERACIONES WEB.",OFB_OK,"ERROR"
+			RETURN (-2)
+		endif
+		
+		siaf:adt_tran_jer_pres = est_ses_vec[pos][4]
+		post:PreDNroTrn = est_ses_vec[pos][5]
+		
+#if CORREO_DEBGUG == CORREO_ON
+	local loc_string_deb	like common:csr_string
+	fprint loc_string_deb "PreDNroTrn: %s - adt_tran_jer_pres: %s" \
+			post:PreDNroTrn,siaf:adt_tran_jer_pres
+	call post:MISClogMenues(loc_string_deb)
+#endif
+
+;		let drv:INDrun_funct = OFB:post:MISCmodif_tx_ses
+
+;		clearfield drv:header
+ 		CALL MISCmodif_tx_ses
+ 		IF (RETVAL < 0)
+			// si se realizo el start_tran y no se puede modif. la trx., debo hacer el end_tran 
+			/*
+			if (substr(drv:header,3,1) == "Y") then
+				LET lib:ind_type = (tlr:INDtran_name >> 24) & 0xff
+				if (lib:ind_type == LST_OBJ) then
+					call post:MISCdumpCampos
+					call csr:dt_tran DT_TRAN_END tlr:INDtran_name
+					call post:MISClogCampos
+				endif
+			endif
+			*/
+ 			//Vuelvo el estado de presupuesto a 2 para seguir con el mismo o para confirmar la tx
+ 			post:estado_presu = 2
+			CALL post:CDSadt_presuact_upd		 		
+ 		else 
+
+			;CALL post:CDSadt_presuact_load
+			post:estado_presu = 3
+			CALL post:CDSadt_presuact_upd
+			call post:CDSPreAct_NroTrn_upd(post:PreDNroTrn)
+		
+ 		END IF
+
+;		drv:last_key = RT_ESC 
+;		call drv:do_mode // para salir del driver menu 
+ 	end if
+		
+END SUB
+
+/*******/

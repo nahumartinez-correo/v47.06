@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:post:MISCimprimo_afip
+* NOMBRE
+*   OFB:post:MISCimprimo_afip
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCimprimo_afip
+	LOCAL l_afip_ticket LIKE siaf:afip_ticket
+	LOCAL l_sf1_ticket LIKE post:sf1_ticket
+
+	//resguardo el canpo
+	LET l_sf1_ticket = post:sf1_ticket
+
+	//gpb:NI50455 CORREO PAGOS
+	//si es AFIP
+	IF (siaf:codigo_siaf == 6840) THEN
+		IF (siaf:afip_ticket.NUMCHARS > 0) THEN
+			//asigno par el proceso
+			LET post:sf1_ticket = siaf:afip_ticket
+			CALL post:MISCsetCorreoPagos("ticket")
+			//recupero valor procesado y asigno
+			LET siaf:afip_ticket = post:sf1_ticket
+			//recupero valor original
+			LET post:sf1_ticket = l_sf1_ticket
+		END IF	
+		
+		IF (post:sf1_comprobante.NUMCHARS > 0) THEN
+			CALL post:MISCsetCorreoPagos("comprobante")
+		END IF
+	END IF
+
+	IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+		IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+			RETURN 0
+		END IF
+		;SMC 23/04/1999
+		;Se pregunta antes de validar, ya que hay comprobantes que no validan.
+		;Solo imprimen ticket.
+		IF (post:sf1_comprobante.NUMCHARS > 0) THEN
+			;Esto es porque habia problemas con el comprobante
+			//FGB 3.4.3: ahora el msg se muestra en la SVAL
+			;MSGBOX "Ingrese la Declaracion Jurada para su validación",OFB_OK,"Validacion"		
+			
+			PRINTDOC OFB:PRNafip_printValid,docprt,"Imprimiendo la Validacion"
+			
+			;gpb:SC50464 Agregar header/footer Pago Facil/Afip
+			//MFM NO SE IMPRIME MAS TIRA AUDITORA
+			//PRINTDOC OFB:PRNafip_printValid2,docprt,"Imprimiendo la Validacion"
+		END IF
+	
+		IF (siaf:afip_ticket.NUMCHARS > 0) THEN
+			PRINTDOC OFB:PRNafip_printTick,docprt,"Imprimiedo Ticket"
+		END IF
+	
+		;SMC 29/08/1999 Hago una pausa porque la impresora pisaba los formularios
+		IF (post:estado_presu == 4) THEN
+			FYIMSG LST:common:fyimsg_list,"IMPRIMIENDO TICKET AFIP ..."
+			NAP 4000
+			FYIMSG CLEAR
+			INIT 33,0
+		END IF
+	ELSE
+		SELECT (post:sf1_reimpresion)
+		CASE 1
+			sf1_reimpresion = 2
+			IF (post:sf1_comprobante.NUMCHARS > 0) THEN
+				;Esto es porque habia problemas con el comprobante
+				MSGBOX "Ingrese la Declaracion Jurada para su validación",OFB_YESNO,"Validacion"
+				IF (RETVAL == OFB_IDYES) THEN
+					PRINTDOC OFB:PRNafip_printValid,docprt,"Imprimiendo la Validacion"
+				//MFM NO SE IMPRIME MAS TIRA AUDITORA		
+					;gpb:SC50464 Agregar header/footer Pago Facil/Afip
+					//PRINTDOC OFB:PRNafip_printValid2,docprt,"Imprimiendo la Validacion"
+				END IF
+			END IF
+			IF (siaf:afip_ticket.NUMCHARS > 0) THEN
+				PRINTDOC OFB:PRNafip_printTick,docprt,"Imprimiedo Ticket"
+				CALL post:CDSupdat_journal_sf1
+			END IF
+		BREAK
+		CASE ELSE
+			MSGBOX "No puede ser reimpreso mas de una vez",OFB_OK,"Error"
+			BREAK
+		END SELECT
+	ENDIF
+END SUB
+
+/*******/

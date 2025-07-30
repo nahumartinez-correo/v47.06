@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVALmon_mot_leg_ent
+* NOMBRE
+*   OFB:siaf:SVALmon_mot_leg_ent
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVALmon_mot_leg_ent
+    
+    if (siaf:codigo_siaf == 8890)
+        let post:adt_mp_cod = siaf:moneda
+        call post:CDSadt_MedPago_load
+                        
+        // Si es un cheque
+        IF (post:adt_mp_admban == "S") then            
+            IF (post:adt_mp_diferido == "S")
+
+                call csr:date_add(common:system_date,1,"y",post:fecha_aux)
+                call csr:date_compare(post:fecha_aux ,post:fec_d)
+                If (RetVal == 2) /*fecha de vencimiento mayor a 1 años que la fecha del sistema*/
+	                MSGBOX "Fecha de Vencimiento invalida",0x00,"ERROR"
+	                nextfield post:fec_d
+	                return (-2)
+                End If
+        
+                call csr:date_compare(post:fec_e,post:fec_d)
+                if (retval == 1 || retval == 0) then /* fecha de emision es mayor o igual a la fecha de vencimiento*/
+                    errmsg LST:common:errmsg_list,"FECHA INVALIDA"
+                    nextfield post:fec_e
+                    return (-2)
+                end if 	        
+            END IF
+        end if
+        
+                
+        ;CALL post:CDSadt_MedPago_load    
+        /*    
+        IF (post:adt_mp_diferido != "S")    
+            call csr:date_compare(post:fec_e,post:fec_d)
+            if (retval == 1 || retval == 0) then ;fecha de emision es mayor o igual a la fecha de vencimiento
+                errmsg LST:common:errmsg_list,"FECHA INVALIDA"
+                nextfield post:fec_e
+                return (-2)
+            end if 	        
+        end if    
+        */
+        ;CALL MISCfallent_pide_fld
+        
+                
+        if (testflag(tlr:tran_flags,correction))
+        	call post:MISCcargo_valor(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq,post:codigo_interno,siaf:nro_cupcheq)
+        	if (post:adt_mp_adm == "I")
+	        	cds select from dsc:tes:TesoCheq_tbl becomes dsc:tes:TesoCheq_ctx \
+	            where tes:teso_cheq_suc    == fld:op:op_branch_id && \
+	            tes:teso_cheq_moneda == fld:siaf:moneda     && \
+	            tes:teso_cheq_banco  == fld:tes:teso_cheq_banco  && \
+	            tes:teso_cheq_cuenta == fld:tes:teso_cheq_cuenta && \
+	            tes:teso_cheq_nro    == fld:tes:teso_cheq_nro && \
+	            tes:teso_cheq_estado == "O" && \
+	            tes:teso_cheq_id == op:op_operator_id
+	            
+	        	cds findfirst dsc:tes:TesoCheq_ctx nolock
+	        	if (cdsretval != 0) then
+	        	    cds endselect dsc:tes:TesoCheq_ctx
+	        	    errmsg lst:common:errmsg_list, "Comprobante Fuera de la Caja"
+	        	    call tes:FVALenable_fields_AR
+	        	    return (-1)
+	        	end if
+	        	cds endselect dsc:tes:TesoCheq_ctx                 
+	       END IF
+        else   
+        
+       
+            /* Controlo que el Nro de cheque no este en la sucursal */
+            if (post:adt_mp_adm == "I")
+                call tes:CDSverif_cheque_tes2(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq,post:codigo_interno,siaf:nro_cupcheq)
+                /*
+                if (post:adt_mp_auto == "S") then
+                    call tes:CDSverif_cheque_tes(siaf:moneda,siaf:nro_cupcheq,0,post:codigo_interno)
+                else
+                    call tes:CDSverif_cheque_tes(siaf:moneda,siaf:nro_cupcheq,siaf:cod_banco,siaf:cheqcuenta)
+                end if
+                */
+                if (retval < 0) then
+                    errmsg lst:common:errmsg_list, "Comprobante Ya Capturado en la Sucursal"
+                    call tes:FVALenable_fields_AR
+                    return (-1)
+                end if     
+                /* Paso la cotizacion.*/
+            end if
+        end if
+    end if
+    
+    if (siaf:codigo_siaf == 8690)
+	    if (post:adt_mp_admban == "N") then  
+	        if (post:adt_mp_auto == "S" && post:adt_mp_int == "S") then
+                siaf:cheqcuenta = post:codigo_interno                    
+            else
+                siaf:cheqcuenta = 0
+            end if
+            siaf:cod_banco = 0
+            refresh siaf:cod_banco
+	    end if
+	    if (!testflag(tlr:tran_flags,correction))
+	        if (post:adt_mp_adm == "I")
+    	        let tes:teso_cheq_estado = "O"
+    	        let tes:teso_cheq_id = op:op_operator_id
+    	        // Me aseguro que sea un comprobante valido.
+    	        call post:MISCcargo_valor(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq,post:codigo_interno,siaf:nro_cupcheq)
+    	        call tes:CDStesoro_cheq_load
+    	        if (retval < 0)
+    	            errmsg lst:common:errmsg_list, "Comprobante inexistente"
+    	            return (-2)
+    	        end if
+    	    end if
+        end if
+    end if
+    
+    if (!testflag(tlr:tran_flags,correction))
+        call post:MISCconvierto_coti(post:importe_origen)
+    end if
+    call siaf:SVALnivel_sup
+    if (retval < 0) THEN
+        return (-2)
+    end if
+END SUB
+
+/*******/

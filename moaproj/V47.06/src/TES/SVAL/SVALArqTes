@@ -1,0 +1,175 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALArqTes
+* NOMBRE
+*   OFB:tes:SVALArqTes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALArqTes
+    ;LOCAL no_coincide LIKE es_tesoro
+    local Ltab_active like drv:tab_active
+    local locidx      like post:Tarif_idx
+    local locidx2     like post:Tarif_idx
+    local loc_scrnact like drv:screen_active
+    local locidxscr   like post:Tarif_idx
+    
+    /***
+    Para cada Medio de Pago, verifico que 
+    el total arqueado coincida con la tabla Tesoro.
+    ***/    
+    locidx  = PL_GETITEM
+    locidx2 = 0
+    locidxscr = 0
+    clearfield common:csr_string
+
+ 
+  
+  	do
+  		if (locidxscr >= 10) then 
+  			break
+  		end if
+  		
+  		if (at_des_mon[locidxscr].numchars == 0) then
+  			break
+  		end if
+        ;tes:tes_moneda = substr(common:csr_string,0,2)
+        ;call csr:trimfield(tes:tes_moneda)    
+        tes:tes_moneda = at_mp_cod[locidxscr]
+                  
+		call tes:CDScons_tes_tesor2             
+        if (lib:err_retval == 0 && tes:tes_total != at_imp_tot[locidxscr])
+            fprint drv:error_msg "(L) El importe del Medio de Pago %s no es correcto",at_des_mon[locidxscr]
+            call OFB:drv:error_msg
+            ;if ((lib:err_retval != 0) || (lib:err_retval == 0 && tes:tes_marca_arqueo != "S"))
+            siaf:i = 0                        
+            while (siaf:i < MAX_DEN)
+                if (tes:at_cant[siaf:i][locidxscr].protected)
+                    siaf:i = siaf:i + 1
+                else 
+                    break
+                end if
+            end while
+            nextfield tes:at_cant[siaf:i][locidxscr]
+            ;end if
+            return (-2)
+            ;no_coincide = "S"              
+        End if
+
+  		locidxscr = locidxscr + 1          
+  
+	loop
+
+    clearfield siaf:continua_transaccion
+    popup tes:SCRNconfirma  
+    if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+        return (-2)
+    end if    
+
+
+    /*
+    Journaliza cada uno de los Medios de Pago en un registro aparte.
+    Grabar o actualizar la tabla Tesoro.
+    */         
+  
+    let drv:next_screen = -1
+    let drv:next_tab = -1
+    let tlr:INDdcol_scrn[0] = SCR:tes:SCRNArqTes_jnl
+    select (drv:screen_active)
+        case 1            
+            clearfield drv:INDscreen[2]
+             ;let drv:INDscreen[1] = SCR:tes:SCRNArqueoTesoro1
+            break
+        case 2            
+            clearfield drv:INDscreen[1]            
+             ;let drv:INDscreen[2] = SCR:tes:SCRNArqueoTesoro2            
+            break
+    end select
+    
+   
+    let drv:INDscr = SCR:tes:SCRNArqTes_jnl
+    move "T" to SUBSTR(drv:header,5,1) // para que entre en la JNLtran
+    locidx  = PL_GETITEM
+    locidx2 = 0
+    locidxscr = 0
+    
+        // deshabilito las solapitas de la trx.
+    let Ltab_active = drv:tab_active
+    let drv:tab_active = 0
+    call drv:disable_tab
+    let drv:tab_active = 1
+    call drv:disable_tab
+    let drv:tab_active = 2
+    call drv:disable_tab
+    let drv:tab_active = Ltab_active
+    
+    
+	;singlestep on
+	do
+  		if (locidxscr >= 10) 
+  			break
+  		end if
+  		if (at_des_mon[locidxscr].numchars == 0) THEN
+  			break
+  		end if
+	
+        tes_moneda = at_mp_cod[locidxscr]
+        call tes:CDScons_tes_tesor2
+        if (retval == 0) then
+            tipo_mon = locidxscr
+            loc_scrnact = drv:screen_active
+            ;drv:screen_active = 0
+		    let tes:es_tesoro = "S"	
+		    siaf:moneda = at_mp_cod[locidxscr]
+		    siaf:desc_moneda = tes:at_des_mon[locidxscr]
+		    ;pasa las cantidades y los importes de las denominaciones a los arreglos que se va a journalizar
+		    CALL MISCimp_por_MP(locidxscr, tes:tes_moneda)
+		    CALL tes:MISCimp_cant_aux(locidxscr, tes:tes_moneda)
+		    FLD:drv:INDjnl_rtn = OFB:tes:JNLArqTes
+		    ungetkey 0x190
+		    call siaf:MISClleno_modalidad
+		    post:importe_origen = tes:tes_total
+		    post:adt_mp_cod = siaf:moneda
+		    call post:CDSadt_MedPago_load
+		    call post:MISCconvierto_coti(post:importe_origen)
+		    call tlr:JNLtran
+		    drv:screen_active = loc_scrnact
+         end if
+         /*Incremento el indice de los medios de pago que estan en la pantalla*/
+         locidxscr = locidxscr + 1
+	loop
+	    
+	CLEARFIELD drv:INDjnl_rtn    
+                  
+
+    // deshabilito el boton para desplegar el picklist... 
+    altercontrol TAG:post:PBitem_1,-1,-1,-1,-1,-1,-1,-1,1
+
+    // deshabilito las solapitas de la trx.
+    let Ltab_active = drv:tab_active
+    let drv:tab_active = 0
+    call drv:disable_tab
+    let drv:tab_active = 1
+    call drv:disable_tab
+    let drv:tab_active = 2
+    call drv:disable_tab
+    let drv:tab_active = Ltab_active
+
+
+  	 	   
+    return (0)
+    
+END SUB
+
+/*******/

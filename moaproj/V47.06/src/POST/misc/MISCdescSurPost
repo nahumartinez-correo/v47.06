@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdescSurPost
+* NOMBRE
+*   OFB:post:MISCdescSurPost
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la imposicion de una una TX Sur Postal si la misma . 
+*	tiene un descuento de timbres > 0
+*	Verifica que dicho descuento <= al Importe que se cobra por el Servicio - el Importe de la
+*	Bonificacion Sur Postal (cantidad total de bienes de cambio * importe)
+*	De no cumplirse la condicion, emite un mensaje informando del mayor descuento permitido en la 
+* 	venta en cuention y retorna el control a la transaccion para su modificacion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCpeso_a_tarifar
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdescSurPost
+    LOCAL imp_temp LIKE siaf:importe
+    LOCAL imp_opc LIKE siaf:importe
+    LOCAL cont LIKE cant_opc
+    LOCAL imp_desc LIKE common:csr_string
+	LOCAL ldcto_opc LIKE post:Dcto_CliMed
+	LOCAL loc_importe   LIKE siaf:importe
+	LOCAL ldcto_postal LIKE post:Dcto_CliMed
+
+
+	IF (!(descuento == 0)) THEN
+
+            cont = 0
+            ldcto_opc = 0
+            WHILE (cont < 6)
+                IF (ali_opc[cont] > 0) THEN
+                    imp_opc = imp_opc + cos_opc[cont]
+                END IF
+                //PS Opcionales: se tienen en cuenta solo los que no tienen iva y bonifican!!
+                IF (bonifCM_opc[cont] == "S" && ali_opc[cont] == 0) THEN
+                	INIT 22,1
+                	ldcto_opc = ldcto_opc + ((post:cos_opc[cont] * post:Dcto_CliMed) / 100)
+                	INIT 22,0
+                END IF
+                cont = cont + 1
+            END WHILE
+
+            //Para que no haya problemas de redondeo
+            INIT 22,1
+            ldcto_postal = ((post:tarifa * Dcto_CliMed) / 100)
+            INIT 22,0
+            
+
+            IF (imp_opc > 0)
+                /* se suma los bloques - Maricel 26/7/2000 */
+                /* MFM - se resta la bonificacion de cliente medio para esta validacion*/
+                /* MFM - PS Opcionales : tambien se descuenta el importe bonificado de los opcionales*/
+
+                imp_temp = tarifa + costo_opc - imp_opc + post:sobretasa + imp_bloques - ldcto_postal - ldcto_opc - fld_promo_imp
+            ELSE
+                /* se suma los bloques - Maricel 26/7/2000 */
+                /* MFM - se resta la bonificacion de cliente medio para esta validacion*/
+                /* MFM - PS Opcionales : tambien se descuenta el importe bonificado de los opcionales*/
+
+                imp_temp = tarifa + costo_opc + post:sobretasa + imp_bloques  - ldcto_postal - ldcto_opc - fld_promo_imp
+            END IF
+            
+            
+      		IF ((siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801))
+				//Se multiplica el importe del bien de cambio por la cantidad impuesta
+				//para calcular el importe maximo permitido en el descuento de timbres y asi
+				//evitar un valor negativo en el campo post:Importe_sin_iva del fin de sesion
+				imp_temp = imp_temp - (adt_prodvs_tarifa * cantidad)
+			END IF
+
+
+            IF (descuento > imp_temp)
+                FPRINT imp_desc,"%s%s","EL DESCUENTO NO PUEDE SER MAYOR A  $",imp_temp
+                MSGBOX imp_desc,0x00,"ERROR"
+                RETURN (-2)
+            END IF
+
+            /*Verifico que el descuento ingresado sea multiplo de la cantidad
+            de piezas a expedir*/
+            CALL post:MISCvalilda_dcto(descuento,cantidad)
+            IF (RETVAL < 0)
+                MSGBOX "EL DESCUENTO INGRESADO NO ES MULTIPLO DE LA CANTIDAD DE PIEZAS. VUELVA A INGRESARLO",0x00,"Error"
+                RETURN (-2)
+            END IF
+
+            /* se suma los bloques - Maricel 26/7/2000 */
+            /*MDG se agrego el descuento por promocion 28/11/2003*/
+            loc_importe = post:tarifa + post:costo_opc - post:descuento + imp_bloques
+            siaf:importe = loc_importe + post:sobretasa
+            //post:importe_final = siaf:importe + post:fld_promo_imp
+            REFRESH siaf:importe
+			/*Calcula la tarifa total del servicio*/
+		    CALL MISCact_tarif_serv
+		END IF
+END SUB
+
+/*******/

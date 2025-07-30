@@ -1,0 +1,760 @@
+/****o* Pendientes de agrupación/OFB:op:TRANlogin
+* NOMBRE
+*   OFB:op:TRANlogin
+* DESCRIPCION
+*   Rutina que se ejecuta cuando el usuario se loguea en MOSAIC
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "optran.h"
+
+SUB op:TRANlogin
+	LOCAL varl_Testing LIKE common:csr_string
+	LOCAL aux LIKE TipoEntero
+	LOCAL aux2 LIKE TipoIndirecto
+	LOCAL MinutosTimer LIKE TipoEntero
+	LOCAL LUserName LIKE common:csr_string
+	LOCAL LMensaje LIKE common:csr_string
+	LOCAL PresNroAux LIKE post:PresNro
+	LOCAL LLong LIKE siaf:i
+    
+  LET intentos = 0
+
+	;LMB - PS 9780 - 10.06.2008
+	;Se parametriza el directorio temporal de listados para Mosaic
+	CALL csr:variable_environment("MOSAIC_TEMP",fld:common:dirTemporal)
+	IF (RETVAL < 0) THEN
+		; El parametro no esta definido --> toma el valor por defecto
+		FLD:common:dirTemporal = "\\TEMP\\"       
+	END IF
+
+	CALL csr:trimfield(common:dirTemporal)
+	;Si el path definido no tiene la / al final se la agrego
+	LLong = common:dirTemporal.NUMCHARS - 1
+	IF ((SUBSTR(FLD:common:dirTemporal,LLong,1) != "\\") && (SUBSTR(FLD:common:dirTemporal,LLong,1) != "/")) THEN
+		FPRINT FLD:common:dirTemporal, "%s%s", FLD:common:dirTemporal, "\\"
+	END IF
+    
+	/* Se parametriza el directorio de Logs para Mosaic - Gabriel Falciola */
+	CALL csr:variable_environment("MOSAIC_LOG",fld:common:dirLog)
+	IF (RETVAL < 0) THEN
+		; El parametro no esta definido --> toma el valor de directorios temporales
+		FLD:common:dirLog = common:dirTemporal       
+	ELSE
+		CALL csr:trimfield(common:dirLog)
+		;Si el path definido no tiene la / al final se la agrego
+		LLong = common:dirLog.NUMCHARS - 1
+		IF ((SUBSTR(FLD:common:dirLog,LLong,1) != "\\") && (SUBSTR(FLD:common:dirLog,LLong,1) != "/")) THEN
+			FPRINT FLD:common:dirLog, "%s%s", FLD:common:dirLog, "\\"
+		END IF	
+	END IF
+	/*Agrego el nombre del archivo de LOG*/
+	FPRINT FLD:common:dirLog, "%smoa_log%s%s", FLD:common:dirLog, common:system_date, ".log"
+
+	/*** Giros:Hernan modifica para el ABM SEMILLA***/ 
+	CALL csr:BlowFishInit()
+	/***fin Giros:Hernan modif***/
+	
+	;SMC Restauro Servidor Central , si es necesario
+	;    por eventuales caidas
+	CALL op:MISCrest_localSRV
+	
+	;Cargo Parametros de Seguridad
+	CALL op:MISCload_ParamSeg
+	
+	;SMC Seteo Valor de La Version (Se graba en la Cabecera del Journal)
+	LET common:VersionCorreo = DSC:lib:VersionCorreo
+	
+	CALL OFB:admin:msg_log_init
+	
+	;SMC Declaracion de DLL Varias
+	CALL post:MISCdeclaracion_DLL
+
+	/*Chequeo que las Versiones de Diccionarios y Tablas sean compatibles - Gabriel Falciola*/
+	CALL admin:MISCVerTablas_chk
+	IF (RETVAL != 0) THEN
+		CALL MISCend_NT
+		RETURN (-1)
+	END IF
+
+	MOVE common:window_node TO op:adt_node_id
+	MOVE op:adt_node_id TO op:op_node_id
+	/* MARTIN AGREGA...Leo Datos de Sucursal y Empresa. */
+	CALL siaf:CDSadt_sucur_load
+	IF (RETVAL < 0) THEN
+		//Correcion BUG AUT-599 
+		MSGBOX "NO SE PUEDE OBTENER SUCURSAL ACTIVA",OFB_OK,"Error"
+		CLEARFIELD FLD:common:sucursal_activa
+		/* si no tengo suc. correo no puedo tener suc. galicia */
+		CLEARFIELD FLD:common:suc_gali
+		/*MFM - Si no encuentra los datos de la sucursal activa hay que salir del RT*/
+		CALL MISCend_NT
+  ELSE
+		// Leo datos de sucursal activa en tabla de sucursales
+		FLD:admin:adt_br_branch = siaf:adt_sucur_codigo
+		CALL admin:CDSadt_br_load
+		IF (RETVAL < 0) THEN
+			CLEARFIELD common:br_address
+			CLEARFIELD common:br_zip
+			CLEARFIELD common:br_city
+			CLEARFIELD common:br_phone
+			CLEARFIELD common:br_CEC
+			CLEARFIELD common:br_CUN
+			//50387 - IPS - mgi REQ 6
+			CLEARFIELD common:ips_officeCD
+			CLEARFIELD common:br_UEN
+			CLEARFIELD common:br_modTP
+			CLEARFIELD common:br_modER
+			CLEARFIELD common:br_modCB
+			CLEARFIELD common:br_ctpnormal
+			CLEARFIELD common:br_server
+			/*MFM - Si no encuentran los datos de la sucursales hay que salir del RT*/
+			MSGBOX "NO SE PUEDE OBTENER DATOS SUCURSAL",0x00000000,"Error"
+			CALL MISCend_NT
+			/***************/
+		ELSE
+			IF (admin:cent_emis_sn == "S" && admin:adt_br_CEC != "") THEN /*Selecciona si la sucursal
+				tiene mas de un centro de emision cual es el asignado a la sucursal*/
+			ELSE
+				CALL admin:CDSselecciona_CEC
+			END IF
+			common:br_address = admin:adt_br_address
+			common:br_zip = admin:adt_br_zip
+			common:br_city = admin:adt_br_city
+			common:br_phone = admin:adt_br_phone
+			common:br_CEC = admin:adt_br_CEC
+			common:br_CUN = admin:adt_br_CUN
+			common:br_UEN = admin:adt_br_UEN
+			common:br_ctpTT = admin:adt_br_ctpTT
+			common:br_cdd = admin:adt_br_cdd
+			common:br_bank_name = admin:adt_br_bank_name
+			common:br_modelo = admin:adt_br_modelo
+			common:br_ctpTT2 = admin:adt_br_ctpTT2
+			common:br_aduana = admin:adt_br_aduana
+			common:br_modTP = admin:adt_br_modTP
+			common:br_modER = admin:adt_br_modER
+			common:br_modCB = admin:adt_br_modCB
+			common:br_ctpnormal = admin:adt_br_ctpnormal
+			common:br_server = admin:adt_br_server
+			common:br_opTT = admin:adt_br_opTT
+			common:br_zona = admin:adt_br_zona
+			common:br_admitePED = admin:adt_br_admitePED
+			common:br_imponePED = admin:adt_br_imponePED
+		END IF
+		FLD:common:sucursal_activa = siaf:adt_sucur_codigo
+		/* obtuve sucursal activa --> obtengo suc. Galicia */
+		LET post:adt_relac_correo = common:sucursal_activa
+		CALL post:CDSadt_relac_load
+		IF (RETVAL != 0) THEN 
+			MSGBOX "NO SE PUEDE OBTENER SUCURSAL GALICIA",OFB_OK,"Error"
+			CLEARFIELD common:suc_gali
+		ELSE
+			common:suc_gali = post:adt_relac_gali
+		END IF
+	END IF
+
+	CLEARFIELD op:op_login_id
+	/* cgw: Adecuacion para RTJAVA.
+					Se creo la nueva funcion csr:GetUserLogin("USERNAME",op_login_id),
+					para obtener el usuario independientemente del sistema operativo.
+					Esta reemplaza a csr:variable_environment("USERNAME",op_login_id)
+	*/
+	//CALL csr:variable_environment("USERNAME",op_login_id)
+	CALL csr:GetUserLogin("USERNAME",op_login_id)
+        
+	;SMC paso todo a mayusculas
+	CALL csr:fld_to_upper(op:op_login_id)
+	
+	; Se parametrizó la clave clave_sf1 en el DDPROJ.INI para adecuaciones para el RTJAVA *** MDG
+	CALL csr:get_profile_string "SF1" "clave_sf1" common:sf1_clave
+    
+	PROTFIELD op_login_id
+	CALL op:MISCobtengo_UserName
+	IF (RETVAL != 1) THEN
+		/* SMC 13-AGO-1998 Despues de terminar de salir,
+		Hago un LogOff de Windows */
+		CALL op:MISCend_NT
+	ELSE
+		LET FLD:LUserName = op:NTUserName
+	END IF
+	
+	IF (op:op_login_id == "") THEN
+		op:op_login_id = op:NTUserName
+	END IF
+
+	;SMC Checkeo por caracteres invalidos
+	CALL op:FVALlogin_id(op:op_login_id)
+	IF (RETVAL < 0) THEN
+		;SMC - cargo sucursal Activa
+		;CALL siaf:CDSadt_sucur_load
+		LET op:op_branch_id = siaf:adt_sucur_codigo
+		LET op:op_operator_id = 00
+		hcomm:tran_status = MEMO
+		LET tlr:INDdcol_scrn[0] = 0
+		LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+		MOVE "CARACTERES INVALIDOS EN LOGIN" TO siaf:adt_mot_desc
+		;SMC - journalizacion log in fallido
+		LET siaf:codigo_siaf = 98070
+		CALL tlr:JNLout_of_tran
+		;SMC Cierro contexto de Totales para no Lockear Tabla
+		CALL op:MISCClrLockTotals
+		
+		FPRINT common:csr_string "CARACTERES INVALIDOS EN LOGIN.\nOPERADOR (%s)." op:op_login_id
+		ERRMSG LST:common:errmsg_list, FLD:common:csr_string
+		
+		/* SMC 13-AGO-1998 Despues de terminar de salir,
+		Hago un LogOff de Windows */
+		CALL op:MISCend_NT
+	END IF
+
+	MOVE op:op_login_id TO op:adt_login_id
+	CALL OFB:op:CDSadt_op_logon
+	IF (RETVAL != 0) THEN
+		;SMC - cargo sucursal Activa
+		;call siaf:CDSadt_sucur_load
+		LET op:op_branch_id = siaf:adt_sucur_codigo
+		LET op:op_operator_id = 00
+		hcomm:tran_status = MEMO
+		LET tlr:INDdcol_scrn[0] = 0
+		LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+		MOVE "OPERADOR INVALIDO" TO siaf:adt_mot_desc
+		;SMC - journalizacion log in fallido
+		LET siaf:codigo_siaf = 98070
+		CALL tlr:JNLout_of_tran
+		;SMC Cierro contexto de Totales para no Lockear Tabla
+		CALL op:MISCClrLockTotals
+		
+		FPRINT common:csr_string "OPERADOR MOSAIC (%s) NO DEFINIDO." op:op_login_id
+		ERRMSG LST:common:errmsg_list, FLD:common:csr_string
+		
+		/* SMC 13-AGO-1998 Despues de terminar de salir,
+		Hago un LogOff de Windows */
+		CALL op:MISCend_NT
+	END IF
+
+	LET op:op_operator_id = op:adt_operator_id
+	LET op:op_branch_id = op:adt_branch_id
+	
+	IF (op:adt_node_id.NUMCHARS > 0) THEN
+		IF (op:adt_node_id != common:window_node)
+			;LET tlr:INDdcol_scrn[0] = 0
+			;LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			;MOVE "IDENTIFICADO EN OTRA TERMINAL" TO siaf:adt_mot_desc
+			;SMC - journalizacion log in fallido
+			;LET siaf:codigo_siaf = 98070
+			;CALL tlr:JNLout_of_tran
+			;SMC Cierro contexto de Totales para no Lockear Tabla
+			;CALL op:MISCClrLockTotals
+			
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+			Hago un LogOff de Windows */
+			FPRINT FLD:LMensaje "EL OPERADOR (%s) YA SE ENCUENTRA IDENTIFICADO\nEN LA TERMINAL (%s)." op:adt_login_id, op:adt_node_id
+			ERRMSG drv:errmsg_list,FLD:LMensaje
+			CALL op:MISCend_NT
+			END
+		END IF
+	END IF
+
+	;SMC si el usuario con el que se entro a NT es distinto
+	;    del que se desea entrar a MOSAIC, chequeo que tenga permisos
+	;    de Administrador de Usuarios.
+	IF (op:op_login_id != FLD:LUserName) THEN
+		IF (op:adt_users_auth != "X") THEN
+			hcomm:tran_status = MEMO
+			op:op_operator_id = 00
+			LET tlr:INDdcol_scrn[0] = 0
+			LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			MOVE "CUENTA NT DIFIERE CON MOSAIC" TO siaf:adt_mot_desc
+			;SMC - journalizacion log in fallido
+			LET siaf:codigo_siaf = 98070
+			CALL tlr:JNLout_of_tran
+			;SMC Cierro contexto de Totales para no Lockear Tabla
+			CALL op:MISCClrLockTotals
+
+			FPRINT common:csr_string "OPERADOR MOSAIC (%s) NO CORRESPONDE CON LOGIN NT (%s)." op:op_login_id, FLD:LUserName
+			ERRMSG LST:common:errmsg_list, FLD:common:csr_string
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+				 Hago un LogOff de Windows */
+			CALL op:MISCend_NT
+			RETURN -1
+		END IF
+	END IF
+
+	;Checkeo si a todos los operadores ya les fue asignado el SID NT
+	CALL op:MISCcheck_SIDchng
+	IF (RETVAL < 0) THEN
+		ERRMSG LST:common:errmsg_list, "NO SE PUEDE OBTENER PARAMETRIA DE SEGURIDAD\nDE LA TABLA SUCURSAL ACTIVA."
+		CALL op:MISCend_NT
+		RETURN -1
+	END IF
+
+	IF (admin:adt_sucur_SIDchng != "") THEN
+		;SID Se chequea por el SID del Operador NT
+		CALL op:MISCCheck_UserSID(FLD:op:adt_login_id,FLD:op:adt_NTUserSID)
+		IF (RETVAL != 1) THEN
+			hcomm:tran_status = MEMO
+			LET tlr:INDdcol_scrn[0] = 0
+			LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			MOVE "SID INVALIDO" TO siaf:adt_mot_desc
+			;SMC - journalizacion log in fallido
+			LET siaf:codigo_siaf = 98070
+			CALL tlr:JNLout_of_tran
+			;SMC Cierro contexto de Totales para no Lockear Tabla
+			CALL op:MISCClrLockTotals
+			
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+			Hago un LogOff de Windows */
+			CALL op:MISCend_NT
+		END IF
+	END IF
+
+	/*Actualizo la jnl_caidas con respecto al journal por si el rt_batch termino 
+	en forma anormal*/
+	CALL giros:CDSupd_jnl_caidas("OPERADOR")
+	
+	;SMC Inicializo Journalizacion y totales
+	CALL tlr:MISCtiene_totales(op:op_branch_id, op:op_operator_id)
+	IF (RETVAL >= 0) THEN
+		;resguardo los valores de la lista de los campos ADT
+		CALL CSR:proc_list(F_SWAP,LST:op:adt_main)
+		
+		CALL OFB:tlr:JNLinitialize
+		;SMC Se aborta ya que tien problemas en el registro de Totales
+		;Puede estar lockeado!
+		IF (RETVAL < 0) THEN
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+			   Hago un LogOff de Windows */
+			CALL op:MISCend_NT
+		END IF
+		;recupero los valores de la lista de los campos ADT
+		CALL CSR:proc_list(F_SWAP,LST:op:adt_main)
+	END IF
+
+  CALL OFB:op:adt_to_op
+  CLEARFIELD op:op_node_id
+
+  // mercedes
+  CALL op:MISCCheqOpInhabil("S")
+  CALL op:MISCChequeoVigencia
+  CALL op:MISCCheqHorasPermit
+  CALL op:MISCCheqDesdeUltLog
+  //fin mercedes
+
+	CALL op:CDSlogon_chk
+	IF (op:op_node_id.NUMCHARS > 0) THEN
+		IF (op:op_node_id != common:window_node) THEN
+			;LET tlr:INDdcol_scrn[0] = 0
+			;LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			;MOVE "IDENTIFICADO EN OTRA TERMINAL" TO siaf:adt_mot_desc
+			;SMC - journalizacion log in fallido
+			;LET siaf:codigo_siaf = 98070
+			;CALL tlr:JNLout_of_tran
+			;SMC Cierro contexto de Totales para no Lockear Tabla
+			;CALL op:MISCClrLockTotals
+			
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+			Hago un LogOff de Windows */
+			FPRINT FLD:LMensaje "EL OPERADOR (%s) YA SE ENCUENTRA IDENTIFICADO\nEN LA TERMINAL (%s)." op:adt_login_id, op:adt_node_id
+			ERRMSG drv:errmsg_list,FLD:LMensaje
+			
+			CALL op:MISCend_NT
+			END
+		END IF
+	END IF
+
+  ;Si llego hasta aca, Esta todo bien.
+  CALL OFB:op_login_setup
+  /* set the aux id, usually the UNIQUE operator id number */
+  SETAUXID op:op_aux_prt_id
+
+  MOVE common:window_node TO op:adt_node_id
+
+  //mercedes - set the date and time of the last login
+  op_fecha_ul_conex = common:system_date
+  op_hora_ul_conex = common:time_of_day
+  MOVE op_fecha_ul_conex TO adt_fecha_ul_conex
+  MOVE op_hora_ul_conex TO adt_hora_ul_conex
+  //fin mercedes
+
+  CALL OFB:op:CDSadt_op_save
+  UNPROTFIELD op_login_id
+
+	/* Leo datos CORREO de la tabla empresa */
+	MOVE "CORAR" TO post:adt_emp_cod
+	CALL post:CDSadt_emp_load
+	IF (RETVAL < 0) THEN
+		MSGBOX "NO SE PUEDE LEER DATOS EMPRESA CORREO",OFB_OK,"Error"
+	ELSE
+		common:emp_desc = post:adt_emp_desc
+		common:emp_cuit = post:adt_emp_cuit
+		common:emp_ingbru = post:adt_emp_ingbru
+		common:emp_cativa = post:adt_emp_cativa
+		/*Se agrega un campo para saber si es necesario preguntar por el cobro del
+		Impuesto Abonado - Gabriel Falciola*/
+		common:emp_impsell_cheq = post:adt_emp_impsell
+
+		/* Se agrega el nuevo campo de inicio de Actividad para la Tabla Empresa */
+		/* 21/09/1998 - M.Laura					           */
+		common:emp_inicact = post:adt_emp_inicact
+		
+		/* MLD Agrego la cantidad de dias fcheque rechazado */
+		common:emp_chqrech = post:adt_emp_chqrech
+		
+		common:emp_leyenIB = post:adt_emp_leyenIB /*16/12/2003 Norma*/
+
+		// FGB cargo los campos que continen las leyendas para el visor
+		// de la tabla Empresa.
+		LET common:emp_dsplmsg[0] = post:adt_emp_dsplmsg[0]
+		LET common:emp_dsplmsg[1] = post:adt_emp_dsplmsg[1]
+		LET common:emp_dsplmsg[2] = post:adt_emp_dsplmsg[2]
+		LET common:emp_dsplmsg[3] = post:adt_emp_dsplmsg[3]
+		LET common:emp_dsplmsg[4] = post:adt_emp_dsplmsg[4]
+		LET common:emp_dsplmsg[5] = post:adt_emp_dsplmsg[5]
+		
+		/*Para habilitar o no Shift-F8 para Giros Internacionales*/
+		common:emp_girint = post:adt_emp_girint                
+		;CALL giros:KEYSappl_giros
+              
+		//Campos pedidos por Correo para ser usados en giros contrareemboslo
+		common:emp_marca = post:adt_emp_marca
+		common:emp_actividad = post:adt_emp_actividad
+		common:emp_registral = post:adt_emp_registral
+		common:emp_categ_ingbr = post:adt_emp_categ_ingbr
+
+		/* con los datos de categoria de iva que extrajo de empresa
+		busco descripcion en la tabla CatIva */
+		LET post:adt_cativa_cod = post:adt_emp_cativa
+		CALL post:CDS_CatIva_Load
+		IF (RETVAL < 0) THEN
+			CLEARFIELD common:emp_correo_ivadesc
+		ELSE
+			common:emp_correo_ivadesc = post:adt_cativa_desc
+		END IF
+		/*MFM - Agrego el campo destino primario para armar la novedad de excepcion*/
+		common:emp_dest_pri = post:adt_emp_dest_pri
+  END IF
+	/* Leo datos GALICIA de la tabla empresa */
+	MOVE "BGBA" TO post:adt_emp_cod
+	CALL post:CDSadt_emp_load
+	IF (RETVAL < 0) THEN
+		MSGBOX "NO SE PUEDE LEER DATOS EMPRESA GALICIA",OFB_OK,"Error"
+	ELSE
+		common:emp_gali_desc = post:adt_emp_desc
+		common:emp_gali_cuit = post:adt_emp_cuit
+		common:emp_gali_ingbru = post:adt_emp_ingbru
+
+		/* Se agrega el nuevo campo de inicio de Actividad para la Tabla Empresa */
+		/* 21/09/1998 - M.Laura					           */
+		common:emp_inicact = post:adt_emp_inicact
+
+		/* con los datos de categoria de iva que extrajo de empresa
+		busco descripcion en la tabla CatIva */
+		LET post:adt_cativa_cod = post:adt_emp_cativa
+		
+		/* Se agrega un campo a la tabla de Empresas que indica el limite
+		de tolerancia para rendir con diferencias en Efectivo.
+		16/05/2000 - Andrea Pregatti.*/
+		common:emp_limite = post:adt_emp_limite
+
+		/* MLD 12-10-00 Cargo en memoria la moneda base */
+		post:moneda_base = post:adt_emp_moneda                
+		
+		CALL post:CDS_CatIva_Load
+		IF (RETVAL < 0) THEN
+			CLEARFIELD common:emp_gali_ivadesc
+		ELSE
+			common:emp_gali_ivadesc = post:adt_cativa_desc
+		END IF
+	END IF
+
+	;Comparo los datos de suc. del operador con sucursal activa para ver
+	;si lo dejo entrar
+	IF (op:op_audit_auth != "X") && (op:op_tables_auth != "X") && (op:op_users_auth != "X") THEN
+		IF (common:sucursal_activa != op:op_branch_id) THEN
+			hcomm:tran_status = MEMO
+			LET tlr:INDdcol_scrn[0] = 0
+			LET FLD:tlr:INDjnl_append = OFB:op:JNLop_perfiles
+			MOVE "DIFIERE SUCURSAL ACTIVA" TO siaf:adt_mot_desc
+			;SMC - journalizacion log in fallido
+			LET siaf:codigo_siaf = 98070
+			CALL tlr:JNLout_of_tran
+			;SMC Cierro contexto de Totales para no Lockear Tabla
+			CALL op:MISCClrLockTotals
+			
+			MSGBOX "OPERADOR NO CORRESPONDE A SUCURSAL ACTIVA",	OFB_OK,"Error"
+			/* SMC 13-AGO-1998 Despues de terminar de salir,
+			Hago un LogOff de Windows */
+			CALL op:MISCend_NT
+			END
+		END IF
+	END IF
+
+  lib:operator_id = op:adt_operator_id
+  lib:branch_id  = op:adt_branch_id
+  admin:adt_br_branch = op:op_branch_id
+  /* leo sucursal del operador */
+  CALL OFB:admin:CDSadt_br_load
+  CALL CSR:f_orskunlk
+
+	/*Begin    (FLOR   19/7/00)*/
+	IF (op:op_tables_auth!= "X" && op:op_users_auth != "X" && op:op_autoimpre_auth != "X" && op:op_audit_auth != "X") THEN  // MLD Agrego perfil auditor
+		tlr:es_administrador = "N"
+		tlr:jnl_adm = "N"
+	ELSE
+		tlr:es_administrador = "S"
+		tlr:jnl_adm = "S"
+	END IF
+	/*End    (FLOR   19/7/00)*/
+
+	/*Begin  (FLOR   19/7/00)*/
+	IF (tlr:es_administrador == "N") THEN
+		CALL tes:CDScons_suc_sucur
+		IF (RETVAL == 0) THEN   
+			IF (tes:suc_marca_ciedia == "X") THEN
+				IF (tes:suc_fecha == common:system_date)
+					MSGBOX "CERRANDO DIA. NO SE PUEDE ENTRAR AL SISTEMA.",OFB_OK,"Error"
+					CALL op:MISCend_NT              
+				ELSE
+					/*Limpiar la marca de cierre del dia de la tabla DiaSuc*/
+					CALL tes:CDSsuc_marca_ciedia("")              
+				END IF        
+			END IF
+		END IF    
+	END IF
+	/*End    (FLOR   19/7/00)*/
+
+	/* para que sepa quien es el operador identificado */
+	LET common:login_id = op:adt_login_id
+	; Repara AuxIva en el caso de que se halla caido el sistema cuando se
+	; modificaba una tx *** MDG
+	CALL post:MISCreparoAuxIva
+	/* Agrego lectura de Estado de presupuesto */
+	CALL post:MISCcheckEstadoPresu
+	// 21-07-1998 PJM se agrega que se lean los datos de Pago Facil
+	// Agente y Terminal
+	// Que duran todo el Tiempo que esten sesion
+	CALL post:CDSsf1_dat_load
+	post:sf1_id_terminal = post:adt_sf1_idterminal
+	
+	;sc50270
+	CALL post:MISCcheck_pagMasivos
+
+	CALL giros:MISCcheck_masivos
+	IF ( RETVAL == 0) THEN
+		SETFLAG giros:giros_masivos,proc_gir_masivos
+		CALL giros:MISCctrl_caida_gm
+	ELSE
+		RESETFLAG giros:giros_masivos,proc_gir_masivos
+	END IF
+
+	;gpb:NI50295 - Importacion Lista de Giros
+	CALL giros:MISCchk_imp_emi_LG ("LG")
+	IF (RETVAL == 0) THEN
+		SETFLAG giros:giros_importacion,proc_imp_lg
+	ELSE
+		RESETFLAG giros:giros_importacion,proc_imp_lg
+	END IF
+  
+	;gpb:NI50295 - Emision Lista de Giros
+	CALL giros:MISCchk_imp_emi_LG ("EG")
+	IF (RETVAL == 0) THEN
+		SETFLAG giros:giros_importacion,proc_em_lg
+	ELSE
+		RESETFLAG giros:giros_importacion,proc_em_lg
+	END IF
+
+	//gpb:NI50479 - Importacion Lista PED
+	CALL post:MISCchk_imp_PED 
+	IF (RETVAL == 0) THEN
+		SETFLAG post:sesion_ped_flags,proc_importacion_ped
+	ELSE
+		RESETFLAG post:sesion_ped_flags,proc_importacion_ped
+	END IF
+	
+	//gpb:NI50572 - Digitalizacion de Reportes
+	CALL tes:MISCloadPDFiniConfig
+		
+  //mercedes - journalizacion log in
+  hcomm:tran_status = MEMO
+  LET tlr:INDdcol_scrn[0] = 0
+  LET FLD:tlr:INDjnl_append = OFB:op:JNLlogs_exitosos
+  LET siaf:codigo_siaf = 98040
+  CALL tlr:JNLout_of_tran
+  ;SMC Cierro contexto de Totales para no Lockear Tabla
+  CALL op:MISCClrLockTotals
+
+  ; Lockeo Estacion
+  MinutosTimer = (op:adt_time_op_lock * 60)
+  CALL lib:MISCsettimer_correo(2,MinutosTimer)
+  
+	IF (TESTFLAG(tlr:controla_marca,reverso_jnl)) THEN
+		CALL tlr:JNLinitialize
+		PresNroAux = post:PresNro 
+		post:PresNro = post:PresNroJnl
+		CALL post:MISCreverso_sesion
+		post:PresNro = PresNroAux
+		RESETFLAG drv:mode_flags,no_stack_list
+	END IF
+
+  /*Se agrega el chequeo para saber si los procesos de anulación quedaron inconclusos
+  (Nota de Crédito) - Gabriel Falciola*/
+  CLEARFIELD post:adt_cativa_discri
+  CALL post:CDSverifRelCorr
+  CALL post:MISCtermina_anula
+
+  CALL op:MISCCheckTablasPend(op:op_login_id)
+
+  /* Se agrega esta instruccion para que al salir de esta transaccion se limpie el buffer de la */
+  /* impresora de Tickets y asi, elimine la posible basura acumulada - M.Laura 06/10/1998   */
+  PRT FLUSH
+  ;; Se agrega para que funcione el FLUSH - SMC 13/10/1998
+  CALL post:PRTreset_printer
+  // FGB inicializa el visor
+  ;    printdoc OFB:post:DSPLinitialize,docprt," "
+  CALL post:MISCmensaje_visor("I")
+
+  /* Giros: agregar rutina que tome de las tablas de datos Generales de Sucursal la variable de Timer 
+  y debe dejarla en hcomm:timeout*/
+
+	CALL giros:CDSdatgralsuc_load
+	IF (RETVAL < 0) THEN
+		MSGBOX "NO SE ENCUENTRA EL TIMER PARA MENSAJERIA DE GIROS EN TABLA DE DATOS GENERALES DE LA SUC.",OFB_OK,"Error"
+		RETURN -1
+	ELSE
+		hcomm:timeout = giros:adt_dgralsuc_tout
+		IF (hcomm:timeout <= 0 ) THEN
+			MSGBOX "NO SE ENCUENTRA CARGADO UN VALOR VALIDO EN TIMER PARA MENSAJERIA DE GIROS EN TABLA DE DATOS GENERALES DE LA SUC.",OFB_OK,"Error"
+			RETURN -1
+		END IF
+	END IF		
+
+	/* SC-50368 AUT-1692 Oficios Judiciales*/
+	/*gpb: Muevo el valor de la cantidad maxima de certificados */
+	common:cant_cert_OJU = giros:adt_dgralsuc_certOJU
+	
+	//gpb:NI50567
+	common:cantidad_compOPW = post:adt_dgralsuc_compOPW
+
+	//gpb:PS10705 Se parametrizó el tiempo de espera (seccion "SLEEPFACTURA" clave "time" en el DDPROJ.INI) 
+	//para las impresiones de facturas/ticket por DOCPRT
+	common:sleep_factura = 0
+  CALL csr:get_profile_string "SLEEPFACTURA" "time" common:sleep_factura
+  IF (RETVAL == 0) THEN
+		CALL post:MISCFtrim(common:sleep_factura)
+		IF (common:sleep_factura.NUMCHARS == 0) THEN
+			common:sleep_factura = 0
+		ELSE
+			CALL post:MISCesNumerico(common:sleep_factura)
+			IF (RETVAL != 0) THEN
+				MSGBOX "Debe ingresar valores numéricos en la seccion [SEELEPFACTURA] en el DDPROJ.ini.\nSe setea el valor en cero.",OFB_OK,"ATENCION"
+				common:sleep_factura = 0
+			END IF				
+		END IF
+	ELSE
+		common:sleep_factura = 0
+	END IF
+	
+	//si el valor del sleep es muy grande, muestro un aviso
+	IF (common:sleep_factura > 5) THEN
+		MSGBOX "EL TIEMPO DE ESPERA PARA LAS IMPRESIONES SUPERA LOS 5 SEGUNDOS\nVERIFIQUE LA ENTRADA EN EL DDPROJ.ini",OFB_OK,"Aviso"
+	END IF
+	
+	//gpb:NI50525 POS Integrado
+	CALL post:MISCcargaParamVPI
+	IF (RETVAL != 0) THEN
+		MSGBOX "ERROR AL OBTENER PARAMETERIA DE LA TABLA ParamVPI",OFB_OK,"Aviso"
+	END IF
+	
+	//gpb:NI50525 POS Integrado
+	CALL post:CDSsel_termi_vpi
+	IF (RETVAL == 0) THEN
+		common:adt_vpi_termi_integ = "S"
+	ELSE
+		common:adt_vpi_termi_integ = "N"
+	END IF
+
+  //gpb:NI50525 POS Integrado
+  //Realiza la verificacion por caida de RT en las operaciones VPI (Tx-99600/Tx-99601/Tx99605)
+  IF (common:adt_vpi_termi_integ == "S") THEN
+  	CALL post:MISCvpiVerifCaidas
+  END IF
+  
+	//gbp:NI50546 Mercado Pago 
+	CALL post:CDSsel_termi_mp
+	IF (RETVAL == 0) THEN
+		common:adt_mp_termi_integ = "S"
+	ELSE
+		common:adt_mp_termi_integ = "N"
+	END IF
+
+		//gpb:PS- 10951
+		//Se comenta tratamiento 99601 - Anulacion Automatica de Venta con Tarjeta para Mercado Pago	
+;;	//gbp:NI50546 Mercado Pago
+;;  //Realiza la verificacion por caida de RT en las operaciones VPI (Tx-99600/Tx-99601/Tx99605)
+;;  IF (common:adt_mp_termi_integ == "S") THEN
+;;  	CALL post:MISCmpVerifCaidas
+;;  END IF
+	
+	//Verifico si quedò incloncluso un cierre de Lote por Caida del RT y de ser asi termino la journalizacion
+	IF (post:codigo_tx == 9030 || post:codigo_tx == 9035)
+		//9030 Cabecera Cierre Lote
+		//9035 Detalle Cierre Lote
+		CALL post:MISCend_CierreLote
+	END IF
+	CLEARFIELD post:codigo_tx
+	
+
+	//50387 - IPS - mgi REQ 6
+	//Paso a memoria el  valor de Oficina de carga defautl de IPS
+	common:ips_officeCD = giros:adt_dgralsuc_office
+	/* MLD Muevo a un campo no autoclear la cant de dias para depuración */
+	giros:giros_dias_bajch = giros:adt_dgralsuc_bajch
+	; Campos que indican si los campos cta y nro de cheque obligan a
+	; ingresar ceros a izquierda *** MDG
+	
+	//cgw: default ceros a izquierda si no existe en parametria
+	IF (giros:adt_dgralsuc_ctaCero != "S" && giros:adt_dgralsuc_ctaCero != "N") THEN
+		giros:adt_dgralsuc_ctaCero = "S"
+	END IF
+	IF (giros:adt_dgralsuc_chCeros != "S" && giros:adt_dgralsuc_chCeros != "N") THEN
+		giros:adt_dgralsuc_chCeros = "S"
+	END IF
+	common:br_ctaChAdmiCerosIzq = giros:adt_dgralsuc_ctaCero
+	common:br_nroChAdmiCerosIzq = giros:adt_dgralsuc_chCeros
+
+  /* variable que permite el pase de chequeras entre cajeros */
+  common:permite_cajero_cheq = giros:adt_dgralsuc_pase
+
+  /* Busco el secuenciador de los totales propios de correo */
+  CALL giros:CDStotal_dgralsuc
+  ;post:total_correo = giros:adt_dgralsuc_total
+
+  /* MLD: Inicializo esta variable global */
+  tes:en_cierre = "N"
+
+	//gpb:PS10823
+	CALL CSR:variable_environment("CONODBC",varl_Testing)
+	CALL CSR:fld_to_upper(varl_Testing)
+	IF (varl_Testing == "S") THEN
+		/* Conexion ODBC   */
+		CALL odbc:InitODBC
+	END IF
+
+  /* cgw:limpia marcas de lockeo asignacion en control_franq para el operador. */
+  CALL post:CDSctrolfranq_unlock
+  
+  //50242 - Limpia lockeos de tabla TranCont y TranPend para el operador logueado
+  CALL post:CDStranpiezas_unlock
+  
+END SUB
+
+/*******/

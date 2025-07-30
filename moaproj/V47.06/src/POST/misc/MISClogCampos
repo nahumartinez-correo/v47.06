@@ -1,0 +1,131 @@
+/****o* Pendientes de agrupación/OFB:post:MISClogCampos
+* NOMBRE
+*   OFB:post:MISClogCampos
+* DESCRIPCION
+*   Lista los campos que tienen valor y que son tomados por la interfaz
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   drv:end_tran
+*   drv:reset_all
+*   drv:reset_this
+*   drv:reset_stack
+*   drv:save_stack
+*   drv:force_end_of_app
+*   plataf:confirma_driver
+*   plataf:presu_adicionales
+*   plataf:TRANcalc_impuestos
+*   post:MISCset_tx_a_modif
+*   post:PBdel_txs_sel
+*   tlr:KEYScorrection
+*   tlr:KEYSdup
+*   tlr:KEYSdup_receipt
+*   tlr:tlr_fb0
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClogCampos
+	local l_str like post:label_string
+	local campo  like post:label_string
+	local valor like post:label_string
+	local trace_ini like common:csr_string
+    LOCAL FieldAppl      LIKE common:csr_string_4096
+    LOCAL FieldName      LIKE common:csr_string_4096
+    LOCAL FieldSeparator LIKE common:csr_string_4096
+    LOCAL FieldEnd 		 LIKE common:csr_string_4096
+    LOCAL loc_pos LIKE siaf:i
+    LOCAL archivo_campos like common:dirLog
+    LOCAL AutoClear like common:csr_string
+    
+
+    CALL csr:get_profile_string("VERSIONES","TRACE",trace_ini) /*Versión de Tablas*/
+	if (retval != 0)
+		return
+	endif
+	CALL CSR:fld_to_upper(trace_ini)
+	if (trace_ini != "SI")
+		return
+	endif
+
+    CALL CSR:file_open(6,common:dirLog,"a")
+   	CALL CSR:file_flush(6)
+	let l_str = "\n-------------------------------------------------------------\n"
+	call csr:file_write 6 l_str
+	fprint l_str,"Estado de Campos:\n"
+	call csr:file_write 6 l_str
+	
+	/*Tomo la ruta del log para buscar el archivo de campos*/
+	call  csr:str_search (common:dirLog, "moa_log", loc_pos)
+	archivo_campos = substr(common:dirLog, 0, loc_pos)
+	fprint archivo_campos, "%scampos_log.dat", archivo_campos
+	
+	/*Abro el archivo de campos a loguear*/
+	CALL CSR:file_open(4,archivo_campos,"r")
+	IF (RETVAL < 0) THEN
+    	fprint l_str,"No se pudo abrir el archivo %s\n",archivo_campos
+    	call csr:file_write 6 l_str
+    	call csr:file_flush(6)
+    	CALL CSR:file_close(6)
+    	CALL CSR:file_close(4)		
+		RETURN (-2) 
+	END IF 
+
+	/*Recorro y logueo los campos que no se limpiaron*/
+	DO 
+		CALL CSR:file_getline(4,campo)
+		IF (RETVAL == 0) THEN
+			;Obtengo si el campo es AutoClear
+			FieldSeparator = 0
+			AutoClear = "N"
+			CALL CSR:str_search (campo,"\|",FieldSeparator,0)
+			if (retval == 0) then
+				FieldSeparator = FieldSeparator + 1
+				FieldEnd = campo.numchars
+				AutoClear = substr(campo, FieldSeparator, FieldEnd)
+				FieldSeparator = FieldSeparator - 1
+				campo = substr(campo,0,FieldSeparator)
+			end if
+			
+			; armo la linea para loguear
+			FieldSeparator = 0
+    		FieldEnd = campo.numchars
+    		CALL CSR:str_search (campo,":",FieldSeparator,0)
+    		FieldAppl = substr(campo,0,FieldSeparator)
+    		FieldSeparator = FieldSeparator + 1
+    		FieldName = substr(campo,FieldSeparator,FieldEnd)
+    		clearfield post:INDtmp
+    		CALL CSR:getofbindx(FieldAppl,FieldName, FLD:post:INDtmp, "FLD")
+    		if (post:INDtmp.numchars != 0) then
+    			CLEARFIELD valor 
+    			CALL CSR:ind_assign(valor,post:INDtmp)
+    			CALL CSR:trimfield(valor)
+				if (valor.numchars > 0) then
+					if (AutoClear == "S" || AutoClear == "s") then
+						fprint l_str,"     %s:%s, campo con AutoClear\n", campo,valor
+					else						
+    					fprint l_str,"     %s:%s\n", campo,valor
+    				end if
+    				call csr:file_write 6 l_str
+    				call csr:file_flush(6)
+    			end if
+    		else
+		    	fprint l_str,"El campo %s no existe en el Diccionario\n", campo
+    			call csr:file_write 6 l_str
+    			call csr:file_flush(6)
+    		end if
+		ELSE 
+			BREAK 
+		END IF 
+	LOOP 
+	CALL CSR:file_close(4)
+   	CALL CSR:file_close(6)
+END SUB
+
+/*******/

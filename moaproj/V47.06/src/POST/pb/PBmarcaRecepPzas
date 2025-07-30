@@ -1,0 +1,102 @@
+/****o* Expedición/OFB:post:PBmarcaRecepPzas
+* NOMBRE
+*   OFB:post:PBmarcaRecepPzas
+* DESCRIPCION
+*   Rutina que marca/desmarca las piezas seleccionadas en la TX De recepcion de piezas de otro contenedor.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN -2 "SELECCIONE UNA PIEZA"
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:FVALttRecepPzas, post:BUTrecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBmarcaRecepPzas
+    LOCAL lpieza LIKE post:Pieza_id
+    LOCAL op     LIKE post:Operador_id
+    
+    let drv:button = 1 /* Combo asoc al cpo. Det. Cont. */
+    call drv:but_disable
+
+    let drv:button = 2 /* Marca - Desmarca */
+    call drv:but_disable
+    
+     let drv:button = 3 /* TODOS */
+    call drv:but_disable
+
+/* si esta marcado como borrado, se lo desmarca y viceverza */
+
+    //swapdup MarcaBorrado
+    if (DetalleContenidoGC2.numchars == 0) then
+        msgbox "SELECCIONE UNA PIEZA",0X00,"AVISO"
+        return -2
+    endif
+    lpieza = substr(post:DetalleContenidoGC2,31,32)
+    CDS SELECT FROM  DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+               WHERE post:Pieza_id     == lpieza              && \
+                     op:op_operator_id == op:op_operator_id
+
+    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+    CDS EXTRACT DSC:post:DetTmp_ctx \
+                post:Operador_id into op, \
+                tlr:jnl_date \
+                post:Pieza_id \
+                post:jnl_corteop_cod \
+                post:jnl_grucorte_cod \
+                post:jnl_apertura_cod \
+                post:MarcaBorrado \
+                post:es_transf_forzada
+    
+    IF (post:es_transf_forzada != "S") THEN
+        //50242 - Actualizo el contador de piezas contenerizadas
+        IF (MarcaBorrado == "*")
+            LET MarcaBorrado = " "
+            LET post:cant_pzas_recibidas = post:cant_pzas_recibidas + 1
+        ELSE
+            LET MarcaBorrado = "*"
+            LET post:cant_pzas_recibidas = post:cant_pzas_recibidas - 1
+        END IF
+        REFRESH cant_pzas_recibidas
+        
+        //swapdup MarcaBorrado
+    
+        cds clearbuffer DSC:post:DetTmp_ctx
+    
+        CDS APPEND DSC:post:DetTmp_ctx FLD:post:MarcaBorrado
+        CDS UPDATE DSC:post:DetTmp_ctx LOCK
+    
+        fprint post:DetalleContenidoGC2, "%-14.14s %-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+               op, \
+               tlr:jnl_date,\
+               post:jnl_grucorte_cod \
+               post:jnl_apertura_cod \
+               post:Pieza_id \
+               post:MarcaBorrado
+        
+        CDS UNLOCK DSC:post:DetTmp_ctx
+    ELSE
+        msgbox "ESTA PIEZA NO PUEDE SER RECHAZADA",0X00,"AVISO"
+    END IF
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+   
+    /*MFM - Refresco DetalleContenidoGC2*/
+    refresh DetalleContenidoGC2
+
+    let drv:button = 1 /* Combo asoc al cpo. Det. Cont. */
+    call drv:but_up_enable
+
+    let drv:button = 2 /* Marca - Desmarca */
+    call drv:but_up_enable
+
+    let drv:button = 3 /* TODOS */
+    call drv:but_up_enable
+    
+END SUB
+
+/*******/

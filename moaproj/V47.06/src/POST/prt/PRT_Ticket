@@ -1,0 +1,242 @@
+/****o* Servicios Postales/OFB:post:PRT_Ticket
+* NOMBRE
+*   OFB:post:PRT_Ticket
+* DESCRIPCION
+*   Rutina que maneja la impresión de Tique
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2387
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Ticket
+LOCAL cont_imp LIKE cantidad
+Local SUBTOTAL like siaf:importe
+//local PRECIO_UNITARIO like post:importe_impre
+local PRECIO_UNITARIO like post:precio_unitario
+local INDICE like post:cantidad /* indice que cuentas las lineas del cuerpo */
+local primero like post:PreDNroTrn
+local a_NroTrn_tt like post:NroTrn_tt
+local a_adt_serv_piezacont like post:adt_serv_piezacont
+local a_combo_nro like post:combo_nro
+local loc_pv like desc_impre_rv
+local a_desc_impre_rv like desc_impre_rv
+
+primero = 0
+INDICE = 0
+ /*Por si el modo prt es laser - Gabriel Falciola*/
+ call MISCprt2laser(SETEODEFAULT)
+
+// Comienazo del Encabezado
+    // Si DocInic viene vacio quiere decir que es original
+    // en caso contrario es la copia y no tengo que obtener el nro
+/*    If ( DocInic.numchars == 0 )
+        Call CDSobtiene_secuen("TICKE")
+        post:nro_impre = adt_codseq_nro
+    Endif*/
+    Call  post:PRT_Hdr_Ticket
+
+    //busco la direccion de la sucursal activa
+/*MGI:AUT-2387 Esta información ahora se muestra en el encabezado
+    CALL MISCdireccion_suc    
+    Fprint common:csr_string "%-5.5s-%s\n",op:op_branch_id,common:csr_string_171
+    Call PRTtransparent(common:csr_string)
+*/
+    Fprint common:csr_string "Nro de Recibo : %e\n",post:nro_impre
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%s %s\n",\
+            FLD:common:emp_leyenIB, post:adt_emp_ingbru /*Dsc:IngBrut_Correo,post:adt_emp_ingbru. Norma*/
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%21s %10e\n",\
+   	Dsc:Inic_Actividad,post:adt_emp_inicact
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(common:csr_string)
+ 	call MISCprt2laser(LINEANUEVA)
+ 	call MISCprt2laser(LINEANUEVA)
+
+    Fprint common:csr_string "%-9.9e%-13.13e %s\n",\
+                DSC:Cuit_Clie,post:adt_emp_cuit,"IVA-RESP.INSC."
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%-20.20s %s\n",\
+                " ","A CONSUMIDOR FINAL"
+    Call PRTtransparent(common:csr_string)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(LINEANUEVA)
+
+//  Fin del Encabezado
+// Comienzo del Cuerpo del Ticket
+    Call post:MISCinic_datos_imp
+    If  ( Retval >= 0 )
+          Do
+		  	 ClearField nro_ingrvario
+			 clearfield leyencor_bloq
+  			 clearfield leyenlar_bloq
+		  	 Call post:MISCbusca_datos_imp
+             If ( Retval < 0 )
+                Break
+             Else
+	    	 // PJM 17-07-1998 fue agregado para los egresos por que sumaban
+			 // en vez de restar
+			 //
+			 If ( siaf:afecta_efectivo == "-" )
+				SUBTOTAL = SUBTOTAL - importe_impre
+			 Else
+				 SUBTOTAL = SUBTOTAL + importe_impre
+			 Endif
+			 //  Solo se Impre esta Linea si es Servicio o Ingres .....
+                 If ( tipo_impre != DESCUENTO && tipo_impre != OPCIONAL && tipo_impre != BONIF_PROD)/* \
+                   && tipo_impre != BONIF_SUR_POSTAL)*/
+					 ; (antes veo si tengo que imprimir los track & trace)
+					 if (primero > 0)
+					     if (siaf:adt_tran_fliatran == "CMB") then
+					     	//cgw:imprime track & trace's del combo
+							call PRTaudit_cb_aux(a_combo_nro) //cgw:busca t&t combo
+							INDICE = INDICE + retval
+					     else
+							//imprime linea con el calculo de la relacion volumetrica
+							IF (a_desc_impre_rv.numchars != 0)
+								loc_pv = substr(a_desc_impre_rv,2,30)
+								Fprint common:csr_string  "%s\n",loc_pv
+     							Call PRTtransparent(common:csr_string)
+     							INDICE = INDICE + retval
+     						END IF					     	
+						    if (a_adt_serv_piezacont == "T")
+							    call PRTtAndT(a_NroTrn_tt)
+							    INDICE = INDICE + retval
+						    endif
+						 endif
+					 else
+						primero = 1
+					 endif
+					 if (siaf:adt_tran_fliatran == "CMB") then
+					     a_combo_nro = post:combo_nro //cgw:reserva combo anterior para impresion t&t
+					 end if
+					 a_NroTrn_tt = NroTrn_tt
+					 a_adt_serv_piezacont = adt_serv_piezacont
+					 a_desc_impre_rv = desc_impre_rv
+                     PRECIO_UNITARIO = importe_impre / cantid_impre
+					 // PJM 10-7-98 pedido por marcelo que salga el secuenciador en el ticket
+					 // para Ingresos Varios
+					//Se modifica la longitud del precio unitario de 8.4 a 12.4. Se modifica la variable para mostrarlo correctamente.
+  				 If ( nro_ingrvario.Numchars	== 0 )
+						 	Fprint common:csr_string  "%-4.4s %9.9s\n",\
+                    	    cantid_impre,PRECIO_UNITARIO
+					 Else
+					 		Fprint common:csr_string  "%-4.4s %9.9s %010.10s\n",\
+                    	    cantid_impre,PRECIO_UNITARIO,nro_ingrvario
+					 End If
+
+					 /*Por si el modo prt es laser - Gabriel Falciola*/
+ 					 call MISCprt2laser(common:csr_string)
+
+                     INDICE = INDICE + 1
+                 Endif
+                 If ( tipo_impre == DESCUENTO || tipo_impre == BONIF_PROD) /* || tipo_impre == BONIF_SUR_POSTAL)*/
+                            importe_impre = importe_impre * -1
+                            PRECIO_UNITARIO = PRECIO_UNITARIO * -1
+                 Endif
+                 // Pedido por nina que salga solo la descripcion
+                 If ( tipo_impre == SERVICIO )
+                 		desc_impre = SUBSTR(desc_impre,0,longDesc)
+                 Endif
+
+				 if (leyencor_bloq.numchars > 0 && tipo_impre == OPCIONAL)
+				    CALL CSR:trimfield(post:leyencor_bloq)
+					desc_impre = leyencor_bloq
+
+				 endif
+                 If ( tipo_impre == DESCUENTO || tipo_impre == BONIF_PROD || tipo_impre == BONIF_SUR_POSTAL)
+				 							Fprint common:csr_string "(%e)", importe_impre
+                 			Fprint common:csr_string  "%-26.26s %10.10s\n",\
+                    	desc_impre,common:csr_string
+                 else
+                 			Fprint common:csr_string  "%-26.26s  %10.10s \n",\
+                    	desc_impre,importe_impre
+                 endif
+                 Call PRTtransparent(common:csr_string)
+				 if (post:destino.numchars != 0)
+					 Fprint common:csr_string  "%-30.30s %8.8s\n",\
+	                    post:destino, ""
+	                 Call PRTtransparent(common:csr_string)
+				 endif
+				 if (post:codigo_impre == 6680) // Registración Web
+					 Fprint common:csr_string  "%s\n", giros:desc_impre2
+					 Call PRTtransparent(common:csr_string)
+                 	INDICE = INDICE + 1
+                 end if
+              Endif
+    Loop
+	if (primero > 0)
+	    if (siaf:adt_tran_fliatran == "CMB") then
+	    	//cgw:imprime track & trace's del combo
+			call PRTaudit_cb_aux(a_combo_nro) //cgw:busca t&t combo
+			INDICE = INDICE + retval
+		else
+			//imprime linea con el calculo de la relacion volumetrica
+			IF (a_desc_impre_rv.numchars != 0)
+				loc_pv = substr(a_desc_impre_rv,2,30)
+				Fprint common:csr_string  "%s\n",loc_pv
+				Call PRTtransparent(common:csr_string)
+				INDICE = INDICE + retval
+			END IF		
+			//imprimo T&T			     			
+		    if (a_adt_serv_piezacont == "T")
+			    call PRTtAndT(a_NroTrn_tt)
+		 	    INDICE = INDICE + retval
+		 	endif
+		endif
+	endif
+
+   /*** MLD 07/08/1999 Impuesto de sellado ***/
+    call PRT_Sellos(INDICE,SUBTOTAL,3,13)
+    SUBTOTAL = siaf:importe
+    INDICE = Retval
+    /*** Fin MLD ***/
+
+    /*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(LINEANUEVA)
+
+    Call PRTtransparent(LINE_GUIONES)
+    Fprint common:csr_string  "TOTAL %33.33s\n",SUBTOTAL
+    Call PRTtransparent(common:csr_string)
+    Call PRTtransparent(LINE_GUIONES)
+
+    /*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = 0
+    Call PRT_MedioPago(INDICE, INDICE,-29,29, 3)
+
+    /*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(LINEANUEVA)
+
+    Fprint common:csr_string "%40.40s%s" common:emp_desc,"\n"
+    //Call PRTtransparent(PIE1)
+    Call PRTtransparent(common:csr_string)
+    Call PRTtransparent(PIE1)
+    Call PRTtransparent(PIE2)
+
+    /*Por si el modo prt es laser - Gabriel Falciola*/
+ 	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = INDICE + Retval + 6
+    // la guillotina esta ubicada antes que el rodillo de impresion por lo tanto
+    //hay lineas impresas abajo de esta.
+    // para solucionar el problema hay que avanzar un par de lineas
+    Call post:MISCavaz_linea_imp(10)
+    // se agradece la colaboracion del Super Equipo de Galicia
+    Call post:PRT_Ticket_Corte
+  End If
+END SUB
+
+/*******/

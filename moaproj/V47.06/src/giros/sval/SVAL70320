@@ -1,0 +1,145 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70320
+* NOMBRE
+*   OFB:giros:SVAL70320
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70320()
+
+    /********************************************************************************************************/
+    /*                                                                                                      */
+    /* [PAW - 06/02/99]      Esta rutina se encarga de validar los campos, comprobar la correspondencia de  */
+    /*                       los importes, y en caso de no haber errores, journalizar, fijar el número de   */
+    /*                       recibo y por último imprimir un recibo.                                        */
+    /*                       Si se encuentra en modo corrección, reversa todas las transacciones con el     */
+    /*                       número de recibo igual.                                                        */
+    /*                                                                                                      */
+    /* Salidas:                                                                                             */
+    /* - retval:    Devuelve (-2) si se ha producido un error en la validación. Y además posiciona el       */
+    /*              cursor en el campo que generó ese error.                                                */
+    /* - impresion: Imprime un recibo para el cliente                                                       */
+    /*                                                                                                      */
+    /********************************************************************************************************/
+
+    local tmpimporte like siaf:importe
+    local cantPagGiros like post:cantidad
+    local cantPagChq like post:cantidad
+    local cantPag like post:cantidad
+    local pagAct like post:cantidad
+    local loc_sucur like post:nro_recibo
+    local varl_sequence  like tlr:jnl_sequence
+    local varl_time      like tlr:jnl_time
+
+    clearfield tlr:INDtots_append
+
+    if (testflag(tlr:tran_flags,correction))
+	call giros:MISCreverGir
+	if (retval != 0)
+	    return (retval)
+	endif
+   else
+	retval = 0
+	call MISCvalidAmbiente
+	if (retval != 0)
+	    return (retval)
+	endif
+
+	// FGB 28.12.2001: si se declaro mas de un giro para la emision, aviso que debe ser hecho por giros masivos
+	call CDScuentaGiro
+	if (retval > 1) then
+	    fprint common:csr_string "SE DECLARARON %s GIROS. RECUERDE REALIZAR LA EMISION POR GIROS MASIVOS" \
+	    retval
+	    msgbox common:csr_string ,OFB_ICONEXCLAMATION,"AVISO"
+	endif
+
+	// [PAW] ---> aca podría sacar el número de remito para poder usarlo en ambas journalizaciones.
+	post:adt_formu_cod = "REMCH"
+	call post:CDSformu_load
+	Call csr:trimfield(post:adt_formu_codseq)
+	if (retval != 0 || post:adt_formu_codseq.numchars == 0)
+	    ERRMSG LST:common:errmsg_list, "ERROR: No se ha encontrado el formulario REMCH o no tiene sequenciador asociado."
+	    return (-2)
+	endif
+
+	call post:CDSavanzar_secuen(post:adt_formu_codseq,1)
+	giros:adt_girChqtmp_rem = post:adt_codseq_nro
+
+	loc_sucur = SUBSTR(common:sucursal_activa,2,3)
+	fprint adt_girChqtmp_rem, "%02.2s%03.3s%08.8s", common:br_UEN, loc_sucur, adt_girChqtmp_rem
+
+        post:cli_tipo = post:climed_tipo //cgw: En la recepcion de cheques para emision, se instancia el cliente como minorista, para grabar en TesoCheq.
+
+	call MISCjournalGiros
+
+	varl_sequence = tlr:jnl_sequence
+	varl_time = tlr:jnl_time
+
+	call MISCjournalChq
+
+	if (hcomm:tran_status == HOST_ACCEPTED )
+
+	    call CDSactRemito
+
+	    clearfield drv:INDscr
+	    clearfield drv:INDjnl_rtn
+
+	    // [PAW]  --->  Vamos a preparar los vectores para la impresión.
+	    // [PAW]  --->  Además tengo que calcular la cantidad de páginas que voy a necesitar.
+	    init 33,0
+
+	    call giros:CDScantPagChq()
+	    cantPagChq = retval
+	    call giros:CDScantPagGiros()
+	    cantPagGiros = retval
+	    tmpimporte = siaf:importe
+	    if (cantPagChq > cantPagGiros)
+		cantPag = cantPagChq
+	    else
+		cantPag = cantPagGiros
+	    endif
+	    call csr:nro_a_letras siaf:importe "Pesos" post:linea_letras1 post:linea_letras2 post:linea_letras3
+	    Fprint post:linea_letras1 "Son %s" post:linea_letras1
+	    pagAct = 1
+	    call giros:CDSrellenaGiros()
+	    while (pagAct <= cantPag)
+		   FPRINT siaf:DAUdestinatario, "Pagina %2.2d de %2.2d", pagAct, cantPag
+		   // [PAW] --> Relleno los Arrays...
+		   call giros:CDSrellenaChq
+		   siaf:importe = tmpimporte
+		   call OFB:DOCS70320
+		   pagAct = pagAct + 1
+	    end while
+	    call giros:CDScierraChq()
+	    call giros:CDScierraGir()
+
+        else
+	    call giros:OFBrechazo_trx(varl_sequence,varl_time)
+	    clearfield drv:INDscr
+	    clearfield drv:INDjnl_rtn
+	    clearfield siaf:codigo_siaf
+	    clearfield post:cli_tipo //cgw. Se limpia tipo de cliente.
+	    ungetkey RT_ESC
+	    return -3
+	end if
+
+    endif
+    ; sino quedaba con 99099 y entraba a la rutina de maria laura de la TesoCheq
+    clearfield siaf:codigo_siaf
+    
+    clearfield post:cli_tipo //cgw. Se limpia luego de grabar en TesoCheq.
+End Sub
+
+/*******/

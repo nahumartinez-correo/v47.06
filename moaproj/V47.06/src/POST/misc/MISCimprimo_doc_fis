@@ -1,0 +1,148 @@
+/****o* Pendientes de agrupación/OFB:post:MISCimprimo_doc_fis
+* NOMBRE
+*   OFB:post:MISCimprimo_doc_fis
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCimprimo_doc_fis
+
+	enSesion = "S"
+	IF (sistCaido == "S") THEN
+		CALL MISCdocFiscal
+		; [PAW] --> Tengo que regenerar el campo factField.
+		CALL MISCmuestraPaginas("N")
+		CALL MISCleeEstado("OK_")
+		IF (RETVAL == VERDAD) THEN
+			post:recienCaido = "N"
+		END IF
+	END IF
+
+	IF (post:importe_sesion > 0 || (cli_tipo != OCASIONAL && cli_tipo != CLIUP && cli_tipo != CLIMED)) THEN
+		CALL MISCleeEstado("OK_")
+		IF ((RETVAL == VERDAD || sistCaido != "S") && ((Tipo_Formulario == FACTURA_A) || (Tipo_Formulario == FACTURA_B) || (revTicket == "S"))) THEN
+			captuNc = "N"
+			CALL MISCcalcNumDocs(revTicket)
+			IF (RETVAL < 0) THEN
+				RETURN RETVAL
+			END IF
+			docAnulado = post:DocInic
+			CALL CDSgrbEstado("OK2")
+			REFRESH post:DocInic
+			REFRESH post:DocFin
+		END IF
+		IF (IvaCod == "CF") THEN
+			CLEARFIELD CloCuit
+		END IF
+		SELECT (Tipo_Formulario)
+			CASE FACTURA_A
+			CASE FACTURA_B
+			CASE TICKET
+			CALL MISCleeEstado("OK2")
+				IF (RETVAL == VERDAD) THEN
+					CALL CDSgrbEstado("")
+					NotaCredito = "N"
+					CLEARFIELD adt_secuen_nro 
+					CLEARFIELD adt_secuen_nro_final
+					CALL post:CDSsaveSecEnPresuAct()
+					CALL MISCjnlPend99023
+					modoPrt = DOCPR
+					
+					//gpb:NI50479 - Genera NC PED
+					IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+						post:impNotaCred = "S"
+					ELSE
+						post:impNotaCred = "N"
+					END IF					
+
+					IF (revTicket != "S") THEN
+						/*Si es NC a CM cambio el mensaje - Gabriel Falciola*/
+						IF (!OperacionNC) THEN
+							//gpb:NI50479 - Genera NC PED
+							IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+								/*
+								CALL post:PRTfac_nc_gral("¿Fue impresa correctamente la Nota de Crédito?",OFB_IDNO, OFB_YESNO)
+								IF (RETVAL != VERDAD) THEN
+									MSGBOX "Debera reimprimir la Nota de Crédito desde el journal",OFB_OK,"ADVERTENCIA"
+									RETVAL = VERDAD 
+								END IF
+								*/
+								CALL post:PRTfac_nc_gral("Si desea reimprimir la Nota de Crédito debera hacerlo desde el journal.\nEl sistema permite un maximo de 3 reimpresiones.",OFB_OK,OFB_OK)
+							ELSE
+								CALL post:PRTfac_nc_gral("¿Fue impresa correctamente la Factura?",OFB_IDNO, OFB_YESNO)
+							END IF
+						ELSE
+							CALL post:PRTfac_nc_gral("¿Fue impresa correctamente la Nota de Crédito?",OFB_IDNO, OFB_YESNO)
+						END IF
+					ELSE
+						CALL post:CDSprt_ticket(modoPrt, "¿Fue impreso correctamente el Ticket?",OFB_IDNO, OFB_YESNO)
+					END IF
+					/*Si es NC a CM y no se imprime bien, permito la reimpresión de la misma
+					factura tres veces más - Gabriel Falciola*/
+					IF (OperacionNC && RETVAL != VERDAD) THEN
+						CALL post:MISCre_impre_NC_CM
+					END IF
+					IF (RETVAL != VERDAD) THEN
+						CALL CDSgrbEstado("R1_")
+					ELSE
+						;Actualizo las tablas stockp y StockpCDD con el número de factura
+						CALL post:CDSstockp_CDD_up_Fac
+						;SC50288 Imprime reportes de rendición de CREM
+						CALL post:DOCSreportesCREM
+						
+						CALL CDSgrbEstado("OK3")
+						; se agrego este estado para que no vuelva a entrar si se cae. Req 3127.
+						/* Imprimo el recibo de cobranza o anticipo */
+						CALL post:MISCImprimoRecCM
+						//aca
+						IF (ImprimeAcuseRec) THEN
+							CALL post:DOCSacuse_recibo
+						END IF
+						IF (post:OperacionNC) THEN
+							CALL post:DOCSacuse_reciboNC
+						END IF				    
+					END IF
+				END IF
+				/* MLD 03-10-00 Graba el Nro.Fiscal y el Doc.Fiscal en la tabla
+				UltMovEspv (Ultimos Movimientos de Especies Valorizadas)  */
+				CALL CDSumev_presu_save
+
+				CALL MISCleeEstado("OK")
+				IF (RETVAL != VERDAD) THEN
+					//cgw:si se cayo el sistema al confirmar reimpresion NC o de la factura generada posteriormente, no borro AuxImpp.
+					IF (sistCaido != "S" || (estAnul != "N1i" && estAnul != "N2i" && estAnul != "F1i" && estAnul != "F2i")) THEN
+						CALL post:CDSdelete_AuxImpp //cgw:borro los registros de AuxImpp, para luego ser rearmados.
+					END IF     
+					CALL MISCmanejoImpre
+				END IF
+			BREAK
+			CASE IRP
+				CALL MISCmanejoImpreIrp
+		BREAK
+		END SELECT
+	END IF
+
+	// Seteo el Estado como Ya Impreso
+	PresEst = 3
+	CALL CDSadt_presu_estado
+	;CALL CDSgrbEstado("T__")
+	REFRESH DocInic
+	REFRESH DocFin
+
+	; [PAW] --> libero memoria del buffer de impresion.
+	CALL csr:printbuffer_free
+END SUB
+
+/*******/

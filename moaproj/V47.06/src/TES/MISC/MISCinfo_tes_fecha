@@ -1,0 +1,426 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCinfo_tes_fecha
+* NOMBRE
+*   OFB:tes:MISCinfo_tes_fecha
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCinfo_tes_fecha
+	local total_cons      like siaf:aux_suma_monto
+	local varl_moneda     like siaf:moneda
+	local varl_dia        like common:system_date
+	local i               like siaf:i
+	local total_inic      like siaf:aux_suma_monto
+	local total_entradas  like siaf:aux_suma_monto
+	local total_salidas   like siaf:aux_suma_monto
+	local total_final     like siaf:aux_suma_monto
+	local total_buzon     like siaf:aux_suma_monto
+	local indice          like siaf:i
+	local inicial_buzon   like siaf:aux_suma_monto
+    local hago_salto like siaf:i
+    local lretval like lib:err_retval
+
+
+	if (LASTKEY == RT_ESC) then
+		return (-2)
+	end if
+
+    ;Armo picklist con los medios de pago con saldo
+    post:tipo_rest = TODOS
+    // Arma un picklist con todos los medios de pago que no tengan saldo y no hayan 
+    // tenido movimientos en el dia.
+    call post:MISCrest_saldo(common:sucursal_activa,"pic:PICmedios","N","sucursal")
+
+    varl_dia = siaf:fecha_proceso
+
+    call csr:cleararray(tes:matriz_dinero)
+    call tes:CDSInfoList_load(varl_dia)
+
+    cds select from dsc:post:Monedas_tbl becomes dsc:post:Monedas_ctx
+    cds findfirst dsc:post:Monedas_ctx nolock
+    lib:err_retval = cdsretval
+    if (cdsretval < 0)
+        return (-2)
+    end if
+
+    DO
+		cds extract dsc:post:Monedas_ctx all       
+
+		hago_salto = 0
+		
+		fprint common:csr_string "  MONEDA: %-30s",post:adt_mon_desc
+		call MISCwrite_file1(5,fld:common:csr_string)
+		
+		total_buzon = 0
+		
+		CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX WHERE \
+		(post:adt_mp_mon == FLD:post:adt_mon_cod)
+     
+		CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+		LET lib:err_retval = CDSRETVAL
+		
+
+		While (lib:err_retval == 0)
+       
+			CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+			let varl_moneda = post:adt_mp_cod
+			let tes:tes_moneda = post:adt_mp_cod
+			;Busco en el picklist al medio de pago
+			call post:MISCbusco_mp_pick(post:adt_mp_cod)
+			lretval = retval			
+
+			total_moneda = 0
+			
+			if (lretval == 0) then
+				let siaf:importe_total = 0       
+				hago_salto = 1
+				/* Efectivo */
+				if (post:adt_mp_adm == "G")
+				    matriz_dinero[post:adt_mon_cod][4] = matriz_dinero[post:adt_mon_cod][4] + \
+				    total_caja_buzon[post:adt_mp_cod]
+				end if
+	        
+	            /* Cheque */
+	            if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")
+					matriz_dinero[post:adt_mon_cod][5] = matriz_dinero[post:adt_mon_cod][5] + \
+					total_caja_buzon[post:adt_mp_cod]
+				
+					/*total de cheques rechazados en la caja */
+					matriz_dinero[post:adt_mon_cod][9] = matriz_dinero[post:adt_mon_cod][9] + \
+					total_chrech[post:adt_mp_cod]
+					
+					/* Total de cheques rechazados en tesoro */
+					matriz_dinero[post:adt_mon_cod][8] = matriz_dinero[post:adt_mon_cod][8] + \
+					total_chrech_tes[post:adt_mp_cod]
+					
+	            end if    
+
+             
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				fprint common:csr_string "  MEDIO DE PAGO: %-2s-%-20s",post:adt_mp_cod,post:adt_mp_desc
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				let common:csr_string = "  INFORMACION DE TESORO: "
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				
+
+				let total_moneda = 0
+
+
+				clearfield tes:tes_total
+				clearfield tes:tes_tot_entrada
+				clearfield tes:tes_tot_salida
+				clearfield tes:tes_tot_inic
+				clearfield inicial_buzon
+				/* Por las dudas limpio los campos */
+				clearfield siaf:importe
+				clearfield siaf:importe2
+			
+				/* Limpio los totales del fondo Habilitacion */
+				clearfield tes:subtes_total
+				clearfield tes:subtes_tot_entrada
+				clearfield tes:subtes_tot_salida
+				clearfield tes:subtes_tot_inic
+             
+
+				/********Saldo Inicial********/
+				CDS SELECT FROM "journal" BECOMES "journal_ctx2" WHERE \
+				tlr:jnl_branch        == common:sucursal_activa     && \
+				tlr:jnl_bus_date      == siaf:fecha_proceso         && \
+				tlr:jnl_status         < 100                        && \
+				tlr:jnl_sequence_corr == 0                          && \
+				siaf:moneda           == varl_moneda                && \
+				tlr:tran_mnemonic     == "SDOTES"
+
+				/*(siaf:codigo_siaf == 8200 || siaf:codigo_siaf == 8400)
+				Busco el saldo inical que journaliza al abrir la sucursal */
+			
+				IF (CDSRETVAL != 0) THEN
+					ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+					break
+				//return (-2)
+				END IF
+
+
+				CDS CLEARBUFFER "journal_ctx2"
+				CDS FINDFIRST "journal_ctx2" NOLOCK
+				LET lib:err_retval = CDSRETVAL
+				IF (lib:err_retval == 0)	            
+					CDS EXTRACT "journal_ctx2" array tes:tes_importes \
+					siaf:importe2 siaf:moneda siaf:importe \
+					tes:subtes_total
+	
+					         
+					; siaf:importe2  Tiene el total en Caja Buzon
+	
+					let inicial_buzon = siaf:importe2
+					/* Lo guardo en inicial_buzon
+		            para despues sumarle el resto de los mov. */
+				end if
+
+
+				let tes:tes_tot_inic = siaf:importe
+				let tes:subtes_tot_inic = tes:subtes_total
+				/************************/
+				/* actual. importes de los vect. aux. segun tran. del jnl de la fecha*/
+				call MISCrecons_teso_jnl(varl_moneda,varl_dia)
+				
+				let total_inic     = 0
+				let total_entradas = 0
+				let total_salidas  = 0
+				let total_final    = 0
+    
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+		
+				/*
+				let common:csr_string = " DENOMIN.   SALDO INICIAL     ENTRADAS         SALIDAS       SALDO FINAL  "
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move " ------------------------------------------------------------------------" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				*/
+
+				let common:csr_string = "             SALDO INICIAL     ENTRADAS         SALIDAS       SALDO FINAL  "
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move " ------------------------------------------------------------------------" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				 
+
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				/* Efectivo */
+				
+				let total_inic     = tes_tot_inic
+				let total_entradas = tes_tot_entrada
+				let total_salidas  = tes_tot_salida
+				let total_final    = tes_total + tes_tot_inic
+	
+				/* Le guardo todo lo que sumo */
+				let total_moneda = total_moneda + total_final
+	    
+				let common:csr_string = " ------------------------------------------------------------------------"
+				call MISCwrite_file1(5,fld:common:csr_string)
+				fprint common:csr_string " TOTALES    %13.13e   %13.13e   %13.13e   %13.13e" total_inic,total_entradas,total_salidas,total_final
+				call MISCwrite_file1(5,fld:common:csr_string)
+	                          
+				CALL tes:MISCpases_pend_ante(tes:den_moneda,siaf:fecha_proceso,common:sucursal_activa,op:op_operator_id,"S",SUCURSAL,tes:total_imp_mov)
+				fprint common:csr_string " TOTALES EN PASES                                           %13.13e" tes:total_imp_mov
+				call MISCwrite_file1(5,fld:common:csr_string)
+				tes:total_imp_mov = tes:total_imp_mov + total_final             
+				fprint common:csr_string " TOTALES FISICO                                             %13.13e" tes:total_imp_mov
+             
+				/* Efectivo */
+				if (post:adt_mp_adm == "G")
+					matriz_dinero[post:adt_mon_cod][0] = matriz_dinero[post:adt_mon_cod][0] + tes:total_imp_mov
+				endif
+
+				/* Cheque */
+				if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")               
+					matriz_dinero[post:adt_mon_cod][1] = matriz_dinero[post:adt_mon_cod][1] + tes:total_imp_mov                
+				end if
+             
+             
+				call MISCwrite_file1(5,fld:common:csr_string)	         
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)	               
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				call MISCwrite_file1(5,"               ")
+			
+
+				//======================Informacion de Cajas=========================
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				call MISCfind_tot_tlr_ant(varl_moneda) // Imprimo total de los Cajeros
+				if (retval < 0) then
+					return (-2)
+				end if
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				call MISCwrite_file1(5,"               ")
+            
+
+				//======================Informacion de Dinero Habilitación===========
+				call MISCtot_hab_ant
+				
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+	
+	             
+				;call MISCbusca_tot_buzon
+				//======================Total en Caja Buzon=========================
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+	             
+				fprint common:csr_string \
+				"TOTAL EN CAJA BUZON ....................................  %13.13e",total_caja_buzon[post:adt_mp_cod]
+				call MISCwrite_file1(5,fld:common:csr_string)
+	    
+				let total_buzon = total_caja_buzon[post:adt_mp_cod]     
+				total_moneda = total_moneda + total_buzon        
+				
+				/*call tes:MISCRecons_Buzon(siaf:fecha_proceso,varl_moneda,inicial_buzon)
+				if (retval < (-2)) then
+					return (-2)
+				end if
+				*/
+			
+
+				//======================Pases Pendientes=========================
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "  " to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				
+				call tes:MISCante_pases_pend(siaf:fecha_proceso,varl_moneda)
+				if (retval < (-2)) then
+					return (-2)
+				end if
+			
+				/*
+				call MISCwrite_file1(5,"      ")
+				call MISCwrite_file1(5,"      ")
+				*/
+				if (siaf:lineas_cl > 52)
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+					call MISCwrite_file1(5,"               ")
+				end if			
+	         
+				move "============================================================================" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "----------------------------------------------------------------------------" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				fprint common:csr_string \
+				"TOTAL CONSOLIDADO EN SUCURSAL EN %-20s    %13.13e" \
+				,post:adt_mp_desc,tes:total_moneda
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "----------------------------------------------------------------------------" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+				move "============================================================================" to common:csr_string
+				call MISCwrite_file1(5,fld:common:csr_string)
+	             
+	            /* 
+				if (siaf:pantalla_impreso ==  "P") then
+					let common:csr_string = "    "
+					call MISCwrite_file1(5,fld:common:csr_string)
+					call MISCwrite_file1(5,fld:common:csr_string)
+				end if
+				*/
+	
+			end if
+			CDS FINDNEXT DSC:post:MEDIOS_CTX nolock
+			LET lib:err_retval = CDSRETVAL
+     
+			if (lib:err_retval == 0) && (lretval == 0)
+				/* salto de hoja */        
+				if (siaf:pantalla_impreso ==  "I") then
+					Do
+						if (siaf:lineas_cl < 61)
+							let common:csr_string = "    "
+							call MISCwrite_file1(5,fld:common:csr_string)
+						else
+							break
+						end if
+					Loop
+				end if
+			end if                    
+		EndWhile
+       
+		/* salto de hoja */
+		;si imprmi algun medio de pago hago un salto 
+		;para el cuadro por monedas
+		if (siaf:pantalla_impreso ==  "I") && (hago_salto == 1) then
+			Do
+				if (siaf:lineas_cl < 61)
+					let common:csr_string = "    "
+					call MISCwrite_file1(5,fld:common:csr_string)
+				else
+					break
+				end if
+			Loop
+		end if
+              
+		CDS ENDSELECT DSC:post:MEDIOS_CTX
+		/* Cheques del tesoro, les resto los rechazados*/
+		matriz_dinero[post:adt_mon_cod][1] = matriz_dinero[post:adt_mon_cod][1] - \
+		matriz_dinero[post:adt_mon_cod][8]
+		
+		/* Cheques de la caja, les resto los rechazados*/
+		matriz_dinero[post:adt_mon_cod][3] = matriz_dinero[post:adt_mon_cod][3] - \
+		matriz_dinero[post:adt_mon_cod][9]
+		
+		call tes:MISCimp_rep_mon(2)
+		cds findnext dsc:post:Monedas_ctx nolock
+		lib:err_retval = cdsretval
+       
+		/* Salto de hoja */
+		if (lib:err_retval == 0)
+			if (siaf:pantalla_impreso ==  "I") then
+				Do
+					if (siaf:lineas_cl < 61)
+						let common:csr_string = "    "
+						call MISCwrite_file1(5,fld:common:csr_string)
+					else
+						break
+					end if
+				Loop
+			end if       
+		end if
+       
+		if (lib:err_retval == -801) then
+			break
+		end if
+       
+	LOOP
+    
+    ;call csr:cleararray(tes:matriz_dinero)
+    cds endselect dsc:post:Monedas_ctx
+ 
+    if (siaf:pantalla_impreso ==  "I") then
+		do
+			if (siaf:lineas_cl < 59)
+				let common:csr_string = "    "
+				call MISCwrite_file1(5,fld:common:csr_string)
+			else
+				break
+			end if
+		loop
+		fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:indica_calcu
+		call MISCwrite_file1(5,fld:common:csr_string)
+    end if
+
+    siaf:lineas_cl = 0
+END SUB
+
+/*******/

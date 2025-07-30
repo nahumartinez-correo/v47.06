@@ -1,0 +1,258 @@
+/****o* Reportes/OFB:siaf:TOTSlista_por_motivo
+* NOMBRE
+*   OFB:siaf:TOTSlista_por_motivo
+* DESCRIPCION
+*   Esta rutina genera el "LISTADO DE TOTALES POR MOTIVO"
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCver_rep_dia_ante,OFB:tes:MISClist_cierre_suc,OFB:tes:MISClist_cieforsuc
+*	OFB:siaf:SVALcon_totmot_suc,OFB:siaf:SVALallmotivo_fecha,OFB:siaf:SVAL_rtot_motivo 
+*	OFB:siaf:SVAL_con_totmot
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1232
+*   http://jira.sibs.net/jira/browse/AUT-1234
+* SOURCE
+*/
+#include "siafTOTS.h"
+
+SUB siaf:TOTSlista_por_motivo
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL mone LIKE moneda
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	
+	LET copias_aux = 1
+   
+  nro_hoja = 0
+  FYIMSG LST:common:fyimsg_list,"GENERANDO LISTADO DE TOTALES POR MOTIVO ..."
+  
+  IF (pantalla_impreso != "P") THEN
+  	CALL MISCopen_tot
+  END IF
+  
+  common:trap_reset = OFB:lib:KEYSreset_esc
+  op:adt_branch_id = op:op_branch_id
+  op:adt_operator_id = op:op_operator_id
+    
+	IF (modo == "OPERADOR") THEN
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:CONjnl_write \
+			WHERE tlr:jnl_branch   == FLD:op:op_branch_id \
+			&& tlr:jnl_operator == FLD:op:op_operator_id \
+			&& tlr:jnl_bus_date == FLD:fecha_proceso \
+			&& siaf:motivo != "" \
+			&& tlr:jnl_status < 100 && tlr:jnl_sequence_corr == 0
+	ELSE
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:CONjnl_write \
+			WHERE tlr:jnl_branch   == FLD:op:op_branch_id \
+			&& tlr:jnl_bus_date == FLD:fecha_proceso \
+			&& siaf:motivo != "" \
+			&& tlr:jnl_status < 100 && tlr:jnl_sequence_corr == 0
+	END IF
+	IF (CDSRETVAL != 0) THEN
+		ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+		RESET TRAN
+		CALL MISCclose_tot
+		RETURN (-2)
+	END IF
+    
+	CDS FINDFIRST DSC:CONjnl_write LOCK
+	IF (CDSRETVAL == -801 && siaf:modo == "SUCURSAL") THEN
+		//listados al cierre de la suc
+		CDS UNLOCK DSC:CONjnl_write
+		CDS ENDSELECT DSC:CONjnl_write
+		CALL MISCclose_tot
+		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550) THEN
+			ERRMSG common:errmsg_list,"No hay datos para listar" // FGB 4.11.5
+		END IF
+		RETURN -8
+	END IF
+	
+  CALL CSR:cleararray(cod_transac_vec)
+  CALL CSR:cleararray(cod_motivo_vec)
+  CALL CSR:cleararray(suma_monto_vec)
+  CALL CSR:cleararray(suma_cant_vec)
+  CALL CSR:cleararray(suma_monto_SinIva)     
+  CALL CSR:cleararray(suma_monto_Iva21)  
+  CALL CSR:cleararray(suma_monto_Iva27) 
+  CALL CSR:cleararray(suma_monto_Sellado)
+        
+	DO
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+	
+		CLEARFIELD motivo
+		CLEARFIELD post:TasaIva   
+		CLEARFIELD post:ImporteIva
+		CLEARFIELD post:ImporteSinIva
+		CLEARFIELD siaf:ImporteSello
+		        
+		CDS EXTRACT DSC:CONjnl_write \
+			siaf:motivo siaf:adt_mot_codigo siaf:adt_mot_modulo \
+			siaf:adt_mot_submodulo siaf:moneda siaf:importe \
+			siaf:codigo_siaf post:TasaIva post:ImporteIva \
+			post:ImporteSinIva siaf:ImporteSello
+		
+		CDS UNLOCK DSC:CONjnl_write
+		IF (motivo.NUMCHARS != 0) THEN
+			//AUT-1232
+			//AUT-1234
+			IF (motivo != "ADEMO" && motivo != "ADEVS" && motivo != "001" && motivo != "002") THEN
+				CALL MISCtots_por_motivo
+				CLEARFIELD motivo
+				CLEARFIELD adt_mot_submodulo
+			END IF
+		END IF
+		CDS FINDNEXT DSC:CONjnl_write NOLOCK
+  LOOP
+    
+	CALL MISCordeno_mot_tots
+	CALL MISCpaso_desc_tot2
+	pick_titulo = "totales"
+	
+	IF (modo == "OPERADOR") THEN
+		CALL CSR:f_sanewpl(pick_titulo,PIC:totales)
+	ELSE        
+		CALL CSR:f_sanewpl(pick_titulo,PIC:totales_mot)
+	END IF
+    
+	CALL CSR:f_sanewpl(pick_titulo,PIC:totales_mot)
+	i = 0
+	
+	CALL post:MISCcargo_desc_mone
+	IF (RETVAL < 0) THEN
+		CALL MISCclose_tot
+		RETURN (-2)
+	END IF
+	
+	moneda = 0
+    
+	/***********************************************************************/
+	/* En el caso de que se elija imprimir una sola moneda entra en este IF*/
+	/***********************************************************************/
+	call MISCtots_encab_mot
+	cant = 0
+	cod_tran2 = 0
+	adt_mot_codigo = 0
+	suma_monto = 0
+	suma_cant = 0
+	suma_Iva21 = 0
+	suma_Iva27 = 0
+	suma_Sellado = 0
+	suma_SinIva = 0    
+    
+  FLD:INDencab_lis = OFB:MISCtots_encab_mot  /*encabez      */  
+      
+	WHILE (cant <= IDX_TOTAL)                    
+		IF (cod_motivo_vec[cant].NUMCHARS != 0) THEN           
+			IF (cod_tran2 != cod_transac_vec[cant]) THEN
+				IF (suma_monto == 0) THEN 
+					FPRINT common:csr_string,"%4s %s ",cod_transac_vec[cant], desc_vec[cant]
+					CALL MISCwrite_tot3
+				ELSE
+					CALL MISCimpri_tot_mot
+					FPRINT common:csr_string,"%4s %s ",cod_transac_vec[cant], desc_vec[cant]
+					CALL MISCwrite_tot3
+				END IF
+				cod_tran2 = cod_transac_vec[cant]
+			END IF
+			MOVE desc_vec[cant] TO desc_vec_mot
+			adt_mot_codigo = cod_motivo_vec[cant]
+			CALL mod_submod(cod_tran2)
+			CALL CDSadt_motiv_load
+			IF (RETVAL < 0) THEN
+				FPRINT common:csr_string,"     MOT INEX           "
+			ELSE
+				FPRINT common:csr_string,"     %4s %-30.30s",adt_mot_codigo,adt_mot_desc
+			END IF
+			CALL MISCtots_mot_nmone2
+		
+			IF (modo != "OPERADOR") THEN
+				FPRINT common:csr_string,"%-s  %3s %10.10s %10.10s %10.10s %10.10s %10.10s",common:csr_string, \
+				suma_cant_vec[cant],suma_monto_SinIva[cant],suma_monto_Iva21[cant],suma_monto_Iva27[cant],suma_monto_Sellado[cant],suma_monto_vec[cant]                        
+			ELSE
+				FPRINT common:csr_string,"%-s                     %3s %17.17s",common:csr_string, \
+				suma_cant_vec[cant],suma_monto_vec[cant]          
+			END IF
+			CALL MISCwrite_tot3
+			cod_tran2 = cod_transac_vec[cant]
+		END IF                  
+		cant = cant + 1
+	END WHILE
+             
+	IF ((suma_cant != 0) ||(suma_monto != 0)) THEN
+		CALL MISCimpri_tot_mot
+	END IF
+	
+	/* salto de hoja */ 
+	IF (siaf:pantalla_impreso !=  "P") THEN
+		WHILE (siaf:i < 60) 
+			LET common:csr_string = "    "
+			CALL MISCwrite_tot3
+		END WHILE 
+	ELSE             
+		common:csr_string = "         "
+		CALL MISCwrite_tot3
+		common:csr_string = "         "
+		CALL MISCwrite_tot3
+	END IF          
+	
+	siaf:indica_calcu = siaf:nro_hoja
+       
+	FYIMSG CLEAR  
+	CLEARFIELD nro_hoja
+	CALL MISCclose_tot
+	CLEARFIELD common:csr_string
+	/* Limpio los campos sobre los que se extraen datos */
+	CLEARFIELD siaf:moneda 
+	CLEARFIELD siaf:importe
+	CLEARFIELD siaf:adt_mot_modulo
+	CLEARFIELD siaf:motivo
+	CLEARFIELD siaf:codigo_siaf
+	CLEARFIELD siaf:adt_mot_submodulo
+	CLEARFIELD siaf:adt_mot_codigo
+	CLEARFIELD post:TasaIva
+	CLEARFIELD post:ImporteIva
+	CLEARFIELD post:ImporteSinIva
+	CLEARFIELD siaf:ImporteSello
+    
+	IF (pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+		;LMB - PS 9870 - 19.06.2008
+		FPRINT common:csr_string, "%s%s", common:dirTemporal, "totales.lis"       
+		KEYDEF PUSH
+		CALL KEYSdefine_tots_oper
+		CALL CSR:f_sadopl(pick_titulo,common:csr_string)
+		KEYDEF POP
+	ELSE
+		listado_totmot = 1 
+    FYIMSG LST:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS TOTALES "
+
+    //Cierro el archivo
+    CALL MISCclose_tot   
+    
+	  //gpb:NI50752
+		CALL tes:MISCflowPDF("totales.lis")
+		IF (siaf:pantalla_impreso != "P") THEN
+			//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro/CAJA
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("totales.lis")
+			END IF
+		END IF
+			
+		FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "totales.lis"
+		CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+
+		CLEARFIELD listado_totmot
+		REFRESH listado_totmot
+	END IF
+    
+END SUB
+
+/*******/

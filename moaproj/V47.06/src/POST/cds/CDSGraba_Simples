@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:post:CDSGraba_Simples
+* NOMBRE
+*   OFB:post:CDSGraba_Simples
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGraba_Simples		
+
+	CDS SELECT FROM DSC:CORTE_TAB BECOMES DSC:CORTE_CTX \
+	WHERE post:adt_corteop_ctrl == "N"
+	CDS FINDFIRST DSC:CORTE_CTX NOLOCK
+	
+	DO 
+		IF (CDSRETVAL == -801) THEN
+			CDS ENDSELECT DSC:CORTE_CTX
+			CDS ENDSELECT DSC:adt_relMod_ctx
+			BREAK
+		END IF
+		
+		CLEARFIELD adt_corteop_cod
+		CLEARFIELD adt_corteop_desc
+		CDS EXTRACT DSC:CORTE_CTX \
+					FLD:adt_corteop_cod 
+		/* Verifico que no exista en la tabla de Servicios ningún servicio con ese corte
+		operativo que sea simple especial; si encuentro por lo menos uno entonces no debo
+		grabar ese registro en la tabla Temporal SacasTmp*/ 
+			
+		CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx \
+		WHERE post:adt_serv_corteop == adt_corteop_cod && adt_serv_simp_esp == "S"
+		CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+		CDS ENDSELECT DSC:Servicio_ctx
+		IF (lib:err_retval == -801) THEN
+			
+			CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+			WHERE post:adt_relMod_modelos == common:br_modelo && \
+			post:adt_relMod_corteop == adt_corteop_cod 
+			CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+			
+			DO
+			    IF (CDSRETVAL == 0) THEN
+					CLEARFIELD adt_novtt_simp_esp
+				    CLEARFIELD adt_relMod_sacatipo
+				    CLEARFIELD adt_relMod_apertura
+				    CLEARFIELD adt_relMod_grucorte
+				    CLEARFIELD adt_relMod_desptipos
+				    CLEARFIELD adt_relMod_despacho
+				
+				    CDS EXTRACT DSC:adt_relMod_ctx \
+				    FLD:adt_relMod_sacatipo \
+				    FLD:adt_relMod_apertura \
+				    FLD:adt_relMod_grucorte \
+				    FLD:adt_relMod_desptipos \
+				    FLD:adt_relMod_despacho
+				    IF (post:adt_relMod_desptipos != "TR") THEN
+    					CDS SELECT FROM DSC:adt_sacatipo_tbl BECOMES DSC:adt_sacatipo_ctx \
+	    				WHERE post:adt_sacatipo_cod == adt_relMod_sacatipo
+		    			CDS FINDFIRST DSC:adt_sacatipo_ctx NOLOCK
+			    		IF (CDSRETVAL == 0) THEN
+				    		CDS EXTRACT DSC:adt_sacatipo_ctx \
+					    	FLD:adt_sacatipo_desc
+    					END IF
+	    				CDS ENDSELECT DSC:adt_sacatipo_ctx
+	
+		    			IF (siaf:codigo_siaf == 99040) THEN
+			    			adt_novtt_saca_desc = adt_sacatipo_desc
+				    		adt_novtt_corte = adt_corteop_cod
+					    	adt_novtt_saca_tipo = adt_relMod_sacatipo
+						    adt_novtt_grupo = adt_relMod_grucorte
+    						adt_novtt_apertura = adt_relMod_apertura
+	    					CALL CDSGraba_SacasTmp
+		    				CDS UNLOCK DSC:SacasTmp_ctx
+			    			CDS ENDSELECT DSC:SacasTmp_ctx
+				    	ELSE
+					    	adt_novtt_despacho = adt_relMod_desptipos
+						    adt_novtt_desc = adt_relMod_despacho
+    						CALL CDSGraba_LineaTmp
+	    				END IF
+		    		END IF
+			    ELSE
+			        CDS ENDSELECT DSC:adt_relMod_ctx
+			        BREAK
+			    END IF
+			    CDS FINDNEXT DSC:adt_relMod_ctx NOLOCK
+            LOOP		
+	  END IF
+	  CDS FINDNEXT DSC:CORTE_CTX NOLOCK
+	LOOP
+
+END SUB
+
+/*******/

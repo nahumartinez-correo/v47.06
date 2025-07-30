@@ -1,0 +1,94 @@
+/****o* Reportes/OFB:tes:MISCprt_den_suc
+* NOMBRE
+*   OFB:tes:MISCprt_den_suc
+* DESCRIPCION
+*	Este OFB lee la tabla tesoro registro por registro y graba cada uno de los
+*	elementos en el archivo
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No encontro registros en la tabla "MedPago".
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:TRANcons_den_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCprt_den_suc
+    local total_cons like siaf:aux_suma_monto    
+    local lretval like lib:err_retval
+    local primero like lib:err_retval
+
+    primero = 0
+    ;Armo picklist con los medios de pago con saldo
+    if (opcion_lst == "TODOS")
+        post:tipo_rest = TODOS
+        // Arma un picklist con todos los medios de pago que no tengan saldo y no hayan 
+        // tenido movimientos en el dia.
+        call post:MISCrest_saldo(common:sucursal_activa,"pic:PICmedios","S","sucursal")
+    end if
+ 
+    if (opcion_lst == "TODOS")
+        CDS SELECT FROM dsc:post:MEDIOS_TAB BECOMES dsc:post:MEDIOS_CTX WHERE \
+        (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") || \
+        (post:adt_mp_adm == "G" && post:adt_mp_monet  == "S")
+    else
+        cds select from dsc:post:MEDIOS_TAB becomes dsc:post:MEDIOS_CTX \
+        where post:adt_mp_cod == post:codigo_moneda     
+    end if
+    ;where (post:adt_mon_tipo == "EFEC" || post:adt_mon_tipo == "CHEQ")
+    cds findfirst dsc:post:MEDIOS_CTX nolock
+    lib:err_retval = cdsretval
+    if (lib:err_retval < 0)
+        return (-2)
+    end if
+
+    WHILE (lib:err_retval == 0)
+        cds extract dsc:post:MEDIOS_CTX all
+        let tes:tes_moneda = post:adt_mp_cod
+        if (opcion_lst == "TODOS")
+             call post:MISCbusco_mp_pick(post:adt_mp_cod)
+             lretval = retval
+        end if
+        if (opcion_lst == "TODOS" && lretval == 0) || (opcion_lst != "TODOS")
+
+            //cgw:SC50282 - No se realiza salto de pagina entre secciones de medio de pagos.
+            //    Se comenta que no imprima lineas en blanco al final de la impresion de la
+            //    seccion del medio de pago.
+            /*
+            if (primero != 0)
+                call tes:MISClineas
+            end if
+            */
+
+            let siaf:importe_total = 0
+            call csr:cleararray(tes:matriz_dinero)
+        
+            /*call MISCestado_tes*/
+            call MISCcalc_den_tes
+            primero = -1     
+        end if
+        cds findnext dsc:post:MEDIOS_CTX nolock        
+        lib:err_retval = cdsretval
+        //cgw: Solo contempla la impresion de cantidad de hojas al pie de pagina para suc.virtual,
+        //     ya que para la opcion listado, se empalma con el listado Detalle de Valores Declarados.
+        IF (post:sucu_virtual == "S") THEN
+        	IF (lib:err_retval != 0) THEN
+                CALL tes:MISClineas
+            END IF
+        END IF
+
+    END WHILE
+
+    //cgw: Solo contempla la inicializacion de lineas para pantalla o suc. virtual, ya que para
+    //     la opcion listado, se empalma con el listado de Detalle de Valores Declarados.
+    IF (siaf:pantalla_impreso == "P" || post:sucu_virtual == "S") then
+    	siaf:lineas_cl = 0
+    END IF
+END SUB
+
+/*******/

@@ -1,0 +1,130 @@
+/****s* Pendientes de agrupación/SCR:post:SVALretiro_dinero
+* NOMBRE
+*   OFB:post:SVALretiro_dinero
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la TX de Retiro de Dinero TS.
+*   Se comunica con el POS y autoriza o no el retiro de dinero
+*   Journaliza la tx de Retrio de Dinero mas la Captura 99098 si hubiera sido aprobada
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANretiro_dinero
+* DOCUMENTACION
+* SOURCE
+*/
+#include "postsval.h"
+#define VPI_EMPTY_BATCH	          105		//El lote se encuentra vacío.
+
+SUB post:SVALretiro_dinero
+
+	local imp_tran like siaf:importe
+	siaf:importe = post:importe_origen
+	Total_importe = post:importe_origen
+
+	call siaf:SVALnivel_sup
+	if (retval < 0) then
+		if (RETVAL == -3) then
+			call post:MISCrechazo_transac
+			return -3
+		else
+			return (retval)
+		endif
+	endif
+
+	if (!testflag(tlr:tran_flags,correction))
+
+		POPUP SCRNconf_retiro,PRECconf_retiro
+		IF (LASTKEY == RT_ESC  || siaf:continua_transaccion == "N") THEN
+			clearfield imp_retiro
+			RETURN -1
+		END IF
+
+		//Llamo a la rutina que se comunica con el POS y ejecuta el retiro de dinero (en este caso es una vta con otro codigo de comercio)
+		CLEARFIELD post:adt_vpi_status
+		LET post:Tipo_Operacion_Pos = "ONLINE"
+		CALL post:MISCvpiPurchase
+		IF (RETVAL < 0) THEN
+			//Si esta habilitada la parametria para venta offline
+			IF (common:adt_vpi_Offline == "S") THEN
+				//Evaluo si debo realizar una venta offline
+				IF (post:adt_vpi_status == "OFF") THEN
+					POPUP SCR:post:SCRNvpiOffline,post:PRESvpiOffLine,-,post:SVALvpiOffLine
+					IF (LASTKEY == RT_ESC) THEN
+				  		RETURN (-2)
+				  	ELSE
+				  		IF (post:adt_vpi_aut_offline == "N") THEN
+				  		END IF
+				  	END IF 
+				ELSE
+					RETURN (-2)
+				END IF
+			ELSE
+				RETURN (-2)
+		  	END IF
+		END IF
+			
+		//Actualizo la marca en la tabla OperacionesVPI
+		CALL post:CDSopvpi_jnlOK("VEN")		
+	
+		CALL post:MISCvpiPrintTicket
+		IF (RETVAL > 0)
+			MSGBOX "¿SE IMPRIMIO CORRECTAMENTE EL TICKET DE LA TARJETA?",OFB_YESNO,"AVISO"
+			IF (RETVAL == OFB_IDNO) THEN
+				//No se pudo imrimir el Ticket del POS luego de 3 intentos entonces se imprime Ticko
+				siaf:DAUdestinatario = "ORIGINAL"
+				PRINTDOC OFB:post:PRTretiroDinero,docprt,"(L)IMPRIMIENDO COMPROBANTE ORIGINAL"
+				siaf:DAUdestinatario = "DUPLICADO"
+				PRINTDOC OFB:post:PRTretiroDinero,docprt,"(L)IMPRIMIENDO COMPROBANTE DUPLICADO"
+			END IF
+		END IF
+		
+	else //reversa
+	
+		LET post:adt_codint_cod = post:retiro_CodInt
+		//datos de Tarjeta_POS
+		post:vpi_originalTicket = post:jnl_opvpi_ticketNumb	//nro cupon tarjeta original
+		post:vpi_issuerCode = post:jnl_opvpi_issuerCode		//codigo de tatrjeta "CA"
+		post:vpi_merchantName = post:jnl_opvpi_merchaName	//Razon Social del Comercio
+		post:vpi_cuit = post:jnl_opvpi_cuit					//CUIT del comercio
+		post:vpi_timeout = common:adt_vpi_timeout			//time out						
+		post:adt_vpi_codseq_nro	= post:jnl_opvpi_codseq_nro //sequenciador de OpercaionesVPI
+	
+		CALL post:MISCvpiVoid
+		IF (RETVAL == 0) THEN
+  			LET post:NroCompPago2AN = post:vpi_ticketNumber
+			LET post:Nro_Lote_PosAN = post:vpi_batchNumber
+			LET post:NroTransacAN = post:vpi_authCode
+		END IF
+
+		IF (RETVAL != 0) THEN
+			MSGBOX "Si el mensaje del visor del POS indica que la TRANS. ORIG. NO EXISTE no podrá Anular la Operación\nSalga de la Anulación de Comprobantes con ESC",0x00,"ATENCION"
+  			RETURN -2
+		END IF
+	
+		//gpb:NI50525 POS Integrado
+		CALL post:MISCvpiPrintTicket
+
+	END IF
+	
+	CALL csr:proc_list(F_COPY, LST:post:LISTopvpiPurchaseIn, LST:post:LISTjnlOpPurchaseIn)
+	CALL csr:proc_list(F_COPY, LST:post:LISTopvpiTrxOut, LST:post:LISTjnlOpTrxOut)
+	
+	
+	
+	if (!testflag(tlr:tran_flags,correction))
+  		call tlr:JNLtran
+   		tlr:link_y_n = "Y" //UNGETKEY RT_SEND
+   		imp_tran = siaf:importe * -1
+   		//Limpio Campos de arrastre para Captura
+   		CALL MISClimpFLD_CaptRetD
+   		Call post:MISCcap_teclas_rap(imp_tran)
+	else
+    	call tes:MISCreverso_sesion
+    end if
+END SUB
+
+/*******/

@@ -1,0 +1,158 @@
+/****o* Tratamiento de Cheques/OFB:post:FVALfecha_venc
+* NOMBRE
+*   OFB:post:FVALfecha_venc
+* DESCRIPCION
+*   Rutina que valida la fecha de vencimiento de un cheque diferido:
+*	Las validaciones que se hacen son las siguientes:
+*	Fecha de Vencimiento no vacia
+*	Fecha de vencimiento > fecha de emision
+*	Dias entre Fecha de Emision y Fecha de Vencimiento no mayor a la parametrizada.(Tabla Medios de Pago)
+*	Si Fecha de Vencimiento es < a Fecha de Proceso, la diferencia entre ambas no debe
+*	superar los 25 dias.
+*       Cliente UP y Marca Dif.Vto al dia activada fecha de vto debe ser menor o igual a la de proceso, sino debe ser siempre mayor.
+*       Venta por Excepcion UP la fecha de vto no debe superar los dias pactados en la excepcion.
+*       Venta por Excepcion CM: debo controlar que la diferencia en dias entre la fecha de emision y la fecha de vencimiento sea menor o igual a la cantidad
+*	de dìas financiables acordados en la excepcion para el monto que se está utilizando.
+*       Cliente Medio: la fecha de vto no debe superar la cantidad de dias financiables pactados para ese cliente en la tabla clientes del host.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:FVALfecha_vto_CC
+* REFERENCIADO POR
+*   SCR:giros:SCRN70320chq,post:PBchqMultAgregar,OFB:post:PBchqMultModif,SCR:post:SCRN99170
+*   SCR:post:SCRN99175,SCR:post:SCRNcaptura_adiciona,SCR:post:SCRNchqMult,SCR:post:SCRNchqMult2
+*   SCR:post:SCRNPago_Diferido
+* DOCUMENTACION
+*   SC50200.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619906&
+*   NI50219.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=620039&
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALfecha_venc
+    
+    Local fecha_aux like fec_d
+    Local fecha_cli like fec_d
+    Local l_fecha like fec_d
+    LOCAL imp_desc LIKE common:csr_string
+    	   
+	//MFM - Para la pantalla de Pago Diferido*/
+	If (siaf:codigo_siaf == 99160) Then
+		//post:adt_mp_cod = "02"
+		Call post:CDSsel_MedPago_Dif
+	End If
+    ;adt_mp_cod = tipo_mpago
+    CALL post:CDSadt_MedPago_load        
+    IF (adt_mp_diferido == "S")  
+    
+    	IF (fec_e.numchars == 0)
+			IF (fec_d.numchars != 0)
+				MSGBOX "Ingrese primero la fecha de emisión",0x00,"ERROR"
+				nextfield fec_e
+				clearfield fec_d
+				refresh fec_d
+			END IF
+		    return 0
+		end if
+    	
+		IF (currentfield.numchars == 0)
+			MSGBOX "Fecha de vencimiento Invalida",0x00,"ERROR"
+		    return -2
+		end if
+    	
+		call csr:date_compare(fec_e,fec_d)
+		If (Retval == 1 || Retval == 0)
+			MSGBOX "La fecha de vencimiento debe ser mayor a la fecha de emisión.",0x00,"ERROR"
+			return (-2)
+		End if
+      
+        //SC 50219 - Se pidió que esta validacion tenga prioridad sobre las que siguen.
+        call csr:date_add(fec_e,post:adt_mp_max_venc,"d",l_fecha)
+        ; comparo la nueva fecha obtenida contra la fecha de vencimiento
+	call csr:date_compare(fec_d,l_fecha)
+	; Si el retval es 2 la fecha de venc. es mayor que l_fecha.Si es 0 son iguales y debería dejar pasarlo. 
+        if (retval != 2 && retval != 0) then
+		FPRINT imp_desc,"%s%s%s","La diferencia entre la fecha de venc. y la fecha de emisión\n no puede superar los ",post:adt_mp_max_venc," días."
+		MSGBOX imp_desc,0x00,"ERROR"
+		return (-2)
+	End if
+      
+      
+        ; Comparo la fecha de venc. p/ ver que sea menor o igual a la fecha del sistema
+    	; Si el retval es 2 la fecha de venc. es más vieja que la fecha actual. *** MDG
+    	call csr:date_compare(fec_d,common:system_date)
+    	if (retval == 2) then
+    		; Le sumo 25 días a la fecha de venc. p/ ver que la fecha de proceso
+    		; no supere 25 días la fecha de venc. 
+    		call csr:date_add(fec_d,25,"d",fecha_aux)
+			; comparo la nueva fecha obtenida contra common:system_date.
+			call csr:date_compare(fecha_aux ,common:system_date)
+			; si la fecha de fecha_aux es más vieja que la fecha actual entonces hay un error.
+			If (RetVal == 2)
+				MSGBOX " La diferencia entre la fecha de venc. y la actual\n no puede superar los 25 días.",0x00,"ERROR"
+				return (-2)
+			End if
+			;SC50200 Se valida que si el pago es con un cheq. dif con vto. al día
+		    ;solo pueden ingresarse en sesiones de este tipo *** MDG
+			IF (post:cli_tipo == CLIUP && (!TESTFLAG (cheque_dif, chq_dif_al_dia))) THEN
+				MSGBOX "Para ingresar esta fecha de vencimiento deberá marcar 'Diferido Vto. Al día' al iniciar la sesión.",0x00,"ERROR"
+				return (-2)
+			End if
+		elseif (retval == 1) then
+		    ;SC50200 Se valida que si el pago es con un cheq. dif con vto. al día
+		    ;la fecha de vencimiento no sea mayor a la fecha actual *** MDG
+		    IF (post:cli_tipo == CLIUP && (TESTFLAG (cheque_dif, chq_dif_al_dia))) THEN
+				MSGBOX "Fecha inválida para la opción 'Diferido Vto. al día' seleccionada. Sólo debe marcar 'Cheque Diferido' al iniciar la sesión.",0x00,"ERROR"
+				return (-2)
+			End if   
+		elseif (retval == 0) then
+		    ;SC50200 Se valida que si el pago es con un cheq. dif con vto. al día
+		    ;solo pueden ingresarse en sesiones de este tipo *** MDG
+		    IF (post:cli_tipo == CLIUP && (!TESTFLAG (cheque_dif, chq_dif_al_dia))) THEN
+				MSGBOX "Para ingresar esta fecha de vencimiento deberá marcar 'Diferido Vto. Al día' al iniciar la sesión.",0x00,"ERROR"
+				return (-2)
+			End if
+		end if
+
+        /*MFM - Si estoy en venta por excepción UP...*/
+	IF (consulta_excepcion == "S") THEN
+		CALL CDSCheck_excepcion
+		fecha_cli = excep_dias
+	END IF
+		
+	/*MFM - Si estoy en venta por excepción CM, debo controlar que la diferencia en dias 
+	entre la fecha de emision y la fecha de vencimiento sea menor o igual a la cantidad
+	de dìas financiables acordados en la excepcion para el monto que se está utilizando*/
+	IF (consulta_excepcionCM == "S") THEN
+		if (importeChqMult > 0) then
+			CALL CDSfechaVChqMult
+			if (retval < 0) then
+				return (-2)
+			end if
+		end if
+	ELSE
+		/*MFM - Si no es una excepción pero es un cliente medio...*/
+		IF (post:cli_tipo == CLIMED) THEN
+			fecha_cli = post:climed_financiacion
+		END IF
+		/*MFM - Controlo que la diferencia en dias entre la fecha de emision y la fecha de vencimiento sea menor
+		o igual a la cantidad de dìas financiables acordados */
+		IF (consulta_excepcion == "S" || post:cli_tipo == CLIMED) THEN
+			/*sumo la cantidad de dias financiables a la fecha de emision*/
+			call csr:date_add(fec_e,fecha_cli,"d",fecha_aux)
+			/*comparo la nueva fecha obtenida contra la fecha de vencimiento*/
+			call csr:date_compare(fecha_aux ,fec_d)
+			/*si la fecha de vencimiento es mayor a fecha_aux entonces hay un error*/
+			If (RetVal == 2)
+				MSGBOX "Fecha de Vencimiento Inválida",0x00,"ERROR"
+				return (-2)
+			End if
+		END IF
+	END IF
+    END IF
+   
+END SUB
+
+/*******/

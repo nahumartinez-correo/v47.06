@@ -1,0 +1,120 @@
+/****o* Pendientes de agrupación/OFB:post:FVALtrack_TT
+* NOMBRE
+*   OFB:post:FVALtrack_TT
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALtrack_TT
+    LOCAL cont LIKE post:cant_opc
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+        IF (pag_act == "" && primer_tt == "S" && tt_aux != " ")
+            primer_tt = "N"
+            CALL MISCverif_tab_tt
+            IF (RETVAL < 0)
+                RETURN (-2)
+            END IF
+        END IF
+        IF (post:tt_aux == "")THEN
+            /*No se pone cartel para evitar el enter cuando se cargan con la lectora de tt*/
+            RETURN (-2)
+        ELSE
+            /*********************************************************/
+            /* Se verifica que cuando se elija un opcional que tenga */
+            /* T&T se ingrese el codigo de T&T correspondiente       */
+            /*********************************************************/
+            
+            //Controlo la cantidad de dígitos, si es des 11 le agrego "AR"
+            CALL MISCcant_digitos_tt(tt_aux,"2")            
+            
+            
+            IF (post:cant_opc > 0) THEN
+                CALL MISCtrack_opc(track_trace)
+                IF (RETVAL < 0)
+                    RETURN (-2)
+                END IF                
+            END IF
+            IF ((SUBSTR(post:tt_aux,0,2) != post:adt_jnl_ttcod && \
+                SUBSTR(tt_aux,0,2) != post:adt_jnl_ttcod1 && \
+                SUBSTR(tt_aux,0,2) != post:adt_jnl_ttcod2) || \
+                post:tt_aux.NUMCHARS < 13 || SUBSTR(post:tt_aux,11,2) != "AR" || \
+                SUBSTR(post:tt_aux,0,2) == "") THEN
+                MSGBOX "EL TRACK & TRACE LEIDO ES INCORRECTO",0x00,"ERROR"
+                CLEARFIELD CURRENTFIELD
+                RETURN (-2)
+            ELSE
+                CALL MISCvalida_digito(post:tt_aux)
+                IF (RETVAL == 0) THEN
+                    ; Verifico que el T&T no haya sido utilizado para VDI
+                    post:track_trace = post:tt_aux
+                    call post:CDSTT_VDI("")
+                    if (retval == 0) then
+                        ; Veo si es un cliente corporativo (correo), de ser así el T&T puede reutilizarse
+                        call post:CDSesClienCorpCorreo(post:PresNro_tt)
+                        if (!retval)
+                            MSGBOX "EL TRACK & TRACE LEIDO HA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+                            RETURN (-2)       
+                        END IF
+                    end if
+                    
+                    /************************************************/
+                    /* Verifico en el que el T&T no haya sido       */
+                    /* utilizado con anterioridad para otro envío.  */
+                    /************************************************/
+                    CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+                    post:fecha == common:system_date && \
+                    post:track_trace == FLD:post:tt_aux
+                    CDS FINDFIRST TT_CTX NOLOCK
+                    IF (CDSRETVAL == 0) THEN
+                        /*************************************************/
+                        /* Ya se había usado ese T&T en otra Transacción */
+                        /*************************************************/
+                        MSGBOX "EL TRACK & TRACE LEIDO YA HABIA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+                        CDS ENDSELECT TT_CTX
+                        CLEARFIELD CURRENTFIELD
+                        RETURN (-2)
+                    ELSE
+                        CDS ENDSELECT TT_CTX
+                        CALL giros:CDSver_ttgiro_usado(tt_aux)
+                        SELECT (RETVAL)
+                            CASE 0
+                                MSGBOX "Se ha escaneado un T&T asociado a un giro. Desea utilizarlo?",OFB_YESNO,"Atencion"
+                                IF (RETVAL == OFB_IDNO) THEN
+                                    RESETFLAG giros:env_post_flag,verif_tt_usado
+                                    RETURN (-2)
+                                END IF
+                                SETFLAG giros:env_post_flag,verif_tt_usado
+                                BREAK
+                            CASE -1
+                                MSGBOX "El T&T ya fué utilizado y está asociado a un giro. ",0x00,"Aviso"
+                                SETFLAG giros:env_post_flag,verif_tt_usado
+                                BREAK
+                            CASE -2
+                                RESETFLAG giros:env_post_flag,verif_tt_usado
+                                BREAK
+                        END SELECT
+                        SETVALDONE post:track_trace                     
+                        RETURN (0)
+                    END IF
+                ELSE
+                    RETURN (-2)
+                END IF
+            END IF
+        END IF
+    END IF
+    SETVALDONE post:track_trace
+END SUB
+
+/*******/

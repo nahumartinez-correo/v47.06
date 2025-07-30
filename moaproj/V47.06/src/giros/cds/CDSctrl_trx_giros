@@ -1,0 +1,803 @@
+/****o* Reversa por journal/OFB:giros:CDSctrl_trx_giros
+* NOMBRE
+*   OFB:giros:CDSctrl_trx_giros
+* DESCRIPCION
+*   PROCESO DE CANCELACION DE TRX. DESDE EL JOURNAL (TRX. SIN COMPROBANTE FISCAL)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tlr:KEYScorrection
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSctrl_trx_giros
+
+	;PROCESO DE CANCELACION DE TRX. DESDE EL JOURNAL (TRX. SIN COMPROBANTE FISCAL)
+
+	;Variables locales segun si transaccion envia 
+	;cancelacion 0200 o 0400 Internacionales.
+	LOCAL varl_flia_tran 	like post:jnl_flia_tran
+	LOCAL varl_tiene_rev    like siaf:tiene_reverso
+	LOCAL varl_host_sndrt   like hcomm:INDhost_sndrt
+	LOCAL varl_host_rcvrt	like hcomm:INDhost_rcvrt
+	LOCAL varl_retval	like lib:err_retval
+	
+	//Reemplazo
+	LOCAL varl_codigo    like siaf:codigo_siaf
+	LOCAL varl_operacion like post:OperacionCob
+	LOCAL varl_modalidad like post:ModalidadAT
+	LOCAL varl_moneda    like siaf:moneda
+
+	;Variables auxiliares de estado actual y/o trx.cargada
+	;de fin de sesion
+	LOCAL aux_tran_flags	like tlr:jnl_tran_flags
+	LOCAL aux_tran_name     like tlr:INDtran_name
+	LOCAL aux_pres_nro      like post:PresNro
+	LOCAL aux_sequence      like tlr:jnl_sequence
+	LOCAL aux_codigo_siaf   like siaf:codigo_siaf
+	LOCAL aux_desc_transac  like siaf:nombre_transac
+	LOCAL aux_cli_razon     like post:CliRaz
+	LOCAL aux_doc_ini	like post:DocInic
+	LOCAL aux_doc_fin       like post:DocFin
+	LOCAL aux_imp_sesion    like post:importe_sesion
+	LOCAL aux_cant_pag      like post:cant
+	LOCAL aux_docfiscal     like post:DocFiscal
+	LOCAL aux_importe_trx   like siaf:importe
+	LOCAL aux_excepCM_id    like post:excepCM_id
+	
+	clearfield post:reversaCaidaEnVuelo
+	aux_tran_flags   = tlr:jnl_tran_flags
+	aux_tran_name    = tlr:INDtran_name  
+	aux_sequence     = tlr:jnl_sequence   
+	aux_pres_nro     = post:PresNro
+	aux_codigo_siaf  = siaf:codigo_siaf
+	aux_desc_transac = siaf:nombre_transac
+	aux_cli_razon    = post:CliRaz
+	aux_doc_ini      = post:DocInic
+	aux_doc_fin      = post:DocFin
+	aux_imp_sesion   = post:importe_sesion
+	aux_cant_pag     = post:cant
+	aux_docfiscal    = post:DocFiscal
+	aux_importe_trx	 = siaf:importe
+	aux_excepCM_id   = post:excepCM_id
+	
+	;La transaccion 70540 de cancelacion no corresponde a reversa
+	resetflag tlr:tran_flags,correction
+	clearfield tlr:jnl_sequence_corr
+	
+	if (post:PresNro == 0) then
+		return 0
+	end if
+	
+
+	CDS SELECT FROM DSC:tlr:TABjnl becomes DSC:tlr:jnl_context2 where \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_branch   == common:sucursal_activa && \
+	tlr:jnl_bus_date == common:system_date && \
+	tlr:jnl_sequence_corr == 0 && \
+	post:PresNro == post:PresNro && \
+	tlr:jnl_status < HOST_REJECTED
+
+	CDS FINDFIRST DSC:tlr:jnl_context2 NOLOCK
+	if  ( CDSRETVAL != 0 )  then
+		if ( CDSRETVAL == -801 )
+			msgbox \
+			"No se pueden encontrar los datos de la/s transaccion/es correspondientes al presupuesto a reversar.",OFB_OK,"Error"
+		else
+			msgbox \
+			"Error al obtener los datos de la/s transaccion/es correspondientes al presupuesto a reversar.",OFB_OK,"Error"
+
+		end if
+		CDS ENDSELECT DSC:tlr:jnl_context2	
+		return -2
+	end if
+
+	DO
+
+		//por Reemplazo
+		CDS EXTRACT DSC:tlr:jnl_context2 \
+		post:jnl_flia_tran  into varl_flia_tran \
+		siaf:tiene_reverso  into varl_tiene_rev \
+		hcomm:INDhost_sndrt into varl_host_sndrt \
+		hcomm:INDhost_rcvrt into varl_host_rcvrt \
+		siaf:codigo_siaf    into varl_codigo \
+		post:OperacionCob   into varl_operacion \
+		post:ModalidadAT    into varl_modalidad \
+		siaf:moneda         into varl_moneda 
+
+		if ( varl_tiene_rev == "S" && \
+		     varl_host_sndrt != 0 && varl_host_rcvrt != 0 )
+			
+			
+			IF (varl_flia_tran == "CSM")
+
+				/*******************************************************************/
+				/*                            TX DE GIROS                          */
+				/*******************************************************************/
+				;Si en la sesion existe una transaccion de giros,
+				;es decir con familia de giros CSM, se extraen los
+				;datos necesarios para JNL la cancelacion de giros Sin
+				;Comprobante Fiscal y para el envio del MSG al host
+	
+				clearfield giros:mtcn_canc
+				
+				CDS EXTRACT DSC:tlr:jnl_context2 \
+				giros:clave_hdr_giros \
+				giros:clave_hdr_giros into giros:clave_hdr_prev \
+				giros:cons_nro_ctrol \
+				giros:codigo_procesamiento \
+				siaf:codigo_siaf into giros:cod_tran_canc \
+				giros:flia_giro_fld \
+				giros:tipo_giro_fld \
+				giros:tipo_giro_desc \
+				giros:Serie_fld \
+				giros:NroGiro_fld \
+				giros:digito_fld \
+				giros:hora_viaje \
+				giros:dia_viaje \
+				post:PresNro into giros:PresNro_canc \
+	    		giros:FechaEmision_fld into cons_fecha_emi \
+	    		giros:ImporteNeto \
+				siaf:importe \
+	    		giros:CodPaisEmis_fld \
+	    		giros:CodPaisBenef_fld  \
+				giros:SucSel2_fld into prov_pagad_fld \
+				giros:SucSel3_fld \
+	    		giros:CodSucBenef_fld into Sucursal_fld \
+				giros:SucSel_fld 
+
+				CDS EXTRACT DSC:tlr:jnl_context2 \
+				siaf:jnl_sucursal into giros:CodSucEmis_fld \
+	    		siaf:jnl_sucursal INTO CodSucSoli_fld \
+				giros:ProvEmis_fld  \
+				giros:CodSucEmis_fld \
+				giros:CodSuc_fld \
+				siaf:nombre_transac into nombre_tran_canc \
+				giros:CodPaisResidEmis \
+				giros:CodPaisResidBenef \
+				giros:PaisResidEmis \
+				giros:PaisResidBenef
+
+				if ( giros:cod_tran_canc == 70141)
+					;GESTION DE DUPLICADO OFICIO
+					CDS EXTRACT DSC:tlr:jnl_context2 \
+						giros:vieja_serie_fld \
+						giros:viejo_num_giro_fld \
+						giros:viejo_dig_fld
+				end if
+  				if ( giros:flia_giro_fld  == "I" )
+					;PARA TRANSACCIONES INTERNACIONALES
+					CDS EXTRACT DSC:tlr:jnl_context2 \
+						giros:pay_indicator \
+						giros:MoneyTKey_fld \
+						giros:ImportePago_fld \
+						giros:cons_nro_ctrol into \
+						giros:mtcn_canc \
+						post:adt_codseq_nro into giros:codseq_nro_canc \
+						giros:hora_viaje    into giros:hora_viaje_canc \
+						giros:dia_viaje     into giros:dia_viaje_canc
+				end if
+
+				;Si se realizaba a traves de un listexec daba error
+				;en las proximas trx, por si posteriormente se puedan
+				;incluir mas de un giro en la sesion
+	
+				FYIMSG drv:fyimsg_list,\
+				"Proceso de cancelacion de operaciones desde el Journal  ... "
+
+				let siaf:codigo_siaf = 70540
+				call siaf:PRESfecha_hora
+				if ( retval != 0 )
+					varl_retval = -2
+					break
+				end if
+				siaf:hora = common:time_of_day
+				siaf:dia  = common:system_date
+
+				setflag tlr:tran_flags,correction
+				call siaf:SVALnivel_sup
+				if ( retval < 0 )
+					resetflag tlr:tran_flags,correction
+					varl_retval = -2
+					break
+				end if
+				resetflag tlr:tran_flags,correction
+
+				call giros:SVAL70540
+				if ( retval < 0 )
+					varl_retval = -2
+					break
+				end if
+	
+				;Se instancian campos para el jnl/envio
+				drv:INDscr = SCR:giros:SCRN70540
+				tlr:INDdcol_scrn[0] = SCR:giros:SCRN70540
+    				drv:INDhcomm_rtn  = OFB:giros:SEND70540
+    				drv:INDspc_rtn[1] = OFB:giros:RCVE70540
+    				drv:INDcur_tran   = LST:giros:TRAN70540
+    				drv:INDjnl_rtn    = OFB:giros:JNL70540
+				
+				/**********************************************************************/
+				/*                           FIN TX DE GIROS                          */
+				/**********************************************************************/
+			ELSE
+				IF (varl_flia_tran == "TAV")
+					IF (varl_codigo == 99200 || varl_codigo == 99240 || varl_codigo == 99242)
+						/**********************************************************************/
+						/*                            TX DE REEMPLAZO                         */
+						/**********************************************************************/
+						CDS EXTRACT DSC:tlr:jnl_context2 \
+						giros:clave_hdr_giros \
+						giros:codigo_procesamiento \
+						siaf:codigo_siaf into giros:cod_tran_canc \
+						giros:hora_viaje \
+						giros:dia_viaje \
+						post:PresNro into giros:PresNro_canc \
+	    					siaf:importe					
+						
+						post:anula_reemp = "S"
+						
+						//Obtengo los deatos necesaerios de la tx para armar el mensaje
+						CALL post:MISCdatChkReempJnl(varl_codigo)
+						if ( retval < 0 )
+							resetflag tlr:tran_flags,correction
+							varl_retval = -2
+							break
+						end if
+						
+						FYIMSG drv:fyimsg_list,\
+						"Proceso de cancelacion de operaciones desde el Journal  ... "
+
+   						CALL post:PRES99175
+						if ( retval != 0 )
+							varl_retval = -2
+							break
+						end if
+
+
+						setflag tlr:tran_flags,correction
+						call siaf:SVALnivel_sup
+						if ( retval < 0 )
+							RETURN (-2)
+							break
+						end if
+						resetflag tlr:tran_flags,correction
+						
+						// Pido supervision, seteo codigo de procesamiento,dia y hora viaje, flag de cancelacion y STAN
+						CALL post:SVAL99175
+						if ( retval < 0 )
+							resetflag tlr:tran_flags,correction
+							varl_retval = -2
+							break
+						end if
+
+                        //cgw:fuerza estos campos utilizados en reemplazo cheques robados para cancelacion reemplazo s/comp.
+                        siaf:moneda = post:cheqrech_moneda 
+                        post:Total_importe = post:imp_aux
+
+						;Se instancian campos para el jnl/envio
+
+
+   						drv:INDhcomm_rtn = OFB:post:SENDreempChk
+						drv:INDspc_rtn[1] = OFB:post:RCVErecep_reemp_Chk
+   						drv:INDscr = SCR:post:SCRN99175
+   						tlr:INDdcol_scrn[0] = SCR:post:SCRN99175
+   						drv:INDjnl_rtn = OFB:post:JNL99170					
+ 	   					drv:INDcur_tran   = LST:post:TRAN99175
+    					
+
+						/**********************************************************************/
+						/*                        FIN TX DE REEMPLAZO                         */
+						/**********************************************************************/
+					
+					ELSE
+						IF ( varl_codigo == 99430 || varl_codigo == 99460 || varl_codigo == 99461 || varl_codigo == 99453)
+								CDS EXTRACT DSC:tlr:jnl_context2 \
+								giros:codigo_procesamiento \
+								siaf:codigo_siaf into giros:cod_tran_canc \
+								giros:hora_viaje \
+								giros:dia_viaje \
+								post:PresNro into giros:PresNro_canc \
+								siaf:nombre_transac into nombre_tran_canc \
+								post:climed_tipo \
+								post:climed_numero \
+								post:anticipo_CM \
+								siaf:importe \
+								post:consumo_operacion \
+								post:financiado_operacion \
+								post:datos_msg105 \
+								post:datos_msg106 \
+								post:datos_msg107 \
+								post:datos_msg108 \
+								post:datos_msg110 \
+								post:datos_msg111 \
+								siaf:moneda \
+								tes:clearing
+
+							FYIMSG drv:fyimsg_list,\
+							"Proceso de cancelacion de operaciones desde el Journal  ... "
+							
+							if (varl_codigo == 99430 )
+								let siaf:codigo_siaf = 99435
+								giros:codigo_procesamiento = 997033
+							endif
+							/* AUT-652 Se elimina tratamiento de Reversa por Journal
+							if (varl_codigo == 99453) then
+								let siaf:codigo_siaf = 99454
+								//giros:codigo_procesamiento = 997031
+								giros:codigo_procesamiento = 997033
+							endif*/
+							
+							if (varl_codigo == 99460)
+								//AUT 2171-PS10367
+								CDS EXTRACT DSC:tlr:jnl_context2 \
+								post:mon_cod \
+								post:cod_banco \
+								post:cuenta \
+								post:nro_cheque 
+								if (post:mon_cod != "" && post:cod_banco != "" && post:cuenta != "" && post:nro_cheque != "") then
+									CALL post:MISCcargo_valor(post:mon_cod,post:cod_banco,post:cuenta,post:nro_cheque,0,0)
+									CALL tes:MISCbusco_cheque_rev
+									if (retval != 0) then
+                            			return (-1)
+            						end if
+            					endif
+								//FIN AUT 2171-PS10367
+								let siaf:codigo_siaf = 99465
+								giros:codigo_procesamiento = 997041
+							endif
+							/* AUT-652 Se elimina tratamiento de Reversa por Journal
+							if (varl_codigo == 99461) then
+								let siaf:codigo_siaf = 99462
+								giros:codigo_procesamiento = 997041
+							endif*/	
+							
+							call siaf:PRESfecha_hora
+							if (retval != 0 )
+								varl_retval = -2
+								break
+							end if
+
+							;PS 9809
+							if (siaf:codigo_siaf == 99435) then
+							    if (TESTFLAG (post:MPcheque,MPpago_cheque) ) then
+							    	CALL tes:CDSverif_cheque_adel
+								if (retval != 0 )
+									varl_retval = -2
+									break
+								end if
+							     endif
+							endif
+							siaf:hora = common:time_of_day
+							siaf:dia  = common:system_date	
+	
+							setflag tlr:tran_flags,correction
+							call siaf:SVALnivel_sup
+							if ( retval < 0 )
+								resetflag tlr:tran_flags,correction
+								varl_retval = -2
+								break
+							end if
+
+							resetflag tlr:tran_flags,correction
+							
+							call hcomm:COMM_stat_init
+							if (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+								varl_retval = -2
+								break
+							end if
+
+							call post:CDSobtiene_secuen("STAN")
+							giros:hora_viaje = siaf:hora
+							giros:dia_viaje = siaf:fecha
+							setflag giros:tran_send_mode,cancelacion
+
+							;0200
+							resetflag tlr:controla_firma,cancelacion
+	
+							FYIMSG drv:fyimsg_list,\
+							"Enviando mensaje de cancelacion correspondiente a Cliente Medio  ... "
+
+							;Se instancian campos para el jnl/envio
+							
+							if (siaf:codigo_siaf == 99435)
+								;Se instancian campos para el jnl/envio
+	   							drv:INDhcomm_rtn  = OFB:post:SENDclimed_canc_con
+								drv:INDspc_rtn[1] = OFB:post:RCVEclimed_canc_con
+	   							drv:INDscr = SCR:post:SCRN99435
+	   							tlr:INDdcol_scrn[0] = SCR:post:SCRN99435
+	   							drv:INDjnl_rtn = OFB:post:JNL99435
+	    							drv:INDcur_tran   = LST:post:TRAN99435
+	    							
+							endif
+							if (siaf:codigo_siaf == 99465)
+								;Se instancian campos para el jnl/envio
+								drv:INDscr = SCR:post:SCRN99465
+								tlr:INDdcol_scrn[0] = SCR:post:SCRN99465
+		    						drv:INDhcomm_rtn  = OFB:post:SENDclimed_ingr_fact
+		    						drv:INDspc_rtn[1] = OFB:post:RCVEclimed_ifact_jnl
+		    						drv:INDcur_tran   = LST:post:TRAN99465
+		    						drv:INDjnl_rtn    = OFB:post:JNL99465
+							end if
+							/* AUT-652 Se elimina tratamiento de Reversa por Journal
+							if (siaf:codigo_siaf == 99462)
+								;Se instancian campos para el jnl/envio
+								drv:INDscr = SCR:post:SCRN99462
+								tlr:INDdcol_scrn[0] = SCR:post:SCRN99462
+		    						drv:INDhcomm_rtn  = OFB:post:SENDclimed_ingr_fact
+		    						drv:INDspc_rtn[1] = OFB:post:RCVEclimed_ifact_jnl
+		    						drv:INDcur_tran   = LST:post:TRAN99462
+		    						drv:INDjnl_rtn    = OFB:post:JNL99462
+							end if*/
+							/* AUT-652 Se elimina tratamiento de Reversa por Journal
+							if (siaf:codigo_siaf == 99454)
+								;Se instancian campos para el jnl/envio
+	   							//drv:INDhcomm_rtn  = OFB:post:SENDclimed_canc_ant
+								//drv:INDspc_rtn[1] = OFB:post:RCVEclimed_jnl_ant
+								drv:INDhcomm_rtn  = OFB:post:SENDclimed_canc_con
+								drv:INDspc_rtn[1] = OFB:post:RCVEclimed_canc_con
+	   							drv:INDscr = SCR:post:SCRN99454
+	   							tlr:INDdcol_scrn[0] = SCR:post:SCRN99454
+	   							drv:INDjnl_rtn = OFB:post:JNL99454
+	    							drv:INDcur_tran   = LST:post:TRAN99454
+							end if*/
+
+					END IF
+					
+					END IF
+
+				ELSE
+					if ( varl_flia_tran == "PCL" && ( varl_codigo == 99410 || varl_codigo == 99470 || ( varl_codigo == 99099 &&  (varl_operacion || varl_modalidad ) && varl_moneda == "02" ) ) )
+
+						;Por Excepcion de Cliente Medio
+						CDS EXTRACT DSC:tlr:jnl_context2 \
+						giros:codigo_procesamiento \
+						siaf:codigo_siaf into giros:cod_tran_canc \
+						giros:hora_viaje \
+						giros:dia_viaje \
+						post:PresNro into giros:PresNro_canc \
+						siaf:nombre_transac into nombre_tran_canc \
+						post:climed_tipo \
+						post:climed_numero \
+						post:Imp_FactDif \
+						post:excepCM_id \
+						post:anticipo_CM \
+						post:consumo_operacion \
+						post:financiado_operacion \
+						post:datos_msg095 \
+						post:datos_msg096 \
+						post:datos_msg097 \
+						post:datos_msg098 \
+						post:datos_msg099 \
+						post:datos_msg105 \
+						post:datos_msg106 \
+						post:datos_msg107 \
+						post:datos_msg108 \
+						post:datos_msg110 \
+						post:datos_msg111 \
+						post:adt_oc_nro \
+						post:adt_oc_dias_fact \
+						post:adt_oc_desc \
+						post:consumo_OC \
+						siaf:moneda \
+						tes:clearing
+
+						if (varl_codigo == 99099 )
+							CDS EXTRACT DSC:tlr:jnl_context2 \
+							post:jnl_interes_diferido \
+							post:iva_Porcentaje \
+							siaf:moneda \
+							post:DescripMedPag \
+							post:Total_importe \
+							post:cod_banco \
+							post:cuenta \
+							post:nro_cheque \
+							post:fec_e \
+							post:fec_d
+
+						end if
+						FYIMSG drv:fyimsg_list,\
+						"Proceso de cancelacion de operaciones desde el Journal  ... "
+
+						if (varl_codigo == 99410)
+							fprint post:Cheques,"%03.3s",""
+							let siaf:codigo_siaf = 99415
+							giros:codigo_procesamiento = 997027
+						else
+							if (varl_codigo == 99099)
+								//AUT-2171 PS 10367 - SE DEBE VERIFICAR (ANTES DE MANDAR EL VIAJE) SI PAGO CON CHEQUE Y VER EL ESTADO DEL MISMO
+								CALL post:MISCcargo_valor(siaf:moneda,post:cod_banco,post:cuenta,post:nro_cheque,0,0)
+								CALL tes:MISCbusco_cheque_rev
+								if (retval != 0) then
+                            		return (-1)
+            					end if
+								if (varl_operacion)
+									let siaf:codigo_siaf = 99170
+									giros:codigo_procesamiento = 997041
+								else
+									let siaf:codigo_siaf = 99170
+									if (post:ModalidadAT) then
+										giros:codigo_procesamiento = 997033
+									else
+										giros:codigo_procesamiento = 997031
+									endif
+								end if
+							else
+								let siaf:codigo_siaf = 99475
+								//Nueva Cod Proc para Cancelacion Itemizada de COmpras V40.00
+								giros:codigo_procesamiento = 997072
+							end if
+						end if
+						
+						call siaf:PRESfecha_hora
+						if ( retval != 0 )
+							varl_retval = -2
+							break
+						end if
+						siaf:hora = common:time_of_day
+						siaf:dia  = common:system_date
+
+						setflag tlr:tran_flags,correction
+						call siaf:SVALnivel_sup
+						if ( retval < 0 )
+							resetflag tlr:tran_flags,correction
+							varl_retval = -2
+							break
+						end if
+						resetflag tlr:tran_flags,correction
+	
+						call hcomm:COMM_stat_init
+						if (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+							varl_retval = -2
+							break
+						end if
+
+						call post:CDSobtiene_secuen("STAN")
+						giros:hora_viaje = siaf:hora
+						giros:dia_viaje = siaf:fecha
+						setflag giros:tran_send_mode,cancelacion
+
+						;0200
+						resetflag tlr:controla_firma,cancelacion
+	
+						FYIMSG drv:fyimsg_list,\
+						"Enviando mensaje de cancelacion correspondiente a Cliente Medio  ... "
+
+						post:consulta_pagodif = 0
+
+						if (siaf:codigo_siaf == 99415)
+							;Se instancian campos para el jnl/envio
+							drv:INDscr = SCR:post:SCRN99415
+							tlr:INDdcol_scrn[0] = SCR:post:SCRN99415
+	    						drv:INDhcomm_rtn  = OFB:post:SENDclimed_canc_cheq
+	    						//Se hace el rcve en una nueva rutina
+	    						drv:INDspc_rtn[1] = OFB:post:RCVEclimed_canc_jnl
+	    						drv:INDcur_tran   = LST:post:TRAN99415
+	    						drv:INDjnl_rtn    = OFB:post:JNL99415
+						else
+								if (varl_codigo == 99099 )
+									drv:INDscr = SCR:post:SCRN99170
+									tlr:INDdcol_scrn[0] = SCR:post:SCRN99170
+		    							drv:INDcur_tran   = LST:post:TRAN99170
+		    							drv:INDjnl_rtn    = OFB:post:JNL99170
+
+									if (varl_operacion)
+			    							drv:INDhcomm_rtn  = \
+										OFB:post:SENDclimed_ingr_fact
+			    							
+										drv:INDspc_rtn[1] = \
+										OFB:post:RCVEclimed_ifact_jnl
+									else
+					   					if (post:ModalidadAT) then
+					   						drv:INDhcomm_rtn  = \
+											OFB:post:SENDclimed_canc_con
+											drv:INDspc_rtn[1] = \
+											OFB:post:RCVEclimed_canc_con
+										else
+											drv:INDhcomm_rtn  = \
+											OFB:post:SENDclimed_canc_ant
+											drv:INDspc_rtn[1] = \
+											OFB:post:RCVEclimed_jnl_ant
+										endif
+									end if
+								else
+									;Se instancian campos para el jnl/envio
+									drv:INDscr = SCR:post:SCRN99475
+									tlr:INDdcol_scrn[0] = SCR:post:SCRN99475
+		    							drv:INDhcomm_rtn  = OFB:post:SENDclimed_item_comp
+		    							drv:INDspc_rtn[1] = OFB:post:RCVEclimed_icomp_jnl
+		    							drv:INDcur_tran   = LST:post:TRAN99475
+		    							drv:INDjnl_rtn    = OFB:post:JNL99475
+			    						
+								end if
+						end if
+
+					else
+						// *****************************************
+						// *      TRANSACCIONES DE PAGO FACIL      *
+						// *****************************************
+						if (varl_flia_tran == "PF ")
+							
+							siaf:hora = common:time_of_day
+							siaf:dia  = common:system_date
+
+							CDS EXTRACT DSC:tlr:jnl_context2 \
+								siaf:adt_tran_fliatran 		\
+								tlr:jnl_date into post:jnl_date_ori \
+								tlr:jnl_time into post:jnl_time_ori \
+								post:sf1_nro_secuencia \
+								tlr:jnl_sequence \
+								post:adt_tran_sf1_codigo post:adt_tran_sf1_ver
+							giros:seq_giros_cancel = tlr:jnl_sequence
+
+							setflag tlr:tran_flags,correction
+							call siaf:SVALnivel_sup
+							if ( retval < 0 )
+								resetflag tlr:tran_flags,correction
+								varl_retval = -2
+								break
+							end if
+							drv:INDscr = SCR:post:SCRNsf1
+							tlr:INDdcol_scrn[0] = SCR:post:SCRNsf1
+							drv:INDhcomm_rtn  = varl_host_sndrt
+							drv:INDspc_rtn[1] = varl_host_rcvrt
+							drv:INDcur_tran   = LST:post:TRANsf1
+
+							; Para que no journalice
+							clearfield drv:INDjnl_rtn
+							clearfield tlr:INDjnl_append
+
+;  				    	    setflag common:rt_flags,reentry_active
+							call post:MISCenv_cancel_iPlan
+							if (retval != 0 && retval != -3)
+								msgbox "EL MENSAJE DE REVERSA HA SIDO RECHAZADO. NO ES POSIBLE REVERSAR LA SESION",OFB_OK,"Error"
+								varl_retval = -2
+							else
+								IF (hcomm:tran_status == 100)
+									MSGBOX "LA TRANSACCION HA SIDO RECHAZADA. NO ES POSIBLE ANULAR LA SESION",0x00,"Error"
+									varl_retval = -2
+								ELSE
+									IF (hcomm:tran_status > 100)
+										post:reversaCaidaEnVuelo = true
+									endif
+									call op:CDSop_marca_reverso(SET_MARCA_REV)
+								END IF
+							endif
+							resetflag tlr:tran_flags,correction
+;  							resetflag common:rt_flags,reentry_active
+  							clearfield giros:seq_giros_cancel
+    					//endif
+						ELSE
+						
+
+					
+							IF (varl_flia_tran == "CSV" && varl_codigo == 6630)
+								//Pago On Site
+								CDS EXTRACT DSC:tlr:jnl_context2 \
+									post:benef_on_site into post:beneficio \
+									post:benef_cod_reimpre into post:beneficio_cod_reimp \
+									post:operativo_on_site into post:operativo 
+						
+								post:marca_masivo = "N"
+								post:beneficio_estado = ""
+		
+								FYIMSG drv:fyimsg_list,\
+								"Proceso de cancelacion de operaciones desde el Journal  ... "
+	
+								let siaf:codigo_siaf = 6632
+								call siaf:PRESfecha_hora
+									if ( retval != 0 )
+									varl_retval = -2
+									break
+								end if
+								siaf:hora = common:time_of_day
+								siaf:dia  = common:system_date
+		
+								setflag tlr:tran_flags,correction
+								call siaf:SVALnivel_sup
+								if ( retval < 0 )
+									resetflag tlr:tran_flags,correction
+									varl_retval = -2
+									break
+								end if
+								resetflag tlr:tran_flags,correction
+
+								SETFLAG giros:tran_send_mode,cancelacion
+								IF (!Testflag(tlr:controla_firma,cancelacion))
+									Call post:CDSobtiene_secuen("STAN")
+									giros:hora_viaje = siaf:hora
+									giros:dia_viaje = siaf:fecha					
+								END IF	
+								giros:cod_tran_canc = giros:codigo_procesamiento		
+								giros:codigo_procesamiento = 970011 
+		
+								;Se instancian campos para el jnl/envio
+								drv:INDscr = SCR:post:SCRNcanc_6630
+								tlr:INDdcol_scrn[0] = SCR:post:SCRNcanc_6630
+    							drv:INDhcomm_rtn  = OFB:post:SENDconsulta_simon
+    							drv:INDspc_rtn[1] = OFB:post:RCVEcanc_6630
+    							drv:INDcur_tran   = LST:post:TRANpago_on_site
+	    						drv:INDjnl_rtn    = OFB:post:JNLcanc_6630							
+								
+								
+				
+							END IF
+						END IF
+					end if
+				END IF
+			END IF
+
+			if (varl_flia_tran != "PF ")
+				
+				call tlr:JNLtran
+				
+				//MFM - BORRAR O ACTUALIZAR ESTADO DEL CHEQUE PESOS, EN LA JNL_CHEQUES, CON EL CUAL SE PAGO EL ADELANTO
+			
+				IF ((siaf:codigo_siaf == 99435 || siaf:codigo_siaf == 99465) && hcomm:tran_status == HOST_ACCEPTED) THEN
+					//RECUPERO EL NRO DE SECUENCIA DE LA CAPTURA DEL CHEQUE PESOS PARA INGRESAR A LA JNL_CHEQUES
+					CALL post:MISCrecupero_seq(aux_pres_nro)
+					if (retval == 0) then
+						CALL post:CDSjnl_chequesCANC
+					end if
+				ENDIF
+				
+				if (hcomm:tran_status == HOST_REJECTED )
+					msgbox "LA TRANSACCION DE CANCELACION HA SIDO RECHAZADA. NO ES POSIBLE REVERSAR LA SESION",OFB_OK,"Error"
+					varl_retval = -2
+				
+				elseif (hcomm:tran_status >= 100 && giros:flia_giro_fld != "I" )
+					varl_retval = -2
+				end if
+			endif
+			
+			
+			
+			resetflag  giros:tran_send_mode,cancelacion
+		end if
+	
+		CDS FINDNEXT DSC:tlr:jnl_context2 NOLOCK
+		if ( CDSRETVAL !=  0 )
+			if ( CDSRETVAL == -801 )
+				break
+			else
+				msgbox \
+				"Error al obtener los datos de la/s transaccion/es correspondientes al presupuesto a reversar.",OFB_OK,"Error"
+				varl_retval = -2
+				break
+			end if
+		end if
+	LOOP
+	
+	CDS ENDSELECT DSC:tlr:jnl_context2
+
+	;Restaurar valores
+	resetflag  giros:tran_send_mode,cancelacion
+	tlr:jnl_tran_flags  = aux_tran_flags
+	tlr:INDtran_name    = aux_tran_name
+	tlr:jnl_sequence    = aux_sequence
+	post:PresNro        = aux_pres_nro
+	siaf:codigo_siaf    = aux_codigo_siaf
+	siaf:nombre_transac = aux_desc_transac
+	post:CliRaz         = aux_cli_razon
+	post:DocInic        = aux_doc_ini
+	post:DocFin	    = aux_doc_fin
+	post:importe_sesion = aux_imp_sesion 
+	post:cant           = aux_cant_pag 
+	post:DocFiscal      = aux_docfiscal
+	siaf:importe 	    = aux_importe_trx
+
+	if ( varl_retval < 0 )
+		return -2
+	end if
+
+END SUB
+
+/*******/

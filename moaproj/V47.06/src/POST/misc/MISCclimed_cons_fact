@@ -1,0 +1,170 @@
+/****o* Clientes Medios/OFB:post:MISCclimed_cons_fact
+* NOMBRE
+*   OFB:post:MISCclimed_cons_fact
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCclimed_facturas
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354 
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCclimed_cons_fact(datos,long)
+
+	/****************************************************************************/
+	/* OBTENER LAS FACTURAS A PAGAR						    */
+	/* BITS : 105,106,107 							    */
+	/****************************************************************************/
+
+	local posicion          like post:cantidad
+	local longitud          like post:Longitud_105
+	local loc_retval        like lib:err_retval
+	local varl_importe      like common:csr_string
+	local varl_intereses    like common:csr_string
+	local varl_tasa         like common:csr_string
+	local varl_fecha        like common:csr_string
+	local varl_fact_id      like common:csr_string
+	local varl_neto         like importe_consumo
+	local varl_tipo_fact    like common:csr_string
+	local varl_real_fact    like common:csr_string
+	local varl_seq          like post:factura_nro
+	local varl_imp_rem	like post:importe_factura
+	local varl_tipo         like giros:EstadoGiro_fld
+	local l_tipo_comp       like giros:EstadoGiro_fld
+	local l_fecha_emision like post:fecha_vencimiento
+	local varl_tipo_comp       	like post:fact_tipo_comp
+	
+	fprint longitud,"%s",long
+	posicion = 0
+	loc_retval = -2
+
+	while ( posicion < longitud )
+
+		post:factura_nro = substr(datos,posicion,15)
+		posicion = posicion + 15
+
+		varl_tipo_fact = substr(datos,posicion,1)
+		posicion = posicion + 1
+
+		varl_real_fact = substr(datos,posicion,15)
+		posicion = posicion + 15
+
+		varl_importe = substr(datos,posicion,12)
+		if ( varl_importe == "000000000000")
+			post:importe_factura = 0.00
+		else
+			post:importe_factura = (varl_importe / 100 )
+		end if
+		posicion = posicion + 12
+
+		post:estado_factura = substr(datos,posicion,1)
+		posicion = posicion + 1
+
+		varl_fecha = substr(datos,posicion,8)
+		posicion = posicion + 8
+		move varl_fecha to post:fecha_vencimiento
+
+		varl_intereses = substr(datos,posicion,12)
+		if ( varl_importe == "000000000000")
+			post:factura_intereses = 0.00
+		else
+			post:factura_intereses = (varl_intereses / 100 )
+		end if
+		posicion = posicion + 12
+
+		varl_fact_id = substr(datos,posicion,15)
+		posicion = posicion + 15
+
+		varl_tasa = substr(datos,posicion,12)
+		if ( varl_tasa == "000000000000")
+			post:factura_iva = 0.00
+		else
+			post:factura_iva = (varl_tasa / 100 )
+		end if
+		posicion = posicion + 12
+
+		varl_importe = substr(datos,posicion,12)
+		if ( varl_importe == "000000000000")
+			post:importe_consumo = 0.00
+		else
+			post:importe_consumo = (varl_importe / 100 )
+		end if
+		posicion = posicion + 12
+		
+		if (varl_real_fact  != "000000000000000")
+			varl_seq = varl_real_fact
+		else
+			varl_seq = post:factura_nro
+		end if
+		
+		varl_importe = substr(datos,posicion,12)
+		if ( varl_importe == "000000000000")
+			varl_imp_rem = 0.00
+		else
+			varl_imp_rem = (varl_importe / 100 )
+		end if
+		posicion = posicion + 12
+
+		varl_tipo = substr(datos,posicion,1)
+		posicion = posicion + 1
+		
+		//50249 Fecha de Emision de Fact y NC
+		varl_fecha = substr(datos,posicion,8)
+		posicion = posicion + 8
+		move varl_fecha to l_fecha_emision
+		//50249
+		if (post:OperacionNC || post:ReporteNC) then
+			varl_tipo_comp = "CRE"  //notas de credito
+		else
+			if (siaf:codigo_siaf != "99460") then
+				varl_tipo_comp = "FAC" //FACTURAS
+			else
+				varl_tipo_comp = post:fact_tipo_comp //FACTURAS y NOTAS DE CREDITO para la TX de Cobranza
+			endif
+		endif
+
+		fprint climed_ult_item,"%015.15s%3.3s",post:factura_nro,varl_tipo_comp
+
+		if ( post:factura_nro.numchars != 0)
+			//50249
+		 	if (varl_tipo != "C")
+		 		l_tipo_comp = "F"
+		 	else
+		 		l_tipo_comp = "N"
+		 	endif
+				varl_neto = importe_factura - importe_consumo
+				//50249
+				fprint post:csr_string_250,\
+				"%1.1s%015.15s %16.16e %e %16.16e                         %16.16e %1.1s %015.15s %15.15s ", \
+				l_tipo_comp,varl_seq,post:importe_factura,post:fecha_vencimiento,varl_neto,\
+				post:factura_intereses,varl_tipo_fact,varl_real_fact,post:factura_nro
+				fprint post:csr_string_250,"%s%15.15s%16.16e %16.16e %1.1s%e",\
+				post:csr_string_250,varl_fact_id,varl_imp_rem,importe_consumo,\
+				varl_tipo,l_fecha_emision
+			
+	   			call csr:f_saaddpl(DSC:facturas_cliente,post:csr_string_250)
+				if (retval < 0 )
+					loc_retval = -2
+					msgbox \
+					"ERROR AL AGREGAR ITEMS AL PICKLIST.",OFB_OK,"Atencion"
+					break
+				else
+					loc_retval = 0
+				end if
+		end if
+
+	end while
+
+	return loc_retval
+
+END SUB
+
+/*******/

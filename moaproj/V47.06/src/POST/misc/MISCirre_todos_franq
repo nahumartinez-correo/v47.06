@@ -1,0 +1,102 @@
+/****o* Reportes/OFB:post:MISCirre_todos_franq
+* NOMBRE
+*   OFB:post:MISCirre_todos_franq
+* DESCRIPCION
+*   Reporte Irregularidades - Todas Las Irregularidades.
+*   Motivo: Fallos por Uso de Franqueadora Rapida.
+*   Realiza el query de la tabla control_franq segun la fecha y/o operador seleccionado, y ordenada por:
+*   Operador, fecha, hora y secuencia.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No hay Fallos a reportar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCirre_todos_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirre_todos_franq /*Todas las Irregularidades Franqueadoras*/
+    LOCAL loc_modif  LIKE post:cant_barras
+    LOCAL oper_irre  LIKE tlr:jnl_operator
+
+    //cgw:NI50276 - Se realiza el query teniendo en cuenta la clave alternativa "frqOpFHS" que ordena por:
+    //Operador, fecha, hora y secuencia.
+    IF (post:opcion_irregula == "SUCURSAL") THEN
+    	//Por Sucursal
+        CDS SELECT FROM DSC:control_franq_tbl BECOMES DSC:control_franq_ctx WHERE \
+            (post:franq_fecha >= FLD:adt_umov_fecha_ini && \
+             post:franq_fecha <= FLD:adt_umov_fecha_fin && \
+             (post:franq_marca_fallo == "X" || \
+              post:franq_marca_fallo == "C" || \
+              post:franq_marca_fallo == "A" || \
+              post:franq_marca_fallo == "R")) \
+            ASCENDING SORT "frqOpFHS"
+
+            //ASCENDING SORT "op_franq"
+    ELSE
+        //Por Operador
+        CDS SELECT FROM DSC:control_franq_tbl BECOMES DSC:control_franq_ctx WHERE \
+            (post:franq_operador == adt_umev_op && \
+             post:franq_fecha >= FLD:adt_umov_fecha_ini && \
+             post:franq_fecha <= FLD:adt_umov_fecha_fin && \
+             (post:franq_marca_fallo == "X" || \
+              post:franq_marca_fallo == "C" || \
+              post:franq_marca_fallo == "A" || \
+              post:franq_marca_fallo == "R")) \
+            ASCENDING SORT "frqOpFHS"
+
+            //ASCENDING SORT "op_franq"
+    END IF 	
+    CDS FINDFIRST DSC:control_franq_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+
+    IF (post:irregu_esp == "S" && lib:err_retval == 0) THEN
+        //cgw:NI50276: imprime titulo de separacion de Irregularidades especiales,
+        //si es la primera irregularidad especial a reportar. 
+        CALL post:MISCtitulo_irreg_esp
+        CLEARFIELD post:irregu_esp //limpia variable de control de titulo de irregularidades especiales.
+    END IF
+
+
+    //cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+    CDS FINDAGAIN DSC:control_franq_ctx NOLOCK
+    lib:err_retval = CDSRETVAL
+
+    oper_irre = -1 //cgw:NI50276 - Intancia variable utilizada para el corte de control por operador.
+
+    loc_modif = 0
+    WHILE (lib:err_retval == 0)    
+        CDS EXTRACT DSC:control_franq_ctx ALL
+
+        //cgw:NI50276 - Corte de Control por Operador.
+	    //El reporte de todas las irregularidades, solo imprime los operadores con irregularidades en el
+	    //rango fecha de selección, a diferecia del reporte del motivo irregularidad particular por sucursal.
+	    //que imprime todos los operadores que operaron en el rango seleccionado.
+        IF (oper_irre != post:franq_operador) THEN
+            oper_irre = post:franq_operador
+            //cgw:NI50276 - Imprime Operador.
+            post:operator_irre = oper_irre
+            CALL post:MISCencab_oper_irre
+        END IF
+
+        CALL post:MISCwrite_irre_franq
+	    loc_modif = 1        
+        CDS FINDNEXT DSC:control_franq_ctx NOLOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    IF (loc_modif == 0) THEN
+    	CDS ENDSELECT DSC:control_franq_ctx    	
+	    RETURN (-2)
+	  ELSE
+		post:flag_irregularidades = "S"
+    END IF
+
+    CDS ENDSELECT DSC:control_franq_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,234 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70160
+* NOMBRE
+*   OFB:giros:SVAL70160
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70160
+    LOCAL formulario_aux LIKE post:PreDForFis
+    LOCAL importe_aux LIKE siaf:importe
+    LOCAL afec_efvo_aux LIKE siaf:adt_tran_afec_efvo
+    LOCAL tran_status_aux LIKE hcomm:tran_status
+    LOCAL enSesion_aux LIKE post:enSesion
+
+    //
+    if (post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) then
+	// FGB 8.2.2001: Cuando el cliente presenta titulo, no se le cobra el servicio, por lo tanto, no se debe
+	// realizar la validacion por Monto menor al servicio. 
+	if (!testflag(giros:flags_back,tiene_titulo)) then
+	    if (((ImporteNeto - imp_servicio_fld) < 0)) then
+    		msgbox "EL MONTO DEL GIRO NO PUEDE SER INFERIOR A LA TARIFA" OFB_OK "Error"
+		ungetkey RT_ESC
+		return -2
+	    endif
+	end if
+	// FGB 8.2.2001 Fin 
+	popup giros:SCRNemis2,PRESemis2 PCOLemis2
+	if (lastkey == RT_ESC) then
+	    return (-2)
+	end if
+	popup giros:SCRNemis1,PRESemis1 PCOLemis1
+	if (lastkey == RT_ESC) then
+	    return (-2)
+	end if
+
+	call MISCenvio_post_tel
+ 	if (retval < 0) then
+	    return -2
+	else
+	    IF (testflag(flags_back,vencido)) then
+		//Si el giro esta vencido no se puede hacer la tx
+		MSGBOX "DEBE REALIZAR LA REVALIDA PRIMERO",0x00,"Error"
+		ungetkey RT_ESC
+		return (-2)
+	    ELSE
+		msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+		if (retval == 7) then
+		    ungetkey RT_ESC
+		    return (-2)
+		end if
+	    END IF			
+	end if
+	/* Si la transaccion se cobra por porcentaje, esta SVAL deja la formula en el 
+	   campo formuCalc para ser impreso en la factura*/
+	call SVALgralFormCalGiro		
+
+    end if
+    //
+    consulta = 0
+    siaf:siaf_status = HOST_ACCEPTED
+    //
+    /*mando mensaje y hago todo antes de la ventana*/
+    if (testflag(flags_back,tiene_titulo)) then
+    	tiene_titulo = 1
+    else
+    	tiene_titulo = 0
+    end if
+    //
+    //Reingenieria
+    //if (post:estado_presu == 4 || post:estado_presu == 1) then
+    if (post:estado_presu < 4) then	
+	if (siaf:codigo_siaf == 70153 || siaf:codigo_siaf == 70161) then
+	    call MISCsupervision
+	    if (retval < 0) then
+		return (-2)
+	    end if
+	end if
+    end if
+
+    if (post:estado_presu == 4 || post:estado_presu == 1) then
+	//
+
+    	/* SE SACA LA REVALIDA AUTOMATICA
+
+    	if (testflag(flags_back,vencido)) then
+    		setflag flags_back,es_revalida
+    		siaf:codigo_siaf_aux = siaf:codigo_siaf
+    		siaf:codigo_siaf = siaf:codigo_rev
+    		call giros:PRESgral_giro
+			//
+    		call giros:MISCrevalida_autom(siaf:codigo_siaf_aux,siaf:codigo_siaf)
+			//
+    	end if*/
+    	
+    	//
+	IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+	    //
+	    clave_hdr_giros  = 0
+	    giros:codigo_procesamiento = siaf:codigo_proc
+	    giros:hora_viaje = common:time_of_day
+	    giros:dia_viaje  = common:system_date
+	    Call post:CDSobtiene_secuen("STAN")
+	    //
+	    post:ImporteConIva = imp_servicio_fld
+	    post:ImporteSinIva = imp_serv_siniva
+	    //
+	    siaf:importe = post:ImporteConIva
+	    //
+	    siaf:importe2 = ImporteNeto /* para que acumule el monto reembolsado en los totales */
+
+
+	    // parece que hay veces que el campo post:enSesion queda sucio
+	    // y esto hace que la tx quede journalizado con tlr:jnl_status = 002 (MEMO)
+	    enSesion_aux = post:enSesion
+	    clearfield post:enSesion
+
+	    //
+	    post:ctrol_ult_tt = "S"
+
+	    if (post:estado_presu == 1) then
+	    	//cgw: En teclas rapidas, arma PresuDet para las sesiones con posventas de giros.
+	    	Call post:MISCgrabo_PresuDet_g
+	    end if
+
+	    call tlr:JNLtran
+	    post:ctrol_ult_tt = ""
+
+	    post:enSesion = enSesion_aux
+	    //
+	    IF (hcomm:tran_status != HOST_ACCEPTED) then
+				call MISCanulo_transac("ANULA_REVALIDA")
+	    ELSE
+		//leyenda = "REEMBOLSADO"
+		//call giros:MISCimpre_comprob
+			if (siaf:codigo_siaf == "70152" || siaf:codigo_siaf == "70153")
+				 //PAGO DE REEMBOLSOS TELEGRAFICOS no debe imprimir OP
+			else
+					post:tira_auditora = "N"
+					PRINTDOC OFB:giros:PRT_OP_PagoGP,docprt,"(L)IMPRIMIENDO ORDEN DE PAGO"				
+					MSGBOX "¿SE IMPRIMIO CORRECTAMENTE LA ORDEN DE PAGO?", OFB_YESNO1, "ATENCION"
+					if (RETVAL != 6) THEN //NO
+						post:reimpresion = "S"
+						PRINTDOC OFB:giros:PRT_OP_PagoGP,docprt,"(L)IMPRIMIENDO ORDEN DE PAGO"
+						post:reimpresion = "N"				
+						MSGBOX "¿SE IMPRIMIO CORRECTAMENTE LA ORDEN DE PAGO?", OFB_YESNO1, "ATENCION"
+						IF (RETVAL != 6) THEN //NO
+							MSGBOX "DEBERA REIMPRIMIRLA DESDE EL JOURNAL.",OFB_OK,"ATENCION"
+						ENDIF
+					endif
+				endif
+		/*Se imprime luego de generar la PresuDet, por eso se guarda el tran_status*/
+		tran_status_aux = hcomm:tran_status
+
+		/* Llamo a la MISCTotalTransac solo si la transacción fue ACEPTADA. Hernán 21/12/2000*/
+
+		/*CSZ - resguardo el importe de la tx y el formulario fiscal y
+		el afecta_efectrio*/
+		formulario_aux = post:PreDForFis
+		importe_aux = siaf:importe
+		afec_efvo_aux = siaf:adt_tran_afec_efvo
+
+		/*CSZ - Primero se llama a la rutina con el monto del giro emitido, el 
+		formulario fiscal vacio y el afecta efectivo "-" porque se resta*/
+		CLEARFIELD post:PreDForFis
+		siaf:importe = ImporteNeto
+		siaf:adt_tran_afec_efvo = "-"
+		CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+		/*CSZ - Luego se llama a la rutina con el monto del servicio(comision,
+		tasa y opcionales) que se cobra por la emision y el formulario fiscal
+		asociado al servicio*/
+		siaf:adt_tran_afec_efvo = afec_efvo_aux
+		siaf:importe = imp_servicio_fld
+		post:PreDForFis = formulario_aux			  
+		CALL post:MISCTotalTransac(siaf:codigo_siaf)
+
+		/*Restauro el importe de la tx*/
+		siaf:importe = importe_aux
+
+	    END IF
+	ELSE
+	    call MISCanulo_transac("NONE")
+	END IF
+    	/*limpio campos para que la JNLtran no ejecute nada dos veces*/
+    	CLEARFIELD drv:INDhcomm_rtn
+    	CLEARFIELD drv:INDspc_rtn[1]
+    	CLEARFIELD drv:INDcur_tran
+    	CLEARFIELD drv:INDjnl_rtn
+    	CLEARFIELD drv:INDspc_rtn[0]
+    end if
+    //
+    post:ImporteConIva = imp_servicio_fld + imp_revalida_fld
+    post:ImporteSinIva = imp_serv_siniva  + imp_sin_iva_rev
+    //
+    siaf:importe = post:ImporteConIva - ImporteNeto
+    //
+    siaf:ImporteConIva = post:ImporteConIva
+    siaf:ImporteSinIva = post:ImporteSinIva
+    //
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+	post:PreDForFis = post:adt_serv_formfiscal
+	call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+    end if
+    //
+    CALL post:MISCGrabaDetalleTrn
+    CALL post:MISCgrabo_sinsesion
+
+    IF (post:estado_presu == 4 || post:estado_presu == 1) THEN
+	IF (siaf:siaf_status == HOST_ACCEPTED) THEN
+	    IF (tran_status_aux == HOST_ACCEPTED) THEN
+			if (siaf:codigo_siaf == "70152" || siaf:codigo_siaf == "70153")
+				 //PAGO DE REEMBOLSOS TELEGRAFICOS  debe imprimir  Comprobante
+					leyenda = "REEMBOLSADO"
+					call giros:MISCimpre_comprob
+				endif
+	    END IF
+	END IF
+    END IF
+
+END SUB
+
+/*******/

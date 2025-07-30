@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:post:SENDdescuento
+* NOMBRE
+*   OFB:post:SENDdescuento
+* DESCRIPCION
+*   Rutina de validación global del abm de descuentos
+* ENTRADAS
+* SALIDAS
+* IMPACTOS
+* REFERENCIADO POR
+*   listtran post:TRANabm_descuento
+* DOCUMENTACION
+*   SC 50187
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDdescuento
+	local l_cant_total like siaf:i
+	local l_retval like lib:err_retval
+
+	IF (TESTFLAG(admin:mode_flags,update)) || (TESTFLAG(admin:mode_flags,delete)) then
+        if (post:estado_presu != 1) then
+            ERRMSG LST:common:errmsg_list,"MODIFICACIONES DE TABLAS NO DISPONIBLES DENTRO DE UNA SESION."
+            return (-2)
+        end if
+	end if
+    IF (TESTFLAG(admin:mode_flags,update) || TESTFLAG(admin:mode_flags,delete)) THEN
+	    if (TESTFLAG(admin:mode_flags,update))
+		    MSGBOX "ESTA USTED SEGURO QUE DESEA ACTUALIZAR LA INFORMACION INGRESADA?",OFB_YESNO,"Grabar Descuento"
+		    l_retval = RETVAL
+		else
+		    if (TESTFLAG(admin:mode_flags,delete))
+			    MSGBOX "ESTA USTED SEGURO QUE DESEA ELIMINAR EL DESCUENTO INGRESAD0? (Esto eliminará el descuento completo junto con su detalle)",OFB_YESNO,"Eliminar Descuento"
+			    l_retval = RETVAL
+			endif
+		endif
+
+ 		if (l_retval == OFB_IDYES)
+			; Cursor busy.
+			init 52,2
+			l_cant_total = adt_descto_cantSerSl + 1
+
+			; Atomizo la actualizacion.
+			CDS BEGINWORK
+
+			; Grabo cabecera de la promoción.
+		    if (TESTFLAG(admin:mode_flags,update)) THEN
+				; Barra de progreso.
+				call post:MISCinicProgressBar("GRABANDO CABECERA    - ", l_cant_total)
+		    	call CDSdesctoCabe_save
+		    	l_retval = retval
+			else
+				call post:MISCresetPickDescto
+		    	call post:CDSdesctoCabDelete
+		    	l_retval = retval
+		    endif
+
+	    	if (l_retval >= 0)
+				; Grabo los servicios asociados al descuento.
+		    	call CDSdesctoServ_save
+		    	l_retval = retval
+	    	endif
+	    	
+	    	if (l_retval < 0)
+				CDS ROLLBACKWORK
+			    if (TESTFLAG(admin:mode_flags,update)) THEN
+					errmsg LST:common:errmsg_list,"LA GRABACION HA FALLADO!!!"
+				else
+					errmsg LST:common:errmsg_list,"LA ELIMINACION HA FALLADO!!!"
+				endif
+			else
+			    CDS COMMITWORK
+				call post:ABMdescuento_clear
+				call post:ABMdescuento_refresh
+				call post:MISCresetPickDescto
+	    	endif
+
+			; Barra de progreso.
+			call post:MISCfinProgressBar
+			FYIMSG LST:common:fyimsg_list, ""
+
+			; Cursor normal.
+			init 53,3
+
+			; Luego de grabar vuelvo a la primer solapa.
+			drv:next_screen = 1
+			drv:next_tab = 0
+			drv:index = 1
+			drv:skip_seq_scr = 1
+			RESETFLAG admin:mode_flags,update
+			RESETFLAG admin:mode_flags,delete
+			;Armo el picklist de descuentos con los nuevos cambios.
+			call post:MISCArmo_PickDescto
+			CALL post:MISCset_sidebar(0, 0, 1, 0)
+			clearfield adt_descto_cantSerSl
+		else
+			RESETFLAG admin:mode_flags,update
+			RESETFLAG admin:mode_flags,delete
+			return -2
+		endif
+	else
+		IF (TESTFLAG(admin:mode_flags,imprimir)) THEN
+			RESETFLAG admin:mode_flags,imprimir
+			admin:tabla = dsc:adt_descto_tbl
+			CALL post:MISCdumptable
+			CALL post:CDSdumptable
+			admin:tabla = dsc:adt_descto_Serv_tbl
+			CALL post:MISCdumptable
+			CALL post:CDSdumptable
+			RETURN (-2)
+		END IF
+    ENDIF
+END SUB
+
+/*******/

@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:op:TRANlog_out
+* NOMBRE
+*   OFB:op:TRANlog_out
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   NI 50591-TRASLADO DE OPERADORES JEFE DE OFICINA
+* SOURCE
+*/
+#include "optran.h"
+
+/* Inicio Corrigo journalizacion de RESET SEND a MEMO */
+SUB op:TRANlog_out
+
+    local aux like TipoEntero
+    local aux2 like TipoIndirecto
+    LOCAL Mode LIKE post:checkeo
+    LOCAL Reserved LIKE post:checkeo
+
+/*
+#ifdef MENSAJES_CIERRE
+        LOCAL Origen LIKE common:ExecString
+        LOCAL Destino LIKE common:ExecString
+        LOCAL LineaComando LIKE common:ExecString
+        LOCAL FechaGuardo like common:system_date
+#endif
+*/
+    CALL  OFB:winhelp:end
+    IF (RETVAL != 0)
+        RETURN
+    END IF
+    CALL  CSR:f_orsklock
+    if (testflag(drv:mode_flags,desktop_mode))
+        FYIMSG drv:fyimsg_list,DSC:op:doing_logout
+    else
+        FYIMSG common:fyimsg_list,DSC:op:doing_logout
+    END IF
+    MOVE lib:branch_id   TO op:adt_branch_id
+    MOVE common:login_id TO op:adt_login_id
+    CALL  OFB:op:CDSadt_op_load
+
+    IF (TESTFLAG (op:op_state_flags,open_day)) THEN
+        SETFLAG op:adt_operator_flags,open_day
+    ELSE
+        RESETFLAG op:adt_operator_flags,open_day
+    END IF
+
+    CLEARFIELD op:adt_node_id
+    IF (lib:stat_host_mode == DSC:hcomm:host_upmode) THEN
+        MOVE DSC:op:x_mark to op:adt_host_mode
+    ELSE
+        MOVE DSC:op:b_mark to op:adt_host_mode
+    END IF
+
+    CALL  OFB:op:CDSadt_op_save
+		 //50591 - Saca la marca de Acceso por ICONO Especial para Traslado de operadores por JEFE DE OFICINA
+		CALL op:CDSadt_acc_save
+		
+	//journalizacion log out
+    hcomm:tran_status = MEMO
+	let tlr:INDdcol_scrn[0] = 0
+	let FLD:tlr:INDjnl_append = OFB:op:JNLlogs_exitosos
+	let siaf:codigo_siaf = 98050
+	call tlr:JNLout_of_tran
+
+    //cgw: Adecuacion para RTJAVA. Se comenta el armado de este logout de aplicacion (cierres.log), debido a que no se utiliza.
+ 	/* Copio el log que dejo para cierre del dia */
+//  #ifdef MENSAJES_CIERRE
+//     if (op:op_sup_auth == "X" || op:op_tesoro == "S") then
+//        fprint Origen "C:\\te mp\\%s.out",\
+//        common:window_node
+//        fprint Destino "C:\\te mp\\%-s%5.5s%-8.8d%4.4d.out",\
+//        common:window_node,common:sucursal_activa,common:system_date,substr(common:time_of_day,0,4)
+//        FPRINT LineaComando "cmd /c copy %-s %-s",Origen,Destino
+//        CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+
+          /*
+          call tes:MISCmuevo_fecha("out","out-",-7)
+
+          ;LMB - PS 9780 - 03.07.2008  
+          ;fprint Origen "C:\\te mp\\%-s*.out",\
+          ;common:window_node
+          fprint Origen "%s%-s*.out", common:dirTemporal, common:window_node
+
+          FPRINT LineaComando "cmd /c del %-s",Origen
+          CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+
+          call tes:MISCmuevo_fecha("out-","out",-7)
+          */
+//        call tes:MISCborro_log
+//     end if
+//  #endif
+
+    RESETFLAG op:op_state_flags,signed_on
+
+// #if BASE_CFIG_COEX == 1
+/* logoff the P8 branch supervisor if p8 pranch supervisor is logged on */
+//      GOSUB OFB:coex:MISCp8_brsup_signoff
+// #endif
+    FYIMSG CLEAR
+    CALL  CSR:f_orskunlk
+
+    CALL  OFB:admin:msg_log_exit
+;   call  ofb:siaf:MISCimpre_log_exit   /* Trace Impresion */
+#if BASE_CFIG_BIO == 1
+        DLL FreeLibrary (que:lib_handle)
+#endif
+
+	/* SMC 13-AGO-1998 Despues de terminar de salir, Hago un LogOff de Windows */
+	call op:MISCend_NT
+
+    END
+END SUB
+/* Fin Corrigo journalizacion de RESET SEND a MEMO */
+
+/*******/

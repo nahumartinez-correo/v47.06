@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:MISCverif_saca
+* NOMBRE
+*   OFB:post:MISCverif_saca
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverif_saca
+
+Local cant like post:cantidad
+	
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:journal_ctx1 \
+	WHERE tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_sequence_corr == "" && \
+	post:CaratulaSaca == id_excepcion && \
+	post:jnl_marca_excep != "S" && \
+	post:jnl_guia_despacho == "" && \
+	(siaf:codigo_siaf == 99140 || siaf:codigo_siaf == 99065 || \
+	siaf:codigo_siaf == 99067 || siaf:codigo_siaf == 99040)
+	
+	CDS FINDFIRST DSC:journal_ctx1 NOLOCK
+	/*Si no la encuentra puede ser por varias razones*/
+	IF (CDSRETVAL == -801) THEN
+		CDS ENDSELECT DSC:journal_ctx1
+		/*1.Puede ser una saca que ya ha sido ingresada como excepcion*/
+		CDS SELECT FROM DSC:excep_tbl BECOMES DSC:excep_ctx \
+		WHERE post:adt_excep_id == id_excepcion
+		CDS FINDFIRST DSC:excep_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+		CDS ENDSELECT DSC:excep_ctx
+	
+		IF (lib:err_retval == 0) THEN
+			RETURN -2
+		END IF
+		
+		/*2.Si no es una saca cuyo destino es la sucursal activa, entonces
+		es una saca despachada o inexistente en la sucursal*/
+		IF (substr (id_excepcion,17,3) != common:br_ctpTT ) THEN
+			RETURN -3
+		ELSE
+			/*17.01.2002 Activo campo Saca Prioritaria
+			SacaPrioritaria = "S"*/
+			SacaDestSuc = true
+		END IF
+		fecha = common:system_date
+		hora  = common:time_of_day
+		RETURN 0
+	END IF
+	/*Como la caratula de saca se puede repetir, chequeo que no existan
+	dos caratulas iguales que cumplan la condición para ser marcada*/
+	cant = 0
+	DO
+		IF (CDSRETVAL == 0) THEN
+			cant = cant + 1
+			CLEARFIELD siaf:jnl_codigo_siaf
+			CLEARFIELD adt_novtt_saca_tipo
+			CLEARFIELD adt_novtt_grupo
+			CLEARFIELD adt_novtt_corte
+					
+			CDS EXTRACT DSC:journal_ctx1 siaf:jnl_codigo_siaf \
+			tlr:jnl_date INTO post:fecha \
+			tlr:jnl_time INTO post:hora \
+			post:adt_novtt_saca_tipo post:adt_novtt_grupo post:adt_novtt_corte
+			if (siaf:jnl_codigo_siaf == 99140) then
+				SacaTransito = true
+			end if
+		 	if (siaf:jnl_codigo_siaf == 99040) then
+		 		SacaSucursal = true
+		 	end if
+		 	if (siaf:jnl_codigo_siaf == 99065 || \
+		 	siaf:jnl_codigo_siaf == 99067) then
+				SacaDevol = true
+			end if
+			
+			CDS FINDNEXT DSC:journal_ctx1 NOLOCK
+		ELSE
+			IF (cant == 1) THEN
+				BREAK
+			ELSE
+				CDS ENDSELECT DSC:journal_ctx1
+				RETURN -1
+			END IF
+		END IF
+		
+	LOOP
+	
+	CDS ENDSELECT DSC:journal_ctx1
+	/*17.01.2002 Borro Saca Prioritaria
+	CLEARFIELD SacaPrioritaria*/
+	
+	
+END SUB
+
+/*******/

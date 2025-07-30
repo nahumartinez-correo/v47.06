@@ -1,0 +1,154 @@
+/****o* Pendientes de agrupación/OFB:post:PREScaptura_med_pago
+* NOMBRE
+*   OFB:post:PREScaptura_med_pago
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+Sub post:PREScaptura_med_pago
+	  Local CODIGO_SIAF like siaf:codigo_siaf
+	  local lRetval like lib:err_retval
+	  local l_cadena like common:csr_string
+    local Proyecto like common:csr_string
+    local Indice like post:tipo_produc
+    local comando like common:csr_string
+
+    //SC 50364 - Para que el lastkey y nextkey no tengan seteado el ENTER.
+    //sino se ejecuta dos veces la SVAL de la captura de medios de pago.
+    if (post:es_WEB == "X") then
+		init 33 0
+	endif
+	
+    /*ACP-Se agrego esta rutina debido a que cuando se trataba de una
+    sesion con importe negativo, quedaba el nombre de la transaccion 
+    de la captura incorrecto, ya que el post:importe esta vacio 
+    en esta instancia */
+    CALL post:CDSTotal_sesion(post:importe)/*ACP-obtengo el total de la sesion*/
+    
+    if (post:importe >= 0)
+    	siaf:codigo_siaf = 99099
+    else
+    	siaf:codigo_siaf = 99098
+    endif
+
+	if (pasadaMP == PRIMER_PASADA) then
+		CALL  CSR:tag TAG_REDRAW_ALL 1 BUT_GHOST -1 -1 -1 -1 -1 -1 "0 1"
+		joinscreen SCR:SCRNproc_restr_wait , NOCURSOR
+	endif
+	
+	if (pasadaMP == PRIMER_PASADA || pasadaMP == CORRECCION)
+		call post:MISCarmo_TotalTrans
+	endif
+
+	;singlestep on
+	ClearField codigo_moneda
+	siaf:nombre_transac.HIGHLITE = 0
+	post:importe_entrego = 0
+	CODIGO_SIAF = siaf:codigo_siaf
+	siaf:restr_otra_casa = "N"
+	siaf:linea_validacion = "S"
+	siaf:exhibe_pantalla = "S"
+	siaf:imprime_comprobante = "N"
+	siaf:afecta_efectivo = " "
+	Call post:CDSmone_curso_legal(DSC:CorreoArgentino )
+	Call siaf:PRESfecha_hora
+	lRetval = retval
+
+    call csr:get_profile_string("project","description",Proyecto)
+
+    call  csr:str_search (Proyecto, " ", Indice)
+
+    // saca comentarios y/o espacios en blanco que haya detras del nombre del proyecto (siempre y
+    // cuando no esten pegados al nombre del proyecto)
+    if (retval >= 0) then
+      Proyecto = substr(Proyecto,0,Indice)
+    endif
+
+  	; levanto de la PresuAct la pasada de Medios de Pago actual.
+	call post:CDSadt_presuact_load
+
+	if (pasadaMP == SEGUNDA_PASADA)
+		; en la segunda pasada no se ejecuta la PRES, solo va a journalizar.
+		return
+	endif
+
+   If (lRetval < 0)
+    if (estado_presu == 4)
+        estado_presu = 3
+        CALL post:CDSadt_presuact_save
+    end if
+    if (pasadaMP == PRIMER_PASADA) then
+		cutscreen SCR:SCRNproc_restr_wait , NOCURSOR
+		CALL  CSR:tag TAG_REDRAW_ALL 0 -1 -1 -1 -1 -1 -1 -1 "   "
+	endif
+    Return -1
+   Endif
+   Call CDScaptura_jour
+   if ( Retval ==  0 )
+		Call MISCprot_CampoMedio
+		UngetKey RT_SEND
+		if (pasadaMP == PRIMER_PASADA) then
+			cutscreen SCR:SCRNproc_restr_wait , NOCURSOR
+			CALL  CSR:tag TAG_REDRAW_ALL 0 -1 -1 -1 -1 -1 -1 -1 "   "
+		endif
+		return
+    Endif
+	//Esto se usa en el nivel de supervision
+   post:captura_mp = "S"
+   let tes:es_tesoro = "S"
+   Call post:MISCLeo_PresDet
+   If ( Retval < 0 )
+   		if (pasadaMP == PRIMER_PASADA) then
+			cutscreen SCR:SCRNproc_restr_wait , NOCURSOR
+			CALL  CSR:tag TAG_REDRAW_ALL 0 -1 -1 -1 -1 -1 -1 -1 "   "
+		endif
+        Return -1
+   Endif   
+   
+   siaf:codigo_siaf  = CODIGO_SIAF
+   Protfield siaf:moneda_tar
+   Protfield siaf:moneda
+   Protfield adt_mon_desc
+   Protfield DescripMedPag
+   Call MISCprotejo_tip_cheq
+   Call MISCprotejo_tip_tarj
+   Protfield codigo_interno
+   Call CDStot_imp_sesion
+    //Total de las Transacciones que no capturaron el medio pago
+    importe_entrego = adt_importe
+	post:importe_pesos = post:adt_importe
+
+	call post:MISCRecup_DatosDif
+
+	; FYI calculando restricciones...
+	fyimsg common:fyimsg_list,"Procesando restricciones de Medios de Pago..."
+    Call post:MISCrestricciones(post:cli_tipo)
+    fyimsg clear
+	Protfield ImporteNeto
+	UnProtfield siaf:moneda
+	ClearField siaf:moneda
+	Refresh siaf:moneda
+	ClearField siaf:importe
+	Refresh siaf:importe2
+	Protfield ImporteMedioPago[0]
+	
+	if (pasadaMP == PRIMER_PASADA) then
+		cutscreen SCR:SCRNproc_restr_wait , NOCURSOR
+		CALL  CSR:tag TAG_REDRAW_ALL 0 -1 -1 -1 -1 -1 -1 -1 "   "
+	endif
+	
+End Sub
+
+/*******/

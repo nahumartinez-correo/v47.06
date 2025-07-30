@@ -1,0 +1,164 @@
+/****o* Pago en Destino/OFB:post:FVALtrack_trace_ped
+* NOMBRE
+*   OFB:post:FVALtrack_trace_ped
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SCRNpedPostal
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALtrack_trace_ped
+
+	IF ((post:ModalidadCC || OperacionCob || OperacionAut) && post:track_trace.numchars == 0) 
+		//Si es cliente medio con modalidad de cobro diferido no es necesario
+		// o si es ...
+		//cargar los tt
+		RETURN (0)
+	END IF
+    
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+		CDS SELECT FROM SERV_TAB BECOMES SERV_CTX WHERE \
+			post:adt_serv_serv == post:tipo_produc
+		CDS FINDFIRST SERV_CTX NOLOCK
+		CDS EXTRACT SERV_CTX post:adt_serv_ttcod adt_serv_ttcod1 adt_serv_ttcod2 adt_serv_ttcod3  \
+		post:adt_serv_ttcod4 adt_serv_ttcod5 adt_serv_ttcod6 adt_serv_ttcod7
+		CDS ENDSELECT SERV_CTX
+		IF (post:track_trace == "") THEN
+			MSGBOX "DEBE SCANNEAR EL TRACK & TRACE",0x00,"CAMPO REQUERIDO"
+			RETURN (-2)
+		ELSE
+			//Controlo la cantidad de dígitos, si es des 11 le agrego "AR"
+			CALL MISCcant_digitos_tt(track_trace,"1")
+			IF (cant_opc > 0) THEN
+				/**************************************************************/
+				/* Se verifica que cuando se elija un opcional que tenga	    */
+				/* T&T se ingrese el codigo de T&T correspondiente        	  */
+				/**************************************************************/
+				CALL MISCtrack_opc(track_trace)
+				IF (RETVAL < 0) THEN
+					MSGBOX "EL TRACK & TRACE LEIDO ES INCORRECTO",0x00,"ERROR"
+					RETURN (-2)
+				END IF
+			END IF
+			IF ((SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod1 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod2 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod3 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod4 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod5 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod6 && \
+				SUBSTR(post:track_trace,0,2) != post:adt_serv_ttcod7) || \
+				post:track_trace.NUMCHARS < 13 || \
+				SUBSTR(post:track_trace,11,2) != "AR" || \
+				SUBSTR(post:track_trace,0,2) == "") THEN
+				MSGBOX "EL TRACK & TRACE LEIDO ES INCORRECTO",0x00,"ERROR"
+				RETURN (-2)
+			END IF
+			CALL MISCvalida_digito(post:track_trace)
+			IF (RETVAL == 0) THEN
+				IF (estado_presu == 3) THEN
+					/********************************************/
+					/* Si estoy modificando y el tt es el mismo */
+					/* no lo valido y salgo de la FVAL          */
+					/********************************************/
+					CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+						post:fecha == common:system_date && \
+						post:operador_tt == op:op_operator_id && \
+						post:PresNro_tt == post:PresNro && \
+						post:NroTrn_tt == post:PreDNroTrn && \
+						post:track_trace == FLD:post:track_trace
+					CDS FINDFIRST TT_CTX NOLOCK
+					IF (CDSRETVAL == 0) THEN
+						CDS ENDSELECT TT_CTX
+						SETVALDONE post:track_trace
+						RETURN (0)
+					END IF
+					CDS ENDSELECT TT_CTX
+				END IF
+				; Verifico que el T&T no haya sido utilizado para VDI
+				CALL post:CDSTT_VDI("")
+				IF (RETVAL == 0) THEN
+					; Veo si es un cliente corporativo (correo), de ser así el T&T puede reutilizarse
+					CALL post:CDSesClienCorpCorreo(post:PresNro)
+					IF (!RETVAL) THEN
+						MSGBOX "EL TRACK & TRACE LEIDO HA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+						RETURN (-2)       
+					END IF
+				END IF
+				/************************************************/
+				/* Verifico en el que el T&T no haya sido       */
+				/* utilizado con anterioridad para otro envío.  */
+				/************************************************/
+				CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+					post:fecha == common:system_date && \
+					post:track_trace == FLD:post:track_trace
+				CDS FINDFIRST TT_CTX NOLOCK
+				IF (CDSRETVAL == 0) THEN
+					/***********************************************************/
+					/* Ya se había usado ese T&T en otra Transacción.          */
+					/***********************************************************/
+					MSGBOX "EL TRACK & TRACE LEIDO YA HABIA SIDO UTILIZADO CON ANTERIORIDAD",0x00,"ERROR"
+					CDS ENDSELECT TT_CTX
+					RETURN (-2)
+				ELSE
+					CDS ENDSELECT TT_CTX
+					//robo de linea. Ctrol tt usados                    		
+					IF (giros:TrackTrace_giros == track_trace)
+						IF (!TESTFLAG(giros:env_post_flag,verif_tt_usado))
+							SETFLAG giros:env_post_flag,verif_tt_usado
+							MSGBOX "Se ha escaneado un T&T asociado a un giro. Desea utilizarlo?",OFB_YESNO,"Atencion"
+							IF (RETVAL == OFB_IDNO) THEN
+								RESETFLAG giros:env_post_flag,verif_tt_usado
+								RETURN (-2)
+							END IF
+						END IF
+					ELSE
+						CALL giros:CDSver_ttgiro_usado(post:track_trace) //Solo en caso de cantidad = 1 
+						SELECT (RETVAL)
+							CASE 0
+								MSGBOX "Se ha escaneado un T&T asociado a un giro. Desea utilizarlo?",OFB_YESNO,"Atencion"
+								IF (RETVAL == OFB_IDNO) THEN
+									RESETFLAG giros:env_post_flag,verif_tt_usado
+									RETURN (-2)
+								END IF
+							BREAK
+							CASE -1
+								MSGBOX "El T&T ya fué utilizado y está asociado a un giro. ",0x00,"Aviso"
+							BREAK
+							CASE -2
+							BREAK
+						END SELECT
+					END IF  
+					//si estoy en la tx de Ingreso de Pzas PED  
+					IF (siaf:codigo_siaf == 30010) THEN   				
+						/*****************************************************/
+						/* Verifico en el que el T&T no haya sido            */
+						/* utilizado con anterioridad para Pago en Destino.  */
+						/*****************************************************/
+						CALL post:CDStrack_trace_ped	
+						IF (RETVAL < 0) THEN
+							RETURN (-2)
+						END IF					
+ 					END IF
+					SETVALDONE post:track_trace			
+					RETURN (0)
+				END IF
+			ELSE
+				RETURN (-2)
+			END IF
+		END IF
+	END IF
+	SETVALDONE post:track_trace
+END SUB
+
+/*******/

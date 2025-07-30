@@ -1,0 +1,76 @@
+/****o* Pendientes de agrupación/OFB:giros:RCVEcanc_simple
+* NOMBRE
+*   OFB:giros:RCVEcanc_simple
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosrcve.h"
+
+SUB giros:RCVEcanc_simple
+    CALL RCVEhdr_giros
+	IF (hcomm:tran_status == HOST_ACCEPTED ) 
+		Call RCVEgral_giros 
+		IF (RETVAL < 0) THEN
+	        RETURN (-2)
+	    END IF 
+   		IF (!testflag(tlr:controla_marca,cancel))
+	       	IF (TESTFLAG(common:rt_flags,batch_mode) && (batch:batch_options == "REC_CAIDAS_VUELO")) THEN
+				FPRINT common:csr_string_171,"%s\n . Hora: %e ",mensaje_transaccion,common:time_of_day
+				CALL batch:MISCgeneraLog(common:csr_string_171,"AMBOS","N")
+			ELSE 
+				MSGBOX mensaje_transaccion,OFB_OK,"Atencion"
+			END IF	        				     		
+			SELECT (cod_tran_canc)
+				CASE 70131 //Orden no pagar giro no emitido
+				CASE 70300 //Anulacion giro postal no emitido
+				/*CASE 70030 //Emision Giro Postal
+				CASE 70040 //Emision Giro Postal Oficio
+				CASE 70041 //Emision Giro Contrareembolso
+				CASE 70140 //Emision giro postal por duplicado
+				CASE 70141 //Emision giro postal oficio por duplicado
+				CASE 70322 //Emision giro postal con cheque*/
+					/* Actualiza la tabla de Estado de Cheques local (RecepChk)
+					Es decir, vuelve a habilitar el cheque para su uso*/
+					SETFLAG tran_send_mode,cancelacion
+					call giros:CDSavanza_cheq("HA")
+					RESETFLAG tran_send_mode,cancelacion
+					BREAK
+				
+				CASE 70132 //Ord No pagar cheque emitido
+					/* Actualiza la tabla de Estado de Cheques local (RecepChk)
+					Es decir, vuelve a habilitar el cheque para su uso*/
+					SETFLAG tran_send_mode,cancelacion
+					call giros:CDSavanza_cheq("EM")
+					RESETFLAG tran_send_mode,cancelacion
+					BREAK
+									
+				CASE 70310 //ANULACION DE CHEQUERA.POSTAL.NO EMIT
+				CASE 70130 //SOL.ORDEN DE NO PAGAR DE CHEQUERA
+					//Vuelvo la chequera al estado antes de cancelar la anulacion
+					// o la orden de no pagar
+					LET adt_chk_fecha = common:system_date
+					LET adt_chk_hora  = common:time_of_day
+					LET adt_chk_tesoro = "S"
+					LET adt_chk_estado = 9
+					CALL giros:CDSadt_chk_actu
+					BREAK 
+				CASE 70000
+					CALL CDSdeleteChequera
+					BREAK
+			END SELECT			
+		END IF
+    END IF 
+END SUB 
+
+/*******/

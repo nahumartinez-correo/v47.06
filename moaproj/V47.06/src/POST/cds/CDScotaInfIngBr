@@ -1,0 +1,77 @@
+/****o* Pendientes de agrupación/OFB:post:CDScotaInfIngBr
+* NOMBRE
+*   OFB:post:CDScotaInfIngBr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScotaInfIngBr(OPER, SUCU)
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 06/01/99]      Esta rutina calcula la cota inferior de los mínimos de la tabla ProvUnNe       */
+   /*                       pero sólo de aquellas familias que están en la AuxIngBr.                       */
+   /*                                                                                                      */
+   /* Parámetros:                                                                                          */
+   /* - OPER: Operador que conincida con el de la tabla AuxIngBr.                                          */
+   /* - SUCU: Código de sucursal que conincida con el de la tabla ProvUnNe.                                */
+   /*                                                                                                      */
+   /* Salidas:                                                                                             */
+   /* - siaf:importe2: Cota inferior de los mínimos de las familias que se presupuestan.                   */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+   /*Se agrega selección por Nro. de Presupuesto - Gabriel Falciola*/
+   local cotaInf like siaf:importe2
+   local primera_vuelta like common:csr_string
+
+	cotaInf = 0
+	primera_vuelta = "S"
+	cds select from DSC:AuxIngBr_tbl becomes DSC:AuxIngBr_ctx where \
+	post:PresNro == fld:PresNro && post:op_operator_id == OPER
+	cds findfirst DSC:AuxIngBr_ctx nolock
+	while (cdsretval == 0)
+		cds extract DSC:AuxIngBr_ctx siaf:adt_tran_fliatran siaf:ImporteConIva siaf:ImporteSinIva
+		if (siaf:ImporteConIva > 0 && siaf:ImporteSinIva > 0)
+			cds select from DSC:ProvUnNe_tbl becomes DSC:ProvUnNe_ctx where \
+			post:adt_prvun_une_cod == fld:siaf:adt_tran_fliatran && \
+			post:adt_prvun_pcia_cod == SUCU
+			cds findfirst DSC:ProvUnNe_ctx nolock
+			if (cdsretval == 0)
+				cds extract DSC:ProvUnNe_ctx post:adt_prvun_min_imp
+				if (primera_vuelta == "S")
+					cotaInf = post:adt_prvun_min_imp
+					primera_vuelta = "N"
+				else
+					if (post:adt_prvun_min_imp < cotaInf)
+						cotaInf = post:adt_prvun_min_imp
+					end if
+				end if
+			else
+				/*Si no existe el registro para la familia, debo asumir
+				el mínimo como 0 - Gabriel Falciola*/
+				siaf:importe2 = 0
+				CDS ENDSELECT DSC:ProvUnNe_ctx
+				CDS ENDSELECT DSC:AuxIngBr_ctx
+				return (0)
+			end if
+			CDS ENDSELECT DSC:ProvUnNe_ctx
+		end if
+		cds findnext DSC:AuxIngBr_ctx nolock
+	end while
+	siaf:importe2 = cotaInf
+END SUB
+
+/*******/

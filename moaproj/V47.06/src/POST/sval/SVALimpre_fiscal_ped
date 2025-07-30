@@ -1,0 +1,115 @@
+/****o* Pago en Destino/OFB:post:SVALimpre_fiscal_ped
+* NOMBRE
+*   OFB:post:SVALimpre_fiscal_ped
+* DESCRIPCION
+*		Validaciones PED para post:SVALimpre_fiscal
+* ENTRADAS
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* REFERENCIADO POR
+*		OFB:post:SVALimpre_fiscal
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALimpre_fiscal_ped(p_cli_tipo_local)
+	LOCAL cli_tipo_local LIKE cli_tipo
+	
+	LET cli_tipo_local = p_cli_tipo_local
+
+	//gpb:PS10813 - PS10812
+	CALL post:CDSgetPresuPed_flags
+
+	//1 - Es una Imposicion PED
+	IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && !TESTFLAG(post:sesion_ped_flags,genera_nc_ped) && !TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		IF (TESTFLAG(post:sesion_ped_flags,esc_servicio_ped)) THEN
+			//Registro pendiente de imposicion (tabla sesion_ped)
+			CALL post:MISCupdateRegSesPed("I")
+			//limpio la marca que reserva el registro
+			CALL post:CDSupdMarca_ped("del")			
+		ELSE	
+			//Registro ya se impuso (tabla sesion_ped)
+			CALL post:MISCupdateRegSesPed("E")	
+			//reseteo flags
+			CALL post:MISCresetFlagsPED	
+		END IF
+	END IF
+
+	//2 - Es una Nota de Credito PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+		IF (!TESTFLAG(post:sesion_ped_flags,esc_servicio_ped)) THEN	
+			//actualizo estado de la pieza en la tabla stockp\PEDpend y NCpedEnOrigen
+			CALL post:MISCupdEstPzaPed("NTCR")
+			//actualizo campos para generar el reporte de NC y Refacturaciones ped
+			CALL post:CDSupd_NC_FC_ped("NTCR")
+
+			//Hubo una caida
+			IF (TESTFLAG(post:sesion_ped_flags,termina_anula_ped)) THEN
+				//Recupero los datos para grabar la CompPED
+				CALL post:CDSrecuperoCompPED
+			END IF			
+			
+ 			//Rutina que genera un registro en la CompPED para que el rtbatch envie el nro de nota de credito
+  		//al centralizado.
+ 			CALL CDSsave_CompPED("NTCR")
+			IF (RETVAL < 0) THEN
+				MSGBOX "No se ha generado el registro de NOTA de CREDITO para enviar al Centralizado PED",0x00,"ATENCION"
+			END IF	
+			
+			//Hubo una caida, reseteo flags
+			IF (TESTFLAG(post:sesion_ped_flags,termina_anula_ped)) THEN
+				RESETFLAG post:sesion_ped_flags,termina_anula_ped
+				RESETFLAG tlr:state_flags,tran_active
+			END IF			
+			
+			//reseteo flags
+			CALL post:MISCresetFlagsPED	
+		END IF		
+	END IF
+
+	//3 - Es una Refacturacion PED
+	IF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+		IF (!TESTFLAG(post:sesion_ped_flags,esc_servicio_ped)) THEN	
+			//si no se reversa el presupuesto
+			IF (!rechazoDiferido) THEN	
+	 			//actualizo estado de la pieza en la tabla stockp\PEDpend y NCpedEnOrigen
+ 				cli_tipo = cli_tipo_local
+				CALL post:MISCupdEstPzaPed("FACT")
+				//actualizo campos para generar el reporte de NC y Refacturaciones ped
+				CALL post:CDSupd_NC_FC_ped("FACT")
+				
+ 				CLEARFIELD cli_tipo
+
+ 				//Hubo una caida
+				IF (TESTFLAG(post:sesion_ped_flags,termina_anula_ped)) THEN
+					//Recupero los datos para grabar la CompPED
+					CALL post:CDSrecuperoCompPED
+				END IF
+ 				
+ 				//Rutina que genera un registro en la CompPED para que el rtbatch envie el nro de nota de credito
+  			//al centralizado.
+  			CALL CDSsave_CompPED("FACT")			
+				IF (RETVAL < 0) THEN
+					MSGBOX "No se ha generado el registro de REFACTURACION para enviar al Centralizado PED",0x00,"ATENCION"
+				END IF	
+				
+				//Hubo una caida, reseteo flags
+				IF (TESTFLAG(post:sesion_ped_flags,termina_anula_ped)) THEN
+					RESETFLAG post:sesion_ped_flags,termina_anula_ped
+					RESETFLAG tlr:state_flags,tran_active
+				END IF
+			ELSE
+				//vuelvo a dejar la pieza disponible para refacturar
+				//actualizo estado de la pieza en la tabla stockp\PEDpend y NCpedEnOrigen
+				CALL post:MISCupdEstPzaPed("NTCR")
+			END IF
+			//reseteo flags
+			CALL post:MISCresetFlagsPED
+		END IF	
+	END IF
+	
+END SUB
+
+/*******/

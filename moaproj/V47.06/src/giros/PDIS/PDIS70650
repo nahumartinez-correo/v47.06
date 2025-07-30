@@ -1,0 +1,121 @@
+/****o* Lista de Giros/OFB:giros:PDIS70650
+* NOMBRE
+*   OFB:giros:PDIS70650
+* DESCRIPCION
+*   Levanta los datos del cliente medio del inicio de sesion y de la tabla CliMed y le da al 
+*   usuario la posibilidad de modificarlos
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:giros:TRAN70650
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosPDIS.h"
+
+SUB giros:PDIS70650
+
+    siaf:codigo_siaf        = 70650
+    siaf:adt_tran_codigo    = siaf:codigo_siaf
+    call siaf:CDSadt_tran_load 
+    siaf:nombre_transac     = siaf:adt_tran_desc
+    tlr:tran_mnemonic       = siaf:adt_tran_mnemonic
+    siaf:afecta_efectivo    = siaf:adt_tran_afec_efvo
+    siaf:tiene_reverso      = siaf:adt_tran_tiene_rev
+    siaf:posible_off        = siaf:adt_tran_posoff
+
+    IF ((post:cli_tipo != 5) || (post:estado_presu != 2 && post:estado_presu != 3 && post:estado_presu != 4) )
+        errmsg common:errmsg_list,"Inicie una Sesión con Cliente Medio para poder ingresar a la transacción."
+        return (-2)
+    END IF
+    
+    call giros:CDSPresuAnticipoMon
+    IF (post:ConsumoAnticipoMon == FALSE) THEN
+        errmsg common:errmsg_list,"Debe consumir su saldo de adelanto monetario para ingresar a la transacción."
+        return (-2)
+    END IF
+    
+   //Validaciones
+  if (post:estado_presu != 4) then
+		call post:MISCValidoAdelanto
+		IF (post:cli_tipo != CLIMED)
+		    errmsg common:errmsg_list,"El cliente no está habilitado para realizar la Emisión de Lista de Giros."
+		    return (-2)
+	    END IF
+	    IF (post:nisDep_CM != common:sucursal_activa) THEN
+		    errmsg common:errmsg_list,"El cliente no pertenece a la sucursal. No podrá realizar la Emisión de Lista de Giros."
+		    return (-2)
+	    END IF
+		if (post:consulta_excepcionCM == "S")
+		    errmsg common:errmsg_list,"Ud.se encuentra en una venta por excepción.\nNo podrá realizar la Emisión de Lista de Giros."
+		    return (-2)
+		endif 
+		if (post:consulta_ordenCM == "S")
+		    errmsg common:errmsg_list,"Ud.se encuentra en una venta por Orden de Compra.\nNo podrá realizar la Emisión de Lista de Giros."
+		    return (-2)
+		endif 		  
+	    IF (post:cli_tipo != CLIMED)
+		    errmsg common:errmsg_list,"El cliente no está habilitado para realizar una Emisión de Lista de Giros."
+		    return (-2)
+	    END IF
+	    
+	    IF (post:ExcepSinLinea) THEN
+		    errmsg common:errmsg_list,"La sesión se ha iniciado fuera de línea.\nPara realizar una Emisión deberá iniciar la sesión nuevamente."
+		    return (-2)
+	    END IF
+	    CALL giros:CDSBuscaTxLG
+		if (retval < 0) then
+		   	errmsg common:errmsg_list,"No puede volver a ingresar a la TX de Emisión. Debe confirmar el Presupuesto."
+		   	return (-2)
+		end if	    	
+	    
+	    IF (post:estado_presu == 2) THEN
+		    CALL post:CDSBusca_TxPresuDet
+		    if (retval < 0) then
+		    	errmsg common:errmsg_list,"La transacción de Emisión debe ser la única del Presupuesto."
+		    	return (-2)
+		    end if
+		END IF	
+  	end if
+
+	clearfield post:PreDForFis
+        
+    Call siaf:PRESfecha_hora
+    If ( Retval < 0 )
+      	Return -1
+    Endif
+
+    CLEARFIELD TipoDocEmisLG_FCuit
+    CLEARFIELD NroDocEmisLG_FCuit
+    call MISClistas_giros_clr
+    call CDSPresuLoadLG
+    IF (retval != -1) THEN
+        call CDSCliMedLoadLG
+        call CDSCliMedSucuLoadLG
+        call FVALProvEmisGm
+    END IF
+    call MISClistas_giros_ref
+    
+    IF (giros:TipoDocEmisGm_fld == "80" || giros:TipoDocEmisGm_fld == "99" || \
+        giros:TipoDocEmisGm_fld == "86" || giros:TipoDocEmisGm_fld == "87") THEN
+        //80(CUIT),86 (CUIL),87(CDI),99(SIN IDENTIFICAT/VENTA GLOB.DIA) 
+        NroDocEmisGm_fld   = substr(post:CloCuit,2,8)
+        CuitEmisGm = post:CloCuit
+    ELSE
+        //Tipo de documento sin formato de CUIT
+        NroDocEmisGm_fld = post:CloCuit * 1
+        CLEARFIELD CuitEmisGm
+    END IF
+    
+    IF (post:es_juridica.NUMCHARS == 0) THEN
+        post:es_juridica = "S" // POR DEFAULT
+    END IF
+
+END SUB
+
+/*******/

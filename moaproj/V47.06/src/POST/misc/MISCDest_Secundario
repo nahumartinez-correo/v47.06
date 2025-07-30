@@ -1,0 +1,85 @@
+/****o* Pendientes de agrupación/OFB:post:MISCDest_Secundario
+* NOMBRE
+*   OFB:post:MISCDest_Secundario
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCDest_Secundario (prioritario)
+
+LOCAL codigo LIKE post:adt_uneg_sitecode
+
+	IF (prioritario == "S") THEN
+		/*1-Busco un corte operativo prioritario*/
+		CDS SELECT FROM DSC:CORTE_TAB BECOMES DSC:CORTE_CTX \
+		WHERE post:adt_corteop_ctrl == "S" && \
+		post:adt_corteop_prior == "S" 
+	ELSE
+		/*1-Busco un corte operativo NO prioritario*/
+		CDS SELECT FROM DSC:CORTE_TAB BECOMES DSC:CORTE_CTX \
+		WHERE post:adt_corteop_ctrl == "S" && \
+		post:adt_corteop_prior == "N" 
+	END IF
+	CDS FINDFIRST DSC:CORTE_CTX NOLOCK
+	lib:err_retval = CDSRETVAL
+	
+	DO
+		IF (lib:err_retval == 0) THEN
+			CLEARFIELD adt_corteop_cod
+			CDS EXTRACT DSC:CORTE_CTX adt_corteop_cod
+			CDS ENDSELECT DSC:CORTE_CTX
+			/*2-Busco en la RelMod el despacho de ese corte operativo,
+			que tenga apertura expedición*/
+			CDS SELECT FROM DSC:adt_relMod_table BECOMES DSC:adt_relMod_ctx \
+			WHERE post:adt_relMod_corteop == adt_corteop_cod && \
+			post:adt_relMod_modelos == common:br_modelo && \
+			(post:adt_relMod_apertura == "E" || \
+			post:adt_relMod_apertura == "")
+			CDS FINDFIRST DSC:adt_relMod_ctx NOLOCK
+		
+			IF (CDSRETVAL == 0) THEN
+				CLEARFIELD adt_relMod_desptipos
+				CLEARFIELD adt_relMod_despacho
+				CDS EXTRACT DSC:adt_relMod_ctx adt_relMod_desptipos adt_relMod_despacho
+				IF (adt_relMod_desptipos == "DM") THEN
+					/*3-BUSCAR EN LA UNEG CON LOS PRIMEROS TRES CARACTERES DEL CAMPO adt_relMod_despacho*/
+					codigo = substr(adt_relMod_despacho,0,3)
+				END IF
+				IF (adt_relMod_desptipos == "DN") THEN
+					/*3-BUSCAR EN LA UNEG CON EL CAMPO common:br_ctpnormal*/
+					codigo = common:br_ctpnormal 
+				END IF
+				IF (adt_relMod_desptipos == "DP") THEN
+					/*3-BUSCAR EN LA UNEG CON EL CAMPO common:br_ctpTT2*/
+					codigo = common:br_ctpTT2
+				END IF
+				BREAK
+			ELSE
+				CDS FINDNEXT DSC:CORTE_CTX NOLOCK
+				lib:err_retval = CDSRETVAL
+			END IF
+		ELSE
+			CDS ENDSELECT DSC:CORTE_CTX
+			BREAK
+		END IF	
+		
+	LOOP	
+	
+	/*4-Obtengo la unidad de negocio (destino secundario de excepcion)*/
+	CALL CDSGet_Uneg(codigo)
+	
+END SUB
+
+/*******/

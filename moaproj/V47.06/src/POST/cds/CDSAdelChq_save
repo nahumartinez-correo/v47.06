@@ -1,0 +1,95 @@
+/****o* Lista de Giros/OFB:post:CDSAdelChq_save
+* NOMBRE
+*   OFB:post:CDSAdelChq_save
+* DESCRIPCION
+*   Rutina que graba registros en la tabla jnl_AdelantoChq (que luego toma el RT BATCH para el envio de
+*	consumo de adelanto)
+* ENTRADAS
+*   limporte = importe del adelanto a consumir/acreditar segun corresponda
+*	lnro_adel = nro de recibo de adelanto sobre el que se deberá realizar la operacion
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:RCVErobo_cheque,RCVErecep_reemp_Chk,giros:LINK99458
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSAdelChq_save(limporte,lnro_adel,mon,bco)
+	local l_jnl_status like tlr:jnl_status
+	local imp_aux like siaf:importe
+	local nro_adel_aux like post:cheq_adel_nro
+	local l_moneda like siaf:moneda
+	local l_banco like siaf:cod_banco
+	local cont like post:cantidad
+	
+	imp_aux = limporte
+	nro_adel_aux = lnro_adel
+	l_moneda = mon
+	l_banco = bco
+	
+	
+	CDS SELECT FROM DSC:jnl_AdelantoChq_tbl BECOMES DSC:jnl_AdelantoChq_ctx \
+	WHERE tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence == post:sequence_aux
+		
+	CDS FINDFIRST DSC:jnl_AdelantoChq_ctx LOCK
+	
+	IF (CDSRETVAL == -801) THEN
+		
+		l_jnl_status = 001 //UNPOSTED
+
+		CDS CLEARBUFFER DSC:jnl_AdelantoChq_ctx
+		CDS APPEND DSC:jnl_AdelantoChq_ctx \
+		FLD:tlr:jnl_branch \
+		FLD:tlr:jnl_operator \
+		FLD:tlr:jnl_date \
+		FLD:tlr:jnl_time \
+		FLD:tlr:jnl_bus_date \
+		sequence_aux AS FLD:tlr:jnl_sequence \
+		l_jnl_status AS FLD:tlr:jnl_status \
+		imp_aux AS FLD:siaf:importe 
+		
+		CDS APPEND DSC:jnl_AdelantoChq_ctx \
+		FLD:climed_tipo \
+		FLD:climed_numero \
+		l_moneda AS FLD:siaf:moneda \
+		l_banco AS FLD:siaf:cod_banco \
+		FLD:siaf:cheqcuenta \
+		FLD:siaf:nro_cheque \
+		FLD:jnl_cheques_tipo \
+		FLD:op:op_node_id \
+		FLD:post:op_adel_mon \
+		nro_adel_aux AS FLD:post:cheq_adel_nro \
+		siaf:codigo_siaf as post:codigo_temp 
+		
+		//grabar vector con nro de adelanto e importes
+		if (siaf:codigo_siaf == 99458) then
+			cont = 0
+			while (cont < 36)
+				CDS APPEND DSC:jnl_AdelantoChq_ctx \
+				giros:id_adel_mon[cont] giros:imp_adel_mon[cont]
+				cont = cont + 1
+			end while
+			//para bit 108
+			CDS APPEND DSC:jnl_AdelantoChq_ctx \
+			post:TipoIdentFact \
+			post:SeqIdentFact 
+		endif
+		
+		CDS INSERT DSC:jnl_AdelantoChq_ctx LOCK
+	ENDIF
+		
+	CDS UNLOCK DSC:jnl_AdelantoChq_ctx
+	CDS ENDSELECT DSC:jnl_AdelantoChq_ctx
+
+END SUB
+
+/*******/
+

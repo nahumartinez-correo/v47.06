@@ -1,0 +1,107 @@
+/****o* Novedades de T&T/OFB:post:MISCverif_ScaneoO
+* NOMBRE
+*   OFB:post:MISCverif_ScaneoO
+* DESCRIPCION
+*   Se graba un Scaneo "O" por cada imposicion/devolución que cumpla las condiciones especifadas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:CDSgrabo_TT,post:TRAN_DP5_Inter,post:TRAN_DP6_Rebut,post:TRANPresu
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverif_ScaneoO
+
+/* MFM - Agosto 2000 - Cuando estoy realizando una Imposición o una Devolución Interdicta
+o de piezas a Rebut necesito guardar nuevos datos sobre las piezas para luego hacer los filtros
+correspondientes en el cierre de contenedor y/o saca*/
+ 
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+         /*DEVOLUCION DE PIEZAS INTERDICTAS O DEVOLUCION DE PIEZAS A REBUT*/
+        IF (siaf:codigo_siaf == 99069 || siaf:codigo_siaf == 99071 || \
+        siaf:codigo_siaf == 99070 || siaf:codigo_siaf == 99072) THEN
+            IF (codtt_aux != post:Reencaminamiento) THEN
+                codtt_aux = post:Reencaminamiento
+                adt_novtt_opcional = " "
+                adt_novtt_pieza = post:Reencaminamiento
+                adt_novtt_codseq = post:codseq_dev
+                /*****************nuevo*******************/
+                adt_novtt_corte = post:adt_relMod_corteop
+                adt_novtt_grupo = post:adt_grucorte_cod
+                adt_novtt_apertura = post:adt_apertura_cod
+                call csr:trimfield (adt_novtt_corte)
+                call csr:trimfield (adt_novtt_grupo)
+                call csr:trimfield (adt_novtt_apertura)
+				CALL MISCdatos_expedicion
+		         /******************************************/
+                adt_novtt_simp_esp = jnl_simp_esp
+                //50387 - IPS - No es necesario grabar los datos de IPS en estos scaneos.
+                CALL CSR:proc_list(F_CLEAR,DSC:NovTT_ctx,LST:LISTscaneoO_IPS)
+                CALL MISCGrabo_ScaneoO
+                RETURN 0
+            END IF
+         END IF
+        /*IMPOSICION DE PIEZAS POSTALES, ENCOMIENDAS, BOLSINES CON TT VALIDO
+        Y CUENTA CORRENTISTA*/
+        //Se agrega OperacionesWeb para motivo MercadoLibre (el motvo Mercado Libre tiene TT)
+        //SE agrega Admiscion PrePaq y Admision RPP
+        IF ((post:jnl_flia_tran == "CSP" || post:jnl_flia_tran == "CSE" || siaf:codigo_siaf == 6680 || siaf:codigo_siaf == 18901 || siaf:codigo_siaf == 99094) && \
+        (post:track_trace.numchars > 0)) THEN
+            IF (codtt_aux != post:track_trace) THEN
+                IF (post:cod_ctrol != "") THEN
+                    CALL MISCes_TT (track_trace)
+                    IF (RETVAL != 0) THEN
+                        post:adt_novtt_pieza = cod_ctrol
+                        post:adt_novtt_simp_esp = adt_serv_simp_esp
+                        CALL CDSGrabo_Scaneo_Aux
+                        codtt_aux = post:track_trace
+                        RETURN -2
+                    END IF
+                 END IF
+                 codtt_aux = post:track_trace
+                 IF (post:tiene_ar == "S") THEN
+                     adt_novtt_opcional = "Y"
+                 ELSE
+                     adt_novtt_opcional = " "
+                 END IF
+                 adt_novtt_pieza = post:track_trace
+                 adt_novtt_codseq = 0
+                 /**************nuevo******************/
+		         adt_novtt_corte = adt_serv_corteop
+		         IF (adt_novtt_corte.numchars == 0) THEN
+		         	 adt_novtt_corte = jnl_corteop_cod
+		         END IF
+	    	     adt_novtt_grupo = post:grucorte
+	    	     IF (adt_novtt_grupo.numchars == 0) THEN
+	    	     	 adt_novtt_grupo = jnl_grucorte_cod
+	    	     END IF
+    	    	 adt_novtt_apertura = post:apertura
+    	    	 IF (adt_novtt_apertura.numchars == 0) THEN
+    	    	  	 adt_novtt_apertura = jnl_apertura_cod
+    	    	 END IF
+		         CALL MISCdatos_expedicion
+        		 /**************************************/
+                 adt_novtt_simp_esp = adt_serv_simp_esp
+                 //50387 - IPS
+                 CALL CSR:proc_list(F_CLEAR,DSC:NovTT_ctx,LST:LISTscaneoO_IPS)
+                 //Calculo peso en kgs
+                 CALL MISCCalcPesoIPS
+                 //Verifico VADC 
+                 CALL MISCVerif_VADC_IPS
+                 //Recupero Oficina de Carga
+                 CALL CDSOficina_Carga_IPS
+                 CALL MISCGrabo_ScaneoO
+            END IF
+        END IF
+        
+   END IF
+END SUB
+
+/*******/

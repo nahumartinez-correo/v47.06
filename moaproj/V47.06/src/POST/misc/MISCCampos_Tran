@@ -1,0 +1,157 @@
+/****o* Pendientes de agrupación/OFB:post:MISCCampos_Tran
+* NOMBRE
+*   OFB:post:MISCCampos_Tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCCampos_Tran(cod)
+    /*Usar campos*/
+    local imp_aux like siaf:importe
+    local l_importeIva like siaf:importe
+    local l_importeSinIva like siaf:importe
+
+    select (cod)
+    case 8500
+    	if ((post:cli_tipo == 1) || TESTFLAG(uso_int_flag,uso_interno) || \
+    		(post:enCombo == "S")) then
+            //cgw:si es un producto de un combo, importes en cero.
+    		siaf:importe = 0
+    		tes:importe_evaux = 0
+			post:imp_promo_epvs = 0
+    	else
+	    	siaf:importe     = tes:adt_evaux_importe
+	    	tes:importe_evaux = siaf:importe - post:promo_tot_EspVdas
+			post:imp_promo_epvs = post:promo_tot_EspVdas
+	    end if
+	    post:bonificaCM = tes:adt_espv_bonifCM
+	    //clearfield Dcto_CliMed
+	    tes:SimporteCM = siaf:importe
+	    siaf:cantidad    = tes:adt_evaux_cantidad
+	    siaf:codigo_siaf = cod
+	    siaf:adt_tran_codigo = siaf:codigo_siaf
+	    post:PreDForFis = tes:adt_espv_formfiscal
+	    TasaIva = tes:adt_espv_aliciva
+	    CALL siaf:CDSadt_tran_load
+	    // Obtengo El Numero de la Transaccion en el Presupuesto
+	    ;CALL CDSprox_PreDNroTrn
+	    post:INDPresuD_Dat = OFB:tes:CDSTRAN8500_append
+	    tlr:INDtran_name   = LST:tes:TRAN8500
+	    drv:INDcur_list    = LST:tes:TRAN8500
+
+	    if (post:estado_presu == 1) then
+	    	let drv:INDscr = SCR:tes:SCRNmov_venta_ev
+	    	drv:INDjnl_rtn = OFB:tes:JNLventa_ev
+    		drv:INDspc_rtn[0] = LST:siaf:TOTS8500
+    		drv:INDcur_tran    = LST:tes:TRAN8500
+
+	end if
+		//SC 50170
+		call post:MISCdesglosaIva(post:promo_tot_EspVdas,tes:adt_espv_aliciva,tes:adt_evaux_cantidad,0)
+   		post:ImporteSinIvaNeto = (- post:ImporteSinIva)
+        //SC 50170
+        CALL post:MISCdesglosaIva(tes:adt_evaux_importe,tes:adt_espv_aliciva,tes:adt_evaux_cantidad,0)
+		post:ImporteSinIvaNeto = post:ImporteSinIvaNeto + post:ImporteSinIva
+		post:ImporteConIvaNeto = tes:adt_evaux_importe - post:promo_tot_EspVdas
+		siaf:ImporteSinIva = post:ImporteSinIvaNeto
+		siaf:ImporteConIva = post:ImporteConIvaNeto
+		/* Para cliente Interno dejo estos campos en blanco como
+		lo hacen las transacciones postales */
+	    //CALL post:MISCdesglosaIva(siaf:importe,TasaIva,siaf:cantidad)
+	    if (!TESTFLAG(uso_int_flag,uso_interno)) then
+        	siaf:ImporteConIva = tes:adt_evaux_importe
+        	post:ImporteConIva = tes:adt_evaux_importe
+        end if
+        //siaf:ImporteSinIva = post:ImporteSinIva
+        /* Para TR el campo post:TotalSinIva guarda el acumulado sin iva*/
+        if (post:estado_presu != 1) then
+        	post:TotalSinIva   = post:ImporteSinIva
+        end if
+	break
+
+	case 40002
+	    ;adt_prodvs_cod = adt_serv_prodvs
+        CALL post:CDSprodvs_load
+        //clearfield post:bonificaCM
+		//clearfield post:Dcto_CliMed
+		
+		//Caja de Sur Postal
+		IF ((siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) && \
+			(post:adt_oc_nro.numchars == 0))
+			post:bonificaCM = "N"
+		else
+			post:bonificaCM = adt_prodvs_bonifCM
+		endif
+		
+		siaf:cantidad = post:cantidad2
+	    imp_aux = adt_prodvs_tarifa * post:cantidad2
+		siaf:importe = imp_aux
+
+	    if ((post:cli_tipo == 1 ) || TESTFLAG(uso_int_flag,uso_interno) || \
+	        (post:enCombo == "S")) then
+            //cgw:si es un producto de un combo, importes en cero.
+    		siaf:importe = 0
+	    end if
+
+	    siaf:codigo_siaf = cod
+	    siaf:adt_tran_codigo = siaf:codigo_siaf
+
+	    post:PreDForFis = post:adt_prodvs_formfisca
+	    TasaIva = post:adt_prodvs_aliciva
+	    CALL siaf:CDSadt_tran_load
+	    // Obtengo El Numero de la Transaccion en el Presupuesto
+	    ;CALL CDSprox_PreDNroTrn
+	    post:INDPresuD_Dat = OFB:post:CDSTRAN40002_append
+	    tlr:INDtran_name   = LST:post:TRANventa_prodvs
+	    drv:INDcur_list    = LST:post:TRANventa_prodvs
+
+
+	    if (post:estado_presu == 1) then
+	    	let drv:INDscr = SCR:post:SCRNventa_prodvs
+	    	drv:INDjnl_rtn = OFB:post:JNLventa_prodvs
+    		drv:INDspc_rtn[0] = LST:siaf:TOTS40002
+    		drv:INDcur_tran    = LST:post:TRANventa_prodvs
+		end if
+
+	    //CALL post:MISCdesglosaIva(siaf:importe,TasaIva,siaf:cantidad)
+		//SC 50170
+		call MISCdesglosaIva(promo_tot_ProdVs, TasaIva, siaf:cantidad,0)
+        ImporteSinIvaNeto = ( - ImporteSinIva )
+        //SC 50170
+        call MISCdesglosaIva(siaf:importe, TasaIva, siaf:cantidad,0)
+        ImporteSinIvaNeto = ImporteSinIvaNeto + ImporteSinIva
+        ImporteConIvaNeto = siaf:importe - promo_tot_ProdVs
+
+		/* Para cliente Interno dejo estos campos en blanco como
+		lo hacen las transacciones postales */
+	    if (!TESTFLAG(uso_int_flag,uso_interno)) then
+	    	siaf:ImporteConIva = imp_aux
+	        post:ImporteConIva = imp_aux
+	    end if
+        siaf:ImporteSinIva = ImporteSinIvaNeto
+        /* MLD En teclas rapidas post:TotalSinIva va acumulando el valor, por las
+        caidas*/
+        if (post:estado_presu != 1) then
+        	post:TotalSinIva   = post:ImporteSinIva
+        end if
+        post:ImpServUP  = siaf:importe
+        post:AliServUP  = post:adt_prodvs_aliciva
+        post:tran_original = "N"
+
+	break
+	end select
+END SUB
+
+/*******/

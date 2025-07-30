@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrevPend99023
+* NOMBRE
+*   OFB:post:MISCrevPend99023
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrevPend99023
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 22/04/99]            Esta rutina se encarga de generar las reversas de la anulación parcial.  */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+    local j like siaf:i
+    local l_retval like lib:err_retval
+    local auxNC like NotaCredito
+    local auxTipo like post:Tipo_Formulario
+    LOCAL track_trace_aux LIKE track_trace
+    LOCAL Pieza_aux LIKE Pieza
+    LOCAL auxNumInic like post:DocInic
+    LOCAL auxNumFin like post:DocFin
+    LOCAL auxNumDocFis like post:DocFiscal
+
+    if (sistCaido == "S")
+	call post:CDStraeNum
+	if (adt_DocInic.numchars != 0)
+	    post:DocInic = adt_DocInic
+	    post:DocFin = adt_DocFin
+	endif
+    endif
+
+    clearfield siaf:importe
+    clearfield tlr:jnl_amount_1
+    clearfield jnl_nuevo_medpag
+    clearfield giros:Impuesto
+    clearfield giros:Impuesto_abonado
+    clearfield siaf:Nis_Destino
+    clearfield motagr_sucdest
+    clearfield ImporteConIva
+    clearfield ImporteSinIva
+    clearfield sequence_aux
+    //cgw: Limpia campos para el calculo anticipado de los impuestos - Sellados.
+    //     De esta manera no arrastraran valores de transacciones anteriores.
+    clearfield post:adt_auximpp_impdesc		
+    clearfield giros:Impp_impdesc_emi
+    clearfield giros:Impp_impdesc_pag
+
+    /*Seteo el flag para la reversa - Gabriel Falciola*/
+    setflag tlr:tran_flags,correction
+    post:ovr_sup_id_aux  = ovr:ovr_sup_id
+    post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+    post:siaf_flags_aux = siaf:siaf_flags
+    auxTipo = post:Tipo_Formulario
+    auxNumInic = post:DocInic
+    auxNumFin = post:DocFin
+    auxNumDocFis = post:DocFiscal
+    if (enSesion == "S" || estAnul == "N2c")
+	Call post:CDSinic_jou("journal", dsc:post:Jounarl_anul_Ctx, PresNro, "99023")
+	Call post:CDSbusca_tabla(dsc:post:Jounarl_anul_Ctx)
+	CALL csr:trimfield post:jnl_flia_tran
+	siaf:adt_tran_codigo = siaf:codigo_siaf
+	CALL MISCmuevo_campos_jou
+	tlr:sequence_corr = tlr:jnl_sequence
+	SETFLAG tlr:tran_flags,correction
+	if (enSesion != "S")
+	    SETFLAG tlr:tran_flags,supovr_granted
+	Endif
+	siaf:siaf_flags = siaf_flags_aux
+	tlr:state_flags = tlr:jnl_tran_flags
+	Call siaf:MISClleno_modalidad
+	clearfield NotaCreditoRev
+	UNGETKEY RT_SEND
+    else
+	NotaCreditoRev = "S"
+	Call siaf:MISClleno_modalidad
+	CALL tlr:JNLtran
+	Call post:CDSinicParaJou("S", "99023")
+    endif
+
+    post:Tipo_Formulario = auxTipo
+    post:DocInic = auxNumInic
+    post:DocFin = auxNumFin
+    post:DocFiscal = auxNumDocFis
+    LET lib:err_retval = RETVAL
+    post:PreDNroTrn = post:adt_PreDNroTrn
+    siaf:hora = common:time_of_day
+    if (lib:err_retval >= 0 )
+	/*Antes de hacer las reversas chequeo si no se hicieron anteriormente
+	Esta rutina solo se ejecuta cuando la anulacion quedo incompleta - Gabriel Falciola*/
+	if (sistCaido == "S")
+            call CDScheck_rev_anul
+	end if
+	LET lib:err_retval = RETVAL
+	l_retval = lib:err_retval
+
+	LET sequence_aux = tlr:jnl_sequence
+	LET track_trace_aux = track_trace
+	LET Pieza_aux = Pieza
+
+	if (l_retval == 0 || sistCaido != "S")
+	    CALL csr:trimfield post:jnl_flia_tran
+	    siaf:adt_tran_codigo = siaf:codigo_siaf
+	    ovr:ovr_sup_id = post:ovr_sup_id_aux
+	    siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+	    post:NotaCredito = "N"
+	    Call post:MISCreversa_transac2
+	    if (enSesion != "S" && estAnul != "N2c")
+		call CDSestadoRevOk
+	    endif
+	end if
+     	clearfield jnl_nuevo_medpag
+	clearfield siaf:importe
+	clearfield tlr:jnl_amount_1
+    endif
+    if (enSesion == "S" || estAnul == "N2c")
+	Call post:CDSfin_tabla(dsc:post:Jounarl_anul_Ctx)
+    else
+	Call post:CDSfin_tabla(dsc:NC_CON)
+    endif
+    Call post:MISCclear_campos_jou
+    Resetflag lib:state_flags,scan_mode
+    resetflag tlr:tran_flags,correction
+    clearfield NotaCreditoRev
+END SUB
+
+/*******/

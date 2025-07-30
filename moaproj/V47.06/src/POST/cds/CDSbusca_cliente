@@ -1,0 +1,211 @@
+/****o* Sesión Correo/OFB:post:CDSbusca_cliente
+* NOMBRE
+*   OFB:post:CDSbusca_cliente
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:FVALbusca_cliente
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSbusca_cliente
+LOCAL busq LIKE post:CliRazBusq
+LOCAL cli LIKE post:CloRazon
+LOCAL clocuit LIKE post:CloCuit
+LOCAL cant1 LIKE siaf:cant
+LOCAL cant2 LIKE siaf:cant
+LOCAL encuentro LIKE siaf:i
+LOCAL ret LIKE lib:err_retval
+
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTCliOca)
+    CALL CSR:proc_list(F_REFRESH,LST:post:LISTCliOca)
+
+    if ( post:cli_tipo == CLIMED )
+        call post:OFBclimed_consultas
+        ret = retval    
+        //cgw:controles de checkbox de pago en inicio de sesion
+        if (siaf:codigo_siaf == 99021 || siaf:codigo_siaf == 99400) then
+            //cgw:Controlo si los checkbox de medio de pago cheques del inicio de sesion,
+            //    o en la consulta excepciones de CM estan deshabilitados.
+            //    Puede estar deshabilitados debido a algun rechazo del Host, o a causa
+            //    de que el mismo envie Cliente Inhabilado o que no admita Pago diferido.
+            if (post:ModalidadCC || post:ModalidadCD || ConsumoAnticipo) then
+                //no habilito los check box pues el cliente medio usará el crédito o adelanto
+            else
+                CALL drv:MISCverifica_tag_hab(TAG:post:CHK6) //cheque.
+                if (RETVAL == 1) then //Deshabilitado
+                    //Verifica si por parametria debe estar habilitado.
+                    CALL post:MISCsetea_mpchq_cli(post:cli_tipo,"cheque")
+                end if
+                CALL drv:MISCverifica_tag_hab(TAG:post:CHK9) //cheque diferido.
+                if (RETVAL == 1) then //Deshabilitado
+                    //Verifica si por parametria debe estar habilitado.
+                    CALL post:MISCsetea_mpchq_cli(post:cli_tipo,"cheque_dif")
+                end if
+            endif   
+            //Si el cliente está inhibido para el pago con cheque reseteo los flags.
+            if (post:climed_inhibido == "S" || post:esSesionReempChq == "S") then
+                //cgw:deshabilito cheque si esta inhibido.
+                CLEARFIELD post:MPcheque
+                RESETFLAG MPcheque,MPpago_cheque
+                ALTERCONTROLSET TAG:post:CHK6
+                DISABLECONTROL post:CHK6
+            end if
+            if (post:climed_pagodiferido == "N" || post:esSesionReempChq == "S") then
+                //si esta inhibido,anteriormente a este campo se le forzo valor "N".
+                //cgw:deshabilito cheque diferido.
+                CLEARFIELD post:cheque_dif
+                RESETFLAG cheque_dif,UPpago_dif
+                ALTERCONTROLSET TAG:post:CHK9
+                DISABLECONTROL post:CHK9 
+            end if
+        end if 
+        let CliRazon = CliRaz
+        CloPersonaJuridica = "S"
+        let CliRazon = CliRaz
+        es_juridica = CloPersonaJuridica
+        call post:PBes_juridica
+        refresh CliRazon
+        if (ret < 0)
+            return -2
+        end if
+        
+        
+    else
+        ;LET encuentro = 0
+        
+        call post:MISCaddPickCli(post:cli_tipo)
+        
+        SELECT (RETVAL)
+        	CASE 0 
+            	MSGBOX "NO SE ENCONTRARON CLIENTES PARA ESA BUSQUEDA",OFB_OK,"ERROR"
+        	CASE 2
+        		RETURN (-2)
+        END SELECT
+        select (post:cli_tipo)
+        	case 2
+        		ret = 0
+        		break
+        	case 4
+        		call post:MISCresultBuscCli(CliRazBusq)
+        		ret = retval
+        		//Correccion BUG AUT-413
+        		IF (retval == -1) THEN 
+        		   MSGBOX "NO SE ENCONTRARON CLIENTES PARA ESA BUSQUEDA",OFB_OK,"ERROR"
+        		ENDIF
+		end select
+        IF (ret >= 0) THEN
+            if (post:cli_tipo == 4) then
+            	clearfield post:CliRazBusq
+            	refresh post:CliRazBusq
+            	CDS ENDSELECT FLD:contextoCli
+            	if (tablaCli == DSC:post:cliocaUP_tbl)
+            	    LET post:CliRaz = substr(common:csr_string,0,50)
+            	    CALL csr:trimfield(post:CliRaz)
+            	    refresh CliRaz
+            	    LET post:CloCuit = substr(common:csr_string,51,11)
+            	    CALL csr:trimfield(post:CloCuit)
+            	    refresh CloCuit
+            	    
+            	    LET post:NisUP = substr(common:csr_string,63,5)
+            	    CALL csr:trimfield(post:NisUP)
+            	    refresh NisUP
+            	    CDS SELECT FROM FLD:tablaCli BECOMES FLD:contextoCli WHERE \
+            	    (CliUP_Nis == "" || CliUP_Nis == common:sucursal_activa) \
+            	        && post:CloRazon == FLD:post:CliRaz && post:CloCuit == FLD:post:CloCuit && \
+            	    post:NisUP == post:NisUP
+            	else
+            	    LET post:CloCuit = substr(common:csr_string,3,11)
+            	    CloTipDoc = substr(common:csr_string,0,2)
+            	    CDS SELECT FROM DSC:clioca_tbl BECOMES fld:contextoCli \
+            	    where  CloCuit == CloCuit && \
+            	    CloTipDoc == CloTipDoc
+            	endif
+            	CDS FINDFIRST FLD:contextoCli NOLOCK
+            	IF (CDSRETVAL == -801) THEN
+            	    CDS ENDSELECT FLD:contextoCli
+            	    RETURN (-2)
+            	END IF
+            	CDS EXTRACT FLD:contextoCli ALL
+            	CDS UNLOCK FLD:contextoCli
+            	CDS ENDSELECT FLD:contextoCli
+            	if (tablaCli == DSC:post:cliocaUP_tbl && common:system_date > CliUP_FechaFin)
+            	    MSGBOX "EL CONTRATO PARA ESTA UNIDAD POSTAL SE ENCUENTRA VENCIDO",0x00,"ERROR"
+            	    call post:MISCident_cli_clear
+            	    clearfield IvaCod
+            	    RETURN (-2)
+            	endif
+            end if
+            
+            CliApellido = CloApellido     
+            CliNombre  = CloNombre
+            CliRazon = CloRazon
+            if (CloPersonaJuridica == "N" && post:cli_tipo == 2)
+                fprint CliRaz "%s %s", CloNombre, CloApellido
+            else
+                CloPersonaJuridica = "S"
+                let CliRaz = CloRazon
+            end if
+            es_juridica = CloPersonaJuridica
+            call post:PBes_juridica
+            let adt_TipoDoc_tipo = CloTipDoc
+            CALL FVALTipoDoc
+            ;IF (LASTKEY == RT_SEND) //|| (LASTKEY == RT_ENTERFIELD)   /*  20000809 RSE agregado para que no salga de la pantalla de inicio de sesion */
+
+                IF (post:cli_tipo == CLIUP) THEN
+                    //cgw: Si es llamado desde el inicio de sesion, No consulta si paga con cheque diferido,
+                    //     ya que se selecciona desde el checkbox del inicio de sesion.
+                    IF (siaf:codigo_siaf != 99021) THEN
+
+                        //25.03.2002 - Pregunto si paga con cheque diferido     
+                        MSGBOX "Paga con Cheque Diferido?",0X04,"AVISO"
+                        IF (RETVAL == 6) THEN
+                            //Habilito el checkbox de pago diferido
+                            SETFLAG cheque_dif,UPpago_dif           
+                            ALTERCONTROLSET TAG:post:CHK9
+                            ENABLECONTROL TAG:post:CHK9
+                        ELSE
+                            //Deshabilito el checkbox de pago diferido
+                           RESETFLAG cheque_dif,UPpago_dif
+                           ALTERCONTROLSET TAG:post:CHK9
+                           DISABLECONTROL TAG:post:CHK9
+                        END IF
+                   
+                    ELSE
+                         //NI 50244- SOLO EN INICIO DE SESION SE AGREGA LA CONSULTA SIMPLE DE CLIENTE PARA UP
+		                //PARA QUE DEVUELVA SALDO DE ADELANTO Y TRANSFERENCIAS BANCARIAS.
+	    	           	if (testflag (hcomm:state_flags,on_line))
+	        	       		post:climed_tipo = UP_HOST
+        	    			move post:NisUP to post:climed_numero
+            				call post:OFBclimedio_simple
+
+                    		if (retval < 0) then
+                        		resetflag giros:tran_send_mode,consulta_simple
+	                       		resetflag giros:tran_send_mode,consulta_multiple
+        	               		ungetkey RT_ESC
+                	       		return -2
+                    		end if
+                    		resetflag giros:tran_send_mode,consulta_simple
+	                    	resetflag giros:tran_send_mode,consulta_multiple
+	                 	endif
+                	END IF    
+                END IF
+                ;RETURN -2
+            ;ENDIF
+        ELSE        /*  20000809 RSE cuando en el picklist se le da ESC debe quedarse en el campo post:CliRazBusq */
+            return -2
+        END IF
+    end if
+
+END SUB
+
+/*******/

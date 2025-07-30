@@ -1,0 +1,175 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCrev_sesion_envio
+* NOMBRE
+*   OFB:tes:MISCrev_sesion_envio
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCrev_sesion_envio
+
+       local loc_err_retval like lib:err_retval
+
+       local aux_codigo_siaf like siaf:codigo_siaf
+       local aux_jnl_time    like tlr:jnl_time
+       local aux_sequence    like tlr:jnl_sequence
+
+       post:ovr_sup_id_aux  = ovr:ovr_sup_id
+       post:ovr_siaf_id_aux = siaf:ovr_sup_siaf_id
+       // PJM 5-10-1998
+       // Me fijo si hay transacciones de Galicia
+       ovr:ovr_sup_id = post:ovr_sup_id_aux
+       siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+       post:siaf_flags_aux = siaf:siaf_flags
+    
+       aux_codigo_siaf = siaf:codigo_siaf
+       aux_jnl_time    = tlr:jnl_time
+       aux_sequence    = tlr:jnl_sequence
+
+       Call CDSinic_tabla_jou("journal",dsc:tes:Journal_anul_Ctx)
+       Call siaf:MISClleno_modalidad
+       UngetKey RT_SEND
+       ;CALL tlr:JNLtran
+       
+       Call post:CDSbusca_tabla(dsc:tes:Journal_anul_Ctx )
+       if (retval == -801  )
+            call post:MISCclear_campos_jou
+            resetflag lib:state_flags,scan_mode
+            call post:CDSfin_tabla(dsc:tes:Journal_anul_Ctx )
+            resetflag tlr:tran_flags,correction
+        return
+       end if
+
+       While ( Retval >= 0 )
+         CALL csr:trimfield post:jnl_flia_tran
+         siaf:adt_tran_codigo = siaf:codigo_siaf
+         ovr:ovr_sup_id = post:ovr_sup_id_aux
+         siaf:ovr_sup_siaf_id = post:ovr_siaf_id_aux
+
+         let loc_err_retval = 0
+         select (siaf:codigo_siaf)
+         case 7506
+              call CDSchequera_load(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,siaf:nro_cheque)
+              if (adt_chequera_stat != NUEVA)
+                let loc_err_retval = 1
+
+              end if
+              break
+            case 9906
+                LET giros:adt_chk_fecha = adt_chk_fecha
+                LET giros:adt_chk_hora  = adt_chk_hora
+                LET giros:adt_chk_op = adt_chk_op_orig
+                LET giros:adt_chk_tesoro = "S"
+                LET giros:adt_chk_estado = 0
+                LET adt_chk_tesoro = giros:adt_chk_tesoro
+                LET adt_chk_marca_ing = "T"
+                call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+                call CDSgraba_TesChkVMov
+                break
+         case 9926
+                LET giros:adt_chk_fecha = adt_chk_fecha
+                LET giros:adt_chk_hora  = adt_chk_hora
+                LET giros:adt_chk_op = adt_chk_op_orig
+                LET giros:adt_chk_tesoro = "N"
+                LET giros:adt_chk_estado = 2
+                LET adt_chk_tesoro = giros:adt_chk_tesoro
+                LET adt_chk_marca_ing = "C"
+                call CDSadt_chk_actu   // Actualiza el archivo de chequeras
+                call CDSgraba_TesChkVMov
+                break
+         end select
+
+         if (loc_err_retval == 0)
+         
+            call hcomm:COMM_stat_init
+            giros:codigo_procesamiento = giros:codigo_procesamiento + 1
+            setflag giros:tran_send_mode,trat_cheques
+            post:jnl_cheques_tipo = "R"
+            giros:hora_viaje = common:time_of_day
+            giros:dia_viaje  = common:system_date
+            call post:CDSobtiene_secuen("STAN")
+            setflag giros:flags_back,cancelacion
+            call  post:MISCreversa_transac
+            resetflag giros:flags_back,cancelacion
+            if (hcomm:tran_status > HOST_REJECTED )
+                break
+            end if
+         end if
+
+         Call post:CDSbusca_tabla(dsc:tes:Journal_anul_Ctx )
+        End While
+        Call post:CDSfin_tabla(dsc:tes:Journal_anul_Ctx )
+
+        clearfield drv:INDhcomm_rtn
+        clearfield drv:INDspc_rtn[1]
+        
+    if (hcomm:tran_status != HOST_ACCEPTED )
+            Call post:CDSfin_tabla(dsc:tes:Journal_anul_Ctx )
+            Call post:MISCclear_campos_jou
+            Resetflag lib:state_flags,scan_mode
+            resetflag tlr:tran_flags,correction         
+        return 
+    end if
+
+    // FGB 28.03.2006 - Tratamiento de Cheques
+    if (siaf:codigo_siaf == 9346 || siaf:codigo_siaf == 9356) then // Si es entrada de cheque de Otra Sucursal
+
+        call tes:MISCes_sucur_auto(tes:sucursal) // Si la sucursal origen es No Automatizada
+        if (retval != 0) then
+            
+            // reverso la salida forzada
+            call post:MISCgenera_salfor_os(REVERSA)
+            // reverso el alta forzada
+            call post:MISCalta_cheque(REVERSA)
+        endif
+    endif
+    
+    
+    cds select from "journal" becomes "Cont" \
+        where tlr:jnl_branch == common:sucursal_activa && \
+        tlr:jnl_bus_date == common:system_date && \
+        tlr:jnl_operator == op:op_operator_id && \
+        tlr:jnl_time == aux_jnl_time &&\
+        tlr:jnl_sequence == aux_sequence && \
+        siaf:codigo_siaf == aux_codigo_siaf && \
+        tlr:jnl_sequence_corr == ""  &&\
+        siaf:tiene_reverso == "S" && tlr:jnl_status != HOST_REJECTED
+
+    CDS FINDNEXT "Cont"  NOLOCK
+    If ( CDSRETVAL < 0 )
+        Return ( CDSRETVAL )
+    Endif
+    CDS EXTRACT "Cont"   All
+
+    call post:MISCmuevo_campos_jou
+    tlr:sequence_corr = aux_sequence
+    tlr:hora_corr = aux_jnl_time
+    call hcomm:COMM_stat_init   
+
+    setflag tlr:tran_flags,correction
+    if (!(post:enSesion == "S" ))
+        setflag tlr:tran_flags,supovr_granted
+    end if
+    tlr:state_flags = tlr:jnl_tran_flags
+    call siaf:MISClleno_modalidad
+
+    CALL tlr:JNLtran
+    CDS ENDSELECT "Cont"
+    Call post:CDSfin_tabla(dsc:tes:Journal_anul_Ctx )
+    Call post:MISCclear_campos_jou
+    Resetflag lib:state_flags,scan_mode
+
+END SUB
+
+/*******/

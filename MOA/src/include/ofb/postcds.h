@@ -1,0 +1,26 @@
+#include "sucuvirt.h"
+#include "ofbdefs.h"
+#include "impresio.h"
+#include "csr.h"
+#include "pickdrv.h"
+#include "drv.h"
+#include "hcommstd.h"
+#include "giros.h"
+#include "tesoro.h"
+#include "cdserdef.h"
+#include "descuento.h"
+#include "presupuesto.h"
+#include "bonif.h"
+#include "reporte.h"
+#define MONEDA_SF1_PROV_GENERICA	"9"
+#define MAYORISTAS 8
+#define REEMP_MAX_MP 6
+#define PICKOP_SORT 4
+#define SELECCION_TODAS_SUC "TODAS"
+#define EXCLUSION "E"
+#define INCLUSION "I"
+#define REST_PRD "PRODUCTOS:"
+#define REST_ESP "ESPECIES:"
+#define DESCTO_SERVICIO "SERVICIOS:"
+#define PICKOP_SEARCH 3
+#define BROWSER_CAPTION	"Buscar"

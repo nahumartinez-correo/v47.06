@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:siaf:OVRro_ovr_proc
+* NOMBRE
+*   OFB:siaf:OVRro_ovr_proc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafOVR.h"
+
+    SUB siaf:OVRro_ovr_proc
+    CALL CSR:f_orsklock
+    CALL CDSadt_op_sup_selall
+    IF (RETVAL != 0) THEN
+      GOTO offset_0201
+
+    END IF
+    LET ovr:ro_rcv_oper = op:adt_operator_id
+    MOVE op:adt_node_id TO ovr:ro_rcv_ws
+    CLEARFIELD ovr:ro_resp
+    CLEARFIELD ovr:ro_info_desc
+    CLEARFIELD ovr:ro_info_msg1
+    CLEARFIELD ovr:ro_info_msg2
+    MOVE DSC:ovr:ro_msg_ovr_rcv TO ovr:ro_info_desc
+    UNPROTFIELD ovr:ro_info_msg1
+    UNPROTFIELD ovr:ro_info_msg2
+    POPUP ovr:POPovr_info_msg
+    IF ((LASTKEY != 0x0191) && (LASTKEY != 0x0186)) THEN
+      GOTO offset_0201
+
+    END IF
+    CALL hcomm:SRQ_ro_send_req
+    IF (RETVAL != 0) THEN
+      GOTO offset_0201
+
+    END IF
+    FYIMSG LST:common:fyimsg_list,ovr:FYIwait_for_sup
+    DO
+      LET hcomm:host_wait_time = 240
+      CALL hcomm:SRQ_wait_for_resp(fld:hcomm:host_wait_time)
+      IF ((RETVAL == 2) || (RETVAL == 3)) THEN
+        IF (RETVAL == 2) THEN
+          GETKEY
+        END IF
+        FYIMSG CLEAR
+        CALL hcomm:SRQ_ro_send_cancel
+        IF (RETVAL != 0) THEN
+          ERRMSG LST:common:errmsg_list,ovr:ERRno_cancel_ovrreq
+        END IF
+        FYIMSG CLEAR
+        GOTO offset_0201
+
+      END IF
+      IF (RETVAL == 1) THEN
+        FYIMSG CLEAR
+        ERRMSG LST:common:errmsg_list,ovr:ERRno_delvr_ovrreq
+        GOTO offset_0201
+
+      END IF
+      IF (TESTFLAG(ovr:event_flags,ovr_acknowledge)) THEN
+        FYIMSG LST:common:fyimsg_list,ovr:FYIsup_proc_ovr
+        RESETFLAG ovr:event_flags,ovr_acknowledge
+        CONTINUE
+      END IF
+      IF (TESTFLAG(ovr:event_flags,ovr_response)) THEN
+        RESETFLAG ovr:event_flags,ovr_response
+        BREAK
+      END IF
+    LOOP
+    PROTFIELD ovr:ro_info_msg1
+    PROTFIELD ovr:ro_info_msg2
+    FYIMSG CLEAR
+    SELECT (ovr:ro_resp)
+      CASE DSC:ovr:ro_grant
+        IF  \
+((ovr:ro_info_msg1.NUMCHARS == 0) && (ovr:ro_info_msg2.NUMCHARS == 0)) THEN
+          FYIMSG LST:common:fyimsg_list,2 ovr:FYIovr_grant
+        ELSE
+          MOVE DSC:ovr:ro_grant_reason TO ovr:ro_info_desc
+          POPUP ovr:POPovr_info_msg
+        END IF
+        GOTO offset_01E5
+
+        BREAK
+      CASE DSC:ovr:ro_deny
+        IF  \
+((ovr:ro_info_msg1.NUMCHARS == 0) && (ovr:ro_info_msg2.NUMCHARS == 0)) THEN
+          ERRMSG LST:common:errmsg_list,ovr:ERRovr_deny
+        ELSE
+          MOVE DSC:ovr:ro_deny_reason TO ovr:ro_info_desc
+          POPUP ovr:POPovr_info_msg
+        END IF
+        GOTO offset_0201
+
+        BREAK
+      CASE ELSE
+        IF  \
+((ovr:ro_info_msg1.NUMCHARS != 0) || (ovr:ro_info_msg2.NUMCHARS != 0)) THEN
+          MOVE DSC:ovr:ro_hold_reason TO ovr:ro_info_desc
+          POPUP ovr:POPovr_info_msg
+        END IF
+        GOTO offset_0201
+
+    END SELECT
+offset_01E5:
+    MOVE op:adt_operator_id TO ovr:ovr_sup_id
+    MOVE op:adt_operator_siaf_id TO ovr_sup_siaf_id
+    CALL CSR:f_orskunlk
+    RETURN
+offset_0201:
+    CALL CSR:f_orskunlk
+    RETURN (1)
+    END SUB
+
+/*******/

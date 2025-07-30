@@ -1,0 +1,92 @@
+/****o* Reportesn/OFB:tes:TRANcons_tes_ev
+* NOMBRE
+*   OFB:tes:TRANcons_tes_ev
+* DESCRIPCION
+*   Rutina que genera el reporte de consulta de Especies del tesoro o caja
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRANcons_TesEspV; OFB:tes:MISClist_cierre_teso; OFB:tes:MISClista_ciefortes
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesTRAN.h"
+
+SUB tes:TRANcons_tes_ev
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+
+	LET copias_aux = 1
+	LET siaf:lineas_cl = 0
+	/* Veo si tengo que crear el picklist de tesoro */
+	LET siaf:pick_titulo = "tesoro"
+	
+	IF (siaf:pantalla_impreso ==  "P") THEN
+		CALL csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	ELSE
+		;LMB - PS 9780 - 13.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal "tesoroev.lis"
+		CALL MISCopen_file(common:tmpDirTemporal,5)
+		
+			IF (siaf:nro_copias.NUMCHARS == 0 || siaf:nro_copias == 0) THEN
+				LET siaf:nro_copias = 1
+			END IF
+	END IF
+
+	/* Genero el listado*/
+	SELECT (drv:dt_app)
+		CASE 2
+		CASE 3
+			CALL CDScons_tes_ev(op:op_branch_id, "N", op:op_operator_id)
+		BREAK
+		CASE 4
+			CALL CDScons_tes_ev(op:op_branch_id, "S", op:op_tesoro_id)
+		BREAK
+		CASE ELSE
+			/* Si el listado no lo tira un cajero o tesorero  busco el id del tesoro */
+			LET tes:tes_moneda = 0
+			CALL tes:CDScons_tes_tesor
+			CALL CDScons_tes_ev(op:op_branch_id, "S",tes:tes_tes_id)
+		BREAK
+	END SELECT
+
+	IF (RETVAL < 0) THEN
+		LET common:csr_string = "(L) Error realizando listado"
+		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		RETURN (-2)
+	END IF
+
+	/* Salida segun opcion del usuario */
+	IF (siaf:pantalla_impreso == "P") THEN
+		CALL csr:f_sadopl(siaf:pick_titulo,common:csr_string)
+	ELSE
+		;LMB - PS 9780 - 13.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal "tesoroev.lis"
+		CALL MISCclose_file(common:tmpDirTemporal,5)
+		IF (siaf:lineas_cl <= 7)
+			IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+				MSGBOX "NO EXISTEN MOVIMIENTOS DE ESPECIES PARA LISTAR",0x00,"AVISO"
+			END IF
+		ELSE
+			//gpb:NI50752
+			CALL tes:MISCflowPDF("tesoroev.lis")
+			//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("tesoroev.lis")
+			END IF
+		END IF
+	END IF
+	
+	FPRINT post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+	CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+	EXEC post:linea_spvCM          
+	UNDISPLAY siaf:SCRNcomo_lista
+	
+END SUB
+
+/*******/

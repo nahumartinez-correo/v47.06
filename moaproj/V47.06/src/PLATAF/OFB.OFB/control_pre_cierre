@@ -1,0 +1,76 @@
+/****o* Sesión Correo/OFB:plataf:control_pre_cierre
+* NOMBRE
+*   OFB:plataf:control_pre_cierre
+* DESCRIPCION
+*   Dentro de esta rutina, se realizan los controles necesarios
+*   para saber si se puede confirmar el presupuesto, o no.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   plataf:estado_presu_accion
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+/////////////////////////////////////////////////////////////
+// Dentro de esta rutina, realizo los controles necesarios //
+// para saber si se puede cerrar el presupuesto, o no.     //
+/////////////////////////////////// FGB 13.11.2002 //////////
+
+SUB plataf:control_pre_cierre
+
+	CALL post:CDSadt_presuact_save
+
+	; tratamiento para Giros Masivos
+	call giros:MISCcheck_masivos
+	if ( retval == -3 )
+		call post:CDSchk_totalRestante
+		if ( Retval < 0 )
+			return (-1) // break
+		endif
+	else
+		call giros:OFBcant_trx_gm
+	end if
+
+	//50295 - Emision de Lista de Giros
+	if (testflag(giros:giros_importacion,proc_em_lg)) then
+		//recupero el nro de sesion lg de la PResu porque hay secuencias que hacen que se borren.
+		CALL giros:MISCextract_nroseslg
+		//Chequeo que no hayan quedados giros enviados sin presupuestar!!(por si vino de una caida del RT)
+		call giros:OFBresultado_lg(giros:nro_sesion_lg)
+	endif
+
+	// por las dudas... hago un ultimo calculo de impuestos.
+	call TRANcalc_impuestos
+
+	; control del importe facturable de la sesion
+	// PJM 29-06-1999
+	// Se valida que el saldo que intervienen el comprobante fisca no sea negativo
+	// siempre y cuando no se Cuenta correntista
+	If ( post:cli_tipo != CTACTE   )
+		/*Limpio estos campos para que no traiga problemas en el cálculo de la restricciones
+		de Medios de Pago - Gabriel Falciola*/
+		clearfield siaf:adt_mot_modulo
+		clearfield post:motagr_modulo
+		Call post:MISCes_negat_sesion
+		If ( Retval < 0 )
+			msgbox "No se permite un Saldo Negativo para el Comprobante Fiscal",OFB_OK,"Error"
+			/* MFM - Limpio post:det_presu_line1*/
+			clearfield post:det_presu_line1
+			refresh post:det_presu_line1
+			return (-1) // BREAK
+		Endif
+	Endif
+
+	// xq' hay varias rtn's que utilizan este campo para realizar su calculo.
+	let post:importe_display = post:Total_importe
+
+END SUB
+
+/*******/

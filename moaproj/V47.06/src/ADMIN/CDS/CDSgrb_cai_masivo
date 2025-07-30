@@ -1,0 +1,136 @@
+/****o* Pendientes de agrupación/OFB:admin:CDSgrb_cai_masivo
+* NOMBRE
+*   OFB:admin:CDSgrb_cai_masivo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   admin:SENDcai_masivo
+* DOCUMENTACION
+*   NI50488
+* SOURCE
+*/
+#include "adminCDS.h"
+
+SUB admin:CDSgrb_cai_masivo
+	/* [PAW] ---> modificada 18-01-99 */  	
+	LOCAL long LIKE post:cantidad
+	LOCAL cdsretval_BR_adt_br LIKE lib:err_retval
+	LOCAL l_cdsretval LIKE lib:err_retval
+	LOCAL cadenaMD5 LIKE common:csr_string
+	LOCAL l_adt_br_branch LIKE admin:adt_br_branch
+	LOCAL l_adt_sucu_cai LIKE admin:adt_sucu_cai
+	LOCAL l_adt_nro_cai LIKE admin:adt_nro_cai
+	LOCAL l_adt_fecha_cai LIKE admin:adt_fecha_cai
+	LOCAL l_cai_crypt LIKE admin:adt_nro_cai
+	LOCAL l_adt_secuen_firma LIKE post:adt_secuen_firma
+	LOCAL cant_reg LIKE admin:adt_br_branch
+	LOCAL idx_item LIKE siaf:i
+	LOCAL line_csr LIKE common:csr_string
+	LOCAL l_cont LIKE siaf:i
+
+
+	/*  Alta y Modificacion de CAI  */
+	FPRINT admin:nro_cai "%014.14s" admin:nro_cai
+	IF (nro_cai ==  "00000000000000") THEN
+		LET drv:error_msg = "(L) CODIGO DE CAI INVALIDO"
+		ERRMSG common:errmsg_list,fld:drv:error_msg
+		CALL admin:MISCresetear_flags
+		RETURN (-2)
+	ELSE	
+
+		//Datos fijos
+		LET l_adt_fecha_cai = admin:adt_fecha_cai
+		LET l_cai_crypt = admin:nro_cai
+		//Desencripto el cai para calular la firma
+		CALL post:MISCenc_dec_ryptar (admin:nro_cai,admin:nro_cai.NUMCHARS)
+		LET l_adt_nro_cai = common:csr_string
+
+		//Inicio - Recorro Sucursales
+		CDS SELECT FROM DSC:admin:adt_br_table BECOMES DSC:admin:adt_br_context \
+			WHERE admin:adt_br_tipo == "SA" ASCENDING
+		
+		CDS FINDFIRST DSC:admin:adt_br_context NOLOCK
+		LET cdsretval_BR_adt_br = CDSRETVAL
+
+		/* Si encontró al menos uno, me fijo cuántos son*/
+		IF (cdsretval_BR_adt_br == 0) THEN
+			cant_reg = 0
+			CDS AGGREGATE DSC:admin:adt_br_context COUNT admin:adt_br_branch AS cant_reg
+			CDS EXTRACT DSC:admin:adt_br_context cant_reg
+			CALL post:MISCinicProgressBar("INSERTANDO REGISTROS CAI - ", cant_reg)
+		ELSE
+		  MSGBOX "No se han encotrado surusales en la tabla BR_adt_br",0x00,"ERROR"
+			CDS ENDSELECT DSC:admin:adt_br_context
+			RETURN -1
+		END IF
+		
+		CDS SELECT FROM DSC:admin:adt_br_table BECOMES DSC:admin:adt_br_context \
+			WHERE admin:adt_br_tipo == "SA" ASCENDING		
+
+		CDS FINDFIRST DSC:admin:adt_br_context NOLOCK
+		LET cdsretval_BR_adt_br = CDSRETVAL
+		WHILE (cdsretval_BR_adt_br == 0)
+			CLEARFIELD l_adt_br_branch
+			CDS EXTRACT DSC:admin:adt_br_context \
+				admin:adt_br_branch INTO l_adt_br_branch
+				
+			//Inicio - Insert cai
+			CDS SELECT FROM DSC:cai_tabla BECOMES DSC:admin:cai_contexto \
+				WHERE admin:adt_sucu_cai == l_adt_br_branch \
+				&& admin:adt_fecha_cai == l_adt_fecha_cai
+				
+			CDS FINDFIRST DSC:admin:cai_contexto LOCK
+			LET l_cdsretval = CDSRETVAL
+			CDS CLEARBUFFER DSC:admin:cai_contexto
+			IF (l_cdsretval == -801) THEN
+				CLEARFIELD post:adt_secuen_firma
+				CLEARFIELD cadenaMD5
+				CLEARFIELD l_adt_secuen_firma
+				
+				// [PAW] --> Firma electrónica. (Sucursal + Número Cai + Fecha Vencimiento)
+				FPRINT cadenaMD5 "%s%s%s", l_adt_br_branch, l_adt_nro_cai, l_adt_fecha_cai
+				CALL csr:MD5checksum(cadenaMD5, 1, post:adt_secuen_firma, 1)
+				LET l_adt_secuen_firma = post:adt_secuen_firma
+
+				CDS APPEND DSC:admin:cai_contexto \
+					l_adt_br_branch AS FLD:admin:adt_sucu_cai \
+					l_cai_crypt AS FLD:admin:adt_nro_cai \
+					l_adt_fecha_cai AS FLD:admin:adt_fecha_cai \
+					l_adt_secuen_firma AS FLD:post:adt_secuen_firma 
+				
+				CDS INSERT DSC:admin:cai_contexto LOCK
+				IF (CDSRETVAL != 0) THEN
+					LET drv:error_msg = "FECHA DUPLICADA"
+					ERRMSG common:errmsg_list,fld:drv:error_msg
+					CALL admin:MISCresetear_flags
+					CDS UNLOCK DSC:admin:cai_contexto
+					CDS ENDSELECT DSC:admin:cai_contexto
+					CDS ENDSELECT DSC:admin:adt_br_context
+					RETURN (-2)
+				END IF
+				CALL post:MISCactProgressBar("INSERTANDO REGISTROS CAI - ", 1, BARRAPORCENT, 1)
+			END IF
+			CDS UNLOCK DSC:admin:cai_contexto
+			CDS ENDSELECT DSC:admin:cai_contexto	
+			//Fin - Insert cai
+			CDS FINDNEXT DSC:admin:adt_br_context NOLOCK
+			LET cdsretval_BR_adt_br = CDSRETVAL
+		END WHILE
+		CDS ENDSELECT DSC:admin:adt_br_context
+		CALL post:MISCfinProgressBar
+		//Fin - Recorro Sucursales	
+	
+		;REFRESH adt_sucu_cai
+		REFRESH nro_cai
+		REFRESH adt_fecha_cai
+	END IF
+		
+END SUB
+
+/*******/

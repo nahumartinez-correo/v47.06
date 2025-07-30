@@ -1,0 +1,137 @@
+/****o* Apertura de Tesoro/OFB:siaf:MISCopen_day_tes
+* NOMBRE
+*   OFB:siaf:MISCopen_day_tes
+* DESCRIPCION
+*   Realiza Apertura-Reapertura del Tesoro.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:MISCcheck_bus_date
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCopen_day_tes(prm_retval_fecha)
+    LOCAL paso_OK LIKE siaf:i //cgw: Flag que verifica si paso los controles de recepcion de fallos.
+
+    resetflag siaf:siaf_flags,cajero
+    resetflag siaf:siaf_flags,retaguardia
+
+    let prm_retval_fecha = 0
+
+    /* Verifico el estado de la sucursal. Si está cerrada 
+    no podrá abrir el tesoro*/
+    call siaf:MISCverif_suc
+    if (retval < 0) then
+        let drv:button = TFB2
+        CALL  drv:but_enable
+        let drv:button = TFB3
+	    CALL  drv:but_enable
+	    CALL siaf:APPLterm
+    endif
+
+    call tes:CDScons_tes_tesor
+    call csr:date_compare(tes:tes_fecha,common:system_date)
+    /* hace la apertura del tesoro SI tiene la marca de cierre O si es la
+    primera vez (tes_fecha y marca_cierre son nulos) */
+    if ((op:op_tesoro == "S") && ((tes:tes_marca_cierre == "X") || \
+        (tes:tes_marca_cierre == "" && tes:tes_fecha == "") || \
+        (retval != 0)))
+        call tes:MISCreapertura
+        /* Si no se quiere reabrir el dia o no le da supervision 
+	   		se va al desktop */
+	    if (retval < 0)
+	        let drv:button = TFB2
+	        CALL  drv:but_enable
+	        let drv:button = TFB3
+	        CALL  drv:but_enable
+	        CALL siaf:APPLterm
+        end if
+        
+        //Si tes:tes_marca_cierre = "" (Apertura Tesoro).
+
+        /*cgw: PS9805 - Control de Recepcion de Fallos.
+               Si hay recepciones pendientes de fallo para Cajero/Tesorero, no se puede abrir o reabrir
+               el Tesoro, hasta que se reciban los fallos pendientes.
+               paso_OK = 1: No hay recepciones pendientes (default), 0: Hay recepciones pendientes. */
+        paso_OK = 1
+
+        //cgw: PS9805 - Control Recepcion Fallos Franqueadoras Para Apertura del Tesoro.
+        //     Verifico que el operador no tenga una marca de fallo de franqueo en la rend_caj.
+	    CALL tes:CDSchk_fallo_rend
+	    IF (RETVAL < 0) THEN
+		    paso_OK = 0
+	    END IF
+
+        //cgw: PS9805 - Control Recepcion Fallos CREM Para Apertura del Tesoro.
+        //     Verifico que el operador no tenga una marca de fallo CREM asignado en la rend_caj.
+	    CALL tes:CDSchk_falloCR_rend
+	    IF (RETVAL < 0) THEN
+		    paso_OK = 0
+	    END IF
+
+        /* cgw: Se deja de utilizar controles de recepciones pendientes de Fallos PCT.
+
+        //cgw: Control Recepcion Fallos Pagos por Cuenta de Terceros Para Apertura del Tesoro.
+        //     Verifico que el operador no tenga una marca de fallo PCT asignado en la rend_caj.
+        CALL tes:CDSchk_falloPCT_rend
+	    IF (RETVAL < 0) THEN
+	    	paso_OK = 0
+	    END IF
+        */
+
+        IF (paso_OK == 0) THEN
+        	//cgw: PS9805 - Hay Recepciones de fallos pendientes.
+        	let drv:button = TFB2
+            CALL drv:but_enable
+            let drv:button = TFB3
+	        CALL drv:but_enable
+	        CALL siaf:APPLterm
+        END IF
+
+	    CALL tes:MISCaper_llave_tes
+	    IF (op:numero_cajas > 2 )THEN
+	        /*Verifico que la sucursal tenga menos de 2 cajas, en caso contrario 
+	          se solicita la password del operador que maneja llave de tesoro */
+
+		    CALL csr:listexec LST:tes:TRANaper_llave_tes /* apert. llave de tesoro*/
+		    if (LASTKEY == RT_ESC ) THEN
+		        let drv:button = TFB2
+		        CALL  drv:but_enable
+		        let drv:button = TFB3
+		        CALL  drv:but_enable
+		        CALL APPLterm
+		    end if
+	    ELSE	
+		    CALL csr:listexec LST:tes:TRANapertura_dia /* apert.de tesoro*/
+	    ENDIF
+
+	    if (LASTKEY == RT_ESC ) THEN
+            let drv:button = TFB2
+            CALL  drv:but_enable
+            let drv:button = TFB3
+            CALL  drv:but_enable
+            CALL APPLterm
+        end if
+    else
+        /* Verifico que sea el mismo tesorero */
+        if (tes:suc_tesorero != op:op_operator_id) then
+             call tes:TRANmuestro_efvo
+             call tes:CDScambio_tesorero(op:op_operator_id)
+        end if
+    end if
+    setflag op:op_state_flags,tesoro_abierto
+    /* El tesoro le puede pasar la marca de tesoro a otro operador a la
+       mitad del dia. Por lo cual el tesoro destino entrara a la aplica
+       cion sin haber hecho la apertura del dia. Esto traia problemas con
+       la tlr:bus_date - FB 25/06/98 */
+    let tlr:bus_date = common:system_date
+END SUB
+
+/*******/

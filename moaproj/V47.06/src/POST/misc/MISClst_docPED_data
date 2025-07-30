@@ -1,0 +1,164 @@
+/****o* Pago en Destino/OFB:post:MISClst_docPED_data
+* NOMBRE
+*   OFB:post:MISClst_docPED_data
+* DESCRIPCION
+*   Reporte de Notas de Credito y Refacturaciones PED
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISClst_docPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_docPED_data(link_num)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL cont LIKE post:cantidad
+	LOCAL sub_header LIKE common:csr_string
+	LOCAL sub_header_ant LIKE common:csr_string
+	LOCAL columns LIKE common:csr_string 
+	LOCAL split LIKE common:csr_string_aux
+	LOCAL line_csr LIKE common:csr_string 
+	LOCAL l_estado LIKE common:csr_string
+	LOCAL l_serv_ant LIKE post:adt_serv_serv
+	LOCAL l_serv_desc LIKE post:adt_serv_desc
+	LOCAL l_pieza_ped LIKE post:pieza_ped
+	LOCAL l_id_pieza_ped LIKE post:id_pieza_ped
+	LOCAL l_total_serv LIKE post:importe_sesion
+	LOCAL l_imprimo_total LIKE siaf:i
+	
+	l_estado = "NCRED"
+	l_imprimo_total = 0
+	
+Inicio:
+	IF (l_estado == "NCRED") THEN
+		//seteo las variables del subencabezado
+		sub_header = "<st>1</st>NOTAS DE CREDITO"			
+		//1 - Consulto Notas de Credito
+		CDS SELECT FROM DSC:post:rep_doc_ped_tbl BECOMES DSC:post:rep_doc_ped_ctx \
+			WHERE post:fec_act_ncred == siaf:fecha_proceso
+	ELSE
+		//seteo las variables del subencabezado
+		sub_header = "<st>1</st>REFACTURACION Y REMITOS DE IMPOSICION"
+		//2 - Consulto Refacturacion y Remitos de Imposicion
+		CDS SELECT FROM DSC:post:rep_doc_ped_tbl BECOMES DSC:post:rep_doc_ped_ctx \
+			WHERE post:fec_act_factu == siaf:fecha_proceso
+	END IF
+	
+	split = "-------------------------------------------------------------------------------------------------"
+	
+	CDS FINDFIRST DSC:post:rep_doc_ped_ctx LOCK
+	LET l_retval = CDSRETVAL
+
+	WHILE (l_retval == 0)
+		CLEARFIELD line_csr
+		CLEARFIELD l_serv_desc
+		
+		//flag para saber si debo imprimir el importe total
+		l_imprimo_total = 1
+				
+		CDS EXTRACT DSC:post:rep_doc_ped_ctx \
+			post:ServicioPED \
+			post:pieza_ped INTO l_pieza_ped \
+			post:adt_serv_desc INTO l_serv_desc \
+			post:fec_act_factu \
+			post:LetraCompFACTU \
+			post:NroCompFACTU \
+			post:ImporteFACTU \
+			post:NroCompImpos \
+			post:fec_act_ncred \
+			post:LetraCompNCRED \
+			post:NroCompNCRED \
+			post:ImporteNCRED 
+			
+		IF (sub_header_ant != sub_header) THEN
+			IF (sub_header_ant.NUMCHARS > 0) THEN
+				CLEARFIELD l_total_serv				
+			END IF
+
+			cont = 0
+
+	    //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+	    CALL post:MISClst_docPED_pie(link_num,sub_header,columns,split,cont)
+			
+			LET sub_header_ant = sub_header
+			cont = 1	
+		END IF	
+
+		IF (l_serv_ant != post:ServicioPED) THEN	
+			IF (l_serv_ant.NUMCHARS > 0) THEN
+				CALL tes:MISCwrite_file_Land2(link_num," ")
+				//Imprimo el total del servicio
+				FPRINT line_csr, "                                                                      TOTAL          %12.12e",l_total_serv
+				CALL tes:MISCwrite_file_Land2(link_num,line_csr)
+				CLEARFIELD l_total_serv
+			END IF
+			
+			LET l_serv_ant = post:ServicioPED
+			FPRINT line_csr, " %5.5s - %s",post:ServicioPED,l_serv_desc
+			
+	    //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+	    CALL post:MISClst_docPED_pie(link_num,sub_header,columns,split,cont)
+	     
+	    CALL tes:MISCwrite_file_Land2(link_num,line_csr) 			
+		END IF
+
+		CLEARFIELD line_csr
+		IF (l_estado == "NCRED") THEN
+			//acumulo el importe total por servicio
+			l_total_serv = l_total_serv + post:ImporteNCRED
+			FPRINT line_csr, "                                    %1.1s - %12.12s          %13.13s          %12.12e",post:LetraCompNCRED,post:NroCompNCRED,l_pieza_ped, post:ImporteNCRED
+		ELSE
+			IF (post:LetraCompFACTU == "X") THEN
+				FPRINT line_csr, "                                    %1.1s - %12.12s          %13.13s          %12.12e",post:LetraCompFACTU,post:NroCompImpos,l_pieza_ped, post:ImporteFACTU				
+			ELSE
+				FPRINT line_csr, "                                    %1.1s - %12.12s          %13.13s          %12.12e",post:LetraCompFACTU,post:NroCompFACTU,l_pieza_ped, post:ImporteFACTU				
+			END IF
+			//acumulo el importe total por servicio
+			l_total_serv = l_total_serv + post:ImporteFACTU		
+		END IF
+
+    //Llamo a la rutina que arma el encabezado y/o subencabezado del reporte
+    CALL post:MISClst_docPED_pie(link_num,sub_header,columns,split,cont)
+     
+    CALL tes:MISCwrite_file_Land2(link_num,line_csr) 
+
+		CDS FINDNEXT DSC:post:rep_doc_ped_ctx LOCK
+		LET l_retval = CDSRETVAL
+  END WHILE     
+
+	CDS UNLOCK DSC:post:rep_doc_ped_ctx 
+	CDS ENDSELECT DSC:post:rep_doc_ped_ctx 
+
+	IF (l_imprimo_total > 0) THEN
+		//Imprimo el total del servicio
+		CALL tes:MISCwrite_file_Land2(link_num," ")
+		FPRINT line_csr, "                                                                      TOTAL          %12.12e",l_total_serv
+		CALL tes:MISCwrite_file_Land2(link_num,line_csr)
+	END IF
+
+	IF (l_estado == "NCRED") THEN
+		CLEARFIELD l_serv_ant
+		l_estado = "FACTU"
+		l_imprimo_total = 0
+		GOTO Inicio
+	END IF
+	
+	IF (cont == 0) THEN 
+		RETURN -2
+	END IF
+	
+	//Valido que tenga lugar para marcar el fin del reporte en la hoja
+	IF (siaf:lineas_cl < 62)
+		CALL tes:MISCwrite_file_Land2(link_num,split)
+	END IF
+	
+END SUB
+
+/*******/

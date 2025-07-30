@@ -1,0 +1,317 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSrec_caidas_batch
+* NOMBRE
+*   OFB:giros:CDSrec_caidas_batch
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSrec_caidas_batch
+	local l_retval like lib:err_retval
+
+    /*Esta rutina se encarga de las recuperaciones y las actualizaciones en el journal de
+    acuerdo a la respuesta que devuelve esl switch*/
+    LOCAL jnl_status_aux LIKE tlr:jnl_status
+    LOCAL hora LIKE post:hor_a
+
+    //Seteo en 99 para grabarlo en la jnl_caidas y saber que a este registro lo esta recuperando el rt batch
+    jnl_status_aux = 99
+
+	//Hago un select de la jnl_caidas de aquellos registros que han quedado con caída en vuelo
+    /**************************************************************************/
+    //Se comenta por ahora hasta que este listo el RTbatch para UP diferida
+    /*CDS SELECT FROM DSC:jnl_caidas BECOMES DSC:jnl_caidas_ctx WHERE  \
+        tlr:jnl_branch == FLD:common:sucursal_activa && \
+        tlr:jnl_status > HOST_REJECTED && \
+        tlr:jnl_status < RECH_REV_AUTO DESCENDING*/
+
+    CDS SELECT FROM DSC:jnl_caidas BECOMES DSC:jnl_caidas_ctx WHERE  \
+        tlr:jnl_branch == FLD:common:sucursal_activa && \
+        post:SiNo_aux != "S" && \
+        tlr:jnl_status > HOST_REJECTED && \
+        tlr:jnl_status < RECH_REV_AUTO DESCENDING
+	/**************************************************************************/
+
+    CDS FINDFIRST DSC:jnl_caidas_ctx LOCK
+    WHILE (CDSRETVAL == 0)
+        CDS EXTRACT DSC:jnl_caidas_ctx ALL
+        CDS CLEARBUFFER DSC:jnl_caidas_ctx
+        //Hago el append en la jnl_caidas, del jnl_status = 99, para saber que esta siendo
+        //recuperado por el proceso batch.
+        // FGB: agrego la hora en que se bloquea el registro... si pasa media hora y no cambia su estado, la appl
+        // de caja liberara el registro...
+        CDS APPEND DSC:jnl_caidas_ctx \
+            FLD:jnl_status_aux AS FLD:tlr:jnl_status \
+			common:time_of_day AS FLD:siaf:adt_jnlc_locktime
+	
+        CDS UPDATE DSC:jnl_caidas_ctx LOCK
+
+        //Hago un select del journal para recuperar el mismo registro que el de la jnl_caídas
+        CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE  \
+            tlr:jnl_branch == FLD:tlr:jnl_branch && \
+            tlr:jnl_operator == FLD:tlr:jnl_operator && \
+            tlr:jnl_date == FLD:tlr:jnl_date && \
+            tlr:jnl_time == FLD:tlr:jnl_time && \
+            tlr:jnl_bus_date == FLD:tlr:jnl_bus_date && \
+            tlr:jnl_sequence == FLD:tlr:jnl_sequence && \
+            tlr:jnl_status == FLD:tlr:jnl_status
+        CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+        IF (CDSRETVAL == 0) THEN
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:tlr:jnl_operator_siaf \
+                FLD:tlr:jnl_state_flags \
+                FLD:tlr:jnl_tran_flags \
+                FLD:tlr:jnl_sequence_corr \
+                FLD:tlr:jnl_supervisor \
+                FLD:tlr:jnl_tenk_status \
+                FLD:tlr:jnl_tran_name INTO FLD:tlr:tran_mnemonic \
+                FLD:tlr:jnl_dia_ult_act \
+                FLD:tlr:jnl_hora_ult_act \
+                FLD:common:tran_appl_no \
+                FLD:common:tran_item_no \
+                FLD:tlr:jnl_payget_start INTO FLD:tlr:cctl_payget_start \
+                FLD:tlr:jnl_payget_end INTO FLD:tlr:cctl_payget_end \
+                FLD:hcomm:INDhost_sndrt \
+                FLD:hcomm:INDhost_rcvrt \
+                FLD:hcomm:host_tran_id \
+                FLD:hcomm:reason_code \
+                FLD:hcomm:trancode \
+                FLD:tlr:INDtran_name \
+                FLD:tlr:INDdcol_scrn \
+                FLD:tlr:INDjnl_append \
+                FLD:tlr:INDtots_append \
+                FLD:tlr:INDdocs_list \
+                FLD:tlr:INDlink_test \
+                FLD:tlr:INDlink_tran \
+                FLD:siaf:mensaje \
+                FLD:lib:calc_tape \
+                FLD:post:PresNro \
+                FLD:post:adt_Modo \
+                FLD:tlr:jnl_op_login_id \
+                FLD:common:VersionCorreo \
+                FLD:post:adt_PreDNroTrn INTO FLD:post:PreDNroTrn
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:tlr:tran_mnemonic \
+                FLD:tlr:tdrv_pret_rtn
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:tlr:jnl_account_1 \
+                FLD:tlr:jnl_amount_1 INTO FLD:siaf:importe \
+                FLD:siaf:moneda \
+                FLD:post:medio_pago_desc \
+                FLD:siaf:jnl_codigo_siaf \
+                FLD:siaf:jnl_sucursal \
+                FLD:siaf:jnl_journal_host \
+                FLD:siaf:jnl_window_node INTO FLD:op:op_node_id  \
+                FLD:siaf:fecha \
+                FLD:siaf:siaf_flags \
+                FLD:siaf:modalidad \
+                FLD:siaf:hora_reentry \
+                FLD:siaf:codigo_bull \
+                FLD:siaf:INDhost_snd_fv \
+                FLD:siaf:nombre_transac \
+                FLD:siaf:codigo_siaf \
+                FLD:post:jnl_flia_tran \
+                FLD:post:jnl_br_CUN \
+                FLD:post:jnl_br_ctpTT \
+                FLD:post:jnl_opTT \
+                FLD:siaf:tiene_reverso \
+                FLD:siaf:posible_off \
+                FLD:siaf:restr_otra_casa \
+                FLD:siaf:linea_validacion \
+                FLD:siaf:exhibe_pantalla \
+                FLD:siaf:imprime_comprobante \
+                FLD:siaf:multiple \
+                FLD:ovr:ovr_sup_login \
+                FLD:drv:jnl_dt_app \
+                FLD:siaf:jnl_tran_modpresu \
+                FLD:post:jnl_cli_tipo \
+                FLD:post:nro_autorizac \
+                fld:post:jnl_fliarep \
+                fld:post:jnl_unicod \
+                fld:post:jnl_unicod_desc
+            CDS EXTRACT DSC:tlr:jnl_context \
+                FLD:codigo_procesamiento \
+                FLD:flia_giro_fld \
+                FLD:usr_call_center \
+                FLD:post:adt_codseq_nro \
+                FLD:siaf:importe \
+                FLD:hora_viaje \
+                FLD:dia_viaje \
+                FLD:clave_hdr_prev \
+                FLD:Serie_fld \
+                FLD:NroGiro_fld \
+                FLD:digito_fld \
+                FLD:nuevo_num_giro_fld \
+                FLD:nuevo_dig_fld \
+                FLD:vieja_serie_fld \
+                FLD:viejo_num_giro_fld \
+                FLD:viejo_dig_fld
+
+
+			cds extract dsc:tlr:jnl_context \
+				post:cod_banco \
+				post:cuenta \
+				post:nro_cheque \
+				post:fec_d \
+				post:fec_e \
+				post:jnl_interes_diferido \
+				post:jnl_iva_int_dif \
+				post:NisUP \
+				post:CliUP \
+				post:monto_chk_dif \
+				post:imp_aux \
+				post:climed_tipo \
+				post:climed_numero \
+				post:Cheques \
+				post:excepCM_id \
+				post:id_excep_comm \
+				post:consumo_operacion \
+				post:financiado_operacion \
+				post:anticipo_CM \
+				post:datos_msg095 \
+				post:datos_msg096 \
+				post:datos_msg097 \
+				post:datos_msg098 \
+				post:datos_msg099 \
+				post:datos_msg105 \
+				post:datos_msg106 \
+				post:datos_msg107 \
+				post:datos_msg108 \
+				post:datos_msg110 \
+				post:datos_msg111 \
+				post:adt_oc_nro \
+				post:adt_oc_dias_fact \
+				post:adt_oc_desc \
+				post:consumo_OC \
+				post:Imp_FactDif \
+				tes:clearing 
+
+			cds extract dsc:tlr:jnl_context \
+				post:limite_up \
+				post:monto_vta_neta \
+				post:imp_afecta_saldo \
+				post:cliente \
+				siaf:nro_cheque \
+				siaf:cod_banco \
+				siaf:cheqcuenta \
+				post:cheqrech_moneda
+
+            IF (siaf:codigo_siaf == "72300") THEN
+                CDS EXTRACT DSC:tlr:jnl_context FLD:clave_hdr_giros
+            ELSE
+                CDS EXTRACT DSC:tlr:jnl_context FLD:cons_nro_ctrol
+                IF (flia_giro_fld == "I") THEN
+                    CDS EXTRACT DSC:tlr:jnl_context FLD:consulta
+                END IF
+            END IF
+
+
+            IF (siaf:codigo_siaf == "6820") THEN
+            	; Algunos campos necesarios para recuperacion de iPlan.
+				CDS EXTRACT DSC:tlr:jnl_context \
+					siaf:adt_tran_fliatran 		\
+					tlr:jnl_date into post:jnl_date_ori \
+					tlr:jnl_time into post:jnl_time_ori \
+					post:sf1_nro_secuencia \
+					tlr:jnl_sequence	\
+					post:sf1_id_paycode \
+					post:sf1_id_terminal \
+					post:sf1_utility \
+					post:adt_tran_sf1_codigo \
+					post:adt_tran_sf1_ver \
+					post:codigo_cliente
+	    	    setflag common:rt_flags,reentry_active
+			endif
+
+			//Simon - Pago On Site y Cancelaciones con y sin Comprobantes
+			IF (siaf:codigo_siaf == "6630" || \
+				siaf:codigo_siaf == "6632" || \
+				siaf:codigo_siaf == "6634")
+				CDS EXTRACT DSC:tlr:jnl_context \
+					post:benef_on_site into post:beneficio \
+					post:benef_cod_reimpre into post:beneficio_cod_reimp \
+					post:operativo_on_site into post:operativo 
+						
+					post:marca_masivo = "N"
+					post:beneficio_estado = ""
+					clearfield siaf:importe
+			END IF
+
+
+
+            op:op_branch_id = tlr:jnl_branch
+            op:op_operator_id = tlr:jnl_operator
+            op:op_login_id = tlr:jnl_op_login_id
+            common:window_node = op:op_node_id
+
+            //Imprimo los datos principales de la tx que se esta recuperando
+            fprint common:csr_string "\n\nSUC: %e      OP: %e      COD TX: %e      NRO.SEC: %e " \
+                tlr:jnl_branch,tlr:jnl_operator,siaf:codigo_siaf,tlr:jnl_sequence
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+
+            //Rutina de tratamiento de recuperaciones de caídas en vuelo mediante
+            //proceso Batch
+            CALL MISCtrat_recup_batch
+            l_retval = retval
+            IF (siaf:codigo_siaf == "6820") THEN
+	    	    resetflag common:rt_flags,reentry_active
+	    	endif
+            SELECT (l_retval)
+                CASE -1/*Salgo del proceso porque no se pudo actualizar alguna tabla*/
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    CDS ENDSELECT DSC:jnl_caidas_ctx
+                    RETURN (-1)
+                CASE -2/*Salgo de la rutina porque no hay comunicacion con el host e intento nuevamente*/
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    CDS ENDSELECT DSC:jnl_caidas_ctx
+                    RETURN (-2)
+                 CASE TRAN_CAIDA_VUELO
+                    /*Si se produjo una caída en vuelo salgo de esta rutina, pregunto si hay linea
+                    y vulevo a llamarla para que comience de nuevo*/
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    CDS ENDSELECT DSC:jnl_caidas_ctx
+                    RETURN (TRAN_CAIDA_VUELO)
+                    BREAK
+                CASE -3
+                    /*Sigo con la siguiente tx de la jnl_caidas porque la anterior no se pudo reversar*/
+            END SELECT
+            IF (tlr:jnl_status == HOST_ACCEPTED)
+                CALL batch:MISCgeneraLog("\nLa Transaccion ha sido recuperada satisfactoriamente","INFO","N")
+            END IF
+            CDS ENDSELECT DSC:tlr:jnl_context
+
+            /*actualizp el status de la jnl_caidas con el correspondiente al del journal*/
+            CDS APPEND DSC:jnl_caidas_ctx tlr:jnl_status
+            CDS UPDATE DSC:jnl_caidas_ctx LOCK
+            IF (RETVAL < 0)
+                hora = common:time_of_day
+                fprint common:csr_string "\nNo se pudo actualizar la jnl_caidas con el jnl_status del journal con sequencia %e .\n Termina el proceso RT batch en forma anormal. Hora: %e\n",tlr:jnl_sequence,hora
+                CALL batch:MISCgeneraLog(common:csr_string,"ERROR","N")
+                //CALL batch:MISCgeneraLog("#############################################################################\n","AMBOS","N")
+                CDS ENDSELECT DSC:jnl_caidas_ctx
+                RETURN (-1)
+            END IF
+
+        ELSE
+        	CDS FINDAGAIN DSC:jnl_caidas_ctx LOCK
+        	CDS DELETE DSC:jnl_caidas_ctx 
+        	fprint common:csr_string "\n\nSe elimina el registro de la jnl_caidas con sequencia %e por no hallarse su correspondiente en el journal\n",tlr:jnl_sequence
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+        END IF
+        CDS FINDNEXT DSC:jnl_caidas_ctx LOCK
+    END WHILE
+    CDS ENDSELECT DSC:jnl_caidas_ctx
+END SUB
+
+/*******/

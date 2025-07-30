@@ -1,0 +1,89 @@
+/****o* Mercado Pago/OFB:post:PRESmpPurchase
+* NOMBRE
+*   OFB:post:PRESmpPurchase
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCflow_mercadopago
+* DOCUMENTACION
+*   NI50546 Mercado Pago 
+* SOURCE
+*/
+#include "postPRES.h"
+
+SUB post:PRESmpPurchase
+
+	CDS SELECT FROM DSC:post:termi_mp_tbl BECOMES DSC:post:termi_mp_ctx \
+		WHERE post:adt_tmp_termi_win == common:window_node \
+		&& post:adt_tmp_codint_sap == post:adt_codint_cod \
+		&& post:adt_tmp_codint_mp == post:adt_tpos_codint_vpi
+	
+	CDS FINDFIRST DSC:post:termi_mp_ctx LOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:post:termi_mp_ctx \
+			post:adt_tmp_ext_ref \
+			post:adt_tmp_device_name
+	END IF
+	CDS UNLOCK DSC:post:termi_mp_ctx 
+	CDS ENDSELECT DSC:post:termi_mp_ctx 
+
+	//Limpio campos de pantalla
+	CALL CSR:proc_list(F_CLEAR,LST:post:LISTmp_screen_status)	
+	CALL CSR:proc_list(F_REFRESH,LST:post:LISTmp_screen_status)	
+	
+	//Limpio campos de la Orden	
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTset_opmp_order)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTget_opmp_order)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTset_opmp_orderQR)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTget_opmp_orderQR)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTset_opmp_orderID)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTget_opmp_orderID) 
+	//Limpio campos del Pago
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTset_opmp_payment)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTget_opmp_payment)
+	//Limpo campos de la Devolucion del Pago
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTset_opmp_refund)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTget_opmp_refund)
+
+	//Obtengo el secuenciador
+	CALL post:CDSobtiene_secuen("MPPC")
+	LET post:adt_mp_codseq_nro = post:adt_codseq_nro
+	//Despues lo utilizo en la journalizacion
+	LET post:adt_vpi_codseq_nro = post:adt_codseq_nro
+
+  FPRINT post:mp_description,"%8.8s%6.6s%04.4s", common:system_date, common:time_of_day, post:adt_mp_codseq_nro
+ 
+  IF (post:adt_tmp_codint_mp == "MPC" || post:adt_tmp_codint_mp == "MPD") THEN
+	  post:mp_amount = post:Total_importe * 100 
+		post:mp_device_name = post:adt_tmp_device_name
+		post:mp_ext_reference = post:adt_tmp_ext_ref
+		post:adt_tmp_codint_mp = post:adt_tpos_codint_vpi
+	
+		IF (post:adt_tmp_codint_mp == "MPC") THEN
+			post:mp_cc_type = "credit_card"
+		ELSE
+			post:mp_cc_type = "debit_card"
+		END IF
+		
+		post:mp_disable_back_btn = "false" //Siempre es false!!!
+	ELSE
+		post:mp_amount = post:Total_importe * 100 
+		post:mp_device_name  = post:adt_tmp_device_name
+		post:mp_ext_reference = post:adt_tmp_ext_ref
+		
+		post:mp_currency_id = "ARS" //Siempre es ARS!!!
+		post:mp_quantity = 1        //Siempre es 1!!!
+	END IF
+	
+	PROTFIELD mp_msg_guia
+	mp_msg_guia = "Presione ENTER para generar la orden de cobro"
+	
+END SUB
+
+/*******/

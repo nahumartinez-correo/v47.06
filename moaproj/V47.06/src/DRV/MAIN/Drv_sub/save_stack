@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:drv:save_stack
+* NOMBRE
+*   OFB:drv:save_stack
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv_sub.h"
+
+SUB drv:save_stack
+    LOCAL stack_temp LIKE drv:stack_cnt
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == CONFIRMATION) then
+	local loc_debug_str like common:csr_string 
+	fprint loc_debug_str "Entrando a... drv:save_stack (app:%d - stack_cnt = %s)" drv:dt_app,drv:stack_cnt
+	call post:MISClogMenues(loc_debug_str)
+	;endif
+#endif
+
+    IF (TESTFLAG(drv:mode_flags,kiosk_mode))
+#if BASE_CFIG_GWS == 1
+	    LET drv:INDfld = LST:gws:TRAN_Touch
+#endif
+    ELSE
+	    LET drv:INDfld = LST:drv:TRAN_desktop
+    END IF
+    call post:MISCdumpCampos
+	CALL  CSR:dt_tran DT_TRAN_RESTART drv:INDfld
+	call post:MISClogCampos
+	// ------------------------------------------------------------------------
+	// Save the start_tran flag, current screen, current tab if it is notecards
+	// mode. Save the sidebar buttons status
+	// ------------------------------------------------------------------------
+#if CORREO_DEBUG == CORREO_ON
+	call post:MISClogMenues("drv:save_stack - stack_start_tran")
+#endif
+
+	MOVE START_TRAN TO stack_start_tran[dt_app][stack_cnt]
+	LET INDstack_screen[dt_app][stack_cnt] = INDscreen[screen_active]
+    IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+	    drv:stack_tab_no[drv:dt_app][drv:stack_cnt] = FLD:drv:tab_active
+	    drv:stack_start_tab[drv:dt_app][drv:stack_cnt] = FLD:drv:starting_tab
+    	MOVE SUBSTR(drv:flags,52,1) TO drv:stack_notecards_no[dt_app][stack_cnt]
+    ELSE
+        MOVE " " TO drv:stack_notecards_no[dt_app][stack_cnt]
+    END IF
+    IF (drv:stack_notecards_no[dt_app][stack_cnt] == "P") THEN
+    	stack_temp = stack_cnt - 1
+        MOVE drv:stack_notecards_no[dt_app][stack_temp] TO drv:stack_notecards_no[dt_app][stack_cnt]
+    END IF
+	CALL  OFB:drv:clear_side_state
+	IF (INDside_bar_scr == 0 && CUT_SIDE == "N" && stack_cnt > 0)
+		LET cnt_tmp = stack_cnt - 1
+		LET INDstack_side_scr[dt_app][stack_cnt] = INDstack_side_scr[dt_app][cnt_tmp]
+		LET stack_side_list[dt_app][stack_cnt] = stack_side_list[dt_app][cnt_tmp]
+	ELSE
+		LET INDstack_side_scr[dt_app][stack_cnt] = INDside_bar_scr
+		LET stack_side_list[dt_app][stack_cnt] = stack_cnt
+	END IF
+	IF (INDstack_side_scr[dt_app][stack_cnt] != 0)
+		CALL  OFB:drv:save_side_state
+	END IF
+    IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+         IF (drv:subscreen[drv:dt_app] != "Y") THEN
+		 	INDstack_notes[drv:dt_app][stack_cnt] = INDscreen[0]
+         ELSE
+         	stack_temp = stack_cnt - 1
+			INDstack_notes[drv:dt_app][stack_cnt] = INDstack_notes[drv:dt_app][stack_temp]
+         END IF
+ 	END IF
+    CALL drv:save_tabs
+	LET stack_act[dt_app][stack_cnt] = drv:screen_active
+	// --------------------------------------------------------------------
+	// Save the SubScreen mode flag for this level of stack if in subscreen
+	// --------------------------------------------------------------------
+    LET stack_sub[dt_app][stack_cnt] = drv:subscreen[drv:dt_app]
+	MOVE collect_done TO stack_col_done[dt_app][stack_cnt]
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == CONFIRMATION) then
+	fprint loc_debug_str "drv:save_stack (app:%d - stack_cnt:%s - return_to_stack: %s)" drv:dt_app,drv:stack_cnt,return_to_stack
+	call post:MISClogMenues(loc_debug_str)
+	;endif
+#endif
+
+
+	LET stack_cnt = stack_cnt + 1
+	IF (START_TRAN == "Y")
+		call post:MISCdumpCampos
+		CALL  CSR:dt_tran DT_TRAN_RESTART drv:INDcur_list
+		call post:MISClogCampos
+	END IF
+	IF (return_to_stack != -1)
+		LET stack_cnt = return_to_stack
+		LET return_to_stack = -1
+	END IF
+END SUB
+
+/*******/

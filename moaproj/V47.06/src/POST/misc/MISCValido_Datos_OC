@@ -1,0 +1,383 @@
+/****o* Pendientes de agrupación/OFB:post:MISCValido_Datos_OC
+* NOMBRE
+*   OFB:post:MISCValido_Datos_OC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCValido_Datos_OC
+local peso like post:peso_en_kgs
+local aforo_aux like post:aforo
+
+	SELECT (post:jnl_flia_tran)
+	
+		CASE "CSP" //PRODUCTOS POSTALES
+		CASE "CSE"
+			call csr:trimfield (post:destino)
+			
+			aforo_aux = post:aforo1 + post:aforo2 + post:aforo3		
+			
+			if (post:adt_serv_pesable == "T") then
+				if (post:adt_serv_umstd == "GMS") then
+					IF (rel_vol > post:peso_en_grs)
+						peso = rel_vol
+					ELSE
+						peso = post:peso_en_grs
+					END IF
+				endif
+				if (post:adt_serv_umstd == "KGS") then
+					IF (rel_vol > post:peso_en_kgs)
+						peso = rel_vol
+					ELSE
+						peso = post:peso_en_kgs
+					END IF
+				endif
+			
+			
+				IF (adt_serv_calc_rv == "S")
+					CDS SELECT FROM DSC:post:TBLitems_OC BECOMES DSC:CTXitems_OC \
+					WHERE post:op_operator_id == op:op_operator_id && \
+					post:adt_oc_nro == post:adt_oc_nro && \
+					post:adt_itemoc_codprod == post:adt_serv_serv && \
+					post:adt_itemoc_destino == post:destino && \
+					post:adt_itemoc_rdesde <= peso && \
+					post:adt_itemoc_rhasta >= peso && \
+					post:adt_itemoc_umstd == post:adt_serv_umstd
+				ELSE
+					CDS SELECT FROM DSC:post:TBLitems_OC BECOMES DSC:CTXitems_OC \
+					WHERE post:op_operator_id == op:op_operator_id && \
+					post:adt_oc_nro == post:adt_oc_nro && \
+					post:adt_itemoc_codprod == post:adt_serv_serv && \
+					post:adt_itemoc_destino == post:destino && \
+					post:adt_itemoc_rdesde <= peso && \
+					post:adt_itemoc_rhasta >= peso && \
+					post:adt_itemoc_umstd == post:adt_serv_umstd && \
+					post:adt_itemoc_aforo >=  aforo_aux
+				END IF				
+								
+			else
+				
+				CDS SELECT FROM DSC:post:TBLitems_OC BECOMES DSC:CTXitems_OC \
+				WHERE post:op_operator_id == op:op_operator_id && \
+				post:adt_oc_nro == post:adt_oc_nro && \
+				post:adt_itemoc_codprod == post:adt_serv_serv && \
+				post:adt_itemoc_destino == post:destino && \
+				post:adt_itemoc_umstd == post:adt_serv_umstd && \
+				post:adt_itemoc_aforo >=  aforo_aux 
+
+			endif
+		
+			CDS FINDFIRST DSC:CTXitems_OC NOLOCK
+				
+			//BLOQUES ADICIONALES (para el caso en que me venga cargado solo el precio sin los rangos desde/hasta)
+			IF (CDSRETVAL == -801 && post:imp_bloques > 0) THEN //&& ordenCM_tipo == "T") THEN
+				CDS ENDSELECT DSC:CTXitems_OC
+				CALL CDSValido_Bloq_OC(siaf:codigo_siaf)
+				if (RETVAL < 0) then
+					clearfield post:adt_bloqoc_precio
+					//clearfield post:adt_bloqoc_desde
+					//clearfield post:adt_bloqoc_hasta
+					clearfield post:adt_itemoc_factdesc
+					clearfield post:adt_itemoc_nro
+					clearfield post:adt_itemoc_puni
+					clearfield post:adt_itemoc_cant
+					clearfield post:adt_itemoc_cantopc 
+					clearfield post:cant_opc
+					clearfield post:costo_opc
+					refresh  post:costo_opc
+					clearfield post:costo_opc_uni
+					RETURN -2
+				endif
+				RETURN 0
+			ENDIF
+			
+			DO
+				IF (CDSRETVAL == 0) THEN
+					clearfield post:adt_oc_nro
+					clearfield post:adt_itemoc_nro
+					clearfield post:adt_itemoc_puni
+					clearfield post:adt_itemoc_factdesc
+					clearfield post:adt_itemoc_cantopc
+					clearfield post:adt_itemoc_cant
+					//solicitud de cambio 50092 - OC por Monto Total
+					if (ordenCM_tipo == "P") then
+						CDS EXTRACT DSC:CTXitems_OC  post:adt_oc_nro post:adt_itemoc_nro \
+						post:adt_itemoc_puni post:adt_itemoc_factdesc post:adt_itemoc_cantopc \
+						post:adt_itemoc_cant
+					else						
+						CDS EXTRACT DSC:CTXitems_OC  post:adt_oc_nro post:adt_itemoc_nro \
+						post:adt_itemoc_puni post:adt_itemoc_factdesc \
+						post:adt_itemoc_cantopc
+					endif
+					
+					//PS 9302
+					//IF ((post:cant_opc == 0 && post:adt_itemoc_cantopc > 0) || (post:cant_opc > 0 && post:adt_itemoc_cantopc == 0)) THEN
+					IF (post:cant_opc != post:adt_itemoc_cantopc) THEN
+						CDS FINDNEXT DSC:CTXitems_OC NOLOCK
+					ELSE
+							
+						CALL post:MISCValido_Opc_OC
+						if (retval < 0) then
+							//clearfield post:cant_opc
+							/*CDS ENDSELECT DSC:CTXitems_OC
+							return -2*/
+							//busca si existe otro item
+							CDS FINDNEXT DSC:CTXitems_OC NOLOCK
+						
+						else
+							//CDS ENDSELECT DSC:CTXitems_OC
+							//return 0
+					
+							//solicitud de cambio 50092 - OC por Monto Total
+							if (ordenCM_tipo == "P") then
+								//PS 9224
+								IF (post:adt_itemoc_cant == 0) then
+									MSGBOX "Ya se ha consumido la cantidad pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								END IF
+
+								//Buscar en la presudet aquellos registros con el mismo nro de item (adt_itemoc_nro)
+								//y validar que la cantidad ingresada + la sumatoria del resto de las cantidades
+								//no supere la cantidad pactada.
+								CALL post:CDSVerifOCCantTot
+								if (retval < 0) then
+									MSGBOX "La cantidad ingresada no coincide con la pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								endif
+								/*IF (post:adt_itemoc_cant < post:cantidad) THEN
+									MSGBOX "La cantidad ingresada no coincide con la pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								ENDIF*/
+								
+							endif
+							
+							CDS ENDSELECT DSC:CTXitems_OC
+							return 0
+							
+						endif
+						
+					ENDIF
+				ELSE
+					CDS ENDSELECT DSC:CTXitems_OC
+					if (post:cant_opc == 0 && post:adt_itemoc_cantopc > 0) Then
+						MSGBOX "Debe comprar los opcionales pactados en la OC.",0X00,"ERROR"
+					else
+						MSGBOX "Los datos seleccionados no fueron los pactados en la Orden de Compra.",0x0,"ERROR"
+					endif
+					
+					//clearfield post:cant_opc
+					clearfield post:cant_opc
+					clearfield post:costo_opc
+					refresh  post:costo_opc
+					clearfield post:costo_opc_uni
+					//call tele:MISCdel_imp_opc_CM
+					return -2
+				END IF
+				
+		
+			LOOP
+			
+			CDS ENDSELECT DSC:CTXitems_OC
+			break
+		
+		CASE "CST" //SERVICIOS TELEGRAFICOS				
+			
+			call csr:trimfield (post:destino)		
+			CDS SELECT FROM DSC:post:TBLitems_OC BECOMES DSC:CTXitems_OC \
+			WHERE post:op_operator_id == op:op_operator_id && \
+			post:adt_oc_nro == post:adt_oc_nro && \
+			post:adt_itemoc_codprod == post:adt_serv_serv && \
+			post:adt_itemoc_destino == post:destino && \
+			post:adt_itemoc_bdesde <= tele:tele_cant_palabras && \
+			post:adt_itemoc_bhasta >= tele:tele_cant_palabras && \
+			post:adt_itemoc_umstd == post:adt_serv_umstd /*&& \
+			post:adt_itemoc_cant >= post:cantidad*/
+			
+			CDS FINDFIRST DSC:CTXitems_OC NOLOCK
+			
+			//BLOQUES ADICIONALES (para el caso en que me venga cargado solo el precio sin los rangos desde/hasta)
+			IF (CDSRETVAL == -801 && post:imp_bloques > 0) THEN
+				CDS ENDSELECT DSC:CTXitems_OC
+				CALL CDSValido_Bloq_OC(post:adt_serv_serv)
+				if (RETVAL < 0) then
+					clearfield post:adt_bloqoc_precio
+					//clearfield post:adt_bloqoc_desde
+					//clearfield post:adt_bloqoc_hasta
+					clearfield post:adt_itemoc_factdesc
+					clearfield post:adt_itemoc_nro
+					clearfield post:adt_itemoc_puni
+					clearfield post:adt_itemoc_cant
+					clearfield post:adt_itemoc_cantopc 
+					//agrego el borrado de estos campos
+					clearfield post:cant_opc
+					clearfield post:costo_opc
+					refresh  post:costo_opc
+					clearfield post:costo_opc_uni
+															
+					RETURN -2
+				endif
+				RETURN 0
+			ENDIF
+			
+			DO
+				IF (CDSRETVAL == 0) THEN
+					clearfield post:adt_oc_nro
+					clearfield post:adt_itemoc_nro
+					clearfield post:adt_itemoc_puni
+					clearfield post:adt_itemoc_factdesc
+					clearfield post:adt_itemoc_cantopc
+					clearfield post:adt_itemoc_cant
+					//solicitud de cambio 50092 - OC por Monto Total
+					if (ordenCM_tipo == "P") then
+						CDS EXTRACT DSC:CTXitems_OC post:adt_oc_nro post:adt_itemoc_nro post:adt_itemoc_cantopc  post:adt_itemoc_puni post:adt_itemoc_factdesc post:adt_itemoc_cant
+					else
+						CDS EXTRACT DSC:CTXitems_OC post:adt_oc_nro post:adt_itemoc_nro post:adt_itemoc_cantopc  post:adt_itemoc_puni post:adt_itemoc_factdesc
+					endif
+					//PS 9302
+					//IF ((post:cant_opc == 0 && post:adt_itemoc_cantopc > 0) || (post:cant_opc > 0 && post:adt_itemoc_cantopc == 0)) THEN
+					IF (post:cant_opc != post:adt_itemoc_cantopc) THEN
+						CDS FINDNEXT DSC:CTXitems_OC NOLOCK
+					ELSE
+						
+						CALL post:MISCValido_Opc_OC
+						if (retval < 0) then
+							//clearfield post:cant_opc
+							/*CDS ENDSELECT DSC:CTXitems_OC
+							return -2*/
+							//busca si existe otro item
+							CDS FINDNEXT DSC:CTXitems_OC NOLOCK
+						else
+							//solicitud de cambio 50092 - OC por Monto Total
+							if (ordenCM_tipo == "P") then
+								//PS 9224
+								IF (post:adt_itemoc_cant == 0) then
+									MSGBOX "Ya se ha consumido la cantidad pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								END IF
+
+								//Buscar en la presudet aquellos registros con el mismo nro de item (adt_itemoc_nro)
+								//y validar que la cantidad ingresada + la sumatoria del resto de las cantidades
+								//no supere la cantidad pactada.
+								CALL post:CDSVerifOCCantTot
+								if (retval < 0) then
+									MSGBOX "La cantidad ingresada no coincide con la pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								endif
+								/*IF (post:adt_itemoc_cant < post:cantidad) THEN
+									MSGBOX "La cantidad ingresada no coincide con la pactada en la OC.",0X00,"ERROR"
+									CDS ENDSELECT DSC:CTXitems_OC
+									return -2
+								ENDIF*/
+							endif
+							
+							CDS ENDSELECT DSC:CTXitems_OC
+							return 0
+						endif
+						
+					ENDIF
+				ELSE
+					CDS ENDSELECT DSC:CTXitems_OC
+					if (post:cant_opc == 0 && post:adt_itemoc_cantopc > 0) Then
+						MSGBOX "Debe comprar los opcionales pactados en la OC.",0X00,"ERROR"
+					else
+						MSGBOX "Los datos seleccionados no fueron los pactados en la Orden de Compra.",0x0,"ERROR"
+					endif
+
+					clearfield post:cant_opc
+					clearfield post:costo_opc
+					refresh  post:costo_opc
+					clearfield post:costo_opc_uni
+					call tele:MISCdel_imp_opc_CM
+					/*call tele:MISClimpia_opc
+					call tele:MISCsobra_indic
+					call tele:MISCcarga_opc_vec
+					call tele:MISCcarga_vec_opc*/
+					return -2
+				END IF
+		
+			LOOP
+			
+			CDS ENDSELECT DSC:CTXitems_OC
+			break
+			
+		CASE "CME" //PRODUCTOS VARIOS
+			
+			if (post:cod_agrupacion == 0) then
+				CDS SELECT FROM DSC:post:TBLitems_OC BECOMES DSC:CTXitems_OC \
+				WHERE post:op_operator_id == op:op_operator_id && \
+				post:adt_oc_nro == post:adt_oc_nro && \
+				post:adt_itemoc_codprod == post:adt_prodvs_cod /*&& \
+				post:adt_itemoc_cant >= post:cantidad2*/
+			
+				CDS FINDFIRST DSC:CTXitems_OC NOLOCK
+				lib:err_retval = CDSRETVAL
+			
+				IF (CDSRETVAL == 0) THEN
+			
+					clearfield post:adt_itemoc_nro
+					clearfield post:adt_itemoc_puni
+					clearfield post:adt_itemoc_factdesc
+					clearfield post:adt_itemoc_cantopc
+					clearfield post:adt_itemoc_cant
+					//solicitud de cambio 50092 - OC por Monto Total
+					if (ordenCM_tipo == "P") then
+						CDS EXTRACT DSC:CTXitems_OC post:adt_itemoc_nro post:adt_itemoc_puni post:adt_itemoc_factdesc post:adt_itemoc_cant
+					else
+						CDS EXTRACT DSC:CTXitems_OC post:adt_itemoc_nro post:adt_itemoc_puni post:adt_itemoc_factdesc 
+					endif
+					
+					//solicitud de cambio 50092 - OC por Monto Total
+					if (ordenCM_tipo == "P") then
+						//PS 9224
+						IF (post:adt_itemoc_cant == 0) then
+							MSGBOX "Ya se ha consumido la cantidad pactada en la OC.",0X00,"ERROR"
+							CDS ENDSELECT DSC:CTXitems_OC
+							return -2
+						END IF
+					
+						//Buscar en la presudet aquellos registros con el mismo nro de item (adt_itemoc_nro)
+						//y validar que la cantidad ingresada + la sumatoria del resto de las cantidades
+						//no supere la cantidad pactada.
+						CALL post:CDSVerifOCCantTot
+						if (retval < 0) then
+							MSGBOX "La cantidad ingresada no coincide con la pactada en la OC.",0X00,"ERROR"
+							CDS ENDSELECT DSC:CTXitems_OC
+							return -2
+						endif
+					endif			
+				ENDIF
+				
+				CDS ENDSELECT DSC:CTXitems_OC
+				
+				IF (lib:err_retval == -801) THEN
+					MSGBOX "El producto no fue pactado en la Orden de Compra.",0x0,"ERROR"
+					return -2
+				END IF
+
+				break
+			else
+				return 0
+			endif
+	END SELECT
+	
+	
+END SUB
+
+/*******/

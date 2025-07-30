@@ -1,0 +1,104 @@
+/****o* Giros/Transferencias Nacionales/OFB:giros:PCOL70392
+* NOMBRE
+*   OFB:giros:PCOL70392
+* DESCRIPCION
+*   Rutina PCOL del Pago de Transferencia Nacional.
+*   Realiza una consulta simple al host, para ver el estado del giro.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): Operacion fuera de linea, consulta simple rechazada o con caida en vuelo.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:TRAN70392
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospcol.h"
+
+SUB giros:PCOL70392
+    local loc_RetVal  like lib:err_retval
+    local loc_mp_desc like post:adt_mp_desc
+
+    protfield giros:tipo_giro_fld
+    protfield giros:tipo_giro_desc
+
+    if (post:estado_presu == 4) then
+    	disablecontrol op:chk0
+    	disablecontrol op:chk1
+    	disablecontrol op:chk2
+    	disablecontrol op:chk3
+    	disablecontrol op:chk4
+    	disablecontrol op:chk5
+    else
+    	if (post:cod_opc[0].numchars == 0) then
+	    	disablecontrol op:chk0
+    	end if
+    	if (post:cod_opc[1].numchars == 0) then
+	    	disablecontrol op:chk1
+    	end if
+    	if (post:cod_opc[2].numchars == 0) then
+	    	disablecontrol op:chk2
+    	end if
+    	if (post:cod_opc[3].numchars == 0) then
+	    	disablecontrol op:chk3
+    	end if
+    	if (post:cod_opc[4].numchars == 0) then
+	    	disablecontrol op:chk4
+    	end if
+    	if (post:cod_opc[5].numchars == 0) then
+	    	disablecontrol op:chk5
+    	end if
+    endif
+    
+    //cgw:SC50253 - Busco la descripción del medio del pago porque para sesion no la estaba recuperando,
+    //    y para que lo muestre correctamente en la screen, cuando un rechazo de la consulta al host muestra
+    //    el msgbox con la causa del rechazo o el aviso de no poder realizar la consulta (caida en vuelo).
+    //    Si es en sesion NO captura medio de pago y luego se le asigna un medio de pago indefinido = "99"
+    IF (post:estado_presu == 1 || post:estado_presu == 2) THEN
+        CLEARFIELD loc_mp_desc
+        CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES "MedioPago_ctx" WHERE \
+            (post:adt_mp_curso == "S" && post:adt_mp_cod == siaf:moneda)
+        CDS FINDFIRST "MedioPago_ctx" NOLOCK
+        IF (CDSRETVAL == 00) THEN  
+            CDS EXTRACT "MedioPago_ctx" post:adt_mp_desc into loc_mp_desc
+        END IF
+        post:medio_pago_desc = loc_mp_desc
+        REFRESH post:medio_pago_desc
+        CDS ENDSELECT "MedioPago_ctx"
+     END IF   
+
+    //cgw:SC50253 - Consulta el estado del giro para el Pago de Transferencia Nacional.
+    //    CONSULTA SIMPLE HOST (sin impacto).
+    //Resguardo los datos de la consulta simple en la duparea de los campos comm 
+    
+    if ((giros:consulta == 1 && (post:estado_presu == 1 || post:estado_presu == 2)) || \
+        (giros:consulta.numchars == 0 && post:estado_presu == 3)) then
+        disablecontrol drv:PBcb7 //deshabilito  medio pago      
+        //Resguardo los datos de la consulta simple en la duparea de los campos comm 
+  	    call csr:proc_list F_CPTODUP LST:LISTcomunic_fld
+  	    call csr:proc_list F_CPTODUP LST:LISTcomunic2_fld
+
+	    call giros:OFBcons_simple_PagTN //Rutina de consulta simple del Giro al Host.
+	    loc_RetVal = retval 
+	    //Restauro los datos de la consulta simple en la storagearea de los campos comm.	    
+	    call csr:proc_list F_SWAP LST:LISTcomunic_fld
+	    call csr:proc_list F_SWAP LST:LISTcomunic2_fld
+
+	    if (loc_RetVal < 0) then // consulta rechazada o caida en vuelo
+		    ungetkey RT_ESC
+		    return (-2)
+	    end if
+    end if    
+    //cgw: SC50253 fin consulta */
+    
+    CALL post:PCOLpresu
+    CALL MISCmed_pag_gir
+    IF (RETVAL == 0) THEN
+	    RETURN (-2)
+    END IF 
+END SUB 
+
+/*******/

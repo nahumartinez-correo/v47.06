@@ -1,0 +1,74 @@
+/****o* Pendientes de agrupación/OFB:post:CDSfirmaCai
+* NOMBRE
+*   OFB:post:CDSfirmaCai
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSfirmaCai(modo)
+
+	/******************************************************************************/
+	/*                                                                            */
+	/* [PAW - 12/01/00]: Esta rutina se encarga de verificar la firma de los      */
+	/*                   CAI comparándola con la almacenada.                      */
+	/*                                                                            */
+	/* Aclaración      : En caso de encontrar la verificación errónea, la rutina  */
+	/*                   bloquea las ventas de la sucursal.                       */
+	/*                                                                            */
+	/* Salidas (retval): [ 0] - Verificación exitosa. (coincidentes)              */
+	/*                   [-2] - Verificación no exitosa. (no coincidentes)        */
+	/*	Se agrega una salida más (1) cuando se pasa como parámetro				  */
+	/*	"control" y sirve para chequear si realmente se corrigió la				  */
+	/*	firma antes de realizar el Desbloqueo de las ventas - Gabriel Falciola	  */
+	/*                                                                            */
+	/******************************************************************************/
+
+	LOCAL cadenaMD5 LIKE common:csr_string
+	LOCAL firmaOri LIKE post:adt_secuen_firma
+	CDS SELECT FROM DSC:admin:cai_tabla BECOMES DSC:admin:cai_contexto \
+		WHERE admin:adt_sucu_cai == common:sucursal_activa
+	CDS FINDFIRST DSC:admin:cai_contexto NOLOCK
+    while (cdsretval == 0)
+    	CDS EXTRACT DSC:admin:cai_contexto ALL
+    	firmaOri = post:adt_secuen_firma
+    	// [PAW] --> desencripto los campos:
+		CALL post:MISCenc_dec_ryptar(admin:adt_nro_cai, admin:adt_nro_cai.numchars)
+	    // [PAW] --> Firma electrónica. (Sucursal + Número Cai + Fecha Vencimiento)
+    	fprint cadenaMD5 "%s%s%s", admin:adt_sucu_cai, common:csr_string, admin:adt_fecha_cai
+	    call csr:MD5checksum(cadenaMD5, 1, adt_secuen_firma, 1)
+    	if (adt_secuen_firma != firmaOri)
+    		if (modo == "detalle")
+    			fprint common:csr_string "CAI: %5.5s %14.14s %e", \
+					admin:adt_sucu_cai, common:csr_string, admin:adt_fecha_cai
+			    CALL csr:f_saaddpl "falloFirma" common:csr_string
+    		else
+				if (modo == "control")
+					msgbox "No puede realizarse el Desbloqueo. Debe corregir la Firma Electrónica de las Tablas bloqueadas", OFB_OK, "ERROR"
+	    			CDS ENDSELECT DSC:adt_secuen_context
+    				return (1)
+				else
+		    		call post:CDSactBloqueoVentas("S")
+    				CDS ENDSELECT DSC:admin:cai_contexto
+	    			return (-2)
+	    		end if
+	    	endif
+    	endif
+    	CDS FINDNEXT DSC:admin:cai_contexto NOLOCK
+    end while
+    CDS ENDSELECT DSC:admin:cai_contexto
+    return 0
+END SUB
+
+/*******/

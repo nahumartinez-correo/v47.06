@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:plataf:cancela_transac
+* NOMBRE
+*   OFB:plataf:cancela_transac
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafdrv.ofb.h"
+
+SUB plataf:cancela_transac /*nueva*/
+    
+    // Verifico si hay pago diferido o excepcion de CM.
+    // en estos casos, se tiene que cancelar el presupuesto.
+    if (post:cli_tipo == CLIUP || post:cli_tipo == CLIMED) then
+        call post:CDSpresu_climed_load
+        if (retval == 0) then
+            if (post:pago_diferido == "S" || \
+               (post:consulta_excepcionCM == "S" && post:excepCM_id == "S") || \
+                post:ModalidadCC || post:ModalidadCD) then
+                    // Ay, caramba!... Se tiene que cancelar el presupuesto!
+                    let post:rechazoDiferido = true
+                    call post:MISCajusteUP // y a rezar se ha dicho...
+                    verify_session = VALUE_CHANGED
+                    return
+            endif
+        endif
+    endif
+    //
+    select (siaf:adt_tran_fliatran)
+        case "CSP" // postales
+        case "CSE" // encomiendas
+        case "CST" // telegraficos
+            call post:CDSdel_tt_presu("TRANSAC")
+        case "CME" // merchandising
+            call post:MISCBorrar_Adic
+            break
+        case "CSM" // giros
+            call giros:CDSborrarRemitTmp
+
+            // FGB 17.11.2003 
+            // contingencia p' giro contrareembolso. En caso de caida en vuelo o rechazo, se 
+            // cancela automaticamente el template asociado.
+            if (siaf:codigo_siaf == 70041) then
+                ;call giros:MISCcanc_tmpl_asoc(giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld)
+                call giros:MISCcancTxAsocReemb
+                call post:MISCcancTx6860
+            endif
+
+            break
+        case else 
+    end select
+    //
+    call post:MISCrut_especiales
+    //
+    /* Productos Mayoristas */
+    if (siaf:codigo_siaf == 99120) 
+        call post:CDSborra_pmaux_presu // Borro de la tabla auxiliar
+    end if
+    //
+    /* resto el importe de la PresuPag */
+    CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,0,siaf:importe)
+    //
+    /* borro la trx de la PresuDet */
+    call post:CDSdel_tx_sesion
+    //
+    /* Resto 1 en el Contador de Transacciones */ 
+    post:Cuenta_Postal = post:Cuenta_Postal - 1 
+    /* Se Actualiza el Total del Importe */
+    call post:CDSTotSesionPag
+    
+    //cgw:SC 50170
+    INIT 22,1   
+    post:Total_importe = post:importe
+    INIT 22,0
+
+    /* Actualiza la PresuAct */
+    Call post:CDSadt_presuact_save
+        
+
+    // para que rearme la captura...
+    verify_session = VALUE_CHANGED
+    ;call post:CDSpresudet_load
+END SUB
+
+/*******/

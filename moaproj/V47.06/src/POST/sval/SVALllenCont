@@ -1,0 +1,155 @@
+/****o* Expedición/OFB:post:SVALllenCont
+* NOMBRE
+*   OFB:post:SVALllenCont
+* DESCRIPCION
+*   Rutina de Confirmación de LLenado de Contenedor. Se verifica que se haya seleccionado al menos un 
+*   grupo de corte + apertura y luego que se haya seleccionado al menos una pieza.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANllenadoCont
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALllenCont
+    /* Cte. Op. - Llenado de Contenedor      */
+    /* B. Petrella - May. 1998              */
+    /* verifica que se haya seleccionado por lo menos una pieza */
+    /* para el Cont. actual.                        */
+    /* Lee DetTmp (Siempre que haya seleccionado un CteOp de ctrl)*/
+
+    /* Módulo de Expedición - Jun. 1999 - B. Petrella */
+
+	if (!testflag(tlr:tran_flags,correction))
+        
+      if (Contcargado == FALSE) then
+        //50242
+        //buscar en la GpoApTmp_table si hay algun registro con post:MarcaIncluye = ">>" y 
+        //en base a eso mostrar el mensaje de error.
+    	call post:CDSVerifGpoApTmp_inc("GpoApTmp")
+    	IF (RETVAL < 0) THEN
+    		let common:csr_string = "POR FAVOR, SELECCIONE AL MENOS UN GRUPO DE CORTE Y APERTURA."
+    		errmsg common:errmsg_list,FLD:common:csr_string
+			CALL MISCrefPzaCont
+    		let drv:button = 1
+			call drv:but_up_enable
+			RETURN -2
+		ENDIF
+        //cargar en la DetTmp las piezas correspondientes a los grupos de corte operativos seleccionados.
+        CALL CDScargaDetTmp
+        if (retval < 0) then
+			IF (mostrar_reenc == "S") THEN
+				let common:csr_string = "NO EXISTEN PIEZAS REENCAMINADAS PENDIENTES CON LAS CARACT. PARA COMPLETAR EL CONTENEDOR."
+				mostrar_reenc = "N"
+			ELSE
+				let common:csr_string = "NO EXISTEN PIEZAS NO REENCAMINADAS PENDIENTES CON LAS CARACT. PARA COMPLETAR EL CONTENEDOR."
+				mostrar_reenc = "S"
+			END IF
+           	errmsg common:errmsg_list,FLD:common:csr_string
+           	refresh mostrar_reenc
+           	protfield mostrar_reenc
+           	return (-2)
+        /*else
+        	//Habilita el resto de los cpos y protege los actuales 
+    		Contcargado = TRUE
+    		CALL MISCprotLLenChdr
+    		CALL MISCunprotLlenC*/
+        endif
+     endif
+          
+        if (post:adt_corteop_ctrl == "S")
+		  call CDSselect_DetTmp
+      	  if (Contcargado == TRUE) then
+      	  	if (retval < 0) then
+              errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA PIEZA."
+              return -2
+          	endif
+          endif
+	  	end if
+        if (Contcargado == TRUE) then
+       	 	IF (mostrar_reenc == "S") THEN
+	    		hay_piezas_reenc = "S"
+    		ELSE
+    			CLEARFIELD hay_piezas_reenc 
+    		END IF
+          
+  		    /*CSZ - Llama rutina que verifica si hay piezas simple especial seleccionadas para
+		    ser enviadas y cuantas son*/
+		    CALL CDShay_simp_esp("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1)
+        
+        	/*MFM - Esta rutina verifica si hay piezas reencaminadas seleccionadas para
+     		ser enviadas y cuantas son
+     		CALL CDShay_piezas_reenc("Expedicion",DSC:DetTmp,DSC:DetTmp_ctx1) */
+     	
+     	
+        	move "S"  to siaf:continua_transaccion
+        	popup siaf:SCRNcontinua
+	  		if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+        		/* 0x0190 = ESC */
+				if (adt_corteop_ctrl != "S") then
+					LET MarcaIncluye = ""
+					unprotfield adt_grucorte_desc  /* Descrip. del Grupo Cte. */
+    				unprotfield adt_apertura_desc  /* Descrip. de Apertura */
+    				unprotfield post:grupo_apertura
+					call MISChabLCont
+		     		call csr:restore_currentfield
+     				INIT 33,0
+        			return -2
+				else
+		     		call csr:restore_currentfield
+     				INIT 33,0
+        			return -2
+				end if
+    		endif
+        	/* Marca para terminar de procesar */
+        	call CDSextCont_max
+        
+        	/*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+    		los detalles. Esto es util para la reversa
+    		CLEARFIELD post:codseq_dev
+	    	CALL CDSobtiene_secuen("CABEC")
+    		post:codseq_dev = post:adt_codseq_nro*/
+    	
+        	/* Journaliza con otra pantalla 
+        	drv:INDscr = SCR:post:SCRNllenContHdr
+    		let post:adt_formu_cod = "GUIAC"
+    		call CDSbuscoCodSeq*/
+    		let orden = 0
+		
+			//50242 - Por cada grupo de corte y apertura cerrado se debe journalizar una cabecera y sus detalles
+			CALL MISCjnl_DetCCont
+		else
+			Contcargado = TRUE
+    		 CALL MISCprotLLenChdr
+    		 CALL MISCunprotLlenC
+    		 return -2
+		endif
+		
+	else//reversa
+		/* MFM - Octubre 2000 - Verifico si tengo que reversar el encabezado*/
+  		IF (post:jnl_guia_saca > 0 || post:jnl_guia_despacho > 0) THEN
+  			MSGBOX "El contenedor no puede reversarse pues ya se ha hecho el Cierre de Saca y/o Corte de Línea.",0x00,"ERROR"
+  		ELSE
+  		/* Reverso el encabezado */
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRNllenContHdr
+	  		tlr:INDjnl_append = OFB:post:JNLllenContHdr
+  			CALL MISCreversa_transac
+  			/* MFM - Septiembre 2000 - Reverso los detalles*/
+	  		CALL CDSSelect_Piezas("3")
+  		END IF
+	  	;Para que no journalice de más....
+  		CALL post:MISCclear_campos_jou
+	  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  		Resetflag tlr:tran_flags,correction
+	end if
+
+END SUB
+
+/*******/

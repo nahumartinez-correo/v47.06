@@ -1,0 +1,88 @@
+/****o* Pendientes de agrupación/OFB:post:CDSstockp_CDD_up_Fac
+* NOMBRE
+*   OFB:post:CDSstockp_CDD_up_Fac
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSstockp_CDD_up_Fac
+local x like siaf:i    
+    ;En el caso de una caida en este punto al levantar nuevamente el sistema no se
+    ;recupera el número de factura y el único lugar donde se puede extraer es del 
+    ;fin de sesión ya que en la tabla PresuAct no se encuentra actualizado.
+    if (post:DocInic.numchars == 0) then
+        cds endselect "Journal_crem"
+        cds select from "journal" becomes "Journal_crem" \
+            where post:PresNro == post:PresNro && \
+              siaf:codigo_siaf == 99023
+        cds findfirst "Journal_crem" NOLOCK
+        if (cdsretval == 0) then
+            cds extract "Journal_crem" post:DocInic
+        else
+            cds endselect "Journal_crem"
+            return -2
+        end if
+        cds endselect "Journal_crem"
+    end if
+    cds endselect "PresuDet_crem"
+    cds select from "PresuDet" becomes "PresuDet_crem" \
+        where post:PresNro == post:PresNro && \
+              (siaf:codigo_siaf == 70041 || \
+              siaf:codigo_siaf == 95000)
+    cds findfirst "PresuDet_crem" NOLOCK
+    IF (CDSRETVAL == 0) THEN
+        cds extract "PresuDet_crem" array FLD:post:track
+        x = 0
+        while (x < 10)
+            cds endselect "stockp_ctx"
+            cds select from "stockp" becomes "stockp_ctx" \
+            where post:adt_stockp_pieza == post:track[x]
+                    
+            cds findfirst "stockp_ctx" lock
+            if (cdsretval == 0) then
+                CDS CLEARBUFFER "stockp_ctx"
+                adt_stockp_DocInic = DocInic
+                CDS APPEND "stockp_ctx" \
+                    adt_stockp_DocInic
+                CDS UPDATE "stockp_ctx" LOCK
+                CDS UNLOCK "stockp_ctx"
+                cds endselect "stockp_ctx" 
+            else
+                CDS UNLOCK "stockp_ctx"
+                cds endselect "stockp_ctx"
+                cds endselect "StockpCDD_ctx"
+                cds select from "StockpCDD"  becomes "StockpCDD_ctx" \
+                where adt_CDD_pieza == post:track[x]
+                    
+                cds findfirst "StockpCDD_ctx" lock
+                if (cdsretval == 0) then
+                    CDS CLEARBUFFER "StockpCDD_ctx"
+                    adt_CDD_DocInic = DocInic        
+                    CDS APPEND "StockpCDD_ctx" \
+                    adt_CDD_DocInic
+                    CDS UPDATE "StockpCDD_ctx" LOCK
+                end if 
+                CDS UNLOCK "StockpCDD_ctx"
+                cds endselect "StockpCDD_ctx"
+            end if
+            x = x + 1
+        end while
+    end if        
+    cds endselect "PresuDet_crem"        
+    
+END SUB
+/*******/
+
+

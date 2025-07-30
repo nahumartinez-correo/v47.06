@@ -1,0 +1,219 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALent_ch_os
+* NOMBRE
+*   OFB:tes:SVALent_ch_os
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALent_ch_os
+    local superviso like tes:rend_marca_cierre
+    local total_caja like siaf:importe
+    local banco_desc like siaf:adt_banco_desc
+    
+    let cant_cheques = 0
+    let siaf:cant = 0
+    if (!testflag(tlr:tran_flags,correction)) then
+        siaf:moneda = tes:jnl_moneda    	
+        ; Antes Borro la tabla
+        if (drv:dt_app == 4) then
+        	call tes:CDSAuxCheq_clear(op:op_branch_id,"S",op:op_tesoro_id)
+        else
+        	call tes:CDSAuxCheq_clear(op:op_branch_id,"N",op:op_operator_id)
+		end if        	
+        ; Paso los cheques seleccionados del picklist a la tabla
+        CALL MISCchq_agregar_os    	
+        let total_caja = siaf:tefectivo_vec[siaf:moneda] + siaf:tefec_inic_vec [siaf:moneda]
+        if (drv:dt_app == 4) then
+        	call tes:CDSverif_cheq_ing("S",op:op_tesoro_id)
+        else
+        	call tes:CDSverif_cheq_ing("N",op:op_operator_id)
+        end if        
+        select (retval)
+	        case -1
+	  	     errmsg lst:common:errmsg_list,"No hay ningún Valor cargado"
+		     return (-1)
+        end select
+		call tes:CDSctrl_envio
+		if (retval < 0) then
+			return (-2)
+		end if
+        popup tes:SCRNconfirma
+        if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+            return (-2)
+        end if
+    else
+		; Verifico el estado de los cheques
+        call tes:CDScheque_ent
+        if (retval < 0)
+            return (-2)
+        end if
+    end if
+    
+    call siaf:SVALnivel_sup
+    if (retval < 0)
+        return (-2)
+    end if
+    ; Guardo si fue supervisada para marcar las otras
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+        let superviso = "S"
+    else
+        let superviso = "N"
+    end if
+    
+    if (!testflag(tlr:tran_flags,correction)) then 
+        let siaf:nro_cheque = 0
+        let siaf:cheqcuenta = 0
+        let siaf:cod_banco  = 0
+        post:climed_tipo = jnl_cli_tipo
+        post:climed_numero = jnl_cli_num        
+        ungetkey 0x190
+        call siaf:MISClleno_modalidad
+        let drv:INDscr  = scr:post:SCRNjnl_cheq_os
+        clearfield post:importe_origen
+        clearfield siaf:importe
+        call tlr:JNLtran
+
+        ; le sumo 6 al codigo de transacción porque cada uno de los pases
+        ; tiene ese código de transacción
+        let siaf:codigo_siaf = siaf:codigo_siaf + 6
+        ; let siaf:nombre_transac = "SAL.VAL. DE CAJ.A TES.PCIA."
+        ; move "SACHTPC" to tlr:tran_mnemonic
+        if (drv:dt_app == 4) then
+        	adt_cheqaux_tesoro = "S"
+        	adt_cheqaux_op = op:op_tesoro_id
+        else
+        	adt_cheqaux_tesoro = "N"
+        	adt_cheqaux_op = op:op_operator_id
+        end if
+        
+        call tes:MISCcargo_param
+        cds select from dsc:AuxCheq_tbl becomes dsc:AuxCheq2_ctx \
+            where  tes:adt_cheqaux_suc == op:op_branch_id    && \
+                   adt_cheqaux_op      == adt_cheqaux_op     && \
+                   adt_cheqaux_tesoro  == adt_cheqaux_tesoro && \
+                   adt_cheqaux_moneda  == tes:jnl_moneda
+    	        
+        cds findfirst dsc:AuxCheq2_ctx lock
+        let lib:err_retval = cdsretval	
+
+        call csr:f_sadroppl dsc:Cheque
+        call csr:f_sanewpl dsc:Cheque pic:Cheque
+        ; En post:importe voy acumulando el total
+        let post:importe = 0 
+        let post:cantidad = 1
+        let siaf:i = 0
+        do
+            if (lib:err_retval != 0) then
+                break
+            end if
+            cds extract dsc:AuxCheq2_ctx all
+	    	move tes:adt_cheqaux_banco   to siaf:cod_banco
+	    	move tes:adt_cheqaux_cuenta  to siaf:cheqcuenta
+	    	move tes:adt_cheqaux_nro     to siaf:nro_cheque
+	    	move tes:adt_cheqaux_importe to post:importe_origen
+	    	move tes:adt_cheqaux_vto 	 to post:fec_d
+	    	move tes:adt_cheqaux_emi 	 to post:fec_e
+	    	move tes:adt_cheqaux_moneda  to siaf:moneda
+	    	move tes:adt_cheqaux_clearing to tes:clearing
+	    		    		    		    	
+	    	;call CDSleer_fecha_dep(op:op_branch_id,siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,"O",siaf:nro_cheque,adt_cheqaux_op)
+            ;move tes:teso_cheq_fvto to post:fec_d
+	    
+	    	call ABMcheques_refresh
+		    ; Restauro la pantalla de cada uno de los movimientos y dejo que le asigno los totales
+		        
+		    call post:MISCconvierto_coti(post:importe_origen)
+	
+			call tes:MISCcargo_param
+	        let tes:es_tesoro = "S"
+	        if (superviso == "S") then
+	        ; si la primera fue supervisada , marco todas
+	        setflag tlr:tran_flags,supovr_granted
+		    end if
+	
+			setflag giros:tran_send_mode,trat_cheques
+			
+			call post:CDSobtiene_secuen("STAN")
+        	giros:codigo_procesamiento = 998130
+        	giros:hora_viaje = common:time_of_day
+        	giros:dia_viaje  = common:system_date
+        	drv:INDhcomm_rtn  = OFB:post:SENDentrada_cheq_suc
+        	drv:INDspc_rtn[1] = OFB:post:RCVEentrada_cheq_suc
+ 			call hcomm:COMM_stat_init
+ 			       		        
+	        call tlr:JNLtran
+	        
+			if (hcomm:tran_status == HOST_ACCEPTED)
+		        siaf:adt_banco_codigo = adt_cheqaux_banco
+		        call siaf:CDSadt_banco_load
+		        if (retval == 0) then
+		            banco_desc = siaf:adt_banco_desc
+		        else             
+		            banco_desc = "Banco desconocido"
+		        end if
+		        
+		        
+		        fprint common:csr_string "%-20.20s      %10.10e  %20.20e  %8.8e   %13e", \
+	        	banco_desc,post:fec_d,adt_cheqaux_cuenta,adt_cheqaux_nro,adt_cheqaux_importe
+		         
+		         
+			    call csr:f_saaddpl dsc:Cheque common:csr_string
+			    let post:importe = post:importe + post:importe_origen 
+			    siaf:i = siaf:i + 1
+		    	if (siaf:i > 44)
+		    	    post:cantidad = post:cantidad + 1
+		    	    siaf:i = 1
+		    	end if
+		 	    cds delete dsc:AuxCheq2_ctx
+		        cds unlock dsc:AuxCheq2_ctx
+			else
+				if (hcomm:tran_status > HOST_REJECTED )
+					break
+				end if		        
+			end if
+		
+			clearfield hcomm:INDhost_sndrt
+			clearfield hcomm:INDhost_rcvrt		        
+		
+	        cds findnext dsc:AuxCheq2_ctx lock
+		    let lib:err_retval = cdsretval
+		    
+        loop
+        clearfield drv:INDjnl_rtn
+        clearfield drv:INDhcomm_rtn
+        clearfield drv:INDspc_rtn[1]
+        
+        tes:sucursal = tes:jnl_suc_orig
+        if (!(testflag(tlr:tran_flags,correction))) then
+            call tes:TRANprt_ent_cheqsuc
+        end if        
+  		; borrar todos los campos no autoclear de 9340 - 9350!!
+		call csr:proc_list(F_CLEAR,LST:tes:LISTfld_cheq_otrasuc)
+		call csr:proc_list(F_REFRESH,LST:tes:LISTfld_cheq_otrasuc)
+        clearfield drv:INDjnl_rtn
+
+        call tes:MISCclr_Datos_Cli
+        cds unlock dsc:AuxCheq2_ctx
+        cds endselect dsc:AuxCheq2_ctx
+        call csr:f_sadroppl dsc:cheques_os
+    else
+        call MISCrev_sesion_envio
+        if (retval < 0) then
+            return (-2)
+        end if
+    end if
+END SUB
+
+/*******/

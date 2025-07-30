@@ -1,0 +1,6 @@
+#include "ofbdefs.h"
+#include "base.h"
+#include "drv.h"
+#define MENSAJES_CIERRE "SI"
+#include "giros.h"
+#include "hcommstd.h"

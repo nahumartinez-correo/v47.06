@@ -1,0 +1,146 @@
+/****o* Pendientes de agrupación/OFB:post:CDSGrabo_ScaneoP
+* NOMBRE
+*   OFB:post:CDSGrabo_ScaneoP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   //NI 50562 - Reporte de Piezas pendientes de expedicion
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSGrabo_ScaneoP
+
+Local fecha like post:adt_stockp_recepfech
+Local fecha_hora like post:adt_novtt_fecha
+
+	//If ((siaf:codigo_siaf == 99009) || (siaf:codigo_siaf == 99020 && post:adt_novtt_fecha_obs.NUMCHARS != 0)) Then //Marca de Excepción
+    If (post:fecha_aux == post:adt_novtt_fecha_obs && post:fecha_aux.numchars != 0 && post:adt_novtt_fecha_obs.numchars != 0)
+    	fecha_hora = post:adt_novtt_fecha_obs 
+    Else
+    	fecha = common:system_date
+    	FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora_scaneoP
+    End If
+        
+    CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx \
+    WHERE  post:adt_novtt_fecha == fecha_hora && \
+    post:adt_novtt_sequence == tlr:jnl_sequence  && \
+    post:adt_novtt_op == op:op_operator_id && \
+    post:adt_novtt_tipo == 16 
+    CDS FINDFIRST DSC:NovTT_ctx LOCK
+    lib:err_retval = CDSRETVAL
+    CDS CLEARBUFFER DSC:NovTT_ctx 
+    post:adt_novtt_op = op:op_operator_id
+    post:adt_novtt_sequence = tlr:jnl_sequence 
+    post:adt_novtt_tipo = 16
+    post:adt_novtt_subtipo = 0
+    post:adt_novtt_fecha = fecha_hora
+    //NI 50562
+    post:adt_novtt_fecha_rep = substr (fecha_hora,0,8)
+    post:adt_novtt_hora_rep  = substr (fecha_hora,8,6)
+    post:adt_novtt_tyt = substr (post:adt_novtt_pieza,0,2)
+    
+    //Piezas Observadas
+    IF (post:adt_novtt_fecha_obs.NUMCHARS == 0) THEN
+    	post:adt_novtt_fecha_obs = post:adt_novtt_fecha
+    END IF
+   
+    /* MFM Enero 2001 - Se hace una modificación para que el campo adt_novtt_uneg tenga siempre longitud 6*/
+    FPRINT adt_novtt_uneg "%06.6e", common:br_CUN
+    //post:adt_novtt_uneg = common:br_CUN
+    
+    post:adt_novtt_ruta = common:sucursal_activa
+    CALL csr:trimfield(common:br_opTT)
+    IF (common:br_opTT.NUMCHARS == 0)
+        adt_novtt_optt = 999999
+    ELSE
+        FPRINT adt_novtt_optt "%06.6e", common:br_opTT
+    END IF
+    post:adt_novtt_en_cond = "S"
+    post:adt_novtt_trans = "F"
+    post:adt_novtt_linea = ""
+    post:adt_novtt_op2 = ""
+       
+    IF (siaf:codigo_siaf == 99064) THEN
+    	IF (jnl_simp_esp_aux != "")  THEN
+    		adt_novtt_simp_esp = jnl_simp_esp_aux
+    	ELSE
+    		adt_novtt_simp_esp = jnl_simp_esp
+    	END IF
+    ELSE
+    	adt_novtt_simp_esp = jnl_simp_esp
+    END IF
+    /*MFM - Obs 431-435 */
+    if (siaf:codigo_siaf == 99009) then
+    	post:adt_novtt_excep = "S"
+    	post:adt_novtt_excep_exis = "N"
+    else
+	    post:adt_novtt_excep = "N"
+    	post:adt_novtt_excep_exis = ""
+    end if
+    
+    CDS APPEND DSC:NovTT_ctx    FLD:adt_novtt_op \
+                                FLD:adt_novtt_sequence \
+                                FLD:adt_novtt_tipo \
+                                FLD:adt_novtt_subtipo \
+                                FLD:adt_novtt_fecha \
+                                FLD:adt_novtt_uneg \
+                                FLD:adt_novtt_ruta \
+                                FLD:adt_novtt_estado_ent \
+                                FLD:adt_novtt_firma \
+                                FLD:adt_novtt_pieza
+
+    CDS APPEND DSC:NovTT_ctx    FLD:adt_novtt_optt \
+                                FLD:adt_novtt_guia_cont \
+                                FLD:adt_novtt_guia_saca \
+                                FLD:adt_novtt_linea \
+                                FLD:adt_novtt_en_cond \
+                                FLD:adt_novtt_listo \
+                                FLD:adt_novtt_trans \
+                                FLD:adt_novtt_simp_esp \
+                                FLD:adt_novtt_excep \
+                                FLD:adt_novtt_excep_exis \
+                                FLD:adt_novtt_reenc \
+                                FLD:adt_novtt_fecha_obs \
+                                FLD:adt_novtt_est_pieza
+
+    /* MFM - Agosto 2000 Devolución Minorista o Devolución Desc.sin Lote
+    necesito guardar estos datos para luego hacer los filtros correspondientes en
+    el cierre de contenedor y/o saca*/
+    IF (siaf:codigo_siaf == 99062 || siaf:codigo_siaf == 99064) THEN
+        CDS APPEND DSC:NovTT_ctx    FLD:adt_novtt_corte \
+                                    FLD:adt_novtt_grupo \
+                                    FLD:adt_novtt_grupo_desc \
+                                    FLD:adt_novtt_apertura \
+                                    FLD:adt_novtt_apert_desc \
+                                    FLD:adt_novtt_saca_tipo \
+                                    FLD:adt_novtt_saca_desc \
+                                    FLD:adt_novtt_despacho \
+                                    FLD:adt_novtt_desc \
+                                    FLD:adt_novtt_contenedor \
+                                    FLD:adt_novtt_saca \
+                                    FLD:adt_novtt_desp \
+                                    FLD:adt_novtt_op2 
+
+    END IF
+    //NI 50562 - Reporte de Piezas pendientes de expedicion
+    CDS APPEND DSC:NovTT_ctx    FLD:adt_novtt_fecha_rep \
+                                FLD:adt_novtt_hora_rep  \
+                                FLD:adt_novtt_tyt
+    
+    IF (lib:err_retval == -801) THEN
+        CDS INSERT DSC:NovTT_ctx LOCK
+    END IF
+    CDS UNLOCK DSC:NovTT_ctx 
+    CDS ENDSELECT DSC:NovTT_ctx 
+END SUB
+
+/*******/

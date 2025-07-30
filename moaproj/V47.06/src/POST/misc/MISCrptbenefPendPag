@@ -1,0 +1,145 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrptbenefPendPag
+* NOMBRE
+*   OFB:post:MISCrptbenefPendPag
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrptbenefPendPag
+LOCAL l_cantRegistros LIKE post:cantidad
+LOCAL l_pick_titulo LIKE siaf:pick_titulo
+local indice like siaf:i
+local l_beneficio like post:beneficio
+local l_importe like siaf:importe
+local l_nombre like adt_benTmp_nombre
+local l_acum_tot like adt_benTmp_importe
+	lineas = 0
+	siaf:pick_titulo = "Reporte"
+	SELECT (siaf:pantalla_impreso)
+    	CASE "P"
+    		CALL CSR:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+    		BREAK
+    	CASE "I"
+    	    ;LMB - PS 9780 - 14.07.2008
+    	    ;CALL post:MISCopen_reporte("/te mp/Reporte.lis")
+            FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "Reporte.lis"  	
+    		CALL post:MISCopen_reporte(common:tmpDirTemporal)
+    		
+    		BREAK
+    END SELECT
+	;CABECERA DEL REPORTE
+	FLD:siaf:INDencab_lis = OFB:siaf:MISCtots_encabez
+	CALL FLD:siaf:INDencab_lis
+    
+    clearfield beneficio
+	clearfield operativo
+	call csr:f_sadroppl("pic_beneficios")
+	call csr:f_sanewpl("pic_beneficios",PIC:climedio_multiple)
+	do
+	    if (adt_benTmp_operativo.numchars == 0) then
+	        return -2
+	    end if
+	    operativo = adt_benTmp_operativo
+        call post:OFBconsulta_simon(970090)
+        select (giros:CodRespuesta_comm)
+            case "00"
+            break 
+            case "70"
+                ;Hay más datos
+                continue
+            case else
+            	call csr:f_sadroppl siaf:pick_titulo
+            	call csr:f_sadroppl("pic_beneficios")
+                return -2
+            break
+        end select
+        break
+    loop
+    adt_benTmp_cli = msg_cliente
+    adt_benTmp_cli_desc = msg_cliente_desc
+    
+    l_pick_titulo = "rptFamilia"
+	CALL csr:f_sadroppl l_pick_titulo
+	CALL CSR:f_sanewpl(l_pick_titulo,PIC:siaf:totales)
+	;CABECERA DE LA TABLA
+	CALL post:MISCCabetblrptBPP
+    
+    indice = PL_GETITEM
+    do
+        call csr:myPickcontrol("pic_beneficios",common:csr_string,indice)
+        if (retval < 0)
+			break
+		end if
+		l_beneficio = adt_benTmp_benef
+		adt_benTmp_benef = substr(common:csr_string,0,20)
+		l_nombre = adt_benTmp_nombre
+		adt_benTmp_nombre = substr(common:csr_string,21,40)
+		l_importe = adt_benTmp_importe
+		adt_benTmp_importe = substr(common:csr_string,78,13)
+		fprint common:csr_string "%-20.20s    %13.13e       %-40.40s" adt_benTmp_benef,adt_benTmp_importe,adt_benTmp_nombre
+		CALL csr:f_saaddpl l_pick_titulo common:csr_string
+		l_acum_tot = l_acum_tot + adt_benTmp_importe
+		l_cantRegistros = l_cantRegistros + 1
+		indice = indice + 1
+	loop
+
+	indice = PL_GETITEM
+	if (l_cantRegistros > 0)
+		call csr:myPickcontrol(l_pick_titulo,common:csr_string,indice)
+	endif
+	WHILE ((indice - PL_GETITEM) < l_cantRegistros )
+		;CUERPO DE LAS TABLAS
+		CALL post:MISCwrt_general("V",0,"")
+		lineas = lineas + 1
+		;SI LAS LINEAS LLEGAN A 50 SE DEBE IMPRIMIR EL TITULO DE LA TABLA
+		;EN LA SIGUIENTE HOJA
+		IF (siaf:pantalla_impreso == "I") THEN
+			IF (lineas == 50 && siaf:pantalla_impreso == "I") THEN
+				lineas = 0
+				CALL post:MISCCabetblrptBPP
+			END IF
+		ELSE
+			lineas = 0
+		END IF
+		indice = indice + 1
+
+		call csr:myPickcontrol(l_pick_titulo,common:csr_string,indice)
+	END WHILE
+
+    ;TOTALES DE LAS TABLAS
+    SELECT (siaf:pantalla_impreso)
+		CASE "P"
+		CASE "I"
+			IF (lineas + 2 > 50) THEN
+				WHILE (lineas < 50)
+					common:csr_string = "   "
+					CALL post:MISCwrt_general("V",0,"")
+					lineas = lineas + 1
+				END WHILE
+				lineas = 0
+			END IF
+			common:csr_string = "   "
+			CALL post:MISCwrt_general("V",0,"")
+			FPRINT common:csr_string, "CUPONES: %4.4s    TOTAL: %13.13e", l_cantRegistros, l_acum_tot
+			CALL post:MISCwrt_general("V",0,"")
+			lineas = lineas + 2
+			BREAK
+	END SELECT
+	call csr:f_sadroppl("pic_beneficios")
+    CALL csr:f_sadroppl l_pick_titulo
+	CALL post:MISCclose_reporte
+END SUB
+
+/*******/

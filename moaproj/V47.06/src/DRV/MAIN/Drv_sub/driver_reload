@@ -1,0 +1,140 @@
+/****o* Pendientes de agrupación/OFB:drv:driver_reload
+* NOMBRE
+*   OFB:drv:driver_reload
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv_sub.h"
+
+SUB drv:driver_reload
+	LOCAL StackCntTmp LIKE drv:stack_cnt
+	// ---------------------------------------------------------------
+	// This procedure is called if we were executing some transaction,
+	// jumped to some other transaction and are coming back to it
+	// First of all, read all the stack* fields so that we know where 
+	// we were when we left it
+	// ---------------------------------------------------------------
+	CALL  OFB:drv:reset_stack
+	// ------------------------------------------
+	// If it was a menu then call the menu driver
+	// ------------------------------------------
+	IF (SUBSTR(data_collect,screen_active,1) == "M")
+		CALL  OFB:drv:driver_menu_load
+	END IF
+	LET LASTKEY = 0
+	// -------------------------------------------------
+	// If we need to re do things like PreDisplay etc...
+	// -------------------------------------------------
+	IF (drv:reload_screen != -1)
+		LET drv:cnt_tmp = stack_act[dt_app][stack_cnt]
+		IF (SUBSTR(auto_side_bar,cnt_tmp,1) == "1")
+			LET drv:cnt_tmp = drv:screen_active
+			LET drv:screen_active = stack_act[dt_app][stack_cnt]
+			CALL  OFB:drv:side_bar_pop
+			LET drv:screen_active = drv:reload_screen
+			IF (SUBSTR(auto_side_bar,screen_active,1) == "1")
+				CALL  OFB:drv:side_bar_push
+			END IF
+		END IF
+		CALL  CSR:proc_list F_CPTODUP drv:screen_active
+#if DT_DEBUG == 1
+		IF (TESTFLAG(debug_flags,predisplay))
+			DPRINT "Debuging In PROC drv:driver_reload\r\n"
+			IF (drv:INDpre_dis_rtn == 0)
+				DPRINT "            Predisplay rtn = NULL\r\n"
+			ELSE
+				DPRINT "            Calling pre display routine\r\n"
+			END IF
+			SINGLESTEP ON
+		END IF
+#endif
+		CALL  FLD:drv:INDpre_dis_rtn
+		IF (RETVAL == -1)
+			CLEARFIELD INDrun_funct
+			LET drv:last_button = -1
+			CALL  OFB:end_tran
+			CALL  OFB:drv:prev_funct
+			RETURN (-2)
+		END IF
+	ELSE
+		CALL  CSR:proc_list F_CPTODUP drv:screen_active
+#if DT_DEBUG == 1
+		IF (TESTFLAG(debug_flags,restore))
+			DPRINT "Debuging In PROC drv:driver_reload\r\n"
+			IF (drv:INDrestore_rtn == 0)
+				DPRINT "            Restore Rtn = NULL\r\n"
+			ELSE
+				DPRINT "            Calling restore routine\r\n"
+			END IF
+			singlestep on
+		END IF
+#endif
+		// --------------------------------------------------------------
+		// Run the Restore Routine, if want to Setup the environment back
+		// which probably got spoiled by the previously executed tran
+		// --------------------------------------------------------------
+		CALL  FLD:drv:INDrestore_rtn
+		IF (RETVAL == -1)
+			CLEARFIELD INDrun_funct
+		    IF (drv:removed_base[drv:dt_app][drv:stack_cnt] == "Y") && \
+	   			(TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+					StackCntTmp = drv:stack_cnt - 1
+					drv:removed_base[drv:dt_app][StackCntTmp] = "Y"
+			END IF
+			LET drv:last_button = -1
+			CALL  OFB:end_tran
+			CALL  OFB:drv:prev_funct
+			RETURN -2
+		END IF
+	END IF
+	// ---------------------------------------------------------------------
+	// If it is a notecards transaction and the base was removed (will not
+	// be removed if the previus transaction was told not to), paste it back
+	// ---------------------------------------------------------------------
+    IF (drv:removed_base[drv:dt_app][drv:stack_cnt] == "Y") && \
+	   (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+    	LET FLD:drv:INDscr = FLD:drv:INDstack_notes[dt_app][drv:stack_cnt]
+    	IF (drv:INDscr != 0) THEN
+  	    	JOINSCREEN FLD:drv:INDscr,CURRENTFIELD
+        END IF
+		// -----------------------------------------------------
+		// Attach the tab back which was active when we left the 
+		// notecards transaction
+		// -----------------------------------------------------
+		IF (drv:tab_active >= 0) THEN
+	        let drv:INDscr = drv:tab_screen[drv:tab_active]
+    	    IF (drv:INDscr != 0) && \
+        	   (drv:subscreen[drv:dt_app] == "Y") THEN
+  	    		JOINSCREEN FLD:drv:INDscr,CURRENTFIELD
+	        	CALL drv:disable_tab
+    	    END IF
+		END IF
+        LET drv:removed_base[drv:dt_app][drv:stack_cnt] = "N"
+    END IF
+	CALL  CSR:proc_list F_COMPARE drv:screen_active
+	IF (RETVAL == 1)
+		LET drv:cnt_tmp = stack_act[dt_app][stack_cnt]
+		IF (SUBSTR(auto_side_bar,cnt_tmp,1) == "1")
+			LET drv:cnt_tmp = drv:screen_active
+			LET drv:screen_active = stack_act[dt_app][stack_cnt]
+			CALL  OFB:drv:side_bar_pop
+			LET drv:screen_active = drv:cnt_tmp
+			IF (SUBSTR(auto_side_bar,screen_active,1) == "1")
+				CALL  OFB:drv:side_bar_push
+			END IF
+		END IF
+	END IF
+END SUB
+
+/*******/

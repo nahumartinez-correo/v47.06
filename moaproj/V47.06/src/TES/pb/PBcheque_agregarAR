@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:tes:PBcheque_agregarAR
+* NOMBRE
+*   OFB:tes:PBcheque_agregarAR
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBcheque_agregarAR
+
+	/* Agrega registros a la tabla AuxCheq */
+	IF (post:adt_mp_admban == "S") THEN /* Administración Bancaria */
+		IF (siaf:cod_banco.NUMCHARS == 0 || siaf:nro_cupcheq.NUMCHARS == 0) THEN
+			ERRMSG LST:common:errmsg_list,"Falta ingresar algún campo"
+			drv:button = drv:last_button
+			CALL drv:but_up_enable
+			RETURN (-1)
+		ELSE
+			IF (siaf:cod_banco.NUMCHARS > 0) THEN
+				CDS SELECT FROM siaf:adt_banco_table BECOMES siaf:adt_banco_context \
+					WHERE siaf:adt_banco_codigo == siaf:cod_banco
+
+				CDS FINDFIRST siaf:adt_banco_context NOLOCK
+				LET lib:err_retval = CDSRETVAL
+				CDS ENDSELECT siaf:adt_banco_context
+				IF (lib:err_retval == -801) THEN
+					MSGBOX "BANCO DEL CHEQUE INEXISTENTE",0x00,"ERROR"
+					drv:button = drv:last_button
+					CALL drv:but_up_enable
+					RETURN (-1)
+				END IF
+			END IF
+		END IF        
+	ELSE        
+		IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+			IF (post:codigo_interno.NUMCHARS == 0 || siaf:nro_cupcheq.NUMCHARS == 0) THEN
+				ERRMSG LST:common:errmsg_list,"Falta ingresar algún campo"
+				drv:button = drv:last_button
+				CALL drv:but_up_enable
+				RETURN (-1)
+			ELSE
+				IF (post:codigo_interno.NUMCHARS != 0) THEN
+					/* Validar si existe ese codigo con tabla de codigos internos */
+					CALL CDSexiste_codint(post:codigo_interno)
+					IF (RETVAL < 0) THEN
+						drv:button = drv:last_button
+						CALL drv:but_up_enable
+						MSGBOX "Codigo interno No válido",0x00,"ERROR"
+						RETURN (-1)
+					END IF
+				END IF
+			END IF
+		END IF
+	END IF
+	    
+	tes:adt_cheqaux_moneda = siaf:moneda
+	tes:adt_cheqaux_suc = op:op_branch_id
+	tes:teso_cheq_suc = op:op_branch_id
+	tes:adt_cheqaux_comerc = ""
+	teso_cheq_termi_win = tes:termi_win
+    
+	IF (post:adt_mp_admban == "S") THEN    	
+		tes:teso_cheq_banco = siaf:cod_banco
+		tes:teso_cheq_cuenta = siaf:cheqcuenta
+	ELSE
+		tes:teso_cheq_banco = 0
+		IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+			tes:teso_cheq_cuenta = post:codigo_interno
+			tes:adt_cheqaux_comerc = post:vpi_merchantCode
+		ELSE
+			tes:teso_cheq_cuenta = 0
+		END IF
+	END IF
+    
+	LET tes:teso_cheq_nro = siaf:nro_cupcheq
+	LET tes:teso_cheq_importe = post:importe_origen
+	LET tes:teso_cheq_moneda = siaf:moneda
+    
+	IF (drv:dt_app == 4) THEN          
+		LET teso_cheq_estado = "T"
+		LET teso_cheq_id = op:op_tesoro_id
+		CALL CDStesoro_cheq_load
+		IF (RETVAL < 0) THEN
+			ERRMSG LST:common:errmsg_list, "Valor No Pertenciente al Tesoro"
+			CALL drv:but_up_enable
+			CALL drv:but_disable
+			RETURN (-1)
+		END IF
+		LET post:importe_origen = tes:teso_cheq_importe
+		REFRESH post:importe_origen
+		LET adt_cheqaux_tesoro = "S"
+		LET adt_cheqaux_op = op:op_tesoro_id
+	ELSE
+		LET teso_cheq_estado = "O"
+		LET teso_cheq_id = op:op_operator_id
+		CALL CDStesoro_cheq_load
+		IF (RETVAL < 0) THEN
+			ERRMSG LST:common:errmsg_list, "Valor No Pertenciente a la Caja"
+			CALL drv:but_up_enable
+			CALL drv:but_disable
+			RETURN (-1)
+		END IF     
+		LET post:importe_origen = tes:teso_cheq_importe
+		REFRESH post:importe_origen
+		LET adt_cheqaux_tesoro = "N"
+		LET adt_cheqaux_op = op:op_operator_id
+	END IF
+    
+	IF (post:adt_mp_admban == "S") THEN /* Administración Bancaria */ 
+		adt_cheqaux_banco = siaf:cod_banco
+		adt_cheqaux_cuenta = siaf:cheqcuenta
+	ELSE 
+		adt_cheqaux_banco  = 0
+		IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+			adt_cheqaux_cuenta = post:codigo_interno
+		ELSE
+			adt_cheqaux_cuenta = 0
+		END IF
+	END IF
+    
+	adt_cheqaux_nro = siaf:nro_cupcheq
+	
+	CALL CDScheques_load
+	IF (RETVAL == 0) THEN    
+		ERRMSG LST:common:errmsg_list, "Valor Ya Ingresado"
+		drv:button = drv:last_button
+		CALL drv:but_up_enable
+		RETURN (-2)
+	END IF
+    
+	LET adt_cheqaux_importe = post:importe_origen
+	CALL CDScheques_save
+	CALL MISCdisplay_cheques
+	CALL ABMcheques_clear
+	CALL ABMcheques_refresh
+	
+	NEXTFIELD siaf:cod_banco
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+	IF (drv:dt_app == 4) THEN
+		CALL drv:but_disable
+	END IF
+	SETVALDONE siaf:nro_cupcheq
+	SETVALDONE post:codigo_interno
+    
+END SUB
+
+/*******/

@@ -1,0 +1,289 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRemito_Item
+* NOMBRE
+*   OFB:post:MISCRemito_Item
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRemito_Item(tipo_presu)
+	
+	LOCAL loc_imp       LIKE siaf:importe
+    LOCAL loc_cant      LIKE siaf:cantidad
+    LOCAL loc_codtx     LIKE siaf:codigo_siaf    
+    LOCAL loc_INDtx     LIKE tlr:INDtran_name
+    LOCAL loc_INDlist   LIKE drv:INDcur_list
+    LOCAL loc_forfis    LIKE post:PreDForFis
+    LOCAL loc_impconiva LIKE post:TotalSinIva
+    LOCAL loc_impsiniva LIKE post:TotalSinIva
+    LOCAL loc_totsiniva LIKE post:TotalSinIva
+    LOCAL NroTrn 		LIKE post:PreDNroTrn
+    LOCAL HayPresu 		LIKE lib:err_retval
+    LOCAL NroAux 		LIKE tes:adt_evaux_prestran
+    LOCAL loc_BonifCM	LIKE post:bonificaCM
+    LOCAL loc_DctoCM	LIKE post:Dcto_CliMed
+    LOCAL loc_AdmiteMP  LIKE post:AdmiteMP
+    LOCAL lcodigo		LIKE siaf:codigo_siaf
+    LOCAL lflia			LIKE siaf:adt_tran_fliatran
+    LOCAL ltarifa		LIKE post:tarifa
+    LOCAL lnro_asoc		LIKE post:PreDNroTrnAsoc
+    LOCAL Hay_Remitos   LIKE post:bonificaCM
+    LOCAL ContRemitos   LIKE siaf:idx
+    LOCAL MarcaRemito	LIKE post:marca_remito
+    LOCAL loc_DctoCliMed LIKE post:Imp_DctoCliMed
+	
+	//Solicitud 50104
+    if (tipo_presu == SESION) then
+    	CALL CDSBorro_PresuDetOC
+    endif
+    
+    /* Resguardo los campos de la tx */
+
+	//PS Cliente Medio - Bienes de Cambio : Se resguarda el campo Dcto_CliMed y Tarifa
+	loc_DctoCM = post:Dcto_CliMed
+	ltarifa    = post:tarifa
+    loc_forfis  = post:PreDForFis
+    loc_imp     = siaf:importe
+    loc_cant    = siaf:cantidad
+    loc_codtx   = siaf:codigo_siaf
+    loc_INDtx   = tlr:INDtran_name
+    loc_INDlist = drv:INDcur_list
+    loc_impconiva = siaf:ImporteConIva
+    loc_impsiniva = siaf:ImporteSinIva
+    loc_totsiniva = post:TotalSinIva  
+    loc_BonifCM = post:bonificaCM                                                            
+    //loc_DctoCM = post:Dcto_CliMed
+	loc_AdmiteMP = post:AdmiteMP
+	
+	Hay_Remitos = "N"
+	ContRemitos = 0
+	
+	if (siaf:codigo_siaf == 99490) //Cobranza Automatica
+		//Se facturan los que NO estan marcados.
+		MarcaRemito = ""
+	else
+		//Se usan los que SI estan marcados, pero..
+		if (tipo_presu == PROFORMA) then
+			//Si es PROFORMA usa los que no estan marcados
+			MarcaRemito = ""
+		else
+			MarcaRemito = "*"
+		end if
+	end if
+	/* Si eligió alguna OC 
+	if (post:adt_oc_nro.numchars != 0 ) then
+		call post:MISCAcumulo_items(MarcaRemito)
+	end if*/
+	if (tipo_presu == SESION) then
+		cds select from dsc:TABremitos becomes dsc:CONremitos where post:op_operator_id == op:op_operator_id \
+		&& post:marca_remito == MarcaRemito && \
+		ErrorPresu == FALSE && \
+		post:adt_oc_nro == post:adt_oc_nro
+	else
+		cds select from dsc:TABremitos becomes dsc:CONremitos where post:op_operator_id == op:op_operator_id \
+		&& post:marca_remito == MarcaRemito && \
+		ErrorPresu == FALSE
+	end if	
+	cds findfirst dsc:CONremitos lock
+	lib:err_retval = cdsretval
+	
+	post:tot_imp_remito = 0
+	/*//grabar en la PRESU
+	call post:CDSpresu_imp_remito*/
+	//importe de los remitos pagados con adelanto
+	clearfield post:anticipo_rem_CM
+	/* No se pueden pagar más de 30 remitos */
+	do
+		clearfield post:remito_tarifa
+		clearfield ErrorPresu
+		//PS 9358 Se agregó a la condición que sea != PROFORMA ya que sino no se 
+		//procesaban todos los remitos pendientes
+		if (lib:err_retval < 0 || (ContRemitos >= 30 && tipo_presu != PROFORMA)) then
+			break
+		end if
+		cds extract dsc:CONremitos all
+		
+		//Solicitud 50105
+		if ( tipo_presu != PROFORMA) then
+		//Actualizar la tabla AdelCM (poner * en los registros correspondientes al remito)	
+			call post:CDSabmAdelCM("M", 0, 0, CM_CREM)
+		endif
+		
+		//acumular en el campo post:tot_imp_remito
+		post:tot_imp_remito = post:tot_imp_remito + post:remito_importe
+		//grabar en la PRESU el total de los remitos y el importe de los remitos pagados con adelanto (post:anticipo_rem_CM)
+	 	call CDSpresu_imp_remito
+		
+		/* Busco los itemas asociados a eses remito, excluyo el descuento CM por sesión */
+		Cds select from dsc:TABrem_item becomes dsc:CONrem_item where \
+		post:op_operator_id == op:op_operator_id && \
+		post:remito_nro == post:remito_nro && \
+		post:item_codigo_trx != 99300
+		cds findfirst dsc:CONrem_item lock
+		do
+			if (cdsretval < 0) then
+				break
+			end if
+			//PS 9495 se borra este campo porque en el caso de una TX que no tarifa queda con el valor anterior
+			clearfield siaf:importe
+			
+			cds extract dsc:post:CONrem_item all
+			
+			fprint post:item_cantidad "%d.d",post:item_cantidad
+			//fprint post:item_cant_caja_prev "%d.d",post:item_cant_caja_prev
+			/* Limpio el importe donde calculo la tarifa */
+			clearfield post:item_impaux
+			call post:MISCArmo_PresuDet(tipo_presu)
+			/* Acumulo el total del remito */
+			if (tipo_presu == PROFORMA)
+				/* Descarto los adelantos y dtos */
+				if (post:item_codigo_trx != 99450 && post:item_codigo_trx != 99300) then
+					if (post:item_efvo == "+") then
+						post:remito_tarifa = post:remito_tarifa + post:item_impaux
+					else
+						post:remito_tarifa = post:remito_tarifa - post:item_impaux
+					end if			
+				end if
+			end if
+			cds findnext dsc:CONrem_item lock
+			Hay_Remitos = "S"
+		loop	
+		cds endselect dsc:CONrem_item
+		if ( tipo_presu != PROFORMA) then
+			/* Busco el Descuento CM por sesión */
+			Cds select from dsc:TABrem_item becomes dsc:CONrem_item where \
+			post:op_operator_id == op:op_operator_id && \
+			post:remito_nro == post:remito_nro && \
+			post:item_codigo_trx == 99300
+			cds findfirst dsc:CONrem_item lock
+			if (cdsretval == 0 ) then
+				cds extract dsc:post:CONrem_item all
+				siaf:codigo_siaf = post:item_codigo_trx
+				post:Dcto_CliMed = post:item_dcto
+				post:bonificaCM = post:item_bonifCM
+				ConvenioSesionV = TRUE
+				PorSesion = TRUE
+				call post:CDSupd_Convenio
+				call post:MISCConvenioSesionV("A")
+				IF (RETVAL == 0) THEN
+					//Grabo el registro de descuento en la PresuDet
+    				//PreDNroTrnAsoc = 0	
+    				//Imp_DctoCliMed = imp_aux
+
+					/* Calculo los importes a desplegar */
+		
+    				post:ImporteSinIva = Imp_DctoCliMed
+    				post:ImporteConIva = Imp_DctoCliMed
+    				loc_DctoCliMed = Imp_DctoCliMed
+					call post:CDSDcto_Sesion("P")		
+    				Imp_DctoCliMed = loc_DctoCliMed
+    				
+    				CALL post:CDSagregTrnDctoCM(0)
+				END IF
+				ConvenioSesionV = FALSE
+				PorSesion = FALSE
+				/* Vuelvo a actualizar */
+				call post:CDSupd_Convenio	
+				
+				/* Calculo los importes a desplegar */
+				call post:CDSDcto_Sesion("P")		
+				
+			end if	
+			cds endselect dsc:CONrem_item
+		end if
+	
+		/* Si estoy en una Facturacion Automática, solo mando los primeros 10*/
+		/* porque es el limite que tiene el buffer y lo tengo que controlar acá */ 
+		ContRemitos = ContRemitos + 1
+		if (tipo_presu == PROFORMA) then
+			cds clearbuffer dsc:CONremitos
+			cds append dsc:CONremitos post:remito_tarifa post:ErrorPresu
+			cds update dsc:CONremitos lock
+		end if
+		cds findnext dsc:CONremitos lock
+		let lib:err_retval = cdsretval
+	loop
+	
+	cds endselect dsc:CONremitos
+	
+	if (tipo_presu != PROFORMA) then
+		
+		/*DESCUENTO POR ORDEN DE COMPRA*/
+		if (post:adt_oc_nro.numchars != 0) then	
+			//50104:Necesito acumular en la PresuDetOC antes de generar los descuentos
+			if (tipo_presu == SESION) then
+				CALL post:MISCSavePresuDetOC("I")
+			endif
+			//Calcular el dcto.OC
+			call post:MISCDcto_OC("A")
+			//Generar el dcto.OC
+			call CDSagregTrnDctoOC
+		endif
+			
+		if (anticipo_CM > 0 ) then
+			/* Cargo los datos de la transac */
+			post:Imp_ConsumoAnt = post:anticipo_CM
+			siaf:importe = post:anticipo_CM
+			;let siaf:adt_tran_codigo = 99450
+			;call siaf:CDSadt_tran_load
+
+			;call post:CDSagregTrnAntCM
+			call post:MISCagregTrnAntCM
+			
+			clearfield siaf:importe
+			clearfield post:Imp_ConsumoAnt
+		end if
+		
+	end if
+    /*Restaurar campos*/
+    post:INDPresuD_Dat   = OFB:post:CDSgral_append
+    tlr:INDtran_name     = loc_INDtx
+    drv:INDcur_list      = loc_INDlist
+    siaf:importe         = loc_imp    
+    siaf:cantidad        = loc_cant   
+    siaf:codigo_siaf     = loc_codtx  
+    post:PreDForFis      = loc_forfis
+    siaf:adt_tran_codigo = siaf:codigo_siaf
+    siaf:ImporteConIva   = loc_impconiva
+    siaf:ImporteSinIva   = loc_impsiniva
+    post:TotalSinIva     = loc_totsiniva
+    post:bonificaCM 	 = loc_BonifCM
+    //post:Dcto_CliMed     = loc_DctoCM
+    post:AdmiteMP 		 = loc_AdmiteMP
+   	//PS Cliente Medio - Bienes de Cambio : Restauro el campo del descuento y la tarifa
+   	post:Dcto_CliMed = loc_DctoCM
+   	post:tarifa      = ltarifa
+
+
+	//A esta altura está la PresuDet armada, entonces hay que acumular
+	//por descripcion en la PresuDetOC
+	if (post:adt_oc_nro.numchars != 0 && tipo_presu == SESION) then
+		//CALL post:MISCSavePresuDetOC("I")
+		CALL post:MISCSavePresuDetOC("X")
+	endif
+
+	        
+	CALL siaf:CDSadt_tran_load
+	if (tipo_presu != PROFORMA) then
+    	/*Fin Grabar en la PresuDet*/
+    	if (Hay_Remitos == "S") then
+    		return (1)
+    	else
+    		return (0)
+    	end if
+    end if
+	
+END SUB
+
+/*******/

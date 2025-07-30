@@ -1,0 +1,108 @@
+/****o* Oficios Judiciales/OFB:siaf:PRES_7210
+* NOMBRE
+*   OFB:siaf:PRES_7210
+* DESCRIPCION
+*   Inicializa la transaccion de Oficios Judiciales
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:TRAN7210
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1692
+*		SC50368
+* SOURCE
+*/
+#include "siafPRES.h"
+
+SUB siaf:PRES_7210
+
+	IF (post:estado_presu == 2) THEN
+		//Limpia todos los campos extraidos de OfiJudi
+		CALL CSR:proc_list(F_CLEAR,LST:siaf:LISTOfiJudi)
+		//Limpia los datos del oficio en pantalla y los instanciados en OfiJudi
+		CALL CSR:proc_list(F_CLEAR,LST:siaf:LIST7210)
+		CALL CSR:proc_list(F_REFRESH,LST:siaf:LIST7210)
+	END IF
+
+	CALL siaf:MISCpress7210
+	
+	IF (RETVAL < 0 ) THEN
+		RETURN -1
+	END IF
+	
+	nombre_transac.HIGHLITE = 0
+	/* 
+	MLD 16/07/1998 por problemas cuando se trabaja en modo presupuesto
+	hago una lista aparte de transacciones de ingresos y egresos varios.
+	Si la transacción se hace desde cajas y se confirma la sesión desde
+	merchandising journaliza mal el código_siaf 
+	*/
+
+	codigo_siaf = 7210
+	restr_otra_casa = "N"
+	linea_validacion = "S"
+	exhibe_pantalla = "S"
+	imprime_comprobante = "D"
+
+	INDhost_snd_fv = drv:INDspc_rtn[6]
+	
+	CALL PRESfecha_hora
+	
+	IF (RETVAL < 0) THEN
+		RETURN (-1)
+	END IF 
+
+	MOVE siaf:nombre_transac TO DAUtitulo1
+	post:INDPresuD_Dat = OFB:CDSTRAN7210_append
+	CALL post:MISCLeo_PresDet
+	
+	/*
+	Limpio el campo que contiene el Grupo de IVA del cliente, ya que se saca de la PresuAct
+	y si no hay una Sesión debe estar vacío - Gabriel Falciola
+	*/
+	IF (post:estado_presu == 1) THEN
+		CLEARFIELD post:PresGrupoIva
+	END IF
+	
+	IF (post:estado_presu == 2) THEN
+		drv:INDscreen[0] = SCR:siaf:SCRN7210_MULTI
+	ELSEIF (post:estado_presu == 3) THEN
+		drv:INDscreen[0] = SCR:siaf:SCRN7210
+	END IF
+
+  CALL post:MISCprotege(LST:fld6600protege,LST:fld6600desprotege)
+
+	/****************************************************************/
+	/* Si tiene captura de medio de pago protejo el campo Medio de  */
+	/* pago. Hernán.     17/10/2000                                 */
+	/****************************************************************/
+	IF (!testflag(tlr:tran_flags,correction)) THEN
+		IF (post:estado_presu == 2 || post:estado_presu == 3 || post:estado_presu == 1) THEN
+			IF (siaf:adt_tran_med_pago != "S") THEN
+				post:captura_mp = siaf:adt_tran_med_pago
+				siaf:moneda = 99
+				CLEARFIELD post:medio_pago_desc
+			END IF
+		END IF   
+	END IF
+
+	IF (post:estado_presu != 1) THEN
+		CLEARFIELD siaf:moneda
+		CLEARFIELD post:medio_pago_desc
+		REFRESH siaf:moneda
+		REFRESH post:medio_pago_desc  
+	END IF
+	
+	IF (post:estado_presu == 3) THEN
+		SETVALDONE siaf:adt_oju_cant
+	END IF
+      
+	RETURN (0)
+
+END SUB      
+
+/*******/

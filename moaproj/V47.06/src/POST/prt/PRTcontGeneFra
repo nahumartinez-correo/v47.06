@@ -1,0 +1,398 @@
+/****o* Expedición/OFB:post:PRTcontGeneFra
+* NOMBRE
+*   OFB:post:PRTcontGeneFra
+* DESCRIPCION
+*   Rutina que imprime la guia de contenedor
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCimpCont,OFB:post:TRANpiezaXcont 
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRTcontGeneFra
+	/* Req. 462: Que los T&T estén ordenados en la Guía de Cont. */
+	/* y Sacas - Dic. 1998 - B. Petrella */
+  LOCAL cant LIKE j_idx
+  LOCAL pagina LIKE j_idx
+  LOCAL primera_vez LIKE j_idx
+  LOCAL indice LIKE j_idx
+  LOCAL corte LIKE adt_corteop_cod
+
+	/* Resguardo campos */
+	SWAPDUP siaf:jnl_codigo_siaf
+	DUPFIELD siaf:jnl_codigo_siaf
+
+	IF (hay_piezas_reenc == "S") THEN
+		CALL PRThdrContGeneFra("Reenc")
+	ELSE
+		CALL PRThdrContGeneFra("Cont")
+	END IF
+	LET cant = 1 /* contador de lineas */
+    
+	LET orden = 1
+	LET j_idx = 0 /* cont. de piezas por corte */
+	LET idx = 0 /* cont. de piezas totales */
+	LET pagina = 1 /* contador de pags. */
+	LET corte = "" /* Resguarda el cod. de corte op. */
+	LET indice = 0 /* cont. de T&T en una linea */
+    
+	IF (post:adt_corteop_ctrl == "N") THEN
+		/* Si No es de cntrol imprime la guia en blanco */
+		DO
+			IF (cant == 50) THEN
+				BREAK
+			END IF
+			PRT NEWLINE
+			PRT CARRIAGERETURN
+			LET cant = cant + 1
+		LOOP
+    
+		FPRINT LineaImpresion "                         %052.52s" \
+			"Espacio reservado para intercalación Legajo archivo."
+		PRT PRINT EDIT post:LineaImpresion
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+        
+		FPRINT LineaImpresion \
+			"                                                                                 Página: %03.3d" \
+			pagina
+		PRT PRINT EDIT post:LineaImpresion
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		
+		RETURN (0)
+  END IF
+  
+	/*CSZ*/
+	IF (hay_guia_esp == "S")//Al menos 1 simple especial ha sido seleccionada
+		/*Si Todas las piezas seleccionadas son Simple Especial Imprime una guia
+		de contenedor vacia pero con la cantidad de piezas simple especial y 
+		se va de la PRT*/
+		CALL PRTsoloSimpEsp("Cont")
+		IF (RETVAL == 0) THEN
+			IF (cant_impresion == 2)
+				PRT FLUSH
+				PRT FORMFEED
+				/*Imprime la guia de Simple Especial y se va*/
+				CALL PRTguiaSimpEspCont
+			END IF
+			RETURN (0)
+		END IF
+	END IF
+    
+	/*MFM - PIEZAS REENCAMINADAS
+	IF (hay_piezas_reenc == "S")//Al menos 1 pieza reencaminada ha sido seleccionada
+		//Si Todas las piezas seleccionadas son Reencaminadas imprime una guia
+		//vacia pero con la cantidad de piezas reencaminadas y 
+		//se va de la PRT
+		CALL PRTsoloReenc("Cont")
+		IF (RETVAL == 0)
+			//MFM - (25.10.2001)CORREO pidió que se imprimiera dos veces la guia de reencaminamiento
+			//IF (cant_impresion == 2)
+				PRT FLUSH
+				PRT FORMFEED
+				//Imprime la guía de Reencaminamiento y se va
+				CALL PRTGuiaReencCont
+			//END IF
+			RETURN (0)
+		END IF
+	END IF*/
+    
+	/*MFM (20.11.2001) Si la marca de reencaminamiento está activada, se imprimirá la guía
+	de reencaminamiento*/
+	//AUT 1721 - Se modifica el indice para ordenar la dettmp no solo por grupo de corte, sino tambien por corte operativo!
+	IF (hay_piezas_reenc == "S") THEN
+		CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+			(op:op_operator_id == op:op_operator_id && \
+			jnl_simp_esp != "S" && \
+			jnl_stockp_reenc_cul == "S" && \
+			post:jnl_grucorte_cod == post:jnl_grucorte_cod && \
+			post:jnl_apertura_cod ==  post:jnl_apertura_cod)  SORT "CorteOp" 
+	ELSE
+		CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+			(op:op_operator_id == op:op_operator_id && \
+			jnl_simp_esp != "S" && \
+			jnl_stockp_reenc_cul != "S" && \
+			post:jnl_grucorte_cod == post:jnl_grucorte_cod && \
+			post:jnl_apertura_cod ==  post:jnl_apertura_cod) SORT "CorteOp"
+	END IF
+    
+	//CDS FINDFIRST DSC:DetTmp_ctx LOCK
+	CDS FINDFIRST DSC:DetTmp_ctx NOLOCK
+	lET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	CDS EXTRACT DSC:DetTmp_ctx ALL
+	DO
+		IF (MarcaBorrado == "*")
+			//CDS FINDNEXT DSC:DetTmp_ctx LOCK
+			CDS FINDNEXT DSC:DetTmp_ctx NOLOCK
+			LET lib:err_retval = CDSRETVAL
+			IF (lib:err_retval < 0) then
+				RETURN (-2)
+			END IF
+			CDS EXTRACT DSC:DetTmp_ctx ALL
+		ELSE
+			BREAK
+		END IF
+	LOOP
+    
+	LET corte = post:jnl_corteop_cod
+	//50242 - debe hacer el corte por grupo de corte operativo y no por corte operativo
+	//LET corte = post:jnl_grucorte_cod
+    
+	CALL CDSdescripCorteOp
+	
+	CLEARFIELD LineaImpresion
+	//gpb:W10
+	//LET LineaImpresion = adt_corteop_desc
+	FPRINT LineaImpresion , "    %s", adt_corteop_desc
+    
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	cant = cant + 1
+    
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	cant = cant + 1
+    
+	DO
+		DO
+			CALL csr:trimfield(Pieza_id)
+			//solicitud Cartas Rapidas
+			IF (SUBSTR(post:Pieza_id,0,2) != "SR" && SUBSTR(post:Pieza_id,0,2) != "SU" && \
+				SUBSTR(post:Pieza_id,0,2) != "GR" && SUBSTR(post:Pieza_id,0,2) != "GS") THEN
+				IF ((LineaImpresion.NUMCHARS + Pieza_id.NUMCHARS) > 96) THEN
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					CLEARFIELD LineaImpresion
+					indice = 0
+					cant = cant + 1
+                
+					IF ((cant + 10) > 50) THEN
+						DO
+							IF (cant == 50) THEN
+								BREAK
+							END IF
+							PRT NEWLINE
+							PRT CARRIAGERETURN
+							LET cant = cant + 1
+						LOOP
+						FPRINT LineaImpresion \
+							"                                                                                 Página: %03.3d" \
+							pagina
+							
+						PRT PRINT EDIT post:LineaImpresion
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+						LET pagina = pagina + 1
+						PRT FLUSH
+						PRT FORMFEED
+						IF (hay_piezas_reenc == "S") THEN
+							CALL PRThdrContGeneFra("Reenc")
+						ELSE
+							CALL PRThdrContGeneFra("Cont")
+						END IF
+						LET cant = 1
+						CLEARFIELD LineaImpresion
+						LET LineaImpresion = adt_corteop_desc
+        	            
+						PRT PRINT EDIT post:LineaImpresion
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+						cant = cant + 1
+						
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+						cant = cant + 1                   
+					END IF
+				END IF
+	    		        
+				IF (indice == 0) THEN
+					FPRINT LineaImpresion "       % s" Pieza_id
+				ELSE
+					FPRINT LineaImpresion "%s   % s" \
+						LineaImpresion, Pieza_id
+				END IF
+				LET indice = indice + 1
+				j_idx = j_idx + 1
+			END IF //FIN CARTAS RAPIDAS
+		    
+			DO
+				//CDS FINDNEXT DSC:DetTmp_ctx LOCK
+				CDS FINDNEXT DSC:DetTmp_ctx NOLOCK
+				LET lib:err_retval = CDSRETVAL
+				IF (lib:err_retval < 0) THEN
+					BREAK
+				END IF
+				CDS EXTRACT DSC:DetTmp_ctx ALL
+				IF (MarcaBorrado != "*") THEN
+					BREAK
+				END IF
+			LOOP
+	        
+			IF (lib:err_retval < 0 || corte != jnl_corteop_cod) THEN
+				//IF (lib:err_retval < 0 || corte != jnl_grucorte_cod) THEN
+				IF (indice > 0) THEN
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					LET cant = cant + 1
+				END IF
+				CLEARFIELD LineaImpresion
+				FPRINT LineaImpresion "                                        %015.15s %05.5s - %3d" \
+					"Cant. de Pzas: " \
+					corte \
+				j_idx
+				PRT PRINT EDIT post:LineaImpresion
+				PRT NEWLINE
+				LET cant = cant + 1
+				idx = idx + j_idx
+				j_idx = 0
+				CLEARFIELD LineaImpresion
+				BREAK
+			END IF
+	  LOOP
+	  
+		IF (lib:err_retval < 0) THEN
+			BREAK
+		END IF
+		LET corte = post:jnl_corteop_cod
+		//LET corte = post:jnl_grucorte_cod
+        
+	  CALL CDSdescripCorteOp
+        
+		CLEARFIELD LineaImpresion
+		LET LineaImpresion = adt_corteop_desc
+		
+		PRT PRINT EDIT post:LineaImpresion
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		cant = cant + 1
+		CLEARFIELD LineaImpresion
+		LET indice = 0
+        
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		cant = cant + 1
+	LOOP
+    
+	//CDS UNLOCK DSC:post:DetTmp_ctx
+	CDS ENDSELECT DSC:post:DetTmp_ctx
+    
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+    
+	DO
+		IF (cant >= 42) THEN
+			BREAK
+		END IF
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		LET cant = cant + 1
+	LOOP
+    
+	/*sumo la cantidad de piezas enviadas No simple especial y simple especial*/
+	idx = idx + cant_simp_esp
+
+	/* Linea modif. por el Correo Arg. - Jul.´98 */
+	CLEARFIELD LineaImpresion
+	FPRINT LineaImpresion "                       %031.31s %5.5d - %09.9s %-8.8s" \
+		"Total de piezas que se remiten:" \
+		idx \
+		"Operador:" \
+		op:op_login_id
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+    
+	/* Agregado por el Correo Arg. */
+	/* Rutina que calcula el CheckSum de todos los T&T que contiene el contenedor */
+	/* Jul. ´98 - B. Petrella - */
+	//call CDScheckSum //("NoSimpEsp")
+	IF (hay_piezas_reenc == "S") THEN
+		CALL CDScheckSumCont ("Reenc")
+	ELSE
+		CALL CDScheckSumCont ("NoReenc")
+	END IF
+
+	CLEARFIELD LineaImpresion
+	;LineaImpresion = itemcheck
+	/*FPRINT LineaImpresion "%s %06.6x" "V3.22",itemcheck //para que lo muestre en hexadecimal
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1*/
+
+	//PS 7686 - Muestro el checksum de la nueva version V3.23
+	//gpb:W10
+	//FPRINT LineaImpresion "%s %04.4x","Checksum:",itemcheckV23 //para que lo muestre en hexadecimal
+	FPRINT LineaImpresion "    %s %04.4x","Checksum:",itemcheckV23 //para que lo muestre en hexadecimal
+	REFRESH LineaImpresion
+	PRT PRINT EDIT post:LineaImpresion
+
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	
+  LET cant = cant + 1
+  
+	FPRINT LineaImpresion "                         %052.52s" \
+		"Espacio reservado para intercalación Legajo archivo."
+	PRT PRINT EDIT post:LineaImpresion
+	
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+    
+	FPRINT LineaImpresion \
+		"                                                                                 Página: %03.3d" \
+		pagina
+  PRT PRINT EDIT post:LineaImpresion
+  PRT NEWLINE
+  PRT CARRIAGERETURN
+  PRT NEWLINE
+    
+	/* Recupero campos */
+	DUPFIELD siaf:jnl_codigo_siaf
+	
+	/*CSZ - Si hay piezas simple especial seleccionadas y se imprimio la ultima copia
+	de la guia de contenedor*/
+	IF (hay_guia_esp == "S" && cant_impresion == 2) THEN
+		PRT FLUSH
+		PRT FORMFEED
+		/*Imprimo la guia Simple Especial*/ 
+		CALL PRTguiaSimpEspCont
+	END IF
+    
+	/*MFM - Si hay piezas reencaminadas seleccionadas y se imprimio la ultima copia
+	de la guia de saca*/
+	/*MFM - (25.10.2001)CORREO pidió que se imprimiera dos veces la guia de reencaminamiento
+	//IF (hay_piezas_reenc == "S" && cant_impresion == 2) THEN
+	IF (hay_piezas_reenc == "S") THEN
+		PRT FLUSH
+		PRT FORMFEED
+		//Imprimo la guia de Piezas Reencaminadas*
+		CALL PRTGuiaReencCont
+	END IF*/
+	
+END SUB
+
+/*******/

@@ -1,0 +1,108 @@
+/****o* Reportes/OFB:tes:MISCcons_tes
+* NOMBRE
+*   OFB:tes:MISCcons_tes
+* DESCRIPCION
+*   Imprime encabezado y detalle del reporte de Consulta de Tesoro
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:TRANrealiza_cons_tes
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcons_tes
+	LOCAL cant LIKE siaf:cantidad
+	LOCAL total_imp LIKE siaf:importe
+	LOCAL i LIKE siaf:i
+	
+	LET total_imp  = 0
+	LET siaf:indica_calcu = 0
+	LET siaf:listado_totmot = 0
+
+	CALL MISCtesoro_encab
+
+	CDS SELECT FROM DSC:tesoro_table BECOMES "tesoro_list" \
+		WHERE tes:tes_suc_id == common:sucursal_activa
+    
+	CDS FINDFIRST "tesoro_list" NOLOCK
+	IF (CDSRETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	DO
+		IF (CDSRETVAL < 0) THEN
+			BREAK
+		END IF
+		
+		CDS EXTRACT "tesoro_list" ALL
+		
+		LET post:adt_mp_cod = tes:tes_moneda
+		
+		CALL post:CDSadt_MedPago_load
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+
+		IF (post:adt_mp_adm == "G") && (post:adt_mp_monet == "S") THEN
+			CALL CDScons_tes_denom // obtiene datos de tabla "den_mon"
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+		
+			FPRINT common:csr_string "MEDIO DE PAGO: %2.2e %-20s",post:adt_mp_cod,post:adt_mp_desc
+			CALL MISCwrite_file(5,FLD:common:csr_string)
+			CALL MISCwrite_file(5,"         ")
+
+			IF (tes:tes_marca_arqueo == "S") THEN
+				i = 0
+				DO
+					/**** Cada moneda tiene como max. 14 denominaciones */
+					IF (i > 13) THEN
+						/* Totales de la moneda */
+						FPRINT common:csr_string "                                                     _______________"
+						CALL MISCwrite_file(5,FLD:common:csr_string)
+						FPRINT common:csr_string "            TOTALES                                   %13.13e" total_imp
+						CALL MISCwrite_file(5,FLD:common:csr_string)
+						CALL MISCwrite_file(5,"         ")
+						CALL MISCwrite_file(5,"         ")
+						CALL MISCwrite_file(5,"         ")
+						BREAK
+					END IF
+		
+					/**** Renglones del listado */
+					IF (den_texto[i] != "" ) THEN
+						IF (den_texto[i] != "DETERIOR") THEN
+							/* Los deteriorados no llevan cantidad */
+							;LET cant = (tes_importes[i] / den_valor[i])
+							/* Muestro el Total arqueado */
+							LET cant = (tes_arqueo[i] / den_valor[i])
+						END IF  
+						FPRINT common:csr_string "            %-10.10s            %13.13e       %13.13e" \
+						den_texto[i],cant,tes_arqueo[i]
+						CALL MISCwrite_file(5,fld:common:csr_string)
+						;LET total_imp = total_imp + tes_importes[i]
+						LET total_imp = total_imp + tes_arqueo[i]
+					END IF
+					LET i = i + 1
+					CLEARFIELD cant
+				LOOP
+			ELSE
+				FPRINT common:csr_string "TOTAL SIN ARQUEAR                                  %13.13e",tes:tes_total
+				CALL MISCwrite_file(5,FLD:common:csr_string)	
+			END IF
+		END IF
+		CDS FINDNEXT "tesoro_list" NOLOCK
+		CLEARFIELD total_imp
+	LOOP
+	CDS ENDSELECT "tesoro_list"
+	
+END SUB
+
+/*******/

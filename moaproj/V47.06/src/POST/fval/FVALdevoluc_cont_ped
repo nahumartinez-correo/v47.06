@@ -1,0 +1,69 @@
+/****o* Pago en Destino/OFB:post:FVALdevoluc_cont_ped
+* NOMBRE
+*   OFB:post:FVALdevoluc_cont_ped
+* DESCRIPCION
+*   Rutina de validación del campo track_trace de la TX Devolucion PED en Continggencia:
+*   Verifica que la pieza exista en la stockp y llama a CDSdevoluc_cont_ped para controlar
+*   que la pieza esté apta para ser entregada.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRN30070
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postfval.h"
+
+
+SUB post:FVALdevoluc_cont_ped
+
+	CALL csr:trimfield(Pieza)	
+	IF (Pieza.NUMCHARS != 0) THEN
+		PROTFIELD Pieza
+		
+		CALL post:MISCes_TT(Pieza)
+		IF (RETVAL == 0) THEN
+			CALL MISCcant_digitos_tt(Pieza,"8")
+		END IF       	
+		
+		//Verifico si la pieza existe el picklist
+		common:csr_string = post:Pieza
+		CALL csr:PickOp PICKOP_SEARCH dsc:aux_pic_total common:csr_string //Buscar en el picklist
+		IF (RETVAL < 0) THEN //Si No existe en el picklist busco si existe en la stockp
+			//controlo STOCKP
+			CALL CDSdevoluc_cont_ped
+			IF (RETVAL < 0) THEN
+				MSGBOX "LA PIEZA NO EXISTE O NO ESTA EN CONDICIONES DE DEVOLVERSE.",0x00,"Error"
+				CALL post:PBnew_30070
+				RETURN (-2)					
+			ELSE
+				//Esta en la stockp //VALIDACIONES
+				ENABLECONTROL drv:PBcb1
+				DISABLECONTROL drv:PBcb2
+				DISABLECONTROL drv:PBcb3
+			END IF
+		ELSE
+			Pieza = SUBSTR(common:csr_string,0,32)
+			CALL csr:trimfield(Pieza)
+			//Verifico que la pieza exista en la stockp
+			CALL CDSpieza_en_stockp
+			IF (RETVAL == -801) THEN
+				RETURN -2
+			END IF
+			devolucionCont_date = SUBSTR(common:csr_string,33,8)
+			ENABLECONTROL drv:PBcb2
+			ENABLECONTROL drv:PBcb3
+			REFRESH devolucionCont_date
+		END IF
+	END IF
+	
+	SETVALDONE Pieza
+
+END SUB
+
+/*******/

@@ -1,0 +1,221 @@
+/****o* Reportes/OFB:tes:MISCimpri_inf_suc
+* NOMBRE
+*   OFB:tes:MISCimpri_inf_suc
+* DESCRIPCION
+*   Invoca a las rutinas que generan la info del listado Estado de Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:TRANrealiza_est_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCimpri_inf_suc
+    local total_cons like siaf:aux_suma_monto
+    local hago_salto like siaf:i
+    local lretval like lib:err_retval
+    		 
+    
+    ;Armo picklist con los medios de pago con saldo
+    post:tipo_rest = TODOS
+    // Arma un picklist con todos los medios de pago que no tengan saldo y no hayan 
+    // tenido movimientos en el dia.
+    call post:MISCrest_saldo(common:sucursal_activa,"pic:PICmedios","S","sucursal")
+    
+    call csr:cleararray(tes:matriz_dinero)
+    cds select from dsc:post:Monedas_tbl becomes dsc:post:Monedas_ctx
+    ; where (post:adt_mon_tipo == "EFEC" || post:adt_mon_tipo == "CHEQ")
+    cds findfirst dsc:post:Monedas_ctx nolock
+    lib:err_retval = cdsretval
+    if (cdsretval < 0)
+        return (-2)
+    end if
+
+    DO
+       cds extract dsc:post:Monedas_ctx all
+       ;let tes:tes_moneda = post:adt_mon_cod
+
+       hago_salto = 0
+       fprint common:csr_string "MONEDA: %-30s",post:adt_mon_desc
+       call MISCwrite_file1(5,fld:common:csr_string)
+
+       CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX WHERE \
+       post:adt_mp_mon == FLD:post:adt_mon_cod
+     
+       CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+       LET lib:err_retval = CDSRETVAL
+       
+
+       While (lib:err_retval == 0)
+       
+             CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+             let tes:tes_moneda = post:adt_mp_cod
+             ;Busco en el picklist al medio de pago
+             call post:MISCbusco_mp_pick(post:adt_mp_cod)
+             lretval = retval
+             if (lretval == 0)
+                 hago_salto = 1
+                 let siaf:importe_total = 0       
+                
+                 call MISCestado_tes
+    
+                 move "  " to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 call MISCwrite_file1(5,"               ")
+    
+                 call MISCbusca_tot_tlr
+    
+                 move "  " to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 call MISCwrite_file1(5,"               ")
+                 
+                 call tes:MISCbusca_tot_hab
+                 
+                 move "  " to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 call MISCwrite_file1(5,"               ")
+		
+                
+                 call MISCbusca_tot_buzon
+    
+                 move "  " to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 call MISCwrite_file1(5,"               ")
+    
+                 /* Pongo el total de los pases pendientes de la sucursal */
+                 /* Efectivo */
+                 if (post:adt_mp_adm == "G")             
+                    call MISCbusca_pases_pnd
+                 else
+                    call MISCbusca_cheq_pnd
+                 end if
+                 if (retval < (-2)) then
+                    let common:csr_string = "(L) Error realizando listado"
+                    errmsg lst:common:errmsg_list,FLD:common:csr_string
+                    return (-2)
+                 end if
+		 
+                 if (siaf:lineas_cl > 52)
+                    call MISCwrite_file1(5,"               ")
+                    call MISCwrite_file1(5,"               ")
+                   /* call MISCwrite_file1(5,"               ")
+                    call MISCwrite_file1(5,"               ")
+                    call MISCwrite_file1(5,"               ")
+                    call MISCwrite_file1(5,"               ")
+                    call MISCwrite_file1(5,"               ")*/
+                 end if
+                 let total_cons = siaf:importe_total
+                 move "=================================================================================" to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 move "---------------------------------------------------------------------------------" to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 fprint common:csr_string \
+                 "TOTAL CONSOLIDADO EN SUCURSAL EN %-20s     %13.13e" \
+                 ,post:adt_mp_desc,total_cons
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 move "---------------------------------------------------------------------------------" to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 move "=================================================================================" to common:csr_string
+                 call MISCwrite_file1(5,fld:common:csr_string)
+
+            end if
+            CDS FINDNEXT DSC:post:MEDIOS_CTX nolock
+            LET lib:err_retval = CDSRETVAL
+            /*NI 50183 - SE ELIMINA EL SALTO DE PAGINA POR MONEDA 
+            ;Hago salto solo si tuve que imprimir
+            if (lib:err_retval == 0) && (lretval == 0)
+               // salto de hoja
+               if (siaf:pantalla_impreso ==  "I") then
+                  Do
+                     if (siaf:lineas_cl < 61)
+          	            let common:csr_string = "    "
+          	            call MISCwrite_file1(5,fld:common:csr_string)
+          	         else
+          	            break
+          	         end if
+                  Loop
+               end if
+            end if*/
+                    
+       EndWhile
+       
+       
+       CDS ENDSELECT DSC:post:MEDIOS_CTX
+
+	//NI 50183
+	//SE ELIMINA SALTO DE PAGINA ENTRE SECCIONES (FONDO DE HABILITACION - INFORMACION DEL DINERO DE LA SUCURSAL)
+       /* salto de hoja */
+        ;si imprmi algun medio de pago hago un salto 
+        ;para el cuadro por monedas
+        /*if (siaf:pantalla_impreso ==  "I") && (hago_salto == 1) then
+          Do
+             if (siaf:lineas_cl < 61)
+                let common:csr_string = "    "
+                call MISCwrite_file1(5,fld:common:csr_string)
+             else
+                break
+             end if
+          Loop
+       end if*/
+
+       call tes:MISCimp_rep_mon(1)
+       cds findnext dsc:post:Monedas_ctx nolock
+       lib:err_retval = cdsretval
+       
+
+	//NI 50183
+        //SE ELIMINA SALTO DE PAGINA ENTRE LAS DISTINTAS MONEDAS DE LA SECCION DE INFORMACION DEL DINERO DE LA SUCURSAL)
+       /* salto de hoja */   
+       /*if (lib:err_retval == 0)
+          if (siaf:pantalla_impreso ==  "I") then
+              Do
+                 if (siaf:lineas_cl < 61)
+          	        let common:csr_string = "    "
+          	        call MISCwrite_file1(5,fld:common:csr_string)
+          	     else
+          	        break
+          	     end if
+              Loop
+          end if       
+       end if*/
+       
+       if (lib:err_retval == -801) then
+     	   break
+       end if
+       
+    LOOP
+    
+    call csr:cleararray(tes:matriz_dinero)
+    cds endselect dsc:post:Monedas_ctx
+    
+    //NI 50183 - se agrega el listado de detalle de valores en caja buzon
+     call tes:MISCsubtit_buzon
+     if (retval == 0) then
+     	call tes:MISCpasa_buzon_str //efectivo y cheques
+     	call tes:MISCpasa_buz_ev //especies valorizadas
+     endif
+   
+    /*if (siaf:pantalla_impreso ==  "I") then
+      	do
+           if (siaf:lineas_cl < 59)
+              let common:csr_string = "    "
+              call MISCwrite_file1(5,fld:common:csr_string)
+           else
+              break
+           end if
+        loop
+        fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:indica_calcu
+    end if*/
+
+    siaf:lineas_cl = 0
+
+END SUB
+
+/*******/

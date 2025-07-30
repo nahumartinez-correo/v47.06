@@ -1,0 +1,154 @@
+/****o* Pendientes de agrupación/OFB:post:MISCobtiene_impreSf1
+* NOMBRE
+*   OFB:post:MISCobtiene_impreSf1
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCobtiene_impreSf1(pTimeUpd)
+	LOCAL Proyecto LIKE common:csr_string
+	LOCAL Indice LIKE post:tipo_produc
+	LOCAL Lsecuencia	LIKE common:csr_string
+	LOCAL Lsf1_importe LIKE siaf:importe
+	LOCAL loc_version_prepagas LIKE common:csr_string
+	LOCAL loc_cuenta LIKE post:sf1_cta_nro
+	LOCAL loc_codbarra_nuevo LIKE post:sf1_codbarras_nuevo
+	LOCAL loc_op_title	LIKE op:op_title
+
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		RETURN
+	END IF
+
+	IF (pTimeUpd != "N") THEN
+		siaf:hora = common:time_of_day
+	END IF
+   
+	//IF (sf1_importe.NUMCHARS == 0) THEN
+		Lsf1_importe = siaf:importe * 100
+		FPRINT sf1_importe "%d" Lsf1_importe
+	//END IF
+
+	CLEARFIELD sf1_comprobante
+	CLEARFIELD sf1_ticket
+	CLEARFIELD sf1_firma
+
+	CALL csr:get_profile_string("project","description",Proyecto)
+	CALL  csr:str_search (Proyecto, " ", Indice)
+	IF (RETVAL >= 0) THEN
+		Proyecto = SUBSTR(Proyecto,0,Indice)
+	END IF
+	FPRINT common:csr_string "rt%s" ,Proyecto
+
+	DLL FindWindowA(common:csr_string,"Olivetti North America Branch Automation")
+	rt_handle = retval
+	
+	;DLL bob_do (rt_handle, "inicio", 0)
+	IF (RETVAL >= 0) THEN
+		//Agrego las variables necesarias al Bob
+		DLL free_variables()
+
+		DLL agregar_variables ("fecha_cobro", siaf:fecha)
+		DLL agregar_variables ("hora_cobro", siaf:hora)
+		DLL agregar_variables ("importe", sf1_importe)
+		DLL agregar_variables ("servicio", sf1_id_paycode)
+		DLL agregar_variables ("cuenta", sf1_cta_nro)
+		DLL agregar_variables ("terminal", sf1_id_terminal)
+		DLL agregar_variables ("codigo", sf1_codbarras_nuevo)
+		let Lsecuencia = post:sf1_nro_secuencia
+		DLL agregar_variables ("nro_secuencia",Lsecuencia)
+		DLL agregar_variables ("info_medio_pago", post:sf1_med_pago)
+		DLL agregar_variables ("recalculo","1")
+		DLL agregar_variables ("medio_de_pago",sf1_med_pago)
+		DLL agregar_variables ("codigo_de_moneda",sf1_moneda)
+		CALL csr:trimfield op:op_title loc_op_title
+		DLL agregar_variables ("nombre_del_cajero_bob" , loc_op_title) // se agrega el nombre del operador en el tck
+		siaf:monto = post:total_bonos * 100
+		DLL agregar_variables ("importe_bono",siaf:monto)
+		DLL agregar_variables ("plataforma","M")
+
+		//FGB 12.08.05: ahora se saca la versión prepaga de la tabla
+		//; checkeo si tiene que hacer viaje adicional (IPLAN, Confirmacion o Afinidad)
+		//IF (post:sf1_tipo_viaje == "R") THEN
+		//	LET loc_version_prepagas = (post:adt_tran_sf1_ver - 1)
+		//ELSE
+		//	SELECT (adt_tran_sf1_codigo)
+		//		CASE 6680
+		//		CASE 6700
+		//		CASE 6860
+		//			LET loc_version_prepagas = (post:adt_tran_sf1_ver - 1)
+		//		BREAK
+		//		CASE ELSE
+		//			LET loc_version_prepagas = "0"
+		//	END SELECT
+		//END IF
+		loc_version_prepagas = post:adt_tran_sf1_verprep
+
+		;SMC Agrego para Version Iplan Carga/Recarga
+		DLL agregar_variables ("version_prepagas", loc_version_prepagas)
+		;SMC Agrego Variable Para Recarga Facil
+		DLL agregar_variables ("recarga_con_barra", post:sf1_tipo_viaje)
+		DLL agregar_variables ("datos_cliente",post:datos_cliente)
+	   	   
+		DLL bob_execute (rt_handle, "reimpresion", 0, 0, 0)
+		IF (RETVAL != 1) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (ERROR DE EJECUCION %s)",RETVAL
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			RETURN (-2)
+		END IF
+		DLL MOSAIC_get_variable ("validacion", sf1_comprobante, 2048)
+		DLL MOSAIC_get_variable ("comprobante", sf1_ticket, 2048)
+		DLL MOSAIC_get_variable ("firma_validadora", sf1_firma, 10)
+			
+		IF (sf1_firma.NUMCHARS <= 0) THEN
+			LET common:csr_string_tmp = "BOBLIB MSG (ERROR DE EJECUCION - Firma Nula -)"
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			RETURN (-2)
+		END IF
+		
+		;SMC checkeo el campo cuenta para ver si la trx viene rechazada por el bob.
+		DLL MOSAIC_get_variable ("cuenta", loc_cuenta, 10)
+		IF (loc_cuenta == "RECHAZO") THEN
+			FPRINT common:csr_string_tmp "Transaccion Rechazada por Parametria (BOB)."
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			RETURN (-2)
+		END IF
+
+		IF (post:sf1_tipo_viaje == "R") THEN
+			LET loc_codbarra_nuevo = ""
+			DLL MOSAIC_get_variable ("codigo_nuevo_reimpresion", loc_codbarra_nuevo, 60)
+			IF (loc_codbarra_nuevo.NUMCHARS > 0) THEN
+				LET post:sf1_codbarras_nuevo = loc_codbarra_nuevo
+			END IF
+		END IF
+
+		IF (sf1_comprobante.NUMCHARS >0) THEN
+			CALL CSR:trimfield(sf1_comprobante)
+		END IF
+		
+		IF (sf1_ticket.NUMCHARS >0) THEN
+			CALL CSR:trimfield(sf1_ticket)
+		ENDIF
+
+		CALL post:MISCformat_comprob(49)
+		
+		//si llego aca, es porque todo salio pipi-cucu!
+		RETURN (0)
+	END IF
+		
+	//si llego hasta aca, es porque algo salio mal... ups!
+	RETURN (-2)
+END SUB
+
+/*******/

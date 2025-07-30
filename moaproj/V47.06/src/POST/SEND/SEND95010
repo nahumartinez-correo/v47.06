@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:post:SEND95010
+* NOMBRE
+*   OFB:post:SEND95010
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SEND95010
+	local l_cant_total like siaf:i
+	local l_retval like lib:err_retval
+	local x like siaf:i
+	local l_cliente like post:cli_tipo
+	
+	IF (TESTFLAG(admin:mode_flags,grb)) then
+    	RESETFLAG admin:mode_flags,grb
+	
+		l_cliente = post:cli_tipo
+		
+    	if (post:estado_presu != 1) then
+    	    ERRMSG LST:common:errmsg_list,"REGULARIZACION DE CONTRAREEMBOLSO NO DISPONIBLES DENTRO DE UNA SESION."
+    	    return (-2)
+    	end if
+    	
+    	x = 0
+    	giros:ImporteNeto = 0
+    	while (x < row) 
+    	    giros:ImporteNeto = giros:ImporteNeto + adt_stockp_impGiro[x]
+    	    x = x + 1
+    	end while
+    	if (giros:ImporteNeto == 0)  then
+    	    MSGBOX "LA SUMATORIA DE LOS IMPORTES DE GIROS DEBE SER MAYOR QUE CERO",0x00,"ERROR"
+    	    return -2
+    	end if
+    	if (giros:ImporteNeto > giros:ImporteCremAcumulado) then
+    	    MSGBOX "LA SUMATORIA DE LOS IMPORTES DE GIROS NO PUEDE SUPERAR LA SUMATORIA DE LOS IMPORTES CREM",0x00,"ERROR"
+    	    return -2
+    	end if
+    	
+		MSGBOX "ESTA USTED SEGURO QUE DESEA ACTUALIZAR LA INFORMACION INGRESADA?",OFB_YESNO,"Grabar Liq. Crem En Contingencia"
+ 		if (RETVAL == OFB_IDYES)
+			siaf:importe = giros:ImporteNeto
+			; Cursor busy.
+			init 52,2
+    	    l_cant_total = 10
+			; Atomizo la actualizacion.
+			CDS BEGINWORK
+    	
+			; Actualizo piezas
+			; Barra de progreso.
+			call post:MISCinicProgressBar("GRABANDO REGULARIZACION - ", l_cant_total)
+		    call post:CDSupdateRegContCrem
+		    l_retval = retval
+			if (l_retval < 0)
+				CDS ROLLBACKWORK
+				errmsg LST:common:errmsg_list,"LA GRABACION HA FALLADO!!!"
+			else
+			    CDS COMMITWORK
+			endif
+			; Barra de progreso.
+			call post:MISCfinProgressBar
+			FYIMSG LST:common:fyimsg_list, ""
+    	
+			; Cursor normal.
+			init 53,3
+			;journalizo.
+			call post:MISCjournal95010
+    	    CALL post:PBnuevo95010
+    	    clearfield drv:INDjnl_rtn
+		endif
+		post:cli_tipo = l_cliente
+		drv:next_screen = 1
+		drv:next_tab = 0
+		drv:index = 1
+		drv:skip_seq_scr = 1
+    	ungetkey RT_SEND
+    else
+    	init 33,0
+    	if (drv:screen_active == 3) then
+    		LET drv:next_tab = 0
+    		drv:next_screen = 1
+    	else
+    		drv:next_screen = drv:screen_active + 1
+    		drv:next_tab = drv:tab_active + 1
+    	end if
+        return 0
+    end if
+END SUB
+
+/*******/

@@ -1,0 +1,315 @@
+/****o* Pendientes de agrupación/OFB:plataf:confirma_driver
+* NOMBRE
+*   OFB:plataf:confirma_driver
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafdrv.ofb.h"
+
+SUB plataf:confirma_driver
+local loc_EsCapturaMP		like drv:init_only
+local loc_tran_name			like siaf:nombre_transac
+local loc_message			like common:csr_string
+local loc_retval			like lib:err_retval 
+
+
+#if CORREO_DEBUG == CORREO_ON
+	local l_appl	like plataf:tran_appl
+	local l_item	like plataf:tran_name
+	local l_str	like common:csr_string
+	call post:MISClogMenues("<< plataf:confirma_driver >>")
+#endif
+
+clearfield drv:INDrun_funct
+
+let loc_EsCapturaMP = "N"
+let cant_proc = 1
+let cant_total = 0 
+clearfield tlr:INDtran_name
+clearfield siaf:codigo_siaf
+
+call CDSpending_trx_count(common:system_date,op:op_operator_id,post:PresNro)
+if (retval > 0) then
+	cant_total = retval 
+	call post:MISCinicProgressBar("Confirmacion: ",cant_total) 
+	if (current_state == RECOVERY) then
+		do
+			if (NEXTKEY == 0x0) then
+				break	
+			endif
+			getkey
+		loop
+		display post:SCRNanulacion_inc
+		joinscreen post:SCRNerror_finses,NOCURSOR
+		getkey
+	else
+		display SCR_CONFIRMA
+	endif
+endif
+
+call trans_a_confirmar 
+
+while (retval == 0) 
+
+	let cant_items = 0
+	refresh plataf:cant_items
+	
+
+#if CORREO_DEBUG == CORREO_ON
+	call csr:getname (tlr:INDtran_name,l_appl,l_item)
+	fprint l_str "tlr:INDtran_name= %s:%s" l_appl,l_item
+	call post:MISClogMenues(l_str)
+#endif
+
+
+	if ( siaf:codigo_siaf == 70610  && ( giros:es_emision_postal == "S" || \
+	     giros:es_emision_tele == "S" || giros:es_emision_correohoy == "S"  ))
+		// Transacciones de giros masivos: Se visualiza trx. de resumen de lote.
+		tlr:INDtran_name = LST:giros:TRAN70610jnl
+	end if
+
+	//VER SI ESTO ESTA BIEN
+	if (siaf:codigo_siaf == 99008)//RGISTRO VAP MANUAL
+		//Si es cliente medio y consume adelanto o 
+		//tiene modalidad fact dif o modalidad cobro dif ==> se journaliza el servicio
+		IF (post:cli_tipo == CLIMED) //cliente medio
+			IF (post:ConsumoAnticipo || post:modalidad_CM != "S")
+				tlr:INDtran_name = LST:post:TRANservicioVAP
+			END IF
+		END IF
+	end if
+
+	if (siaf:codigo_siaf == 99093)//RGISTRO RPP
+		//Si es cliente medio y consume adelanto o 
+		//tiene modalidad fact dif o modalidad cobro dif ==> se journaliza el servicio
+		IF (post:cli_tipo == CLIMED) //cliente medio	
+			IF (post:ConsumoAnticipo || post:modalidad_CM != "S")
+				tlr:INDtran_name = LST:post:TRANservicioRPP
+			END IF
+		END IF
+	end if
+
+	if (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99098) then
+		loc_EsCapturaMP = "S"
+		init 33,0
+	endif
+
+	if (current_state != RECOVERY) then
+		// Este es el fin ? 
+		let INDlast_tran = END_SESSION_TX
+		if (INDlast_tran == tlr:INDtran_name) then
+			call ending_presu  
+
+#if CORREO_DEBUG == CORREO_ON
+	call post:MISClogMenues("<< final 1 >>")
+#endif
+			return // the end !! 
+		end if
+	end if
+	
+	call clear_drv_lst_flds 
+
+	clearfield plataf:INDconf_cur_list
+	clearfield drv:INDcur_tran
+	let plataf:INDconf_cur_list = tlr:INDtran_name 
+	let drv:INDcur_tran  = tlr:INDtran_name 
+	let drv:INDcur_list	 = tlr:INDtran_name
+
+	LET lib:ind_type = (tlr:INDtran_name >> 24) & 0xff
+	if (lib:ind_type == LST_OBJ) then
+		call load_drv_trn_flds
+		loc_retval = retval
+	else
+		loc_retval = -2
+	endif 
+
+	if (loc_retval == 0) then
+		call post:MISCdumpCampos
+		CALL  CSR:dt_tran DT_TRAN_START FLD:plataf:INDconf_cur_list
+		call post:MISClogCampos
+		setflag tlr:state_flags,tran_active
+		;starttran
+
+#if CORREO_DEBUG == CORREO_ON
+	call csr:getname (plataf:INDconf_cur_list,l_appl,l_item)
+	fprint l_str "plataf:INDconf_cur_list= %s:%s" l_appl,l_item
+	call post:MISClogMenues(l_str)
+#endif
+        
+        //cgw:limpia estas variables para que no traiga problemas de cancelacion de una
+        //    venta de combo, cuando esta se combina con tx's de giros con consulta al 
+        //    switch antes de la confirmacion.
+        clearfield hcomm:tran_status
+        clearfield verify_status
+        clearfield verify_status2
+        clearfield verify_session
+                
+		// levanto todos los campos (y sus valores) de la PresuDet 
+		call post:CDSpresud_Pend_Conf
+pres:
+		//// PRE TRANSACTION /////
+		call FLD:drv:INDspc_rtn[5]	
+		//////////////////////////
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:INDspc_rtn[5] - Retval= %s" retval 
+	call post:MISClogMenues(l_str)
+#endif
+
+
+		//// PRE DISPLAY ////////// 
+		call FLD:drv:INDpre_dis_rtn 
+		///////////////////////////
+		
+		
+		call hcomm:COMM_stat_init 
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:INDpre_dis_rtn - Retval= %s" retval 
+	call post:MISClogMenues(l_str)
+#endif
+
+		//Si la transaccion tiene algun opcional que tenga cod.T&T, el codigo de este opcional
+		//se incorpora al nombre de la transaccion.
+		Call MISCtt_opcional
+		refresh siaf:nombre_transac
+		if (siaf:codigo_siaf == 6840) then
+			loc_tran_name = siaf:nombre_transac 
+			fprint siaf:nombre_transac "%s - Form: %s" siaf:nombre_transac,siaf:adt_formulario
+			refresh siaf:nombre_transac
+			let siaf:nombre_transac = loc_tran_name
+		endif
+		
+		// si tengo que corregir la captura...
+		if (post:pasadaMP == CORRECCION && loc_EsCapturaMP == "S") then
+			// cambio de pantalla.
+			undisplay SCR_CONFIRMA
+			joinscreen FLD:drv:INDscreen[0],NOCURSOR
+		endif
+
+		//// PRE COLLECT ////////// 
+		call FLD:drv:INDpre_col_rtn 
+		///////////////////////////
+
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:INDpre_col_rtn - Retval= %s" retval 
+	call post:MISClogMenues(l_str)
+#endif
+
+		// verifico si hay que hacer collect?
+		if (post:pasadaMP == CORRECCION && loc_EsCapturaMP == "S") then
+coll:
+			collect 
+		endif
+	
+		//// SEND VALIDATION //// 
+		call FLD:drv:INDsend_rtn	
+		let loc_retval = retval
+		/////////////////////////
+
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:INDsend_rtn - Retval= %s" retval 
+	call post:MISClogMenues(l_str)
+#endif
+
+		// Esto es xq al llamar a la JNLtran dentro de las SVAL se resetea la flag 
+		if (!testflag(tlr:state_flags,tran_active)) then
+			setflag tlr:state_flags,tran_active
+		endif
+
+		// Si tengo que volver al collect de la  captura...
+		if (loc_retval < 0) then
+			if (loc_EsCapturaMP == "S") then
+				if ((current_state == CONFIRMATION || current_state == RECOVERY) && \
+				 	post:pasadaMP != CORRECCION) then
+					call CDSset_pasadaMP(op:op_operator_id,CORRECCION)
+					goto pres // tengo que corregir la captura 
+				else
+					goto coll // ya estaba en correccion, tengo que continuar corrigiendo.
+				endif
+			else // para el resto de las transacciones 
+				fprint loc_message "LA OPERACION:\n%s\nNO PUDO SER CONFIRMADA." siaf:nombre_transac
+				errmsg common:errmsg_list,FLD:loc_message
+				call cancela_transac
+				goto verify_trx 
+			endif
+		endif
+
+		// resguardo el status del mensaje en la sval, xq' varias trx. hacen ahi su viaje.
+		let verify_status2 = hcomm:tran_status 
+		
+		//// JOURNALIZATION //// 
+		call tlr:JNLtran	
+		////////////////////////
+
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "tlr:JNLtran - Retval= %s" retval 
+	call post:MISClogMenues(l_str)
+#endif
+
+verify_trx:
+		// resguardo el status del mensaje enviado en la JNLtran 
+		let verify_status = hcomm:tran_status 
+
+		// verifica si tiene que cambiar el estado actual...
+		call curstate_conf_drv
+
+		// si corregi la captura => quito la pantalla de la 99099 
+		if (post:pasadaMP == CORRECCION && loc_EsCapturaMP == "S") then
+			cutscreen FLD:drv:INDscreen[0],NOCURSOR
+		endif
+
+
+#if CORREO_DEBUG == CORREO_ON
+	call csr:getname (plataf:INDconf_cur_list,l_appl,l_item)
+	fprint l_str "plataf:INDconf_cur_list= %s:%s" l_appl,l_item
+	call post:MISClogMenues(l_str)
+#endif
+      
+        clearfield giros:ImporteNeto //cgw:para que no arrastre el valor
+		resetflag tlr:state_flags,tran_active
+		call post:MISCdumpCampos
+		CALL  CSR:dt_tran DT_TRAN_END FLD:plataf:INDconf_cur_list
+		call post:MISClogCampos
+		;endtran 
+
+	endif
+
+	// actualiza la barra 
+	call proc_conf_progress 
+
+	let loc_EsCapturaMP = "N"
+
+	// leo los datos de la proxima trx. a confirmar...
+	call post:CDSadt_presuact_load
+	;call post:CDSpresud_Pend_Conf 
+	clearfield tlr:INDtran_name
+	clearfield siaf:codigo_siaf
+
+	call trans_a_confirmar 
+
+end while
+
+call ending_presu
+
+#if CORREO_DEBUG == CORREO_ON
+	call post:MISClogMenues("<< final 2 >>")
+#endif
+
+END SUB
+
+/*******/

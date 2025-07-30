@@ -1,0 +1,102 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSreconst_saldo
+* NOMBRE
+*   OFB:tes:CDSreconst_saldo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSreconst_saldo(bco,tipo,nro)
+	local inicial like mov_importe
+	local tipo_mov_aux like tes:mov_tipo_mov
+	local codigo_auxiliar like tes:mov_codigo_siaf
+	local importe_auxiliar like tes:mov_importe
+
+	mov_br_id = common:sucursal_activa
+	mov_banco = bco
+	mov_tipo_cuenta = tipo
+	mov_nro_cuenta = nro
+
+	CDS select from dsc:MovimCta_tbl becomes dsc:MovimCta_ctx where \
+	tes:mov_br_id == mov_br_id && \
+	tes:mov_banco == mov_banco && \
+	tes:mov_tipo_cuenta == tes:mov_tipo_cuenta && \
+	tes:mov_nro_cuenta == mov_nro_cuenta && \
+	tes:mov_codigo_siaf == 6000
+
+	cds findfirst dsc:MovimCta_ctx nolock
+	let lib:err_retval = cdsretval
+	select (lib:err_retval)
+	    case 0
+    	    cds extract dsc:MovimCta_ctx mov_importe into importe_auxiliar
+	        ;let inicial = mov_importe
+	        let inicial = importe_auxiliar
+	        break
+	    case -801
+	        let inicial = 0
+	        break
+	    case else
+	        cds endselect dsc:MovimCta_ctx
+	        return (-2)
+    end select
+
+   /*Tomo los movimientos no reversados para reconstruir el saldo */
+    CDS select from dsc:MovimCta_tbl becomes dsc:MovimCta_ctx where \
+	tes:mov_br_id == mov_br_id && \
+	tes:mov_banco == mov_banco && \
+	tes:mov_tipo_cuenta == tes:mov_tipo_cuenta && \
+	tes:mov_nro_cuenta == tes:mov_nro_cuenta && \
+	tes:mov_marca_rev != "R"
+
+	cds findfirst dsc:MovimCta_ctx nolock
+
+	let lib:err_retval = cdsretval
+	DO
+	      IF (lib:err_retval < 0)
+	  	       break
+	      end if
+	      cds extract dsc:MovimCta_ctx mov_importe into importe_auxiliar  \
+	      mov_codigo_siaf into codigo_auxiliar mov_tipo_mov into tipo_mov_aux
+	      if (codigo_auxiliar != 6000)
+	         select (tipo_mov_aux)
+		        case CREDITO
+			        ;inicial = mov_importe +	inicial
+			        inicial = importe_auxiliar  + inicial
+			        break
+	            case DEBITO
+			        ;inicial = inicial - mov_importe
+			        inicial = inicial - importe_auxiliar
+			    break
+	         end select
+	      else
+	         /* Actualizo el inicial según lo que reconstruyo */
+	         cds findagain dsc:MovimCta_ctx lock
+	         cds clearbuffer dsc:MovimCta_ctx
+	         cds append dsc:MovimCta_ctx inicial as mov_importe
+	         cds update dsc:MovimCta_ctx lock
+	      end if
+	      cds findnext dsc:MovimCta_ctx nolock
+	      let lib:err_retval = cdsretval
+    loop
+	cds endselect dsc:MovimCta_ctx
+	let sdo_cta_efvo = inicial
+	/* Calculo el saldo en cheques pos acreditar que tiene la cuenta */
+	call CDScheques_por_acred(mov_banco,mov_tipo_cuenta,mov_nro_cuenta)
+	if (retval < 0)
+	   return (-1)
+	end if
+	call CDSupdate_saldo(mov_banco,mov_tipo_cuenta,mov_nro_cuenta," ")
+END SUB
+
+/*******/

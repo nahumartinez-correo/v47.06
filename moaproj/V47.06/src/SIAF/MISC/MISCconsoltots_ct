@@ -1,0 +1,175 @@
+/****o* Reportes/OFB:siaf:MISCconsoltots_ct
+* NOMBRE
+*   OFB:siaf:MISCconsoltots_ct
+* DESCRIPCION
+*   Reporte Consulta de Totales Consolidado de Caja.
+* ENTRADAS
+*   p_tipo_cierre = 0 => cierre de sucursal,cierre forzado de sucursal y consulta totales consolidado de caja
+*   p_tipo_cierre = 1 => cierre de caja
+*   p_tipo_cierre = 2 => reimpresion listado por fechas (tipo listado TLS)
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:TRANteller_tots
+*		siaf:TRANteller_tots_aux
+*		siaf:SVALconsoltots_ct
+*   post:SVALrtot_fecha_ct
+* DOCUMENTACION
+*   http://jirats.siemens.com.ar/jira/browse/AUT-2255
+* NI50614 - Digitalizacion de Reportes Cierre de Caja
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCconsoltots_ct(p_tipo_cierre)
+	LOCAL copias_aux LIKE siaf:i
+	LOCAL DumpFileName LIKE common:ExecString
+	LOCAL l_tmp LIKE common:csr_string
+	LOCAL l_tipo_cierre LIKE siaf:i
+
+	LET l_tipo_cierre = p_tipo_cierre
+	LET copias_aux = 1
+	
+	pick_titulo = "totales_mot"
+	listado_totmot = 1 /*0*/ 
+
+  CALL MISCpaso_desc_tot
+    
+	IF (pantalla_impreso != "P") THEN
+		IF (post:sucu_virtual != "S") THEN
+			CALL MISCopen_tot
+		ELSE
+			CALL csr:get_profile_string("sucuVirt","pathLogs",l_tmp)
+			IF (RETVAL != 0) THEN
+				LET l_tmp = common:dirTemporal  		    	
+			END IF
+
+			FPRINT DumpFileName "%s\\L1%5.5s%-8.8d%4.4d.txt",\
+				l_tmp, \
+				common:sucursal_activa,\
+				post:fecha_virtual,\
+				post:hora_virtual
+
+			CALL tes:MISCopen_file(DumpFileName,1)
+		END IF
+	ELSE
+		CALL CSR:f_sanewpl(pick_titulo,PIC:totales_mot)
+	END IF
+
+	i = 0
+	
+	IF (l_tipo_cierre == 2 ) THEN
+		CALL siaf:CDSaux_suc_tots  /*NUEVA*/
+		IF (RETVAL != 0) THEN
+			//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+				MSGBOX "Listado vacio",OFB_OK,"ERROR"
+			END IF
+			RETURN
+		END IF
+	ELSE
+		//CALL post:MISCcargo_desc_mone
+		IF (RETVAL < 0) THEN
+			CALL MISCclose_tot
+			RETURN (-2)
+		END IF
+	END IF
+    
+  ;CALL siaf:MISCopera_tot
+  ;CALL siaf:MISCimpresion_tot     /*ver OK*/
+
+  SELECT (l_tipo_cierre)
+  	CASE 0
+  		CALL siaf:CDSsuc_tots           /*se modifico*/   
+  	BREAK
+  	CASE 1
+  		CALL siaf:CDSoper_tots
+  	BREAK
+  	CASE 2
+  		//extract de siaf:monto_no_oper que corresponda
+  		CALL siaf:CDSno_oper_tot
+  	BREAK
+  END SELECT
+
+  FLD:siaf:INDencab_lis = OFB:siaf:MISCconstotct_encab
+  FLD:tes:INDsheet_header = OFB:siaf:MISCconstotct_encab
+    
+	/*CALL MISClst_suc_constot*/
+	CALL siaf:MISClst_constotct_st    /*Servicios-Transferencias-Impuestos*/
+	;SC50183 se comenta Cajas que No Operaron
+	;CALL siaf:MISClst_constotct_no    /*Cajas que No Operaron*/
+	CALL siaf:MISClst_constotct_mp    /*Medios de Pago*/
+	CALL siaf:MISClst_constotct_mo    /*Moneda Origen*/
+	;SC50183 se comenta Totales por Moneda
+	;CALL siaf:MISClst_constotct_tm    /*Totales por Moneda*/
+    
+  CALL siaf:MISCclose_tot
+  CLEARFIELD common:csr_string
+
+	IF (pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+		FPRINT common:csr_string, "%s%s", common:dirTemporal, "totales.lis"
+		KEYDEF PUSH
+		CALL KEYSdefine_tots_oper
+		CALL CSR:f_sadopl(pick_titulo,common:csr_string)
+		KEYDEF POP
+	ELSE
+		IF (post:sucu_virtual != "S") THEN
+			FYIMSG LST:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS TOTALES "
+			CALL CSR:file_close(4)
+			
+			//gpb:NI50752
+			CALL tes:MISCflowPDF("totales.lis")
+			//Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;		IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN	
+			IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+				//Genero el PDF y lo imprimo
+				CALL tes:MISCcrearPDF("totales.lis")
+
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "totales.lis"
+;;					CALL CSR:file_open(7,common:tmpDirTemporal,"r")
+;;					
+;;					IF (RETVAL < 0) THEN
+;;						MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+;;						BREAK 
+;;					END IF 
+;;					
+;;					PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+;;					
+;;					IF (PRTRETVAL != 0) THEN
+;;						FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+;;						MSGBOX siaf:mensaje,0x00000000,"Error"
+;;					END IF 
+;;	   
+;;	    		CALL CSR:file_close(7)			
+;;					LET copias_aux = copias_aux + 1
+;;	    	END WHILE				
+			END IF
+			
+			FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "totales.lis"
+			CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT
+			CALL lib:KEYSdefine_global
+			CALL KEYScustom_siaf
+		ELSE
+			CALL tes:MISCclose_file(DumpFileName,1)
+		END IF
+	END IF
+	CLEARFIELD listado_totmot
+    
+	/* 
+	Se sacan estos porque no estan mas las opciones del menu,
+	se deja solo la de Gerente 
+	*/
+  ;PDM CHECKITEM drv:tesorero,2,0x00000000    
+  /* cgw:no deslockear menues colgante gerente
+	IF (post:sucu_virtual != "S") THEN
+		PDM CHECKITEM drv:gerente,2,0x00000000
+	END IF
+  */
+  ;PDM CHECKITEM drv:contador,2,0x00000000
+END SUB
+
+/*******/

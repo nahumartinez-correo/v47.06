@@ -1,0 +1,134 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSchk_cm_facturas
+* NOMBRE
+*   OFB:siaf:CDSchk_cm_facturas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSchk_cm_facturas
+
+	local varl_cdsretval like lib:err_retval
+	local varl_branch    like tlr:jnl_branch
+	local varl_operator  like tlr:jnl_operator
+	local varl_date      like tlr:jnl_date
+	local varl_time      like tlr:jnl_time
+	local varl_bus_date  like tlr:jnl_bus_date
+	local varl_sequence  like tlr:jnl_sequence
+	local varl_msg105    like post:datos_msg105
+	local varl_msg106    like post:datos_msg106
+	local varl_msg107    like post:datos_msg107
+	local varl_msg108    like post:datos_msg108
+	local varl_cm_tipo   like post:climed_tipo
+	local varl_cm_numero like post:climed_numero
+	local varl_proc_codi like giros:codigo_procesamiento
+	local varl_hora      like giros:hora_viaje
+	local varl_dia       like giros:dia_viaje
+	local varl_stan      like post:adt_codseq_nro
+	local varl_send      like hcomm:INDhost_sndrt
+	local varl_rcve      like hcomm:INDhost_rcvrt
+	local varl_status    like hcomm:tran_status
+	local varl_tran_send like giros:tran_send_mode
+
+	varl_msg105    = post:datos_msg105
+	varl_msg106    = post:datos_msg106
+	varl_msg107    = post:datos_msg107
+	varl_msg108    = post:datos_msg108
+	varl_cm_tipo   = post:climed_tipo
+	varl_cm_numero = post:climed_numero
+
+	varl_proc_codi = giros:codigo_procesamiento
+	varl_hora      = giros:hora_viaje
+	varl_dia       = giros:dia_viaje
+	varl_stan      = post:adt_codseq_nro
+	varl_send      = hcomm:INDhost_sndrt
+	varl_rcve      = hcomm:INDhost_rcvrt
+	varl_status    = hcomm:tran_status
+	varl_tran_send = giros:tran_send_mode
+
+	CDS SELECT FROM DSC:post:jnl_facturas BECOMES \
+	DSC:post:jnl_facturas_ctx WHERE tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_operator == op:op_operator_id && tlr:jnl_date == common:system_date && \
+	tlr:jnl_status > HOST_REJECTED && tlr:jnl_status < RECH_REV_AUTO
+
+   	CDS FINDFIRST DSC:post:jnl_facturas_ctx LOCK
+   	let varl_cdsretval = cdsretval
+
+	if  (CDSRETVAL == 0 )
+
+		CDS EXTRACT dsc:post:jnl_facturas_ctx  \
+			tlr:jnl_branch   into varl_branch \
+			tlr:jnl_operator into varl_operator \
+			tlr:jnl_date     into varl_date \
+			tlr:jnl_time     into varl_time \
+			tlr:jnl_bus_date into varl_bus_date \
+			tlr:jnl_sequence into varl_sequence \
+			post:datos_msg108 \
+			post:climed_tipo \
+			post:climed_numero
+
+		call  hcomm:COMM_stat_init
+
+		hcomm:INDhost_sndrt = OFB:post:SENDclimed_factura
+		hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_factura
+
+		giros:codigo_procesamiento = 997042
+		giros:hora_viaje = common:time_of_day
+		giros:dia_viaje  = common:system_date
+		call post:CDSobtiene_secuen("STAN")
+		post:cm_msg_update = 1
+
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+
+		call hcomm:COMM_host_tran
+		clearfield post:cm_msg_update
+
+		clearfield siaf:tran_retval
+
+		call post:MISCjnl_fact_sesion(varl_branch,varl_operator,\
+		varl_date,varl_time,varl_bus_date,varl_sequence)
+
+		CDS CLEARBUFFER dsc:post:jnl_facturas_ctx
+
+		CDS APPEND dsc:post:jnl_facturas_ctx \
+			hcomm:tran_status as tlr:jnl_status
+
+		CDS UPDATE dsc:post:jnl_facturas_ctx LOCK
+
+	end if
+
+	post:datos_msg105 = varl_msg105
+	post:datos_msg106 = varl_msg106
+	post:datos_msg107 = varl_msg107
+	post:datos_msg108 = varl_msg108
+	post:climed_tipo = varl_cm_tipo
+	post:climed_numero = varl_cm_numero
+
+	giros:codigo_procesamiento = varl_proc_codi
+	giros:hora_viaje = varl_hora
+	giros:dia_viaje  = varl_dia
+	post:adt_codseq_nro = varl_stan
+
+	hcomm:INDhost_sndrt = varl_send
+	hcomm:INDhost_rcvrt = varl_rcve
+	hcomm:tran_status   = varl_status
+	giros:tran_send_mode = varl_tran_send
+
+	CDS UNLOCK DSC:post:jnl_facturas_ctx
+	CDS ENDSELECT DSC:post:jnl_facturas_ctx
+
+END SUB
+
+/*******/

@@ -1,0 +1,254 @@
+/****o* Sesión Correo/OFB:tlr:jnl_header
+* NOMBRE
+*   OFB:tlr:jnl_header
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+SUB tlr:jnl_header
+    local esIplan       like siaf:i
+
+        if (  post:Modo != "R" )
+            post:adt_Modo = "NR"
+        Else
+            post:adt_Modo = "R"
+        Endif
+        
+			
+/* Increment the sequence number (wrap to 1 if it has reached 9..9) */
+        let sequence = (sequence + 1)
+        if (sequence == 0)
+                let sequence = 1
+        END IF
+        /* se resguarda el campo para cargar en la tabla TTaux */
+        IF (post:gseqcont == 0)
+                post:gsequence = sequence
+                let post:gseqcont = 1
+        END IF
+/* Set up primary index fields */
+        let jnl_branch = op:op_branch_id
+        let jnl_operator = op:op_operator_id
+        /*Se agrega el tipo y número de documento del operador - Gabriel Falciola*/
+        jnl_op_tipo_doc = op:op_tipo_doc
+        jnl_op_nro_doc = op:op_nro_doc
+        if (tes:es_tesoro == "S")
+           /* si son las que realiza el que maneja tesoro */
+           if (tes:viaja_nro_tesoro == "S") then
+              let jnl_operator_siaf = op:op_tesoro_id
+           else    /* las de tesoro-caja */
+              let jnl_operator_siaf = op:op_operator_siaf_id
+           end if
+        else
+            let jnl_operator_siaf = op:op_operator_siaf_id
+        end if
+        let jnl_bus_date = bus_date
+
+        /* En un Cierre forzado de Sucursal o de Tesoro tiene que quedar
+        con la fecha del dia que estoy cerrando.
+        El cierre forzado del dia debe quedar con la fecha
+        que estoy cerrando para transmitir el journal*/
+        /* Agrego ademas, el cierre comun del dia porque lo puede realizar
+        un cajero que no haya operado ese dia y la fecha queda desactualizada */
+        if (siaf:codigo_siaf == 9550) || (siaf:codigo_siaf == 9570) \
+        || (siaf:codigo_siaf == 8550) || (siaf:codigo_siaf == 9560) \
+        || (siaf:codigo_siaf == 9590) 
+               let jnl_bus_date = tlr:set_bus_date
+        end if
+
+        //Se agrega tambien la tx de Compromisos cuando el cierre forzado es 
+        //del dia anteriory no estoy en reversa     
+        IF  (!testflag(tlr:tran_flags,correction) && \
+            (siaf:codigo_siaf == 6700 || siaf:codigo_siaf == 6710)) then
+            let jnl_bus_date = tlr:set_bus_date
+        end if  
+        
+        fprint jnl_sequence,"%.*d",jnl_sequence.length,sequence
+/* Set up additional secondary index fields */
+        let jnl_date = siaf:fecha
+        let jnl_time = siaf:hora
+        
+        // FGB: just in case...
+        call csr:valid_date(tlr:jnl_date)
+        if (retval != 0) then
+            jnl_date = common:system_date
+        endif
+        
+
+#ifdef SUCU_VIRTUAL
+        if (post:sucu_virtual == "S") && ((siaf:codigo_siaf != 98040) && \
+        (siaf:codigo_siaf != 98041) && (siaf:codigo_siaf != 98051) && \
+        (siaf:codigo_siaf != 98050)) then
+
+            let tlr:jnl_bus_date = post:fecha_virtual
+            // Las tx de tesoreria unicamente lleva hora virtual
+            if (siaf:codigo_siaf < 10000)
+                let tlr:jnl_time = post:hora_virtual
+            endif
+        end if
+
+        if (post:sucu_virtual == "S")
+            if (post:estado_pasivo != "S" && post:PresNro > 0)
+                post:fecFacturacion = post:adt_fecfact_web
+            else
+                post:fecFacturacion = post:fecha_virtual
+            endif
+            if (siaf:codigo_siaf == 98041 || siaf:codigo_siaf == 98051)
+                clearfield post:fecFacturacion
+            endif
+        else
+            //post:fecFacturacion = common:system_date
+            select (siaf:codigo_siaf)
+                case 6652
+                    break
+                case else
+                    post:fecFacturacion =  jnl_bus_date
+                    break
+            end select
+        endif
+
+#endif
+        /* Si estoy en una facturación automática tomo la fecha del día anterior */
+        ;if (post:OperacionAut && drv:dt_app != 2 ) then
+        if (post:FechaAnt) then
+            tlr:jnl_bus_date = post:fecha_factCM
+        end if
+            
+/* Set up non-index header fields */
+        move state_flags to jnl_state_flags
+        move tran_flags to jnl_tran_flags
+
+        If ((post:jnl_flia_tran == "TES") &&  \
+            (!TESTFLAG(giros:tran_send_mode,ventaUP_diferida)) && \
+            !(hcomm:INDhost_sndrt == 0 && hcomm:INDhost_rcvrt == 0) && (jnl_status == "" || jnl_status.numchars == 0))
+                if (!testflag(giros:tran_send_mode,trat_cheques))
+                   //Timeout, cuando no llega a recibir los datos
+                   // fprint jnl_status,"100"
+                   hcomm:tran_status = 100
+                   siaf:mensaje = "ERROR DE COMUNICACION - TRANSACCION RECHAZADA"
+                endif
+        End If
+
+        /* sba 16.1.2004: Ahora se busca en la tabla utilities por la utility
+        esIplan = (post:sf1_id_paycode == "2NN" || post:sf1_id_paycode == "2PN")
+        */
+       call post:CDSutility_cod_prod("")
+       esIplan = (post:utility_cod_prod == "IPLAN")
+       //
+
+        If (post:jnl_flia_tran == "PF " && siaf:codigo_siaf == 6820 && esIplan)
+           hcomm:tran_status = 106
+        End If
+
+        //Ojo... controlar esto...
+        IF (TESTFLAG(giros:tran_send_mode,ventaUP_diferida))
+            IF (sequence_corr == 0) THEN
+                hcomm:tran_status = MEMO
+            ELSE
+                hcomm:tran_status = jnl_status
+            END IF
+        END IF
+
+        IF (post:jnl_flia_tran == "CSM") THEN
+            IF (sequence_corr == 0 || TESTFLAG(giros:flags_back,cancelacion)) THEN
+                //50295
+                 if ((!testflag(giros:giros_masivos_trx,proc_trx_masivos)) && \
+                 	(!testflag(giros:giros_importacion,proc_em_lg)))
+                    if (siaf:codigo_siaf == 70386 || siaf:codigo_siaf == 70385) then
+                        // FGB 8.4.03 - PS7439 - la consulta de comision, si se cae
+                        // el RT, generaba una caida en vuelo...
+                        hcomm:tran_status = HOST_REJECTED
+                        siaf:mensaje = "TRANSACCION CANCELADA"
+                    else
+                        hcomm:tran_status = MEMO
+                    endif
+                 else
+                    // Transacciones de Giros Masivos  se graban SIN_ENVIO
+                    // Transacciones de Emision de Lista de Giros  se graban SIN_ENVIO
+                    if (siaf:codigo_siaf != 70650) then
+                    	hcomm:tran_status = UNPOSTED
+                    endif
+                 end if
+            ELSE
+                hcomm:tran_status = jnl_status
+            ENDIF
+        ENDIF
+        /*Agregado para que no se pise el Estado del Host de la Transacción
+        cuando es Nota de Crédito - Gabriel Falciola*/
+        /* a pedido de Gabriel Falciola se agrega dos condiciones con respecto al comentario anterior*/
+        if (post:NotaCredito != "S" && post:NotaCreditoRev != "S") && (post:enSesion != "S" && post:enSesion != "P") ||\
+            (siaf:codigo_siaf == 99023)
+                if (post:rechazoDiferido && (post:cli_tipo == CLIUP || post:cli_tipo == CLIMED))
+                    jnl_status = STATUS_UP_ANULADO
+                    //FPRINT siaf:mensaje, "%s SESION UP REVERSADA AUTOMATICAMENTE", siaf:mensaje
+                else
+                    fprint jnl_status,"%.*d",jnl_status.length,hcomm:tran_status
+                endif
+                fprint jnl_status,"%.*d",jnl_status.length,hcomm:tran_status
+        else //Req-2482 - Cuando el jnl_status queda vacio luego de que se cae el sistema
+            CALL csr:trimfield(jnl_status)
+            if (jnl_status == "" || jnl_status.numchars == 0)
+                if (hcomm:INDhost_sndrt == 0 && hcomm:INDhost_rcvrt == 0)
+                    fprint jnl_status,"002"
+                else
+                    if (post:rechazoDiferido)
+                        jnl_status = STATUS_UP_ANULADO
+                    else
+                        fprint jnl_status,"%.*d",jnl_status.length,hcomm:tran_status
+                    endif
+                end if
+            end if
+        end if
+        
+        // PS 10587 - se setea el status en 100 para el primer update del jnl. Solo para 
+        //Pago Facil que no tenga viaje y en las directas
+		if (post:NotaCredito != "S" && post:NotaCreditoRev != "S") && \
+			(post:enSesion != "S" && post:estAnul != "R2_")
+        	IF (post:jnl_flia_tran == "PF")
+        		call post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+        		IF (retval != 1)
+        			//Si es pago facil y no tiene viaje el status se pone en 100
+        			//hcomm:tran_status = HOST_REJECTED //100
+        			jnl_status = HOST_REJECTED //100
+        		END IF
+        	END IF
+    	end if    
+        
+        if (sequence_corr != 0)
+                fprint jnl_sequence_corr,"%.*d",jnl_sequence_corr.length, \
+                        sequence_corr
+        END IF
+        IF (post:supervisor_id != "" || post:supervisor_id.numchars != 0)
+            ovr:ovr_sup_id = post:supervisor_id
+            SETFLAG tlr:tran_flags,supovr_granted
+        END IF
+        let jnl_supervisor = ovr:ovr_sup_id
+    let tlr:jnl_dia_ult_act = common:system_date
+    let tlr:jnl_hora_ult_act = common:time_of_day
+/* Append index fields */
+    /*Si es Nota de Credito no hace el append de los campos - Gabriel Falciola*/
+    If ( post:NotaCredito != "S" )
+        if (siaf:adt_tran_modpresu == "I" && siaf:codigo_siaf != 99021 &&\
+            !testflag(common:rt_flags,batch_mode))
+            /* MLD las trasacciones con parametria "I" quedan journalizadas
+            con presupuesto 0 */
+            let post:PresNro = 0
+        end if
+        CALL CSR:proc_list,F_APPEND,DSC:CONjnl_write,LST:DBFMheader,2
+    end if
+/* Invoke custom header routine */
+        CALL OFB:TLR_JNL_HEADER
+END SUB
+
+/*******/

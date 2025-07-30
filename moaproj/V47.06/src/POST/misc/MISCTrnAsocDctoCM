@@ -1,0 +1,151 @@
+/****o* Pendientes de agrupación/OFB:post:MISCTrnAsocDctoCM
+* NOMBRE
+*   OFB:post:MISCTrnAsocDctoCM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCTrnAsocDctoCM(Tabla)
+
+LOCAL directa LIKE post:jnl_sequence_dire
+LOCAL tarifa_basica LIKE post:tarifa
+LOCAL cant_aux LIKE post:cantidad
+LOCAL tarifa_opc_aux[6] LIKE post:tarifa
+LOCAL flia_aux LIKE siaf:adt_tran_fliatran
+
+	if (Tabla == "NCTABLE")
+		//Verifico en la NcTable si la transacción a la cual está asociada el descuento de CM
+		//queda en la nueva Sesión o será reversada
+		CDS SELECT FROM DSC:NC_TAB BECOMES DSC:NC_CON2 where \
+		tlr:jnl_branch == op:op_branch_id && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == common:system_date && \
+		post:PreDNroTrnAsoc == post:PreDNroTrnAsoc && \
+		post:jnl_sequence_dire == "D"
+		CDS FINDFIRST DSC:NC_CON2 NOLOCK
+		IF (CDSRETVAL == 0) THEN
+			post:jnl_sequence_dire = "D"
+		else
+			post:jnl_sequence_dire = "ND"
+		end if
+		CDS ENDSELECT DSC:NC_CON2
+	end if
+	
+	if (Tabla == "JOURNAL")
+		//Actualizo los valores del descuento de CM en la PresuDet según las transacciones
+		///a las que está asocidado el mismo
+		cds select from "journal" becomes "journalCMCtx" where \
+		tlr:jnl_branch == op:op_branch_id && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == common:system_date && \
+		PresNro == fld:post:presNroNew && \
+		post:PreDNroTrnAsoc == post:PreDNroTrnAsoc && \
+		siaf:codigo_siaf != 99300
+		CDS FINDFIRST "journalCMCtx" NOLOCK
+		clearfield siaf:importe
+		DO
+			IF (CDSRETVAL == 0) THEN
+				CLEARFIELD post:tarifa
+				CLEARFIELD post:Dcto_CliMed
+				CLEARFIELD post:AliTrnCM
+				CLEARFIELD post:cant_opc
+				
+				call csr:cleararray(post:bonifCM_opc)
+				call csr:cleararray(post:cos_opc)
+				call csr:cleararray(post:cod_opc)
+				call csr:cleararray(post:ali_opc)
+								
+				CDS EXTRACT "journalCMCtx" post:tarifa post:Dcto_CliMed	post:jnl_flia_tran INTO flia_aux \
+				post:cant_opc 
+				
+				select (flia_aux)
+    				case "TES"
+    					CDS EXTRACT "journalCMCtx" tes:adt_espv_aliciva INTO post:AliTrnCM
+	    				break
+    				case "CSV"
+    					CDS EXTRACT "journalCMCtx" siaf:adt_mot_aliciva INTO post:AliTrnCM
+    					break
+    				case "CME"
+	    				CDS EXTRACT "journalCMCtx" post:adt_prodvs_aliciva INTO post:AliTrnCM
+    					break
+    				case "CSP" ;postales
+    				case "CSE"
+    				case "VAP"
+    					CDS EXTRACT "journalCMCtx" post:AliServUP INTO post:AliTrnCM
+    					break
+    			end select
+				
+				//extraigo los valores de los opcionales uno a uno
+				cant_aux = 0
+				while (cant_opc > cant_aux)
+					CDS EXTRACT "journalCMCtx" post:bonifCM_opc[cant_aux] post:cos_opc[cant_aux] post:cod_opc[cant_aux] post:ali_opc[cant_aux]
+					cant_aux = cant_aux + 1
+				end while
+				
+				tarifa_basica =  tarifa_basica + tarifa
+				post:tarifa = tarifa_basica
+				
+				//PS Opcionales: acumulo la tarifa de los opcionales que bonifican
+				cant_aux = 0
+				while (cant_opc > cant_aux) 
+					if (post:bonifCM_opc[cant_aux] == "S" && cod_opc[cant_aux] == post:prod_DescuentoCM) then
+						tarifa_opc_aux[cant_aux] = tarifa_opc_aux[cant_aux] + cos_opc[cant_aux]
+						post:tarifa = tarifa_opc_aux[cant_aux]
+						post:AliTrnCM = post:ali_opc[cant_aux]
+					endif
+					cant_aux = cant_aux + 1
+				end while
+				
+				//PS Bienes de Cambio: Si la tarifa esta vacia asumo que se trata del descuento de un bien de cambio
+				if (post:tarifa.numchars == 0) then
+					CDS EXTRACT "journalCMCtx" siaf:importe INTO post:tarifa 
+				endif
+								
+				CDS FINDNEXT "journalCMCtx" NOLOCK
+			ELSE
+				CDS ENDSELECT "journalCMCtx"
+				BREAK
+			END IF
+		LOOP
+		
+		INIT 22,1
+		siaf:importe = ((Dcto_CliMed * post:tarifa) / 100)
+		INIT 22,0
+			//SC 50170
+		CALL MISCdesglosaIva(siaf:importe,post:AliTrnCM, 1,0)
+		siaf:ImporteConIva = siaf:importe
+		siaf:ImporteSinIva = post:ImporteSinIva
+		//Actualizo la NcTable con los importes actualizados.
+		cds findagain dsc:NC_CON lock
+		CDS CLEARBUFFER dsc:NC_CON
+		CDS APPEND dsc:NC_CON post:tarifa siaf:importe
+		CDS UPDATE dsc:NC_CON LOCK
+
+		cds findagain dsc:PRESU_DES_CON lock
+		//Borro del contexto los campos correspondientes para luego grabarlos
+//		con el nuevo valor
+		Call csr:delete_field(dsc:PRESU_DES_CON, "siaf", "importe", 1)
+		Call csr:delete_field(dsc:PRESU_DES_CON, "post", "tarifa", 1)
+		Call csr:delete_field(dsc:PRESU_DES_CON, "siaf", "ImporteConIva", 1)
+		Call csr:delete_field(dsc:PRESU_DES_CON, "siaf", "ImporteSinIva", 1)
+
+		//Hago el append necesario
+		cds append dsc:PRESU_DES_CON \
+  		siaf:importe post:tarifa \
+  		siaf:ImporteSinIva siaf:ImporteConIva 
+	end if
+END SUB
+
+/*******/

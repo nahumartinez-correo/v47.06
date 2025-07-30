@@ -1,0 +1,122 @@
+/****o* Tratamiento de Cheques/OFB:post:PBreemp_mpag_pic
+* NOMBRE
+*   OFB:post:PBreemp_mpag_pic
+* DESCRIPCION
+*   Displaya el picklist de medios de pago en Remplazo de 
+*   Cheque Observado/Rechazado
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:BUTreemp_chqrech_up, post:BUTreemp_chqrob
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1151
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBreemp_mpag_pic
+    local loc_fecha     like post:fec_d
+
+    ////////////////////////////////////////////
+    // Displaya el picklist de medios de pago //
+    ////////////////////////////////////////////
+
+    local varl_idx	  like siaf:idx
+    local varl_picstr like common:csr_string
+    LOCAL l_last_button LIKE drv:last_button
+
+    if (post:estado_presu == 4) then
+	drv:button = drv:last_button //drv:PBcb4
+	call drv:but_up_enable
+	call drv:but_redraw    	
+	return (0)
+    end if
+
+	/* MGI 10-08-11 AUT-1151 inhabilita los botones Selección de Cheque, Agregar, Borra y
+	Modificar que se encontraban habilitados. Esto Ocurre cuando se cliquea el botón que
+	despliega el picklist medios de pago*/
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+
+    // por si las moscas...
+    if (testflag(tlr:tran_flags,correction)) then
+        return
+    end if
+
+    // me aseguro que haya al menos un item...
+    let varl_idx = PL_GETITEM
+    call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+    if (retval != 0) then
+        errmsg common:errmsg_list,"No hay elementos en la lista"
+        return (-2)
+    end if
+
+    // bueno, si tenemos al menos un elemento, lo muestro.
+    call csr:f_sadopl "mediospagos" varl_picstr
+    
+    if (retval >= 0) then
+        // se eligio un elemento -> paso los datos del item seleccionado a 
+        // los campos de entrada (por si se quieren modificar)
+        let PicDescrip2   = substr(varl_picstr,0,57)
+        //let PicDescrip3 = substr(varl_picstr,0,69)
+        let tipo_mpago    = substr(varl_picstr,0,2)
+        let banco_mpago   = substr(varl_picstr,3,3)
+        let cuenta_mpago  = substr(varl_picstr,7,20)
+        let cheque_mpago  = substr(varl_picstr,28,12)
+        let importe_mpago = substr(varl_picstr,41,16)
+        let fec_e = substr(varl_picstr,59,2) +  substr(varl_picstr,62,2) * 100 \
+        + substr(varl_picstr,65,4) * 10000
+        //cgw:limpio vsriable si la fecha de emision tiene valor 0.
+        if (fec_e == 0) then
+            clearfield fec_e
+        end if    	
+
+        loc_fecha = substr(varl_picstr,70,2) + substr(varl_picstr,73,2) * 100 \
+        + substr(varl_picstr,76,4) * 10000     
+        if (loc_fecha.numchars > 0 && loc_fecha != 0)
+            let fec_d = loc_fecha
+            unprotfield fec_d
+        else
+            fec_d = ""
+            protfield fec_d
+        end if
+
+	tes:clearing = substr(varl_picstr,80,4)
+        
+        /*        
+        let fec_d = substr(varl_picstr,70,2) +  substr(varl_picstr,73,2) * 100 \
+        + substr(varl_picstr,76,4) * 10000
+        */
+       
+        adt_mp_cod = tipo_mpago
+        CALL post:CDSadt_MedPago_load        
+        post:medio_pago_desc = adt_mp_desc
+        call csr:proc_list F_REFRESH LST:post:LISTccte_cobza_flds3
+        end if
+	/* MGI 10-08-11 AUT-1151 inhabilita el botón del picklist medios de pago cuando se cliquea,
+	y lo habilita cuando se sale de el seleccionando un medio de pago, o con la tecla escape*/
+    LET drv:button = drv:last_button
+    CALL drv:but_up_enable
+    CALL drv:but_redraw
+
+	/* MGI 10-08-11 AUT-1151 habilita los botones Selección de Cheque, Agregar, Borra y
+	Modificar que se encontraban inhabilitados. Esto Ocurre cuando se sale del picklist
+	medios de pago seleccionando un medio de pago, o con la tecla escape*/
+	drv:button = 1
+	call drv:but_enable
+	drv:button = 2
+	call drv:but_enable
+	drv:button = 3
+	call drv:but_enable
+	drv:button = 4
+	call drv:but_enable
+
+END SUB
+
+/*******/

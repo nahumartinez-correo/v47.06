@@ -1,0 +1,82 @@
+/****o* Chequeras/OFB:tes:MISCgenpic_chequeras
+* NOMBRE
+* OFB:tes:MISCgenpic_chequeras
+* DESCRIPCION
+* Genera picklist dinamico que contiene las chequeras postales ordenadas por Operador con sus estados, para ser listadas.
+* REFERENCIADO POR
+* OFB:tes:MISCpasa_chek_a_str
+* DOCUMENTACION
+* http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=532140&
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCgenpic_chequeras
+	LOCAL l_string LIKE common:csr_string
+	LOCAL l_libres LIKE siaf:i
+	LOCAL l_orden LIKE op:TipoEntero    
+	LOCAL l_estado LIKE giros:adt_chk_estado
+	LOCAL l_oper LIKE giros:adt_chk_op
+	
+	//cgw:crea picklist chequeras que contendra las chequeras a listar.
+	CALL csr:f_sadroppl "chequeras"
+	CALL csr:f_sanewpl "chequeras" PIC:lib:csr_dynamic_pic
+
+	CDS SELECT FROM DSC:giros:RecepChk_tab becomes DSC:giros:RecepChk_ctx \
+		WHERE giros:adt_chk_suc == common:sucursal_activa
+	       
+  CDS FINDFIRST DSC:giros:RecepChk_ctx NOLOCK
+
+	WHILE (CDSRETVAL == 0)
+		CLEARFIELD l_estado
+		CLEARFIELD l_orden
+		CLEARFIELD l_oper
+		
+		CDS EXTRACT DSC:giros:RecepChk_ctx ALL
+
+		//cgw:orden del tipo del operador.
+		IF (giros:adt_chk_tesoro == "S") THEN
+			l_orden = 1 //tesoro.
+			//cgw: si esta en el tesoro busco el id del operador en profiles.
+			IF (op:adt_branch_id.NUMCHARS == 0) THEN //cgw:busca nombre del operador.
+				CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+				WHERE op:op_tesoro == "S" \
+				&& op:op_borrado_logico != "S" ASCENDING
+			ELSE
+				CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+					WHERE op:op_branch_id == FLD:op:adt_branch_id \
+					&& op:op_tesoro == "S" \
+					&& op:op_borrado_logico != "S" ASCENDING
+			END IF
+			CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+			IF (CDSRETVAL == 0) THEN
+				CALL op:CDSadt_op_extract
+				l_oper = op:adt_operator_id
+			END IF
+			CDS ENDSELECT DSC:op:adt_op_context
+		ELSE
+			//cgw: si no esta en tesoro tomo el id del operador directamente de RecepChk.
+			l_oper = giros:adt_chk_op
+			IF (giros:adt_chk_habilitador == "S") THEN
+				l_orden = 2 //habilitador.
+			ELSE
+				l_orden = 3 //cajero.
+			END IF
+		END IF
+
+		l_estado = giros:adt_chk_estado
+		l_libres = giros:adt_chk_cantid - giros:adt_chk_usado
+		
+		FPRINT l_string "%1.1s%05.5s%1.1s%06.6s%06.6s%3.3s%3.3s%1.1s",l_orden, l_oper ,giros:adt_chk_serie, giros:adt_chk_nrogiro, giros:adt_chk_nrofin, giros:adt_chk_cantid, l_libres, l_estado
+		
+		CALL csr:f_saaddpl "chequeras" l_string
+		
+		CDS FINDNEXT DSC:giros:RecepChk_ctx NOLOCK
+	END WHILE
+
+	//cgw:ordena el picklist por orden.
+	CALL csr:PickOp 4 "chequeras" "0,19"
+    
+END SUB
+/*******/
+ 

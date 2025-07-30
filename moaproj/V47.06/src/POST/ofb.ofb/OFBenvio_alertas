@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:post:OFBenvio_alertas
+* NOMBRE
+*   OFB:post:OFBenvio_alertas
+* DESCRIPCION
+*   Rutina que envia mensaje de alertas al HOST
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:OFBrecorre_alertas
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2326
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBenvio_alertas
+	LOCAL l_cadena LIKE post:datos_msg105
+	LOCAL l_datos_msg105 LIKE post:datos_msg105
+	LOCAL l_retval LIKE lib:err_retval
+
+offset_0000:
+	;Guardar numero de operador
+	op:operator_tmp = op:op_operator_id
+	
+	;Resetear flags
+	RESETFLAG tlr:controla_firma,cancelacion
+	RESETFLAG tlr:controla_marca,cancel
+	RESETFLAG tlr:controla_marca,reverso_auto
+
+	giros:codigo_procesamiento = 997500
+
+	hcomm:INDhost_sndrt = OFB:post:SENDmsje_alertas
+	hcomm:INDhost_rcvrt = OFB:post:RCVEmsje_alertas
+	
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	CALL post:CDSobtiene_secuen("STAN")
+
+	//Armo el mensaje
+	CALL post:MISCmsje_alertas
+	l_retval = RETVAL
+	
+	CLEARFIELD l_datos_msg105
+	LET l_datos_msg105 = SUBSTR(post:datos_msg105,37,200)
+
+	//verifica que haya comunicacion para el envio del mensaje	
+	CALL hcomm:COMM_stat_init
+	IF (RETVAL == -2 ) THEN
+		RETURN -2
+	ENDIF	
+	
+	FPRINT l_cadena,"FECHA: %e HORA: %e STAN: %s PCODE: %s",\
+		giros:dia_viaje,giros:hora_viaje,post:adt_codseq_nro,giros:codigo_procesamiento
+
+	CALL hcomm:COMM_host_tran
+
+	IF (RETVAL == TRAN_CAIDA_VUELO) THEN
+		CALL CSR:file_putline(7,l_cadena)
+		FPRINT l_cadena,"MENSAJE BIT 105:%s",l_datos_msg105
+    CALL CSR:file_putline(7,l_cadena)
+		FPRINT l_cadena,"%s","Transaccion Caida en Vuelo ... "
+		CALL CSR:file_putline(7,l_cadena)
+		CALL CSR:file_putline(7,"........................................................................................")
+	END IF
+	
+	RESETFLAG tlr:controla_firma,cancelacion
+	RESETFLAG tlr:controla_marca,cancel
+	RESETFLAG tlr:controla_marca,reverso_auto
+	
+	IF (hcomm:tran_status != HOST_ACCEPTED) THEN
+		CALL CSR:file_putline(7,l_cadena)
+		FPRINT l_cadena,"MENSAJE BIT 105: %s",l_datos_msg105
+    CALL CSR:file_putline(7,l_cadena)
+	
+		IF (hcomm:tran_status == HOST_REJECTED) THEN
+			FPRINT hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_REJECTED
+			FPRINT siaf:nota_1 "Transaccion Rechazada. CodRespuesta = %e. Status = %s Hora: %e ",\
+				giros:CodRespuesta_comm,hcomm:tran_status,common:time_of_day
+			 CALL CSR:file_putline(7,siaf:nota_1)
+			CALL CSR:file_putline(7,"........................................................................................")
+		ELSE
+			IF (hcomm:tran_status > HOST_REJECTED) THEN
+				FPRINT l_cadena "Transaccion Caida en Vuelo. Hora: %e ",	common:time_of_day
+				CALL CSR:file_putline(7,l_cadena)
+				CALL CSR:file_putline(7,"........................................................................................")
+			END IF
+		END IF
+	END IF
+
+ 	op:op_operator_id = op:operator_tmp
+ 	
+ 	//si la longitud del mensaje supera los 200 caracteres
+ 	//entonces el excedente va en otro mensaje
+ 	IF (l_retval == 1) THEN
+ 		GOTO offset_0000
+ 	END IF
+
+END SUB
+
+/*******/

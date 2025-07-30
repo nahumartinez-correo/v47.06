@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:post:RCVEend_UP
+* NOMBRE
+*   OFB:post:RCVEend_UP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postrcve.h"
+
+SUB post:RCVEend_UP
+
+	Call MISCverifFirmaUP
+	If (Retval < 0)
+	    if (!testflag(tlr:controla_marca,cancel)) 
+			
+			// Rechazo por firma invalida. 
+
+				IF (!TESTFLAG(giros:tran_send_mode,cancelacion))
+					IF (TESTFLAG(giros:tran_send_mode,consulta_simple)) 
+						FPRINT giros:mensaje_transaccion "Error en Verificación de Firma"
+						common:trap_reset = OFB:drv:KEYSreset_esc
+						LET hcomm:tran_status = RCV_ERROR
+					ELSE //F.I. - 210 - Dir/Canc - Registro
+						FPRINT giros:mensaje_transaccion "FIRMA INVALIDA LA TRANSACCION SERA CANCELADA"
+						SETFLAG tlr:controla_firma,cancelacion
+						LET hcomm:tran_status = HOST_REJECTED
+					END IF
+					LET giros:err_firma = -1
+					LET siaf:mensaje = "Rech. por firma Inválida." 
+					MSGBOX giros:mensaje_transaccion OFB_OK "Error"
+					CLEARFIELD lib:stat_message
+					REFRESH lib:stat_message
+					RETURN -2 //error por firma inválida 				
+				ELSE //F.I. - 210 - Rev/Canc
+					// es una cancelacion
+					LET hcomm:tran_status = HOST_REJECTED
+					LET siaf:mensaje = "RECH. FIRMA INVALIDA"
+					LET giros:mensaje_transaccion = "CANC. RECHAZADA POR FIRMA INVALIDA"
+					SETFLAG tlr:controla_firma,cancelacion			
+				END IF
+
+	    end if
+	else
+		// Firma esta OK
+		// Si estoy en directa, la transaccion esta ok.
+		
+		if (!testflag(tlr:controla_marca,cancel))
+		
+
+				IF (!TESTFLAG(tlr:controla_firma,cancelacion))
+					RESETFLAG tlr:controla_firma,cancelacion
+					LET giros:err_firma = 0
+					LET hcomm:tran_status = HOST_ACCEPTED
+					LET siaf:mensaje = "TRANSACCION ACEPTADA"
+					/*Si no es cancelacion*/
+					IF (!TESTFLAG(giros:tran_send_mode,cancelacion))
+						FPRINT giros:mensaje_transaccion "TRANSACCION  ACEPTADA"
+					ELSE //F.OK - 200 - Flag Firma != Set - SI Canc
+						FPRINT giros:mensaje_transaccion "CANCELACION ACEPTADA"		
+					END IF
+				ELSE 
+					// Estoy en una cancelacion(reversando la tx rechazada por firma inválida),
+					// no se controlo firma. La transaccion original fue cancelada.?????
+					RESETFLAG tlr:controla_firma,cancelacion
+					IF (hcomm:tran_status == HOST_ACCEPTED)
+					//IF (giros:CodRespuesta_comm == 00)
+						// la cancelacion por firma inválida fue aceptada
+						// marco la directa como rechazada porque se reverso.
+						LET siaf:mensaje = "RECH. FIRMA INVALIDA" 
+						LET giros:mensaje_transaccion = "RECH. FIRMA INVALIDA" 
+						LET hcomm:tran_status = HOST_REJECTED
+						CLEARFIELD lib:stat_message
+						REFRESH lib:stat_message					
+						RETURN -2
+					ELSE
+						// La cancelacion por firma inválida fue rechazada.
+						LET hcomm:tran_status = HOST_ACCEPTED
+						FPRINT giros:mensaje_transaccion "TRANSACCION  ACEPTADA"
+					ENDIF
+				ENDIF
+
+		else	
+			LET siaf:mensaje = "TRANSACCION ACEPTADA"
+			LET hcomm:tran_status = HOST_ACCEPTED			
+			LET giros:err_firma = 0
+		end if
+		
+	end if
+END SUB
+
+/*******/

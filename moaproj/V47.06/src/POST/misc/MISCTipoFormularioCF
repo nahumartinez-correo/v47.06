@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:post:MISCTipoFormularioCF
+* NOMBRE
+*   OFB:post:MISCTipoFormularioCF
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCTipoFormularioCF
+	LOCAL LOC_ERROR LIKE lib:err_retval
+	
+	LOC_ERROR = 0
+
+	IF (Modo != "R" ||  siaf:adt_tran_fliatran == "CSM") THEN
+		CALL post:CDShay_factura
+		IF (RETVAL < 0) THEN
+			CALL post:CDShay_ticket
+			IF (RETVAL < 0) THEN
+				LOC_ERROR = -1
+				MSGBOX "Transacción sin formulario asociado",OFB_OK,"ADVERTENCIA"				
+			ELSE
+				IF (rechazoDiferido) THEN
+					RETVAL = OFB_IDYES
+					CALL post:MISCdeshab2_reqfactu // cgw:deshabilita y setea req_factura
+				ELSE
+					//Habilita si requiere factura
+					CALL post:MISChab_reqfactu		
+					/* cgw: no pregunta, setea segun checkbox req_factura */
+					//MsgBox "Quiere como Formulario una Factura",OFB_YESNO2,"ADVERTENCIA"
+					IF (TESTFLAG (req_factura, Requiere_factura)) THEN
+						RETVAL = OFB_IDYES
+					ELSE
+						RETVAL = OFB_IDNO    
+					END IF					
+				END IF
+				IF (RETVAL != OFB_IDYES) THEN
+					Tipo_Formulario = TICKET
+					DocFiscal = "TICKET"
+					CALL post:MISCprotege_doc
+				ELSE
+					Tipo_Formulario = FACTURA_B
+					 DocFiscal = "FACTURA B"
+				END IF
+				CALL post:MISCtotal_sin_iva
+			END IF
+		ELSE
+			CALL post:MISCdeshab2_reqfactu // cgw:deshabilita y setea req_factura
+			Tipo_Formulario = FACTURA_B
+
+			//gpb:NI50479
+			IF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN					
+				DocFiscal = "NOTA DE CREDITO B"
+			ELSE
+				DocFiscal = "FACTURA B"
+			END IF
+			
+			CALL post:MISCtotal_sin_iva
+		END IF
+	END IF
+	
+	/*cgw: Controla si hay especies que supere el importe min.esp.val.
+	en ese caso, pide datos del cliente y debe imprimir factura. */
+	IF (Modo != "R") THEN 
+		CALL post:MISCctrol_impmin_esp
+	END IF
+	
+	CALL post:MISCverif_tarj_chq //cgw:verifico si pago con cheque o tarjeta,pide datos cliente.
+	
+	IF (Tipo_Formulario == FACTURA_B) THEN
+		CALL MISCverifMonto
+		CALL MISCmuestraPaginas("S")
+	ELSE
+		/* cgw:limpio cantidad paginas */
+		CLEARFIELD cant
+		REFRESH cant	
+	END IF
+	
+	IF (LOC_ERROR < 0) THEN
+		RETURN (-2)
+	END IF
+END SUB
+
+/*******/

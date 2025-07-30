@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:post:FVALcajaAdmRPP
+* NOMBRE
+*   OFB:post:FVALcajaAdmRPP
+* DESCRIPCION
+*   Validacion del campo tipo de caja de la tx de Registro VAP. Valida que el tipo de caja seleccionado este dado de
+*	alta en la tabla de TipoCaja para el servicio seleccionado y obtiene las medidas de la caja si es normalizada
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNadmisionRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALcajaAdmRPP
+
+	IF (post:serv_admRPP_cod.NUMCHARS == 0) THEN
+		MSGBOX "DEBE SELECCIONAR PRIMERO EL SERVICIO.",OFB_OK,"Error"
+		RETURN (-2)
+	END IF
+
+	adt_servcaja_serv = serv_admRPP_cod
+	adt_servcaja_caja = tipo_caja_admRPP
+	CALL CDSServCaja_load
+	IF (RETVAL < 0) THEN
+		
+			CALL PBcajaAdmRPP
+		
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+		SETVALDONE post:tipo_caja_admRPP		
+	END IF
+
+	IF (post:adt_serv_umstd == "GMS") THEN
+		post:adt_tarif_desde = post:peso_admRPP_grs
+	ELSEIF (post:adt_serv_umstd == "KGS")
+		post:adt_tarif_desde = post:peso_admRPP_kgs
+	END IF
+
+	IF (adt_servcaja_caja == "CAJA PROPIA") THEN
+		IF (estado_presu == 3) THEN
+			MSGBOX "No se puede cambiar a CAJA PROPIA en el transcurso de la transaccion",0x00,"Error"
+			UNPROTFIELD tipo_caja_admRPP
+			RETURN -2			
+		END IF		
+		MSGBOX "Ha seleccionado CAJA PROPIA. Esta opcion no podra ser modificada. Desea Continuar?",OFB_YESNO,"Advertencia"
+		IF (RETVAL == OFB_IDYES) THEN
+			caja_propia = TRUE
+			PROTFIELD tipo_caja_admRPP
+			CLEARFIELD rel_vol
+			UNPROTFIELD aforo1
+			UNPROTFIELD aforo2
+			UNPROTFIELD aforo3			
+			
+			//gpb:arreglo RTJava, porque estaba perdiendo cual era el proximo campo
+			IF (siaf:codigo_siaf == 30010) THEN
+				resetvaldone aforo1
+				resetvaldone aforo2
+				resetvaldone aforo3
+				NEXTFIELD destino_admRPP
+			END IF
+		ELSE
+			CLEARFIELD tipo_caja_admRPP
+			REFRESH tipo_caja_admRPP
+			RETURN -2
+		END IF
+	ELSE
+		caja_propia = FALSE
+		CLEARFIELD aforo1
+		CLEARFIELD aforo2
+		CLEARFIELD aforo3
+		CLEARFIELD aforo
+		PROTFIELD aforo1
+		PROTFIELD aforo2
+		PROTFIELD aforo3
+		IF (post:adt_serv_calc_rv == "S") THEN
+			//extraigo las medidas de la caja normalizada
+			post:adt_tipocaja_caja = adt_servcaja_caja
+			CLEARFIELD post:adt_tipocaja_L1
+			CLEARFIELD post:adt_tipocaja_L2
+			CLEARFIELD post:adt_tipocaja_L3
+			CALL CDSadt_tipocaja_load
+			IF (adt_tipocaja_L1.NUMCHARS == 0 || adt_tipocaja_L2.NUMCHARS == 0 || adt_tipocaja_L3.NUMCHARS == 0) THEN
+				MSGBOX "FALTA CARGAR PARAMETRIA EN SERVICIO CAJA PARA CALCULAR LA RELACION VOLUMETRICA",0x00,"ERROR"
+				RETURN -2
+			END IF
+			CLEARFIELD rel_vol
+			rel_vol_l1 = post:adt_tipocaja_L1
+			rel_vol_l2 = post:adt_tipocaja_L2
+			rel_vol_l3 = post:adt_tipocaja_L3		
+			//Calculo Relacion Volumetrica de la caja normalizada si la tiene
+			CALL MISCobt_rel_vol //loc_L1,loc_L2,loc_L3)
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		END IF
+	END IF
+	
+	//resetea el setvaldone del peso para que si se cambia el tipo de caja vuelva a tarifar
+	//para el peso con el destino nuevo
+	RESETVALDONE post:peso_admRPP_kgs
+
+END SUB
+
+/*******/

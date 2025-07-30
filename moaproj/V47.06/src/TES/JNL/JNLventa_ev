@@ -1,0 +1,158 @@
+/****o* Pendientes de agrupación/OFB:tes:JNLventa_ev
+* NOMBRE
+*   OFB:tes:JNLventa_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesJNL.h"
+
+SUB tes:JNLventa_ev
+
+	tes:importe_evaux = tes:adt_evaux_importe - post:promo_tot_EspVdas
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:tes:espv_cod \
+		FLD:tes:espv_subcod \
+		FLD:tes:adt_evaux_subcod \
+		FLD:tes:adt_evaux_cantidad \
+		FLD:tes:adt_evaux_importe \
+		FLD:tes:adt_evaux_prestran \
+		FLD:siaf:importe \
+		FLD:tes:importe_evaux \
+		FLD:siaf:cantidad \
+		FLD:tes:es_tesoro \
+		FLD:post:nro_impre \
+		FLD:tes:SubImporte \
+		FLD:post:PreDForFis
+        
+	/*post:percep_r212: Al reversar por fin de sesión no pasa por la PRES
+	entonces necesito journalizar este campo*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:adt_espv_valor \
+		FLD:post:NroCompPago \
+		FLD:post:NroCompPago2 \
+		FLD:post:ImporteIva \
+		FLD:post:ImporteSinIva \
+		FLD:post:ImporteConIva \
+		FLD:post:TasaIva \
+		FLD:tes:adt_espv_aliciva
+
+	/*Campos Necesarios Para el reverso de operaciones*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:ImporteConIvaNeto \
+		FLD:post:ImporteSinIvaNeto
+
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:post:promo_tot_EspVdas AS post:fld_promo_imp \
+		FLD:post:promo_aplica \
+		FLD:post:promo_desc_esvs AS post:promo_desc \
+		FLD:post:promo_cod_esvs AS post:promo_cod \
+		FLD:post:promo_inhibeUpEsvs AS post:promo_inhibeUp \
+		FLD:post:promoEsvsTipoBon AS post:promoTipoBon \
+		FLD:post:promo_bon_esvs AS post:promo_bon
+
+
+	/*Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	CDS APPEND DSC:tlr:CONjnl_write FLD:post:INDticket_laser
+	
+	// PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+	CALL post:JNLcamp_nota_credito
+	
+	CDS APPEND DSC:tlr:CONjnl_write FLD:post:TotalSinIva \
+		post:ImpServUP post:AliServUP
+	
+	CALL tes:CDSget_imp_TesEspV(common:sucursal_activa,"N",op:op_operator_id,tes:espv_cod, tes:espv_subcod,importe_evant)
+	
+	CDS APPEND DSC:tlr:CONjnl_write FLD:importe_evant
+	
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:cod_agrupacion \
+		FLD:post:secuencia_vta
+
+	/*MFM - Descuento Cliente Medio*/
+	//PS 6218 - Grabar el descuento por sesion en cada transaccion involucrada en el mismo
+	IF (post:ConvenioSesionV && tes:adt_espv_bonifCM == "S") THEN
+		//recupero el descuento para grabarselo a NINA
+		CALL post:CDSLoadDctoSesion
+		tes:adt_evaux_descCM = post:Dcto_CliMed
+	END IF
+
+	IF ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.NUMCHARS != 0 && \
+		post:bonificaCM == "S") THEN //no se para que se usa el campo Dcto_CMPres,
+		//siempre sale por el else de esta condicion ya que dicho cmapo no esta nunca seteado
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:Dcto_CMPres AS post:Dcto_CliMed
+	ELSE
+		IF ((post:OperacionCob || post:OperacionAut) && post:bonificaCM == "S") THEN
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:Dcto_CliMed
+		ELSE
+			CDS APPEND DSC:tlr:CONjnl_write \
+				FLD:tes:adt_evaux_descCM AS post:Dcto_CliMed
+		END IF
+	END IF	
+    
+	CDS APPEND DSC:tlr:CONjnl_write \
+		FLD:tes:adt_espv_bonifCM AS post:bonificaCM
+	
+	IF (post:ConvenioSesionV) THEN
+		//lo borro para que no se me grabe luego el campo PreDNroTrn!
+		CLEARFIELD post:Dcto_CliMed
+		CLEARFIELD tes:adt_evaux_descCM
+	END IF
+ 
+	IF ((post:OperacionCob || post:OperacionAut ) && post:Dcto_CliMed > 0) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:PreDNroTrnAsoc
+	ELSE
+		IF (tes:adt_evaux_descCM > 0) THEN
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:PreDNroTrnCM AS post:PreDNroTrnAsoc	 //para que nina pueda asociarla al descuento
+		ELSE
+			CLEARFIELD post:PreDNroTrnAsoc
+			CDS APPEND DSC:tlr:CONjnl_write \
+				post:PreDNroTrnAsoc
+		END IF
+	END IF
+	
+	//Tratamiento Cliente Medio
+	IF (post:cli_tipo == CLIMED && !post:ConvenioSesionV) THEN
+		CALL tes:MISCupdate_DctoCM
+	END IF
+
+	/* Dejo grabado el nro de comprobante que lo generó */
+	CDS APPEND DSC:tlr:CONjnl_write \
+	 	post:remito_nro
+	
+	CALL post:MISCdesglosa_puni(tes:adt_espv_valor, post:AliServUP,1)
+	CALL post:MISCcampos_reporte(post:ImpSinIvaAux,siaf:cantidad,post:ImporteSinIva,NO_TARIFA)
+	CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:post:LISTreporte,0)
+    
+	;SC50170 - Propuesta superadora
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:dif_calculada \
+		post:cod_dif_aplicada \
+		tes:adt_evaux_prestran AS tes:adt_evaux_seq_aux
+	
+	CDS APPEND  DSC:tlr:CONjnl_write \
+		post:NIS_Imposicion			
+	
+	//gpb:NI50479	
+	//Journalizo post:es_PED y post:DocFisPed
+	CALL post:JNLes_PED
+ 
+END SUB
+
+/*******/

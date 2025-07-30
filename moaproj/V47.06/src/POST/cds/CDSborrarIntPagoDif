@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:post:CDSborrarIntPagoDif
+* NOMBRE
+*   OFB:post:CDSborrarIntPagoDif
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSborrarIntPagoDif
+local Imp_aux like siaf:importe
+local Mone_aux like siaf:moneda
+local estado like post:estado_presu //para reingenieria
+
+	call  csr:cleararray(fliatran_vec)
+	call  csr:cleararray(impciva_vec)
+	call  csr:cleararray(impsiva_vec)
+
+	/*Cargo los datos de la transacción*/
+	siaf:codigo_siaf = 99160
+	siaf:moneda = "99"
+	let siaf:adt_tran_codigo = siaf:codigo_siaf
+	call siaf:CDSadt_tran_load
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+			
+	/*Esta rutina resta de los impuestos en donde impactó la transacción de Intereses y luego
+	elimina la misma de la PresuDet - Gabriel Falciola*/	
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+	WHERE post:fecha == common:system_date && \
+	post:op_operator_id == op:op_operator_id && \
+	post:PresNro == post:PresNro && siaf:codigo_siaf == 99160
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:CONPresuDeta ALL
+		CDS ENDSELECT DSC:CONPresuDeta
+		/*Lo resguardo porque se pierde*/
+		Imp_aux = siaf:importe
+		Mone_aux = siaf:moneda
+	
+		/******************PARA REINGENIERIA******************************
+		signo = siaf:adt_tran_afec_efvo //para reingenieria
+		siaf:adt_tran_afec_efvo = "-"  //para reingenieria
+		//Actualizo la Tabla PresuPag - Gabriel Falciola
+		//CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,siaf:importe,0) //para reingenieria
+		siaf:adt_tran_afec_efvo = signo //para reingenieria
+		/******************PARA REINGENIERIA*******************************/
+		
+		/*Actualizo la Tabla PresuPag - Gabriel Falciola*/
+		estado = post:estado_presu
+		post:estado_presu = 3
+		CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,0,siaf:importe)
+		post:estado_presu = estado 
+		/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+		call post:MISCborrarAuxIngBr
+
+		Call MISClimpia_presudet
+		call MISCborrarIva
+		estado = post:estado_presu
+		post:estado_presu = 3 //para que me actualice bien la presupag!!!!
+		call MISCagregTrnPrec
+		post:estado_presu = estado 
+		CALL MISCobt_med_pag_pres /* Regenerar tabla de Medios de Pago*/
+		CALL MISCAgregaTrnImpre(PresNro)
+
+		// PJM 21-07-1998 pedido por marcelo agregado para que pida el importe a pagar
+		// efectivo pesos y dolares
+		// pesos
+		Call post:MISCcalc_dol_pesos
+		// Esto fue Agreagado para la pantalla que lleva el Estado de la Sesio
+		// PJM 27-05-1998
+		// Resto 1 en el Contador de Transacciones
+		Cuenta_Postal = Cuenta_Postal - 1
+
+		/*Se Actualiza el Total del Importe*/
+		call post:CDSTotSesionPag
+		
+		
+	    INIT 22,1 //cgw:SC 50170 (Redondea al pasar campo post:importe de 4 dec a otro de 2 dec.)
+		Total_importe = post:importe
+
+		/*Dependiendo del signo del importe, seteo un título u otro - Gabriel Falciola*/
+		if (post:importe >= 0)
+			post:Paga_o_Cobra = "TOTAL A COBRAR:"
+			post:importe_display = post:importe
+		else
+			post:Paga_o_Cobra = " TOTAL A PAGAR:"
+			post:importe_display = post:importe * -1
+		end if		
+	    INIT 22,0
+		
+		refresh post:importe_display
+		refresh post:Paga_o_Cobra
+
+		//para que el campo Diferencia de la pantalla de Confirma Sesión se actualice
+		call post:FVALimp_dif_pesos
+		
+		// Rutina de Captura de Medio de Pago Pjm
+		Call MISCagregoCapturaMed
+
+		CLEARFIELD jnl_interes_diferido
+		CLEARFIELD iva_Porcentaje
+		Call post:CDSadt_presuact_save
+
+  	 	
+		/*Una vez que actualicé todo borro el registro de la PresuDet*/
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+		WHERE post:fecha == common:system_date && \
+		post:op_operator_id == op:op_operator_id && \
+		post:PresNro == post:PresNro && siaf:codigo_siaf == 99160
+		CDS FINDFIRST DSC:CONPresuDeta LOCK
+		IF (CDSRETVAL == 0) THEN
+			CDS DELETE DSC:CONPresuDeta
+		END IF
+		CDS UNLOCK DSC:CONPresuDeta		
+		
+		/*Borro los datos de la Presu*/
+		//Limpio de la Presu estos montos
+		CLEARFIELD post:monto_chk_dif
+		CLEARFIELD post:monto_impuestos
+		CLEARFIELD post:monto_vta_neta
+		CLEARFIELD post:imp_afecta_saldo
+		CLEARFIELD post:monto_bonif
+		CLEARFIELD post:monto_bruto
+		CLEARFIELD post:monto_int
+		call CDSGraboImp_Presu
+	END IF
+
+	CDS ENDSELECT DSC:CONPresuDeta
+END SUB
+
+/*******/

@@ -1,0 +1,184 @@
+/***** Pendientes de agrupación/OFB:giros:SVAL70610
+* NOMBRE
+*   OFB:giros:SVAL70610
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+
+SUB giros:SVAL70610
+    post:tablaCli = "CliOca"
+    post:contextoCli = "CliOca_ctx"
+    
+    CALL post:CDSverif_existe_cli2
+   
+    if (retval == 0)
+        if (post:CloRazon.numchars > 0 && (post:es_juridica == "N")) then
+            MsgBox "El cliente es Persona Jurídica y no coincide con lo seleccionado",OFB_OK,"ERROR"
+            return -2
+        elseif (post:CloNombre.numchars > 0 && post:CloApellido.numchars > 0 && (post:es_juridica == "S")) then
+            MsgBox "El cliente es Persona Física y no coincide con lo seleccionado",OFB_OK,"ERROR"
+            return -2
+        end if
+        if (post:CloRazon != post:CliRazon && (post:es_juridica == "S")) then
+            if (post:CliRazon.numchars == 0) then
+                MsgBox "La Razon Social es obligatoria",OFB_OK,"ERROR"
+            else
+                MsgBox "La Razon Social no corresponde a este cliente",OFB_OK,"ERROR"
+            end if
+            return (-2)
+        else
+            if (post:CloNombre != post:CliNombre && post:CloApellido != post:CliApellido) then
+                if (post:CliRaz.numchars == 0) then
+                    MsgBox "El nombre y el apellido son obligatorios",OFB_OK,"ERROR"
+                else
+                    MsgBox "El nombre y/o el apellido no se corresponde con lo registrado",OFB_OK,"ERROR"
+                end if
+                return (-2)    
+            end if
+        end if
+    else
+        MsgBox "Cliente Inexistente, Debe Darle de Alta",OFB_OK,"ERROR"
+        return (-2)
+    end if
+
+    if (post:es_juridica == "N")
+        fprint post:CliRaz "%s %s", post:CloNombre, post:CloApellido
+    else
+        let post:CliRaz = post:CliRazon
+    end if
+    	        
+	setflag giros:giros_masivos,proc_gir_masivos	
+    
+    if ( post:estado_presu == 2)
+        ;caida
+        return 0
+    end if
+    
+	//Seteo todos los valores necesarios para generar la tx 99021
+	siaf:nombre_transac.HIGHLITE = 0
+   	siaf:codigo_siaf = 99021
+   	siaf:restr_otra_casa     = "N"
+   	siaf:linea_validacion    = "S"
+   	siaf:exhibe_pantalla     = "S"
+   	siaf:imprime_comprobante = "N"
+	
+   	// VER ESTO /* Inicializo en Cero los Dos Campos de la Tabla Presu */
+  	post:PresEst    = 0
+  	post:PreDNroTrn = 0
+
+	//ojo
+    call siaf:PRESfecha_hora
+    if (retval < 0) then
+    	return -2
+    endif
+    
+
+	dupfield post:CliRaz
+	swapdup  post:CliRaz
+    
+    dupfield post:CliRazon
+	swapdup  post:CliRazon
+	
+	dupfield post:CliNombre
+	swapdup  post:CliNombre
+	
+	dupfield post:CliApellido
+	swapdup  post:CliApellido
+    
+	call post:CDSgm_clioca_upd
+	call giros:MISCobtener_id_cli
+
+    if (post:CatGCod == "X")
+    	setflag  post:categ_cli_flags,categ_gan
+    else
+    	resetflag post:categ_cli_flags,categ_gan
+    end if
+    if (post:CatECod == "X")
+    	setflag post:categ_cli_flags,categ_emp
+    else
+    	resetflag post:categ_cli_flags,categ_emp
+    end if
+
+    call post:CDSdelete_AuxIva  
+    call post:CDSdelete_AuxImpp 
+    call post:CDSTotalTransac_del 
+    call post:CDSborro_PresuPag  
+    call post:CDSdelete_TotMedPag
+
+    post:PresNro_ttran = 0
+	post:cli_tipo = 2
+
+	let post:CliFranqueo = "N"
+
+	let post:adt_TipoDoc_tipo  = post:CloTipDoc
+	call post:CDSadt_TipoDoc_load
+
+	call post:CDSadt_clocuit_load
+	call post:MISCidentif_cli_refr
+
+
+    // post:CloProvin = substr(common:sucursal_activa,0,1)
+    CALL post:CDSadt_cloprov_load
+
+    post:CloSSFranq  = "N"
+    post:CliFranqueo = "N"
+    post:CloSucAlt = common:sucursal_activa
+    post:CloFecAct = common:system_date
+
+	call post:FVALIvaCod
+
+
+	/* Limpia la Tabla Auxiliar de Especies Valorizadas */
+   	call tes:CDSsesAuxEspV_clear
+	CALL post:CDSdelAll_AuxIngBr
+	CALL post:CDSdelAll_AuxIvaUP
+	CALL post:CDSdel_presup_sincob
+	/*Borra de PresuPag los presup. sin cobrar*/
+
+   	let post:estado_presu = 2
+   	if (post:cli_tipo == 2) // || post:cli_tipo == CLIUP || post:cli_tipo == CLIMED)  //minorista o cliente up o cliente medio
+       	CALL post:CDSadt_ivacod_load  //busca en tabla CatIva
+       	post:percep_r212 = post:adt_cativa_perc
+       	post:PresGrupoIva = post:adt_cativa_grupo
+   	else
+       	post:percep_r212 = "N"
+   	end if
+
+   	call post:CDSobtiene_secuen("PRESU")
+   	post:PresNro = post:adt_codseq_nro
+   	call post:CDSadt_presuact_save
+
+   	/* Grabo los Datos del Presupuesto PJM */
+   	post:PresEst = 1
+	post:tipo_giro_presu = "GM"
+   	call post:CDSadt_presu_save
+    
+    ; Grabo la ocupación por si se cae el sistema.
+    call post:CDSupd_presu_ocupac
+    
+    call post:MISCBot_estado_presu
+
+   	tlr:INDdcol_scrn[0] = SCR:post:SCRNidentifica_cli
+   	drv:INDscr = SCR:post:SCRNidentifica_cli
+	post:CloLoc = giros:LocEmisGm_WU
+   	clearField siaf:moneda
+
+	giros:gm_tran_modpresu = siaf:adt_tran_modpresu
+
+END SUB
+
+/*******/
+

@@ -1,0 +1,92 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBenvio_caidas_cup
+* NOMBRE
+*   OFB:post:OFBenvio_caidas_cup
+* DESCRIPCION
+*   Rutina que envia mensaje al switch para recuperar caida en vuelo de un Cupon CCT
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBcaidas_cupon
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBenvio_caidas_cup
+
+	local window_node      like common:window_node
+	
+	hcomm:INDhost_sndrt = OFB:post:SENDCupones
+	hcomm:INDhost_rcvrt = OFB:post:RCVECupones
+	setflag tlr:controla_firma,cancelacion
+	setflag tlr:controla_marca,cancel
+	
+	call post:MISCarma_cupon 
+	
+	clearfield siaf:tran_retval
+	window_node = common:window_node
+   	;common:window_node = op:op_node_id
+	common:window_node = post:adt_cupon_node
+
+	call  hcomm:COMM_stat_init
+
+	fprint siaf:nota_1,\
+	"Recuperacion Caida en vuelo - FECHA: %e HORA: %e STAN: %s PCODE: %s",giros:dia_viaje,giros:hora_viaje,\
+	post:adt_codseq_nro,giros:codigo_procesamiento
+	call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")
+
+	call hcomm:COMM_host_tran
+
+	resetflag tlr:controla_firma,cancelacion
+	resetflag tlr:controla_marca,cancel
+	common:window_node = window_node
+
+	if (siaf:tran_retval == TRAN_CAIDA_VUELO )
+		clearfield siaf:tran_retval
+		CDS UNLOCK "jnl_caidas_cup_ctx"
+		CDS ENDSELECT "jnl_caidas_cup_ctx"
+		fprint siaf:nota_1,"%s","No se pudo recuperar caida en vuelo ... "
+		call batch:OFBlog_batch(siaf:nota_1,0,"N","S","INFO","N")			
+		return TRAN_CAIDA_VUELO
+	end if
+
+	CDS CLEARBUFFER "jnl_caidas_cup_ctx"
+	CDS APPEND "jnl_caidas_cup_ctx" \
+		giros:CodRespuesta_comm \
+		hcomm:tran_status as tlr:jnl_status
+
+	CDS UPDATE "jnl_caidas_cup_ctx" LOCK
+
+	if (hcomm:tran_status == HOST_ACCEPTED )
+		fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_ACCEPTED
+		fprint common:csr_string "\nRecuperacion de Caida satisfactoria. CodRespuesta = %e. Hora: %e ",\
+		giros:CodRespuesta_comm,common:time_of_day
+		call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")
+	else
+		if (hcomm:tran_status == HOST_REJECTED )
+			fprint hcomm:tran_status,"%.*d",hcomm:tran_status.LENGTH,HOST_REJECTED
+			
+			/*por alguna razon la recuperacion de caida en vuelo no se pudo hacer (por un rechazorechazo)
+			entonces se actualiza el status de la jnl_caidas_cup = 100 y como de esta rutina, sale con retval = 0
+			actualiza la cupon con 001 y vuelve a mandar el mensaje por lo que se duplica el cupon
+			Para evitar esta duplicacion se retonra -2 en lugar de 0 asi no se graba un nuevo cupon */
+				
+			return -2 //para diferenciarlo de la TRAN_CAIDA_VUELO
+			
+		else
+			if (hcomm:tran_status > HOST_REJECTED )
+				fprint common:csr_string "\nRecuperacion de Caida con Caida en Vuelo. Hora: %e ",\
+				common:time_of_day
+				call batch:MISCgeneraLog(common:csr_string,"AMBOS","N")	
+			end if
+		end if
+	end if
+
+END SUB
+
+/*******/

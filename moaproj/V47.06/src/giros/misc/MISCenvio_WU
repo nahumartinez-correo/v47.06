@@ -1,0 +1,89 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCenvio_WU
+* NOMBRE
+*   OFB:giros:MISCenvio_WU
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+sub giros:MISCenvio_WU
+    local enSesion_aux like post:enSesion
+
+    IF (consulta == 1) THEN
+	call giros:OFBcons_simple_WU
+	if (retval == 2) then /* consulta OK */
+	    //
+	    if (post:estado_presu == 1) then
+		call MISCnivel_caja
+		if (retval < 0) then
+		    return (-2)
+		end if
+	    end if
+    	    consulta = 0
+    	    if (siaf:codigo_siaf == 70396) then
+		protfield SucSel_fld
+		protfield CodSucEmis_fld
+	    endif
+    	    return (1)
+    	else
+    	    if (retval == -2) then /* consulta rechazada */
+    		return (-2)
+    	    elseif (retval == 1) then /* repetir consulta */
+    		    consulta = 1
+    		    return (2)
+	    end if
+    	end if
+    ELSE
+	if (post:estado_presu != 4) then
+	    msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+	    if (retval == 6) then
+	   	if (siaf:codigo_siaf != 70392) && (perfil == 1) then	/* En el pago no se pide supervisor */
+		    call giros:MISCnivel_sup
+		    IF (retval < 0) THEN
+			return (2)
+		    END IF
+		end if
+		if (post:estado_presu != 1) then
+		    return (0)
+		endif
+	    else
+	   	return (2)
+	    end if
+	endif
+	clave_hdr_giros = 0
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje = common:system_date
+	call post:CDSobtiene_secuen("STAN")
+	siaf:siaf_status = HOST_ACCEPTED
+	post:ctrol_ult_tt = "S"
+
+	// SBA 04.02.2002 - parece que hay veces que el campo post:enSesion queda sucio
+	// y esto hace que el Pago quede journalizado con tlr:jnl_status = 002 (MEMO)
+	enSesion_aux = post:enSesion
+	clearfield post:enSesion
+
+        if (post:estado_presu == 1 && siaf:codigo_siaf != 70392) then
+	    //cgw: En teclas rapidas, arma PresuDet para las sesiones con posventas de giros.
+	    //     No tiene en cuenta pago Transferencia Nacional.
+	    Call post:MISCgrabo_PresuDet_g
+	end if
+
+	call tlr:JNLtran
+	// restauro la variable post:enSesion
+    	post:enSesion = enSesion_aux
+	post:ctrol_ult_tt = ""
+    END IF
+end sub
+
+/*******/

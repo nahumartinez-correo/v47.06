@@ -1,0 +1,152 @@
+/****o* Pendientes de agrupación/OFB:post:PRT_ConsumoAnticipo
+* NOMBRE
+*   OFB:post:PRT_ConsumoAnticipo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:PRT_Factura
+*   post:PRT_Ticket_Jou
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_ConsumoAnticipo(LIMP, Importe_Acumulado, Tipo_Impresion, Relleno)
+	LOCAL l_err_retval LIKE lib:err_retval
+	LOCAL l_tipo_impresion LIKE siaf:i
+	LOCAL l_cont LIKE siaf:i
+	LOCAL l_cadena LIKE common:csr_string
+	LOCAL l_acum LIKE siaf:i
+	LOCAL l_longitud LIKE siaf:i
+	LOCAL l_id_rec LIKE post:adt_adelcm_id
+	LOCAL l_consumo LIKE post:adt_adelcm_consumo
+
+	l_cont = 0
+	l_cadena = 0
+	l_tipo_impresion = Tipo_Impresion
+	
+	CALL post:CDSselConsumoAdelCM
+	LET l_err_retval = RETVAL
+	IF (l_err_retval != 0) THEN
+		;No encontro consumo de anticipo
+		RETURN -2
+	END IF
+	
+	CALL PRTcortePagina(LIMP, Importe_Acumulado, PAGE_FACTURA, Tipo_Impresion)
+	LIMP = RETVAL
+
+	IF (DocFiscal == "TICKET") THEN
+		FPRINT common:csr_string, "Apli.de Ade."
+		l_longitud = 39
+	ELSE
+		//gpb:AUT-2491
+		//FPRINT common:csr_string, "Aplicación de Adelanto"
+		FPRINT common:csr_string, "Aplicaci\xA2n de Adelanto"
+		//l_longitud = 80
+		l_longitud = 49
+	END IF
+	
+	CALL post:MISCprt2laser(common:csr_string)
+	CALL post:MISCprt2laser(LINEANUEVA)
+	LIMP = LIMP + 1
+	
+	CALL PRTcortePagina(LIMP, Importe_Acumulado, PAGE_FACTURA, Tipo_Impresion)
+	LIMP = RETVAL
+	common:csr_string = ""
+	;extraigo el nro del recibo
+	IF (l_err_retval == 0) THEN
+		CDS FINDAGAIN DSC:AdelCM_ctx NOLOCK
+		CDS EXTRACT DSC:AdelCM_ctx post:adt_adelcm_id
+	END IF
+    
+	WHILE (l_err_retval == 0)
+		CDS EXTRACT DSC:AdelCM_ctx post:adt_adelcm_consumo INTO l_consumo post:adt_adelcm_id INTO l_id_rec
+		IF (post:adt_adelcm_id == l_id_rec) THEN
+			post:adt_adelcm_consumo = post:adt_adelcm_consumo + l_consumo
+		ELSE
+			//FPRINT l_cadena "%-s: $%e",post:adt_adelcm_id, post:adt_adelcm_consumo
+			FPRINT l_cadena "%-s: $%e\n",post:adt_adelcm_id, post:adt_adelcm_consumo
+			post:adt_adelcm_id = l_id_rec
+			CLEARFIELD post:adt_adelcm_consumo
+			post:adt_adelcm_consumo = post:adt_adelcm_consumo + l_consumo    		
+			l_acum = l_acum + l_cadena.NUMCHARS
+			IF (l_cont == 0) THEN
+				FPRINT common:csr_string "%-s", l_cadena
+				l_cont = l_cont + 1		
+			ELSE
+				IF (Relleno == 1) THEN
+					CALL post:MISCprt2laser(common:csr_string)
+				//	CALL post:MISCprt2laser(LINEANUEVA)
+					LIMP = LIMP + 1
+					FPRINT common:csr_string "%-s", l_cadena
+					l_acum = common:csr_string.NUMCHARS			
+				ELSE
+					IF (l_acum > l_longitud) THEN
+						CALL post:MISCprt2laser(common:csr_string)
+					//	CALL post:MISCprt2laser(LINEANUEVA)
+						LIMP = LIMP + 1
+						FPRINT common:csr_string "%-s", l_cadena
+						l_acum = common:csr_string.NUMCHARS
+					ELSE
+						FPRINT common:csr_string "%-s - %-s",common:csr_string, l_cadena
+					END IF
+				END IF 
+			END IF
+		END IF
+		CDS FINDNEXT DSC:AdelCM_ctx NOLOCK
+		LET l_err_retval = CDSRETVAL
+	END WHILE
+    
+	//FPRINT l_cadena "%-s: $%e",post:adt_adelcm_id, post:adt_adelcm_consumo
+	FPRINT l_cadena "%-s: $%e\n",post:adt_adelcm_id, post:adt_adelcm_consumo
+	post:adt_adelcm_id = l_id_rec
+	CLEARFIELD post:adt_adelcm_consumo
+	post:adt_adelcm_consumo = post:adt_adelcm_consumo + l_consumo    		
+	l_acum = l_acum + l_cadena.NUMCHARS
+    
+	IF (l_cont == 0) THEN
+		FPRINT common:csr_string "%-s", l_cadena
+		l_cont = l_cont + 1 		
+	ELSE
+		//tira auditora
+		IF (Relleno == 1) THEN
+			CALL post:MISCprt2laser(common:csr_string)
+			//CALL post:MISCprt2laser(LINEANUEVA)
+			LIMP = LIMP + 1
+			FPRINT common:csr_string "%-s", l_cadena
+			l_acum = common:csr_string.NUMCHARS
+		ELSE
+			IF (l_acum > l_longitud) THEN
+				CALL post:MISCprt2laser(common:csr_string)
+				//CALL post:MISCprt2laser(LINEANUEVA)
+				LIMP = LIMP + 1
+				FPRINT common:csr_string "%-s", l_cadena
+				l_acum = common:csr_string.NUMCHARS
+			ELSE
+				FPRINT common:csr_string "%-s - %-s",common:csr_string, l_cadena
+			END IF
+		END IF
+	END IF
+    
+	IF (l_acum > 0) THEN
+		CALL post:MISCprt2laser(common:csr_string)
+		//CALL post:MISCprt2laser(LINEANUEVA)
+		LIMP = LIMP + 1
+	END IF
+	CDS ENDSELECT DSC:AdelCM_ctx
+	//borro para que no queden sucios
+	CLEARFIELD post:adt_adelcm_id
+	CLEARFIELD post:adt_adelcm_consumo
+	CALL post:MISCprt2laser(LINEANUEVA)
+	RETURN (LIMP)
+END SUB
+
+
+/*******/

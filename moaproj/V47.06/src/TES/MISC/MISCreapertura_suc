@@ -1,0 +1,81 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCreapertura_suc
+* NOMBRE
+*   OFB:tes:MISCreapertura_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCreapertura_suc
+	
+	/*MLD Consulto en la tabla de operadores, se puede cambiar al responsable del fondo y 
+	el receptor no haber salido del sistema teniendo la variable op:op_subtesoro desactualizada */
+	call op:CDSop_subteso
+
+	/* MLD 21-01-2002 Solo Jefe de Oficina y tesorero pueden abrir */
+	/* MLD 08/07/2003 El operador que maneja el fondo también*/	
+	if (op:op_tesoro != "S" && op:op_sup_auth != "X" && op:op_subtesoro != "S") then
+    	errmsg common:errmsg_list "No Tiene Perfil para Abrir la Sucursal"
+    	return (-2)
+   	end if 
+ 
+	call csr:date_compare(tes:suc_fecha,common:system_date)
+	let lib:err_retval = retval
+	select (lib:err_retval)
+	    case 0
+		if (tes:suc_marca_cierre == "X") then
+		        /* Chequeo que el dia no haya sido cerrado */
+		        call siaf:CDSadt_sucur_load
+		        if (retval < 0) then
+		            errmsg common:errmsg_list, "Error al leer Tabla de Sucursal Activa"
+                            return (-2)
+                        end if
+                        if (post:adt_sucur_dia_dump == common:system_date && siaf:adt_sucur_cierre_dia == "S") then
+                                errmsg common:errmsg_list "Dia Cerrado: No Podra reabrir la Sucursal"
+                                return (-2)
+                        end if
+			move "La Sucursal Ya Fue Cerrada. Desea Reabrirla?" to \
+			     common:csr_string
+			msgbox FLD:common:csr_string,OFB_YESNO,"Aviso"
+			if (retval == 7) then
+				return (-2)
+			end if
+			call MISCopenday_ovr_req
+			if (retval < 0) then
+				return (-2)
+			end if
+			siaf:nombre_transac = "REAPERTURA DE DIA DE SUCURSAL"
+			tlr:tran_mnemonic = "REOPENSU"
+			drv:descrip = "REOPENSU"
+
+		else
+			/* el dia esta abierto (caso pase de marca de tesoro) */
+			LASTKEY = RT_SEND //saltea ctrl. siaf:MISCcheck_bus_date
+			return (-2)
+
+		end if
+		break
+	    case 2
+		if (tes:suc_marca_cierre != "X") then
+			let common:csr_string = "El Dia Anterior No Fue Cerrado"
+			errmsg common:errmsg_list,FLD:common:csr_string
+			let common:csr_string = "Debe Realizarse Cierre Forzado"
+			msgbox FLD:common:csr_string,OFB_OK,"Aviso"
+			return (-2)
+		end if
+		break
+	end select
+END SUB
+
+/*******/

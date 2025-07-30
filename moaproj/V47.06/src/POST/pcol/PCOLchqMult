@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:post:PCOLchqMult
+* NOMBRE
+*   OFB:post:PCOLchqMult
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOLchqMult
+
+Local imp_acum like giros:Giros_fld
+
+	/*unprotfield giros:Giros_fld
+	giros:Giros_fld = importe_origen*/
+	clearfield giros:Giros_fld
+	
+	if (plataf:current_state != BUDGET_STARTED) then 
+		giros:Giros_fld   =  ImporteMedioPago[1]
+		giros:Cheques_fld =  importe_display2
+	else		
+		//PS 7687 - Se calcula el importe total a financiar
+		
+		CDS SELECT FROM DSC:TABexcep_diferido BECOMES DSC:CONexcep_diferido \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		((post:excep_dif_total == 0 && post:excep_dif_total_hta == 0) || (post:excep_dif_total <= post:importe_display2 && post:excep_dif_total_hta >= post:importe_display2)) && \
+		post:excep_dif_usado != "S"
+		
+		CDS FINDFIRST DSC:CONexcep_diferido NOLOCK
+		
+		DO
+			IF (CDSRETVAL != 0) THEN
+				BREAK
+			END IF
+			CDS EXTRACT DSC:CONexcep_diferido excep_dif_hasta
+			//acumulo los porcentajes de financiacion
+			init 22,1
+			imp_acum = (importe_display2 * excep_dif_hasta) / 100
+			init 22,0
+			giros:Giros_fld = giros:Giros_fld + imp_acum
+			
+			CDS FINDNEXT DSC:CONexcep_diferido NOLOCK
+		LOOP
+		
+		CDS ENDSELECT DSC:CONexcep_diferido
+	end if
+	
+	refresh giros:Giros_fld
+	PROTFIELD giros:Giros_fld 
+	
+	call ABMchqMultClear
+	call ABMchqMultRefresh
+    protfield siaf:moneda
+	protfield DescripMedPag
+	
+	; Reutilizo rutina modificada por Florencia K. para
+	; que no traiga problemas a la hora del mantenimiento.
+	call post:MISChabilito_campos 
+	
+	if (plataf:current_state == BUDGET_STARTED) then 
+		UNPROTFIELD sucursal
+		UNPROTFIELD cod_banco
+		UNPROTFIELD cuenta
+		UNPROTFIELD nro_cheque	
+		UNPROTFIELD importeChqMult
+		ENABLECONTROL CHK1
+		PROTFIELD   imp_intereses 
+		UNPROTFIELD fec_e
+		UNPROTFIELD fec_d
+		UNPROTFIELD tes:clearing
+		drv:button = 8
+		call drv:but_enable
+		drv:button = 9
+		call drv:but_enable
+		drv:button = 10
+		call drv:but_disable
+		drv:button = 11
+		call drv:but_disable
+		drv:button = 13
+		call drv:but_enable
+	else
+		CLEARFIELD cod_banco
+		CLEARFIELD cuenta
+		CLEARFIELD nro_cheque
+		CLEARFIELD importeChqMult
+		CLEARFIELD fec_e
+		CLEARFIELD fec_d
+		CLEARFIELD tes:clearing
+		call ABMchqMultRefresh
+		PROTFIELD post:sucursal
+		PROTFIELD cod_banco
+		PROTFIELD cuenta
+		PROTFIELD nro_cheque
+		if (giros:Giros_fld == giros:Cheques_fld) then
+			PROTFIELD importeChqMult	
+		else
+			UNPROTFIELD importeChqMult
+		end if
+		DISABLECONTROL CHK1
+		PROTFIELD imp_intereses
+		PROTFIELD fec_e
+		PROTFIELD fec_d
+		PROTFIELD tes:clearing
+		drv:button = 10
+		call drv:but_enable
+		drv:button = 13
+		call drv:but_disable
+	end if
+	
+	if (plataf:current_state != BUDGET_STARTED) then
+		if (giros:Giros_fld  <	giros:Cheques_fld ) then
+			PROTFIELD importeChqMult
+			msgbox "El Total en Cheques no puede ser menor al Total Cargado",0x00,"AVISO"
+		end if
+	end if 	
+	
+END SUB
+
+/*******/

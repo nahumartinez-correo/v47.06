@@ -1,0 +1,107 @@
+/****o* Reportes/OFB:post:MISCirregu_def_suc
+* NOMBRE
+*   OFB:post:MISCirregu_def_suc
+* DESCRIPCION
+*   Reporte Irregularidades - Deficit al cierre por Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No existe ninguna irregularidad en el periodo seleccionado.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TOTSirregula
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirregu_def_suc  /*Deficit al cierre*/
+	/*Por sucursal*/
+    LOCAL oper_irre LIKE tlr:jnl_operator
+    LOCAL loc_modif LIKE post:cant_barras
+
+	loc_modif = 0
+	oper_irre = -1
+
+	//cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+    CDS FINDAGAIN DSC:tlr:CONjscn NOLOCK
+
+    While (cdsretval == 0)    
+	    cds extract DSC:tlr:CONjscn \
+	    siaf:jnl_codigo_siaf \
+	    tlr:jnl_operator \
+		siaf:motivo siaf:adt_mot_desc_tmp
+		
+        IF (oper_irre != tlr:jnl_operator) THEN
+            oper_irre = tlr:jnl_operator
+            //cgw:NI50276 - Imprime Operador.
+            post:operator_irre = oper_irre
+            CALL post:MISCencab_oper_irre
+        END IF
+
+        IF (siaf:jnl_codigo_siaf == "8517") THEN
+
+        	//cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+            CDS FINDAGAIN DSC:tlr:CONjscn NOLOCK
+        	        	
+            /* format scan display for journal record */
+	        CALL OFB:MISCjscn_cvt_flag
+	        CALL OFB:tlr:jscn_cvt_status
+	        CALL OFB:JSCNcustom_format
+            /* print scan display for journal record */
+
+	        FPRINT common:csr_string \
+	        " %s ", tlr:jscn_ds_line1
+	        CALL MISCwrite_irre
+
+	        FPRINT common:csr_string \
+	        " %s ", tlr:jscn_ds_line2
+	        CALL MISCwrite_irre
+	        loc_modif = 1
+        END IF
+        
+        IF (siaf:jnl_codigo_siaf == "8690" && (siaf:motivo == "FCAJN" || siaf:motivo == "FTESN")) THEN
+
+        	//cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+            CDS FINDAGAIN DSC:tlr:CONjscn NOLOCK
+
+            /* format scan display for journal record */
+	        CALL OFB:MISCjscn_cvt_flag
+	        CALL OFB:tlr:jscn_cvt_status
+	        CALL OFB:JSCNcustom_format
+            /* print scan display for journal record */
+
+	        FPRINT common:csr_string " %s ", tlr:jscn_ds_line1
+	        CALL MISCwrite_irre
+			FPRINT common:csr_string "                                                      %s ", siaf:adt_mot_desc_tmp
+			CALL MISCwrite_irre
+	        FPRINT common:csr_string " %s ", tlr:jscn_ds_line2
+	        CALL MISCwrite_irre
+	        loc_modif = 1
+        END IF
+	    CDS FINDNEXT DSC:tlr:CONjscn NOLOCK
+    End While
+
+    IF (loc_modif == 0)
+        if (siaf:pantalla_impreso == "I") THEN
+        	//cgw: NI50276 - Por si son varios los operadores logueados sin irregularidades, y se imprime 
+        	//que no existe de ninguna irregularidad, como primera linea de detalle de la siguiente pagina.
+        	clearfield post:operator_irre 
+
+            //cgw:NI50276 - Imprime que no existen irregularidades en el periodo seleccionado.       	
+        	CALL post:MISCwrite_sin_irregu
+
+	        CALL post:MISCimprime_irregu
+	    else
+	        MSGBOX "NO EXISTE NINGUNA IRREGULARIDAD EN EL PERIODO SELECCIONADO",0x00000000,"Error"
+	    end if	    
+	    RETURN (-2)
+    End if
+
+    CALL post:MISCimprime_irregu
+
+END SUB
+
+/*******/

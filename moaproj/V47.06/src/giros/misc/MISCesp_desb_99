@@ -1,0 +1,97 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCesp_desb_99
+* NOMBRE
+*   OFB:giros:MISCesp_desb_99
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCesp_desb_99
+	/*Para el tiempo que va a tener que esperar el operador si intenta recuperar una caída
+	que esta siendo recuperada por el rt batch*/
+    LOCAL varl_cdsretval LIKE lib:err_retval
+    LOCAL tiempo_transcurrido LIKE NroGiro_fld
+    local varl_timediff	like siaf:hora
+	local LostOnTheFly like siaf:siaf_status
+
+    FYIMSG drv:fyimsg_list,"Proceso de Recuperación de Transacciones con Caídas en Vuelo"
+    if (siaf:adt_tran_fliatran == "PF ") then
+		CDS SELECT FROM DSC:giros:jnl_caidas BECOMES DSC:giros:jnl_caidas_ctx \
+	    	WHERE	tlr:jnl_branch == op:op_branch_id  		&& \
+					tlr:jnl_operator == op:op_operator_id	&& \
+					tlr:jnl_date == common:system_date      && \
+					tlr:jnl_status == 99					&& \
+					siaf:adt_tran_fliatran == "PF "
+	else
+		CDS SELECT FROM DSC:giros:jnl_caidas BECOMES DSC:giros:jnl_caidas_ctx \
+	    	WHERE	tlr:jnl_branch == op:op_branch_id  		&& \
+					tlr:jnl_operator == op:op_operator_id	&& \
+					tlr:jnl_date == common:system_date      && \
+					tlr:jnl_status == 99					&& \
+					siaf:adt_tran_fliatran != "PF "
+	endif
+
+    CDS FINDFIRST DSC:giros:jnl_caidas_ctx NOLOCK
+    varl_cdsretval = CDSRETVAL
+    WHILE (varl_cdsretval == 0 || varl_cdsretval == -803) // si lo encuentra O si esta lockeado
+		IF (tiempo_transcurrido >= 15000) // 20 segundos
+			//Salio del While porque se paso del tiempo estipulado sin haber sido liberado el registro
+			LET lib:err_retval = -2
+			// FGB verifico el tiempo que hace que el RT esta tratando el registro...
+			CDS EXTRACT DSC:giros:jnl_caidas_ctx siaf:adt_jnlc_locktime
+			if (cdsretval == 0) then
+				call csr:f_time_subtract(common:system_date,common:time_of_day, \
+										 common:system_date,siaf:adt_jnlc_locktime, \
+										 varl_timediff)
+				// Si el registro fue tomado hace mas de 1/2 hora, lo libero para que lo recupere el mismo operador...
+				if (varl_timediff > FREE_LOCKED_REG_TIME) then
+					CDS FINDAGAIN DSC:jnl_caidas_ctx LOCK
+					CDS CLEARBUFFER DSC:jnl_caidas_ctx
+					let LostOnTheFly = 104
+					CDS APPEND DSC:jnl_caidas_ctx LostOnTheFly as tlr:jnl_status
+					CDS UPDATE DSC:jnl_caidas_ctx NOLOCK
+					if (cdsretval == 0) then
+						// sigo con el siguiente registro de la jnl_caidas...
+						CDS FINDNEXT DSC:giros:jnl_caidas_ctx NOLOCK
+						let lib:err_retval = 0
+					else
+						break // si no lo pudo actualizar... que corte (y no siga con la trx. actual...)
+					end if
+				else
+					break // si no lo pudo actualizar... que corte (y no siga con la trx. actual...)
+				end if
+			else
+				BREAK
+			end if
+		ELSE
+		    let lib:err_retval = 1
+			NAP 30
+			tiempo_transcurrido = 30 + tiempo_transcurrido
+		END IF
+        CDS FINDAGAIN DSC:giros:jnl_caidas_ctx NOLOCK
+        varl_cdsretval = CDSRETVAL
+        IF (varl_cdsretval == -801)
+            CDS FINDNEXT DSC:giros:jnl_caidas_ctx NOLOCK
+            varl_cdsretval = CDSRETVAL
+            tiempo_transcurrido = 0
+        END IF
+    END WHILE
+    IF (varl_cdsretval < 0)
+        lib:err_retval = 0
+    END IF
+    FYIMSG CLEAR
+	RETURN (lib:err_retval)
+END SUB
+
+/*******/

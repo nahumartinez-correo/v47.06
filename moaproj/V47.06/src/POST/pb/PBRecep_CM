@@ -1,0 +1,179 @@
+/****o* Pendientes de agrupación/OFB:post:PBRecep_CM
+* NOMBRE
+*   OFB:post:PBRecep_CM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBRecep_CM
+    LOCAL ret LIKE lib:err_retval
+	local cliente like CliUP
+	
+	call drv:but_number(OFB:post:PBRecep_CM)
+    if (retval >= 0) then
+    	drv:last_button = retval
+    end if
+
+	
+    drv:button = drv:last_button
+	call drv:but_down_disable
+    call drv:all_but_disable
+    CDS ENDSELECT DSC:CONCliMed
+	SELECT (post:Recep_CliTipo)
+		CASE CTACTE
+			if (CliUP.numchars == 0) then
+				CDS SELECT FROM DSC:ctacte_tbl BECOMES DSC:CONCliMed 
+			else
+				cliente =  substr(CliUP,0,39)
+				CDS SELECT FROM DSC:ctacte_tbl BECOMES DSC:CONCliMed \
+    			WHERE (CloRazon >= cliente) ASCENDING SORT "ClOxRazo"
+			end if
+			break
+		CASE OCASIONAL
+			clearfield CliMed_tipo
+			clearfield CliMed_numero
+			post:CliRazBusq = post:CliUP
+		    call post:MISCaddPickCli(OCASIONAL)
+			break
+		CASE CLIUP
+		    call drv:back_but_status
+		    drv:button = drv:last_button
+            CALL drv:but_up_enable
+			return -2
+			break
+		CASE CLIMED
+			if (CliUP.numchars == 0) then
+				CDS SELECT FROM DSC:TABCliMed BECOMES DSC:CONCliMed 
+			else
+				cliente =  substr(CliUP,0,39)
+				CDS SELECT FROM DSC:TABCliMed BECOMES DSC:CONCliMed \
+    			WHERE (CloRazon >= cliente) ASCENDING SORT "ClOxRazo"
+			end if
+			break
+		CASE ELSE
+		    MSGBOX "Debe ingresar primero el tipo de cliente",0x00,"Aviso"
+		    call drv:back_but_status
+		    drv:button = drv:last_button
+            CALL drv:but_up_enable
+		    RETURN -2
+		    BREAK	
+	END SELECT 
+
+	
+	clearfield common:csr_string
+	SELECT (post:Recep_CliTipo)
+	    CASE CTACTE
+	    CASE CLIUP
+	    CASE CLIMED    
+	        CDS MULTIDISPLAY DSC:CONCliMed LST:post:LISTRecep_CM
+            IF (CDSRETVAL == -801) THEN
+                CDS ENDSELECT DSC:CONCliMed
+                CLEARFIELD CliUP
+                clearfield post:climed_tipo
+	        	clearfield post:climed_numero
+	        	clearfield post:cliente
+	        	if (post:Recep_CliTipo == CLIMED) then
+	        		//consulta multiple y luego simple!*/
+	        		post:CliRazBusq = post:CliUP
+	        		call post:OFBclimed_consultas
+	        		if ( retval < 0 )
+	        			clearfield post:CliRazBusq
+	        			/*clearfield post:CliUP
+	        			refresh post:CliUP*/
+	        			call drv:back_but_status
+            			drv:button = drv:last_button
+            			CALL drv:but_up_enable
+	        			SETVALDONE CliUP
+	        			return -2
+	        		end if
+            	endif
+            	clearfield post:CliRazBusq
+            	drv:button = drv:last_button
+            	CALL drv:but_up_enable
+	        	SETVALDONE CliUP
+            ELSE
+            	//CliUP = common:csr_string
+            	FPRINT CliUP,"%s" substr(common:csr_string,0,50)//,substr(common:csr_string,51,11)
+            	move substr(common:csr_string,63,1)  to post:climed_tipo
+	        	move substr(common:csr_string,65,11) to post:climed_numero
+	        	fprint post:cliente,"%1.1s%-11.11s",post:climed_tipo,post:climed_numero
+                move substr(common:csr_string,51,11) to post:CloCuit
+                move substr(common:csr_string,77,2) to post:adt_TipoDoc_tipo
+                REFRESH post:CloCuit
+                REFRESH post:adt_TipoDoc_tipo
+            END IF
+            BREAK
+            CASE OCASIONAL
+            	SELECT (RETVAL)
+        			CASE 0
+            			ret = -2
+            			break
+        			CASE 2
+        				ret = -399
+        				break
+					case 1
+						ret = 0        			
+        		END SELECT
+
+                IF (ret >= 0) THEN
+                    post:adt_TipoDoc_tipo = CloTipDoc
+                    CDS SELECT FROM DSC:clioca_tbl BECOMES "CliOca_ctx" \
+                    where  CloCuit == CloCuit && \
+                    CloTipDoc == CloTipDoc
+                    
+                    CDS FINDFIRST "CliOca_ctx" NOLOCK
+                    IF (CDSRETVAL == -801) THEN
+                        CDS ENDSELECT "CliOca_ctx"
+                        call drv:back_but_status
+		                drv:button = drv:last_button
+                        CALL drv:but_up_enable
+                        RETURN (-2)
+                    END IF
+                    CDS EXTRACT "CliOca_ctx" ALL
+                    CDS UNLOCK "CliOca_ctx"
+                    CDS ENDSELECT "CliOca_ctx"
+                    
+                    post:climed_tipo = CliMed_tipo
+	        	    post:climed_numero = CliMed_numero
+	        	    fprint post:cliente,"%1.1s%-11.11s",post:climed_tipo,post:climed_numero
+                    REFRESH post:CloCuit
+                    REFRESH post:adt_TipoDoc_tipo
+                    if (CloPersonaJuridica == "N")
+                        fprint CliUP "%s %s", CloNombre, CloApellido
+                    else
+                        let CliUP = CloRazon
+                    end if
+                ELSE
+                    call drv:back_but_status
+		            drv:button = drv:last_button
+                    CALL drv:but_up_enable
+                    RETURN (-2)
+                END IF
+            BREAK	
+	END SELECT 
+            
+    REFRESH CliUP
+    CDS ENDSELECT DSC:CONCliMed
+    call drv:back_but_status
+    drv:button = drv:last_button
+    CALL drv:but_up_enable
+    NEXTFIELD CliUP
+	SETVALDONE CliUP
+	SETVALDONE post:CloCuit
+	SETVALDONE post:adt_TipoDoc_tipo
+	
+END SUB
+
+/*******/

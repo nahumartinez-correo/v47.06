@@ -1,0 +1,295 @@
+/****o* Servicios Postales/OFB:post:MISCjnl
+* NOMBRE
+*   OFB:post:MISCjnl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl
+local pasado like ctrol_ult_tt
+LOCAL cont LIKE cant_opc
+LOCAL x LIKE cant_opc
+LOCAL j LIKE cant_opc
+LOCAL l_debeAcumular LIKE lib:err_retval
+LOCAL l_preCantidad LIKE post:cant_aux
+LOCAL l_cont_aux LIKE cant_opc
+	/*journaliza n cantidad de transacciones a partir de la tabla de track_trace*/
+	//cont_jnl = 0
+	/*para que no se llame a la rutina que verifica que sea la ultima transaccion del presupuesto*/
+	IF (post:estado_presu == 4) THEN
+		ctrol_ult_tt = "S"
+	END IF
+	
+	IF (cli_tipo == OCASIONAL || cli_tipo == CLIUP || (cli_tipo == CLIMED && TTcargado))
+		IF (estado_presu == 1)
+			CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+				fecha == common:system_date && \
+				operador_tt == op:op_operator_id && \
+				PresNro_tt == PresNro && \
+				tt_journalizado != "S"
+		ELSE
+			CDS SELECT FROM TT_TAB BECOMES TT_CTX WHERE \
+				fecha == common:system_date && \
+				operador_tt == op:op_operator_id && \
+				PresNro_tt == PresNro && \
+				NroTrn_tt == PreDNroTrn && \
+				tt_journalizado != "S"
+		END IF
+		CDS FINDFIRST TT_CTX NOLOCK
+		lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0)
+			CDS ENDSELECT TT_CTX
+			RETURN (-2)
+		END IF    	
+		CALL MISCvalores_indiv
+		WHILE (lib:err_retval != -801)
+			CDS EXTRACT TT_CTX ALL
+			IF (CDSRETVAL < 0)
+				CDS ENDSELECT TT_CTX
+				CLEARFIELD drv:INDspc_rtn[2]
+				RETURN (-2)
+			END IF
+			IF (pasado != "S" && cont_jnl > 0)
+				pasado = "S"
+				promo_imp_tot_opc = promo_imp_tot_opc - promo_opc_uni
+				promo_imp_tot_ind = promo_imp_tot_ind - promo_opc_uni
+				costo_opc = costo_opc - costo_opc_uni
+				siaf:importe = siaf:importe - costo_opc_uni
+				if (headOrBodyTele == "H")
+					headOrBodyTele = "B"
+				end if
+				cont = 0
+				WHILE (cont < MAX_VEC_INGBR)
+				    impciva_vec[cont] = impciva_vec[cont] - post:coniva_opc_uni[cont]
+				    impsiva_vec[cont] = impsiva_vec[cont] - post:siniva_opc_uni[cont]
+				    cont = cont + 1
+				END WHILE
+				cont = 0
+				
+				l_preCantidad = cant_aux
+				WHILE (cont < cant_opc)//elimina los opc que se cobran una sola vez
+    				;PS9490
+                    CALL post:MISCopcCantPart(cod_opc[cont], post:tipo_produc, cant_aux)
+    				l_debeAcumular = retval
+    				if (l_debeAcumular)
+    					ImporteSinIva = ImporteSinIva - siniva_opc[cont]
+    					IF (cont_jnl == 1) //se hace este para el tratamiento de contingencia de caidas del rt en telegramas multiples
+    						ImporteConIva = ImporteConIva - cos_opc[cont]
+    					END IF
+    					fld_promo_imp = fld_promo_imp - promo_imp_opc_tot[cont]
+    					promo_tot_Serv = promo_tot_Serv - promo_imp_opc_tot[cont]
+    					x = cont
+    					while (x < cant_opc)
+    						j = x + 1
+    						if (j < 6)
+    							cod_opc[x] = cod_opc[j]
+								cos_opc[x] = cos_opc[j]
+								cor_opc[x] = cor_opc[j]
+								vec_opc2[x] = vec_opc2[j]
+								ali_opc[x] = ali_opc[j]
+								inf_opc[x] = inf_opc[j]
+								comb_opc[x] = comb_opc[j]
+								flia_opc[x] = flia_opc[j]
+    			    			siniva_opc[x] = siniva_opc[j]
+    			    			tele:nemonic_sap_opc[x] = tele:nemonic_sap_opc[j]
+    			    			promo_imp_opc_tot[x] = promo_imp_opc_tot[j]
+								promo_imp_opc_ind[x] = promo_imp_opc_ind[j]
+								promo_opc_bon[x] = promo_opc_bon[j]
+								promoOpcTipoBon[x] = promoOpcTipoBon[j]  
+								post:cod_opc_aux[x] = post:cod_opc_aux[j]
+								tele:OpcInd_vec[x][0] = tele:OpcInd_vec[j][0]
+							else
+								clearfield cod_opc[x]
+							    clearfield cos_opc[x]
+							    clearfield cor_opc[x]
+							    clearfield vec_opc2[x]
+							    clearfield ali_opc[x]
+							    clearfield inf_opc[x]
+							    clearfield comb_opc[x]
+							    clearfield flia_opc[x]
+							    clearfield siniva_opc[x]
+							    clearfield tele:OpcInd_vec[x][0]
+							    clearfield tele:nemonic_sap_opc[x]
+							    clearfield promo_imp_opc_tot[x]
+							    clearfield promo_imp_opc_ind[x]
+							    clearfield promo_opc_bon[x]
+							    clearfield post:cod_opc_aux[x]
+							end if
+    			    		x = x + 1
+    			    	end while
+    			    	post:cant_opc = post:cant_opc - 1
+    			    	l_cont_aux = 1
+					end if
+    			    cont = cont + 1 - l_cont_aux
+    			    l_cont_aux = 0
+    			    cant_aux = l_preCantidad
+    			END WHILE
+    			cont = 0
+			END IF
+			/*Cuando se esta en la ultima journalizacion se limpia la vble para que se llame a la rutina*/
+			/*que verifica que sea la ultima transaccion del presupuesto*/
+			IF (cont_jnl == cant_aux - 1) THEN
+				CLEARFIELD ctrol_ult_tt
+			END IF
+			/*si requiere nivel superv. journaliza c/u con el numero de supervisor y la leyenda corresp.*/
+			IF (niv_sup_aux == "S") THEN
+				SETFLAG tlr:tran_flags, supovr_granted
+			END IF
+			CLEARFIELD drv:INDspc_rtn[2]
+			cantidad = 1 //se pone en uno el campo cantidad porque se journalizan por separado
+			//SC 50170 - FACTURACION
+			CALL post:MISCaplico_dif_mult(0,0,0,0)
+			CALL tlr:JNLtran
+			cont_jnl = cont_jnl + 1    	
+			/*CDS FINDAGAIN TT_CTX NOLOCK
+			IF (CDSRETVAL < 0)
+				CDS ENDSELECT TT_CTX
+				CLEARFIELD drv:INDspc_rtn[2]
+				RETURN (-2)
+			//ELSE
+				//tt_journalizado = "S"
+				//CDS CLEARBUFFER TT_CTX
+				//CDS APPEND TT_CTX tt_journalizado
+				//CDS UPDATE TT_CTX LOCK
+				//CDS UNLOCK TT_CTX
+			END IF*/
+			CDS FINDNEXT TT_CTX NOLOCK
+			lib:err_retval = CDSRETVAL
+			IF (lib:err_retval < 0) 
+				CDS ENDSELECT TT_CTX
+				CLEARFIELD drv:INDspc_rtn[2]
+				//RETURN (-2)
+				RETURN (0)
+			END IF
+			//CDS ENDSELECT TT_CTX
+		END WHILE
+	ELSE
+		IF (cli_tipo == CTACTE || (cli_tipo == CLIMED && !TTcargado))
+			
+			
+			
+			NroTrn = PreDNroTrn
+			gseqcont = 0
+			
+			
+			CALL MISCvalores_indiv
+			WHILE (cont_jnl < cant_aux)
+				/*Cuando se esta en la ultima journalizacion se limpia la vble para que se llame a la rutina*/
+				/*que verifica que sea la ultima transaccion del presupuesto*/
+				IF (cont_jnl == cant_aux - 1) THEN
+					CLEARFIELD ctrol_ult_tt
+				END IF
+				IF (pasado != "S" && cont_jnl > 0)
+				    pasado = "S"
+				    promo_imp_tot_opc = promo_imp_tot_opc - promo_opc_uni
+				    promo_imp_tot_ind = promo_imp_tot_ind - promo_opc_uni
+				    costo_opc = costo_opc - costo_opc_uni
+				    siaf:importe = siaf:importe - costo_opc_uni
+				    if (headOrBodyTele == "H")
+				    	headOrBodyTele = "B"
+				    end if
+				    cont = 0
+				    WHILE (cont < MAX_VEC_INGBR)
+				        impciva_vec[cont] = impciva_vec[cont] - post:coniva_opc_uni[cont]
+				        impsiva_vec[cont] = impsiva_vec[cont] - post:siniva_opc_uni[cont]
+				        cont = cont + 1
+				    END WHILE
+				    cont = 0
+				    l_preCantidad = cant_aux
+				    WHILE (cont < cant_opc)//elimina los opc que se cobran una sola vez
+    			    	;PS9490
+                        CALL post:MISCopcCantPart(cod_opc[cont], post:tipo_produc, cant_aux)
+    			    	l_debeAcumular = retval
+    			    	if (l_debeAcumular)
+    			    		ImporteSinIva = ImporteSinIva - siniva_opc[cont]
+    			    		IF (cont_jnl == 1) //se hace este para el tratamiento de contingencia de caidas del rt en telegramas multiples
+    			    			ImporteConIva = ImporteConIva - cos_opc[cont]
+    			    		END IF
+    			    		fld_promo_imp = fld_promo_imp - promo_imp_opc_tot[cont]
+    			    		promo_tot_Serv = promo_tot_Serv - promo_imp_opc_tot[cont]
+    			    		x = cont
+    			    		while (x < cant_opc)
+    			    			j = x + 1
+    			    			if (j < 6)
+    			    				cod_opc[x] = cod_opc[j]
+				    				cos_opc[x] = cos_opc[j]
+				    				cor_opc[x] = cor_opc[j]
+				    				vec_opc2[x] = vec_opc2[j]
+				    				ali_opc[x] = ali_opc[j]
+				    				inf_opc[x] = inf_opc[j]
+				    				comb_opc[x] = comb_opc[j]
+				    				flia_opc[x] = flia_opc[j]
+    			        			siniva_opc[x] = siniva_opc[j]
+    			        			tele:nemonic_sap_opc[x] = tele:nemonic_sap_opc[j]
+    			        			promo_imp_opc_tot[x] = promo_imp_opc_tot[j]
+				    				promo_imp_opc_ind[x] = promo_imp_opc_ind[j]
+				    				promo_opc_bon[x] = promo_opc_bon[j]
+				    				promoOpcTipoBon[x] = promoOpcTipoBon[j]  
+				    				post:cod_opc_aux[x] = post:cod_opc_aux[j]
+				    				tele:OpcInd_vec[x][0] = tele:OpcInd_vec[j][0]
+				    			else
+				    				clearfield cod_opc[x]
+				    			    clearfield cos_opc[x]
+				    			    clearfield cor_opc[x]
+				    			    clearfield vec_opc2[x]
+				    			    clearfield ali_opc[x]
+				    			    clearfield inf_opc[x]
+				    			    clearfield comb_opc[x]
+				    			    clearfield flia_opc[x]
+				    			    clearfield siniva_opc[x]
+				    			    clearfield tele:OpcInd_vec[x][0]
+				    			    clearfield tele:nemonic_sap_opc[x]
+				    			    clearfield promo_imp_opc_tot[x]
+				    			    clearfield promo_imp_opc_ind[x]
+				    			    clearfield promo_opc_bon[x]
+				    			    clearfield post:cod_opc_aux[x]
+				    			end if
+    			        		x = x + 1
+    			        	end while
+    			        	post:cant_opc = post:cant_opc - 1
+    			        	l_cont_aux = 1
+				    	end if
+    			        cont = cont + 1 - l_cont_aux
+    			        l_cont_aux = 0
+    			        cant_aux = l_preCantidad
+    			    END WHILE
+    			    cont = 0
+			    END IF
+
+				/*si requiere nivel superv. journaliza c/u con el numero de supervisor y la leyenda corresp.*/
+				IF (niv_sup_aux == "S") THEN
+					SETFLAG tlr:tran_flags, supovr_granted
+				END IF
+				CLEARFIELD track_trace
+				CLEARFIELD cp
+				CLEARFIELD drv:INDspc_rtn[2]
+				cantidad = 1 //se pone en uno el campo cantidad porque se journalizan por separado
+				//SC 50170 - FACTURACION
+				CALL post:MISCaplico_dif_mult(0,0,0,0)
+				CALL tlr:JNLtran
+				cont_jnl = cont_jnl + 1
+			END WHILE
+			IF (cli_tipo == CLIMED && !TTcargado && !OperacionCob && !OperacionAut)
+				//NroTrn = PreDNroTrn
+				//gseqcont = 0
+				//IF (estado_presu == 4)
+    		    	CALL CDScargo_TT
+    		    //END IF
+	    	END IF  
+		END IF
+	END IF
+END SUB
+
+/*******/

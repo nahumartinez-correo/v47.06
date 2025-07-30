@@ -1,0 +1,207 @@
+/****o* Pendientes de agrupación/OFB:post:FVALtipo_caja
+* NOMBRE
+*   OFB:post:FVALtipo_caja
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALtipo_caja
+	LOCAL prov LIKE post:adt_pcia_cod
+	//LOCAL loc_L1 LIKE post:adt_tipocaja_L1
+	//LOCAL loc_L2 LIKE post:adt_tipocaja_L1
+	//LOCAL loc_L3 LIKE post:adt_tipocaja_L1
+
+	//Necesario para las restricciones de las especies
+	prov = SUBSTR(common:sucursal_activa,0,1)
+	adt_servcaja_serv = adt_serv_serv
+	adt_servcaja_caja = tipo_caja
+	CALL CDSServCaja_load
+	IF (RETVAL < 0) THEN
+		CALL CDSServCaja_sel
+		IF (RETVAL < 0)
+			//MSGBOX "No existen Tipos de Caja asociadas al Servicio",0x00,"Error"
+			RETURN (-2)
+		END IF
+	END IF
+	
+	//Solicitud 50076
+	IF (adt_servcaja_caja == "CAJA PROPIA") THEN
+		IF (estado_presu == 3) THEN
+			//gpb:NI50479
+			IF (!TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+				MSGBOX "No se puede cambiar a CAJA PROPIA en el transcurso de la transaccion",0x00,"Error"
+				UNPROTFIELD tipo_caja
+				RETURN -2			
+			END IF		
+		END IF
+	
+	  //gpb:NI50479
+	  caja_propia = TRUE
+		IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+			CLEARFIELD rel_vol
+			UNPROTFIELD aforo1
+			UNPROTFIELD aforo2
+			UNPROTFIELD aforo3			
+		ELSE
+			IF (!TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+				MSGBOX "Ha seleccionado CAJA PROPIA. Esta opcion no podra ser modificada. Desea Continuar?",OFB_YESNO,"Advertencia"
+				IF (RETVAL == OFB_IDYES) THEN
+					CLEARFIELD rel_vol
+					UNPROTFIELD aforo1
+					UNPROTFIELD aforo2
+					UNPROTFIELD aforo3			
+				ELSE
+					RETURN -2
+				END IF
+			END IF
+		END IF
+		//CALL MISCobt_rel_vol(aforo1,aforo2,aforo3)
+	ELSE
+		caja_propia = FALSE
+		CLEARFIELD aforo1
+		CLEARFIELD aforo2
+		CLEARFIELD aforo3
+		CLEARFIELD aforo
+		PROTFIELD aforo1
+		PROTFIELD aforo2
+		PROTFIELD aforo3
+		IF (post:adt_serv_calc_rv == "S") THEN
+			//extraigo las medidas de la caja normalizada
+			post:adt_tipocaja_caja = adt_servcaja_caja
+			CLEARFIELD post:adt_tipocaja_L1
+			CLEARFIELD post:adt_tipocaja_L2
+			CLEARFIELD post:adt_tipocaja_L3
+			CALL CDSadt_tipocaja_load
+			IF (adt_tipocaja_L1.NUMCHARS == 0 || adt_tipocaja_L2.NUMCHARS == 0 || adt_tipocaja_L3.NUMCHARS == 0) THEN
+				MSGBOX "FALTA CARGAR PARAMETRIA EN SERVICIO CAJA PARA CALCULAR LA RELACION VOLUMETRICA",0x00,"ERROR"
+				RETURN -2
+			END IF
+			CLEARFIELD rel_vol
+			rel_vol_l1 = post:adt_tipocaja_L1
+			rel_vol_l2 = post:adt_tipocaja_L2
+			rel_vol_l3 = post:adt_tipocaja_L3		
+			//Calculo Relacion Volumetrica de la caja normalizada si la tiene
+			CALL MISCobt_rel_vol //loc_L1,loc_L2,loc_L3)
+			IF (RETVAL < 0) THEN
+				RETURN -2
+			END IF
+		END IF
+	END IF
+		
+	tipo_caja = adt_servcaja_caja
+	REFRESH tipo_caja
+	CALL post:MISCvalidaVentasRest("PRD", tipo_caja, "", "", common:sucursal_activa, post:cli_tipo, "")
+	IF (RETVAL < 0) THEN
+		SELECT (RETVAL)
+			CASE -1
+				FPRINT common:csr_string "Las restricciones cargadas de regiones no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+			BREAK
+			CASE -2
+				FPRINT common:csr_string "Las restricciones cargadas de provincias no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+			BREAK
+			CASE -3
+				FPRINT common:csr_string "Las restricciones cargadas de sucursales no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+			BREAK
+			CASE -4
+				FPRINT common:csr_string "Las restricciones cargadas de clientes no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+			BREAK
+		END SELECT
+		MSGBOX common:csr_string,OFB_OK,"ERROR"
+		RETURN -2
+	END IF
+	
+	/*Obtengo el producto asociado a este tipo de caja*/
+	CALL post:MISCParam_CajaProd
+	IF (codesp_prod.NUMCHARS != 0 && subcod_prod.NUMCHARS != 0) THEN
+		IF (post:cli_tipo == CLIUP) THEN
+			CALL post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, post:NisUP)
+		ELSE
+			CALL post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, "")
+		END IF
+		IF (RETVAL < 0) THEN
+			SELECT (RETVAL)
+			CASE -1
+				FPRINT common:csr_string_aux "Las restricciones cargadas de regiones no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+			BREAK
+			CASE -2
+				FPRINT common:csr_string_aux "Las restricciones cargadas de provincias no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+			BREAK
+			CASE -3
+				FPRINT common:csr_string_aux "Las restricciones cargadas de sucursales no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+			BREAK
+			CASE -4
+				FPRINT common:csr_string_aux "Las restricciones cargadas de clientes no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+			BREAK
+			CASE -5
+				FPRINT common:csr_string_aux "Las restricciones cargadas de up no permiten la venta de la especie %s %s asociada al producto %s que es combo de este servicio!", post:adt_prodvs_espv_cod, post:adt_prodvs_espv_scod, post:adt_prodvs_desc
+			BREAK
+			END SELECT
+			MSGBOX common:csr_string_aux,OFB_OK,"ERROR"
+			RETURN -2
+		END IF
+	END IF
+	
+	/*Se agrega esta rutina para que llame al CDSbasico en el momento de seleccionar el tipo de caja y pueda
+	obtener el valor de la misma de tablas tarifas. Diego Priore 22/02/2000*/
+	IF (!TESTFLAG(uso_int_flag,uso_interno)) THEN
+		CALL MISCactualizo_tarifa
+		IF (RETVAL < 0) THEN
+			RETURN (-2)
+		END IF
+		CALL MISCactualizo_opc
+		CALL MISCactualizo_1opc
+	END IF
+    
+	SETVALDONE post:tipo_caja
+	IF ( post:destino.NUMCHARS > 0 ) THEN
+		SELECT (adt_serv_umstd)
+			CASE "KGS"
+				IF (peso_en_kgs > 0 ) THEN
+					CALL post:FVALpn_peso
+					SETVALDONE post:peso_en_kgs
+				END IF
+			BREAK
+			CASE "GMS"
+				IF (post:peso_en_grs > 0 ) THEN
+					IF (post:adt_serv_tipo == "PO" && post:adt_serv_alcance == "N" && \
+						post:estado_presu == 1)THEN
+						CALL post:FVALpeso2
+					ELSE
+						CALL FVALpn_peso
+					END IF
+					SETVALDONE post:peso_en_grs
+				END IF
+			BREAK
+			CASE ELSE
+			BREAK
+		END SELECT
+	END IF
+	
+	//CLIENTE MEDIO
+	IF (cli_tipo == CLIMED) THEN
+		//Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+		IF (PerfilDireccion && (ConvenioProducto || ExcepProducto)) THEN
+			post:bonificaCM = "S"
+		END IF
+	END IF
+	IF (caja_propia) THEN
+		PROTFIELD tipo_caja
+	ELSE
+		UNPROTFIELD tipo_caja
+	END IF
+	RETURN (0)
+END SUB
+
+/*******/

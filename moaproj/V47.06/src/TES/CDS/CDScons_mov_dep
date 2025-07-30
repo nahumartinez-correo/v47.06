@@ -1,0 +1,172 @@
+/****o* Pendientes de agrupación/OFB:tes:CDScons_mov_dep
+* NOMBRE
+*   OFB:tes:CDScons_mov_dep
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDScons_mov_dep
+    local existe_dif like siaf:i
+    local importe like siaf:importe
+
+    if (siaf:pantalla_impreso != "P") then
+        ;LMB - Ps 9780 - 12.06.2008
+        ;fprint siaf:dnix_cmd,"/te mp/consdep.lis"
+        fprint siaf:dnix_cmd "%s%s" common:dirTemporal, "consdep.lis"
+         
+        call CSR:file_open 1 siaf:dnix_cmd "w"
+        if (retval < 0) then
+            errmsg lst:common:errmsg_list,"Error al abrir el archivo movctas.lis"
+            return (-2)
+        end if
+    end if
+
+    let siaf:pick_titulo = "movctas"
+    call CSR:f_sanewpl siaf:pick_titulo pic:movctas
+
+    existe_dif = 0
+    siaf:i = 0
+    siaf:cta_hojas = 1
+    encabezado = 0
+
+    if (fecha_valor.numchars != 0) then
+        cds select from dsc:MovimCta_tbl becomes dsc:MovimCta_ctx \
+            where (mov_br_id == common:sucursal_activa) && \
+                  (mov_banco == fld:banco_codigo) && \
+                  (mov_tipo_cuenta == tipo_cuenta) && \
+                  (mov_nro_cuenta == nro_cuenta) && \
+                  (boleta_deposito == fld:boleta_deposito) && \
+                  (mov_bus_date == fecha_valor) && \
+                  ((mov_codigo_siaf == 7520) || (mov_codigo_siaf == 7600)) && \
+                  (mov_marca_rev != "R")
+    else
+        if (siaf:fecha_proceso.numchars != 0) then
+            cds select from dsc:MovimCta_tbl becomes dsc:MovimCta_ctx \
+                where (mov_br_id == common:sucursal_activa) && \
+                      (mov_banco == fld:banco_codigo) && \
+                      (mov_tipo_cuenta == tipo_cuenta) && \
+                      (mov_nro_cuenta == nro_cuenta) && \
+                      (boleta_deposito == fld:boleta_deposito) && \
+                      (mov_date == siaf:fecha_proceso) && \
+                      ((mov_codigo_siaf == 7520) || (mov_codigo_siaf == 7600)) && \
+    	              (mov_marca_rev != "R")
+        end if
+    end if
+
+    if (cdsretval != 0) then
+  	   errmsg lst:common:errmsg_list,ERRmovctas_select
+   	   reset tran
+   	   call csr:file_close(1) //cierra archivo listado
+   	   return (-2)
+    end if
+
+    cds findfirst dsc:MovimCta_ctx nolock
+
+
+
+    post:err_retval = cdsretval
+    post:cant_mov = 0
+
+    if (post:err_retval == 0) then
+        cds extract dsc:MovimCta_ctx all
+        call MISCconsdep_encabez
+        call MISCmov_enc_sub_dep
+        tmp_mov_banco = mov_banco
+        tmp_mov_tipo_cuenta = mov_tipo_cuenta
+        tmp_mov_nro_cuenta = mov_nro_cuenta
+        tmp_mov_bus_date = 19970101
+    else
+        CALL tes:MISCcons_mov_dep_chq
+        if (retval == 0)
+           call csr:file_close(1)
+           return
+        end if
+        msgbox "NO EXISTE EL DEPOSITO INGRESADO",OFB_OK,"AVISO"
+    end if
+
+    select (mov_codigo_siaf)
+
+            case 7520 /* Dep. de Efectivo de Tesoro en Cuenta de la Suc */
+            case 7600 /* Dep. de Efectivo de Caja en Cuenta de la Suc */
+
+                 FPRINT common:csr_string "  %8e  %8e  %-30.30s    %12e",\
+                        mov_bus_date, mov_date, mov_desc_mov, mov_importe
+                 CALL MISCwrite_consdep
+                 total_imp_mov = mov_importe
+                 post:cant_mov = post:cant_mov + 1
+                 break
+
+            case 7536 /* Dep. de Cheques de Tesoro en Cuenta de la Suc */
+            case 7616 /* Dep. de Cheques de Caja en Cuenta de la Suc */
+
+                 total_imp_mov = 0
+                 call CDScons_mov_depcheq
+                 break
+
+            case else
+                 CALL tes:MISCcons_mov_dep_chq
+                 if (retval == 0)
+                    call csr:file_close(1)
+                    return
+                 end if
+                 call csr:file_close(1) //cierra archivo listado
+                 msgbox "NO EXISTE EL DEPOSITO INGRESADO",OFB_OK,"AVISO"
+                 return (-1)
+                 break
+    end select
+
+    mov_codigo_siaf = 6000
+    call MISCctas_pie_dep
+
+    fyimsg clear
+
+    clearfield common:csr_string
+
+    if (siaf:pantalla_impreso == "P") then
+        clearfield common:csr_string
+        ;LMB - Ps 9780 - 12.06.2008
+        ;fprint common:csr_string,"/te mp/movctas.lis"
+        fprint common:csr_string "%s%s" common:dirTemporal, "movctas.lis"
+        
+        keydef push
+        call csr:f_sadopl siaf:pick_titulo common:csr_string
+	keydef pop
+    else
+      /* Avanza hasta el final para imprimir la Cantidad de hojas */
+         do
+             if (siaf:i < 59)
+                 let common:csr_string = "    "
+                 call MISCwrite_consdep
+             else
+                 break
+             end if
+        loop
+        fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:cta_hojas
+        call MISCwrite_consdep
+
+        fyimsg lst:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS MOVIMIENTOS"
+        call csr:file_close(1)
+        
+        ;LMB - PS 9780 - 12.06.2008
+        ;call siaf:MISCfile_print("\\te mp\\movctas.lis", "predeterminada")
+        fprint common:tmpDirTemporal "%s%s" common:dirTemporal, "movctas.lis"
+        call siaf:MISCfile_print(common:tmpDirTemporal, "predeterminada")
+                
+        exec common:csr_string
+    end if
+
+END SUB
+
+/*******/

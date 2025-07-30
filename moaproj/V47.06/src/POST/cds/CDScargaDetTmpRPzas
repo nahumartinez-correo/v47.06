@@ -1,0 +1,107 @@
+/****o* Expedición/OFB:post:CDScargaDetTmpRPzas
+* NOMBRE
+*   OFB:post:CDScargaDetTmpRPzas
+* DESCRIPCION
+*  Busca si algun operador le transfirio piezas(tabla TranPend) Si tiene transferencias las graba en DetTmp
+*  Y graba en TranPend con MarcaBorrado = 1, esto marca que esta siendo usado por el oper. destino
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): "No existen piezas pendiente de recepción."
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:FVALtransfOtroOp,OFB:post:SVALRecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaDetTmpRPzas
+    Local loc_operator_id Like op:op_operator_id
+    Local loc_login_id    Like op:op_login_id
+    Local loc_op_id       Like post:Operador_id
+    
+    Let orden       = 0
+    loc_operator_id = op:op_operator_id
+    loc_login_id    = op:op_login_id
+    loc_op_id       = post:Operador_id
+    
+    /* Limpio la DetTmp */
+    CALL CDSborroDetTmp
+
+    IF ( !TESTFLAG(flagRecepPzasOtroOp, ejecuta_SVAL) ) THEN
+        CDS SELECT FROM DSC:post:TranPend_tbl BECOMES DSC:post:TranPend_ctx   \
+            WHERE       op:op_login_id      ==      post:Operador_id       && \
+                        post:CodOperador    ==      op:op_operator_id
+    ELSE
+        CDS SELECT FROM DSC:post:TranPend_tbl BECOMES DSC:post:TranPend_ctx   \
+            WHERE       post:CodOperador    ==      op:op_operator_id
+    END IF
+
+    CDS FINDFIRST   DSC:post:TranPend_ctx LOCK
+
+    lib:err_retval = CDSRETVAL
+    IF (CDSRETVAL != 0) THEN
+       CDS UNLOCK DSC:post:TranPend_ctx
+       CDS ENDSELECT DSC:post:TranPend_ctx
+       msgbox "No existen piezas pendiente de recepción.",0x00,"ATENCION"
+       UNGETKEY RT_ESC
+       RETURN (-2)
+    END IF
+
+
+    DO
+        lib:err_retval = CDSRETVAL
+        IF (lib:err_retval != 0) THEN
+            BREAK
+        END IF
+        
+        CDS EXTRACT DSC:post:TranPend_ctx all
+        
+        LET MarcaBorrado = "1"
+        CDS CLEARBUFFER DSC:post:TranPend_ctx
+        CDS APPEND DSC:post:TranPend_ctx \
+                   fld:post:MarcaBorrado
+        CDS UPDATE DSC:post:TranPend_ctx lock
+        
+        CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx
+        
+        IF ( post:es_transf_forzada == "S" ) THEN
+            LET MarcaBorrado = " "
+            LET post:cant_pzas_recibidas = post:cant_pzas_recibidas + 1
+        ELSE
+            LET MarcaBorrado = "*"
+        END IF
+
+        /* Graba la pieza transferida en DetTmp */
+        call CDSappDetTmpRPza
+
+
+        if ( orden  == 1 ) then
+            fprint post:DetalleContenidoGC2, "%-14.14s %-10.10e %-2.2s %-1.1s %-32.32s %-1.1s" , \
+                   op:op_login_id, \
+                   post:jnl_date_ori,\
+                   post:jnl_grucorte_cod \
+                   post:jnl_apertura_cod \
+                   post:Pieza_id \
+                   post:MarcaBorrado
+        end if
+
+        CDS FINDNEXT DSC:post:TranPend_ctx LOCK
+    LOOP
+    
+    CDS UNLOCK DSC:post:TranPend_ctx
+    CDS ENDSELECT DSC:post:TranPend_ctx
+   
+    dettmpcargada = TRUE
+
+    post:Operador_id     = loc_op_id
+    op:op_operator_id    = loc_operator_id
+    op:op_login_id       = loc_login_id
+    REFRESH     post:DetalleContenidoGC2
+    
+END SUB
+
+/*******/

@@ -1,0 +1,280 @@
+/****o* Pendientes de agrupación/OFB:tele:PRESgral_tele
+* NOMBRE
+*   OFB:tele:PRESgral_tele
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telepres.h"
+
+SUB tele:PRESgral_tele
+Local aux_codigo like siaf:codigo_siaf
+
+	siaf:nombre_transac.HIGHLITE = 0
+
+	/*Carina - Reseteo el flag de Cliente Interno*/
+	RESETFLAG post:uso_int_flag,uso_interno
+	PROTFIELD post:cli_int_obs
+
+    /**********************************************************/
+    /* Limpio todos los campos que voy a utilizar, por si     */
+    /* falla algún AutoClear, más los que debo journalizar    */
+    /* vacios pues están relacionados con el Corte Operativo. */
+    /**********************************************************/  
+	//Reingenieria
+    //resguardo el tt por si ingreso a la tx por Codigo de tt
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTgral_clear)
+    CALL CSR:proc_list(F_CLEARARRAY,LST:post:LISTgral_clear_vec)
+	
+    /* Agrego también que si estoy en teclas ráìdas y tiene curso legal protejo el
+    campo y si no tiene le muestro un mensaje de error y no le permito
+    hacer la transacción - Hernán 14/11/2000*/
+	if (post:estado_presu == 1) then
+		;Busco el medio de pago que tenga captura de CL
+	   	call post:CDSMPago_Clegal_load
+	   	if (retval == 0) then
+			siaf:moneda = post:adt_mp_cod
+		  	post:medio_pago_desc = post:adt_mp_desc
+	      	protfield siaf:moneda
+	      	DISABLECONTROL drv:PBcb0
+	   	else
+	    	errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+	      	UNGETKEY RT_ESC
+	   	end if
+	end if
+
+    /********************************************************/
+    /* Llamo a la PRESfecha_hora que luego llama a la OFB   */
+    /* CDSadt_tran_load, la cual lee la Tabla de Transacc.  */
+    /* De esta forma obtengo toda la informacion referente  */
+    /* a la transaccion y accedo con el Código de Producto  */
+    /* a la Tabla de Servicios para obtener la parametr¡a   */
+    /* del Producto. 					    */
+    /********************************************************/
+    CALL siaf:PRESfecha_hora
+    IF (RETVAL < 0) THEN
+		/* No puedo continuar */
+		IF (post:adt_Modo == "R" && post:Modo.NUMCHARS == 0)
+			RETURN (-2)
+		ELSE
+			;UNGETKEY RT_ESC
+			RETURN (-1)
+		END IF
+    END IF
+
+  	/*Comienzo de Control de cliente con el canal*/
+    /*Utilize una variable auxiliar para el codigo siaf, ya que no quería */
+    /*modificar su contenido, lo creí conveniente, Mariano Gecik.- */
+
+    /*Agrego modificacion para que cuando controle el canal de la transaccion, al
+    no dejar realizarla por distinto tipo de cliente, cierre la sesion. Diego Priore 16/5/2000*/
+    if (post:cli_tipo != 0)
+   		let aux_codigo = siaf:codigo_siaf
+      	cds select from dsc:post:adt_serv_table becomes dsc:post:adt_serv_context \
+      	where post:adt_serv_serv == aux_codigo
+      	cds findfirst dsc:post:adt_serv_context NOLOCK
+      	if (cdsretval == 0)
+        	cds extract dsc:post:adt_serv_context ALL
+        	if (cdsretval == 0)
+          		let post:adt_serv_canal = post:adt_serv_canal
+          		if (post:cli_tipo == 1)
+            		/* CLIENTE MAYORISTA O CTA CTES*/
+            		if (post:adt_serv_canal == "MINORISTA" )
+              			msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",0x00,"Error"
+              			UNGETKEY RT_ESC
+            		endif
+          		else
+             		/* CLIENTE MINORISTA */
+            		if (post:adt_serv_canal == "MAYORISTA") THEN
+              			msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",0x00,"Error"
+              			UNGETKEY RT_ESC
+            		endif
+          		endif
+        	endif
+      	endif
+    endif    
+    /*Fin de Control de cliente con el canal*/
+
+    /********************************************************/
+    /* Protejo el campo NroComprobante ya que se determina  */
+    /* en el Inicio de Sesi¢n y no se debe modificar dentro */
+    /* de la Transacci¢n.                    		    */
+    /********************************************************/
+    PROTFIELD post:NroCompPago2
+    IF (post:NroCompPago != "0") THEN
+		post:NroCompPago2 = post:NroCompPago
+    END IF
+
+    /********************************************************/
+    /* Protejo el campo Importe porque en las Transacciones */
+    /* Postales se calcula mediante una Funci¢n en vez de   */
+    /* ser digitado por el Cajero.			    			*/
+    /********************************************************/
+    PROTFIELD siaf:importe
+    PROTFIELD siaf:importe_tot_serv
+
+    /*********************************************************/
+    /* Por default asigno a Producto-CLiente el valor en 0.   */
+    /*********************************************************/
+    post:prod_cli = "0000000000"
+    /*********************************************************/
+    /* Protejo el campo hasta definir la fval que valide el picklist      */
+    /*********************************************************/
+    PROTFIELD post:prod_cli
+    DISABLECONTROL drv:PBcb1
+
+    /*********************************************************/
+    /* Por default asigno a cantidad de cartas el valor 1,   */
+    /* y peso 0.                                		     */
+    /*********************************************************/
+    post:cantidad = 1
+    post:tipo_produc2 = post:tipo_produc
+
+    /***********************************************************/
+    /*  Se chequea que si el envio tiene como apertura */
+    /*  "E" que se encuentre por default en la pantalla  */
+    /***********************************************************/
+    CALL post:PRESapert_gral
+
+	
+    /* Verifico si es una Directa o una Reversa */
+    IF (!TESTFLAG(tlr:tran_flags,correction))
+		/* Es una Directa */
+		CALL post:MISCprotege(LST:post:LISTgral_prot,LST:post:LISTgral_unprot)
+        /* Verifico en que modo estoy */
+	    post:INDPresuD_Dat = OFB:tele:CDSgral_append_tele
+		SELECT (post:estado_presu)
+		    CASE 2
+		        /****************************************************************/
+	            /* Si tiene captura de medio de pago protejo el campo Medio de  */
+	            /* pago. Hernán.     17/10/2000                                 */
+	            /****************************************************************/
+				if (siaf:adt_tran_med_pago != "S") then
+	     	    	post:captura_mp = siaf:adt_tran_med_pago
+	     	        protfield siaf:moneda
+	     	        siaf:moneda = 99
+	     	        clearfield post:medio_pago_desc
+	     	        DISABLECONTROL drv:PBcb0
+	            end if
+	
+		        /*Carina - Si cantidad de envios > 1 protejo el tt para que lo ingrese en el vector*/
+				//Por Reingenieria 
+				IF (post:cantidad > 1 || post:cli_tipo == 1)
+		      		PROTFIELD post:track_trace
+		      	END IF
+				/*Fin - Carina*/         
+				BREAK
+		    CASE 3
+		    	/****************************************************************/
+	            /* Si tiene captura de medio de pago protejo el campo Medio de  */
+	            /* pago. Hernán.     17/10/2000                                 */
+	            /****************************************************************/
+	            if (siaf:adt_tran_med_pago != "S") then
+	     	    	post:captura_mp = siaf:adt_tran_med_pago
+	     	        protfield siaf:moneda
+	     	        siaf:moneda = 99
+	     	        clearfield post:medio_pago_desc
+	     	        DISABLECONTROL drv:PBcb0
+	            end if
+			    /* Estoy en modo Confirmaci¢n */
+		        /* Leo datos de la Tabla Auxiliar */
+		        call post:MISCLeo_Adicional
+	    		CALL post:MISCLeo_PresDet
+				post:tipo_produc2 = post:tipo_produc
+				
+		        /*Carina - Si cantidad de envios > 1 protejo el tt para que lo ingrese en el vector*/
+				//Por Reingenieria
+				IF (post:cantidad > 1 || post:cli_tipo == 1)
+		      		PROTFIELD post:track_trace
+		      	END IF
+				/*Fin - Carina*/
+		        BREAK
+		    CASE 4
+		        /* HERNAN - protejo la moneda*/
+		        protfield siaf:moneda
+		        DISABLECONTROL drv:PBcb0
+			    /* Estoy en modo Fin de Presupuesto */
+		      	/*Testeo que no pida T&T - Cargo datos de la transaccion sin T&T*/
+		      	IF (post:cli_tipo == 1 ) && (post:adt_serv_piezacont == "T")THEN
+		        		UNGETKEY RT_SEND
+				END IF
+		      	/*Fin*/
+		        /* Leo datos de la Tabla Auxiliar */
+			    CALL post:MISCLeo_PresDet
+		        BREAK
+		    CASE 1
+	            IF (siaf:adt_tran_modpresu == "E") THEN
+		            MSGBOX "LA TRANSACCION NO SE PUEDE EJECUTAR FUERA DEL MODO PRESUPUESTO",0x00,"ERROR"
+		            UNGETKEY RT_ESC
+		        END IF
+	            BREAK
+		END SELECT
+    ELSE
+		/* Es una Reversa */
+        IF (post:adt_corteop_guiacont == "S") THEN
+	        IF (post:jnl_guia_cont != "") THEN
+	            /* Ya no se puede Reversar */
+	            UNGETKEY RT_ESC
+	        END IF
+        ELSE
+            IF (post:jnl_guia_saca != "") THEN
+                /* Ya no se puede Reversar */
+                UNGETKEY RT_ESC
+            END IF
+        END IF
+    END IF
+
+    /*********************************************************/
+    /* Verifico si el Servicio tiene definido Opcionales.    */
+    /* Lo necesito saber antes de dibujar la Pantalla de la  */
+    /* Transacci¢n para decidir si debo displayar el Combo   */
+    /* para seleccionar los Opcionales o no.		     */
+    /*********************************************************/
+	CALL tele:PRESopc_gral
+	IF (RETVAL < 0) THEN
+		UNGETKEY RT_ESC
+	END IF
+
+    /*********************************************************/
+    /* Si el Cliente es Mayorista, protejo el Medio de Pago  */
+    /* ya que los Mayoristas no pueden elegir el mismo.	     */
+    /*********************************************************/
+    IF (post:cli_tipo == 1 || post:estado_presu == 1) THEN
+    	PROTFIELD siaf:moneda
+    	DISABLECONTROL drv:PBcb0
+    END IF
+
+	/*Seteo en el campo indirecto la rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	//post:INDticket_laser = ofb:post:PRT_Ticket_Postal
+
+    /*Limpio los vectores que almacenan los importes con y sin iva de los opcionales
+    y del servicio*/
+    IF (post:estado_presu != 4 || post:estado_presu != 1 )
+        CALL CSR:cleararray(post:fliatran_vec)
+        CALL CSR:cleararray(post:impciva_vec)
+        CALL CSR:cleararray(post:impsiva_vec)
+    END IF
+
+	; Se necesitaba este campo lleno para armar el picklist de restricciones.
+	IF (post:estado_presu == 3)
+		post:adt_serv_formfiscal = post:PreDForFis
+	endif
+
+	siaf:importe_tot_serv = siaf:importe
+	refresh siaf:importe_tot_serv
+	
+    RETURN (0)
+END SUB
+
+/*******/

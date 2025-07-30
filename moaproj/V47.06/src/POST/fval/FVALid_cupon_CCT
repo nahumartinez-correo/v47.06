@@ -1,0 +1,111 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:FVALid_cupon_CCT
+* NOMBRE
+*   OFB:post:FVALid_cupon_CCT
+* DESCRIPCION
+*   Rutina FVAL asociada al Identificador del cupon de la trx Cobro por Cuenta de Terceros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRN6670
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALid_cupon_CCT
+	LOCAL l_long_cupon LIKE  post:adt_cct_longcupon
+	LOCAL l_tipo_cupon LIKE post:adt_cct_tipocupon
+	LOCAL l_ctrl_venc LIKE post:adt_cct_ctrl_venc
+	LOCAL l_mensaje LIKE common:csr_string
+	
+	CALL CSR:fld_to_upper(post:id_cupon_CCT)
+	REFRESH post:id_cupon_CCT
+	
+	IF (post:servicio_CCT.NUMCHARS == 0) THEN
+		LET l_mensaje = "DEBE SELECCIONAR UN SERVICIO."
+		MSGBOX l_mensaje,OFB_OK,"Aviso"
+		RETURN (-2)	
+	END IF
+	
+	IF (post:id_cupon_CCT.NUMCHARS == 0) THEN
+		LET l_mensaje = "DEBE INGRESAR EL CODIGO DEL CUPON."
+		MSGBOX l_mensaje,OFB_OK,"Aviso"
+		NEXTFIELD post:id_cupon_CCT
+		RETURN (-2)
+	END IF
+	
+	//Si el ingreso es manual se recuperan los datos de la ParamCCT en base al comitente y servicio ingresado
+	if (post:cod_barra_CCT.numchars == 0) then
+		CALL post:CDSBuscoCuponMnlCCT
+		IF (RETVAL != 0) THEN
+			NEXTFIELD post:id_cupon_CCT
+			RETURN (-2)
+		END IF
+	endif
+	
+	LET l_long_cupon =  post:adt_cct_longcupon
+	LET l_tipo_cupon = post:adt_cct_tipocupon
+	LET	l_ctrl_venc = post:adt_cct_ctrl_venc
+
+	CALL post:MISCFtrim(post:id_cupon_CCT)
+	CALL post:MISCval_num_Cupon(l_tipo_cupon ,post:id_cupon_CCT)
+	REFRESH post:id_cupon_CCT
+	
+	IF (RETVAL < 0) THEN
+		IF (l_tipo_cupon == "NUM") THEN
+			LET l_mensaje = "EL CODIGO DEL CUPON DEBE SER NUMERICO."
+		ELSE
+			LET l_mensaje = "EL CODIGO DEL CUPON DEBE SER ALFANUMERICO."
+		END IF
+		MSGBOX l_mensaje,OFB_OK,"Error"
+		NEXTFIELD post:id_cupon_CCT
+		RETURN (-2)
+	END IF
+
+	IF (post:id_cupon_CCT.NUMCHARS > l_long_cupon) THEN
+		FPRINT l_mensaje , "EL CUPON HA SUPERADO LA LONGITUD MAXIMA DE %s %s",l_long_cupon,"CARACTERES"
+		MSGBOX l_mensaje,OFB_OK,"Error"
+		NEXTFIELD post:id_cupon_CCT
+		RETURN (-2)
+	END IF
+	//Control de Fecha de Vencimiento
+	IF (l_ctrl_venc == "N") THEN
+		clearfield post:fecha_vto_CCT
+		refresh post:fecha_vto_CCT
+		protfield post:fecha_vto_CCT
+	ELSE
+		/*if (post:fecha_vto_CCT == "") then
+			LET l_mensaje = "DEBE INGRESAR LA FECHA DE VENCIMIENTO."
+			MSGBOX l_mensaje,OFB_OK,"Error"
+		endif*/
+		unprotfield post:fecha_vto_CCT
+	END IF
+	
+	//setea flags de campos editables segun desglose
+	CALL post:MISCedit_cct_flags
+
+	//verificar si existe cupon en tabla cupon_tmp
+	IF (TESTFLAG(admin:mode_flags,act)) THEN
+    //Si no estoy modificando entonces los campos se asignan de la ParamCCT.
+    ELSE
+		post:id_comitente_CCT = post:adt_cct_comitente
+		post:cupon_cod_serv = post:adt_cct_cod_serv
+	ENDIF
+	//el identificador de cupon fue desglosado
+	CALL post:CDSverif_cupon_tmp
+	IF (RETVAL == 0) THEN
+		//cupon ya cargado en el lote, se habilita boton Modificar y Eliminar
+		CALL post:MISCmodificar_cupCCT
+	END IF
+	
+	SETVALDONE post:id_cupon_CCT
+
+END SUB
+
+/*******/
+

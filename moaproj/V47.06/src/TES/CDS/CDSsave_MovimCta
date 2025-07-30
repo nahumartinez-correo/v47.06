@@ -1,0 +1,99 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSsave_MovimCta
+* NOMBRE
+*   OFB:tes:CDSsave_MovimCta
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSsave_MovimCta(bco,tipo_cta,nro_cta,fvalor,tipo_mov,imp,desc,cod)
+    local loc_retval like lib:err_retval
+    
+    mov_br_id       = common:sucursal_activa
+    mov_banco       = bco
+    mov_tipo_cuenta = tipo_cta
+    mov_nro_cuenta  = nro_cta
+    mov_bus_date    = fvalor
+    mov_date        = common:system_date
+    mov_operator    = op:op_operator_id
+    mov_marca_rev   = ""
+
+    clearfield loc_retval
+
+    /* Si la fecha valor es anterior a la fecha de sistema chequeo que exista
+    el inicial para ese dia, sino lo grabo */
+    do
+    	if (mov_bus_date > common:system_date || loc_retval == -2)
+    		break
+    	end if
+    	call CDSinicial_cta(0,0)
+        call csr:date_add(mov_bus_date,1,"d",mov_bus_date)
+    loop
+
+    let mov_bus_date = fvalor
+    /* Antes de Grabar el Movimiento actualizo la marca en la
+    tabla de saldos, inidcando que el detalle del mov se
+    esta actualizando */
+    call CDSupdate_saldo(tes:mov_banco,tes:mov_tipo_cuenta,tes:mov_nro_cuenta,"X")
+
+    mov_time        = tlr:jnl_time
+    mov_sequence    = tlr:jnl_sequence
+    mov_tipo_mov    = tipo_mov
+    mov_codigo_siaf = siaf:codigo_siaf
+    //mov_desc_mov  = desc
+    fprint mov_desc_mov "%-s",desc
+    mov_importe     = imp
+    mov_mone_mov    = siaf:moneda
+    mov_date        = common:system_date
+    mov_codigo_siaf = cod
+
+    cds select from dsc:MovimCta_tbl becomes dsc:MovimCta_ctx where \
+    mov_br_id       == mov_br_id       && \
+    mov_banco       == mov_banco       && \
+    mov_tipo_cuenta == mov_tipo_cuenta && \
+    mov_nro_cuenta  == mov_nro_cuenta  && \
+    mov_bus_date    == mov_bus_date    && \
+    mov_date        == mov_date        && \
+    mov_time        == mov_time        && \
+    mov_operator    == mov_operator    && \
+    mov_sequence    == mov_sequence
+
+    cds findfirst dsc:MovimCta_ctx lock
+    let lib:err_retval = cdsretval
+    if (lib:err_retval == -801) then
+        cds clearbuffer dsc:MovimCta_ctx
+        /*****************************************************************
+            Header del Movimiento
+        *****************************************************************/
+        CALL csr:proc_list(F_APPEND,DSC:MovimCta_ctx,lst:tes:LISTmovim_hdr,0)
+
+        /*****************************************************************
+            Fin Header del Movimiento
+        ******************************************************************/
+
+        /******************************************************************
+        El detalle del movimiento, como es variable según transacción, está en
+        una lista.
+        *******************************************************************/
+         if (fld:INDMovim_Append != 0)
+              CALL csr:proc_list(F_APPEND,DSC:MovimCta_ctx,fld:INDMovim_Append,0)
+         end if
+         cds insert dsc:MovimCta_ctx lock
+    end if
+    cds unlock dsc:MovimCta_ctx
+    cds endselect dsc:MovimCta_ctx
+    call CDSupd_saldo_inic(mov_banco,mov_tipo_cuenta,mov_nro_cuenta,mov_bus_date,mov_importe,tipo_mov)
+END SUB
+
+/*******/

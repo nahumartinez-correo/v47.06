@@ -1,0 +1,553 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCjnltran
+* NOMBRE
+*   OFB:tes:MISCjnltran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCjnltran    /*tomada el 15/03/2001*/
+	LOCAL loc_imp LIKE siaf:importe
+	LOCAL l_evaux_importe LIKE siaf:importe
+	LOCAL l_estado_ped like post:estadoPED_estado
+	SELECT (siaf:codigo_siaf)
+		CASE 6820                     // Pago Facil
+			CALL post:CDStotal_utility_sf1
+			;SMC actualizo la tabla de Codigos de Barra
+			IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+				CALL siaf:CDSrev_SF1_Cod
+			ELSE
+				CALL siaf:CDSsave_SF1_Cod
+			END IF
+		BREAK
+		CASE 8500 // venta especies valorizadas
+		CASE 8501 // reversa de 8500
+			//gpb:NI50479
+			//valido que no sea una Nota de Credito PED en Origen
+			//valido que no sea una Refacturacion PED
+			IF (!TESTFLAG(post:sesion_ped_flags,genera_nc_ped) && !TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+				CALL MISCsalida_cajaVtaEv
+				l_evaux_importe = adt_evaux_importe
+				CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",0,l_evaux_importe)
+				; Guardo un campo en la AuxEspV para saber si llegó a journalizarse
+				; o no la subespecie.
+				IF (!TESTFLAG (tlr:tran_flags,correction) && (post:estAnul != "D1_" && post:estAnul != "D2_")) THEN
+					; Si está pasando la factura luego de la primera o segunda reimpresion
+					; no es necesario que actualice la tabla
+					adt_evaux_envio = "S"
+					CDS CLEARBUFFER DSC:AuxEspV_ctx
+					CDS APPEND DSC:AuxEspV_ctx adt_evaux_envio
+					CDS UPDATE DSC:AuxEspV_ctx LOCK
+				END IF
+			END IF
+		BREAK
+		CASE 8580 // Salida de Cheques de Caja
+		CASE 8850
+			CALL MISCsal_cabe_cheq
+		BREAK
+		CASE 8586 // Cada una de las salidas
+		CASE 8856
+			//ML Duek
+			CALL MISCsalida_cheques
+		BREAK
+		CASE 8590
+			CALL MISCdep_cheq_tes
+		BREAK
+		;CASE 8610 // carga negativa especies valorizadas
+		CASE 8616
+		CASE 8611 // reversa de 8610 especies valorizadas
+		CASE 9286 // salida de Esp.Val de Caja a Otra Suc.
+		CASE 9296 // salida de Esp.Val de Caja a Tes.Pcial.
+			CALL MISCsalida_caja_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",0,siaf:importe)
+		BREAK
+		CASE 8620 // salida caja
+		CASE 8621 // reversa de 8620
+			CALL MISCsalida
+		BREAK
+		CASE 8660 //salida de Especie Val de caja. Encabezado
+			CALL MISCsalida_cabe_ev
+		BREAK
+		CASE 8666 // salida caja especies valorizadas
+		CASE 8661 // reversa de 8620 especies valorizadas
+			CALL MISCsalida_ev
+			CALL MISCsalida_caja_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",0,siaf:importe)
+		BREAK
+		CASE 8630 // salida tesoro
+		CASE 8631 // reversa de 8630
+			CALL MISCsalida
+			CALL MISCsalida_tesoro
+		BREAK
+		CASE 8670 // salida tesoro especies valorizadas. Encabezado
+			CALL MISCsalida_cabe_ev
+		BREAK
+		CASE 8676 // salida tesoro especies valorizadas
+		CASE 8671 // reversa de 8670
+			CALL MISCsalida_ev
+			CALL MISCsalida_tesoro_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_tesoro_id,"S",0,siaf:importe)
+		BREAK
+		CASE 8640 // salida tesoro externo
+		CASE 8641 // reversa de 8640
+		CASE 8701 // reversa de 8700
+		CASE 8711 // reversa de 8710
+		CASE 8780 // salida de tesoro a administración regional
+		CASE 8781 // reversa de 8780
+		CASE 6875 // Salida Efectivo a ATM
+			CALL MISCsalida_tesoro
+		BREAK
+		CASE 8726 // cada una de las salidas de cheques de tesoro
+			CALL MISCsal_cheq_tes("S")
+		BREAK
+		CASE 9336 // Salida de cheques de tesoro a otra suc
+			CALL MISCsal_cheq_tes("U")
+		BREAK       
+		CASE 8756 // Cada una de las salidas de cheques de caja a tesoría provincial
+			LET siaf:nro_cupcheq = siaf:nro_cheque
+			CALL MISCsal_cheq_tes_caj("S",siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque)
+		BREAK
+		CASE 9326 // Salida de cheques de caja a otra sucursal
+			CALL MISCsal_cheq_tes_caj("U",siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque)
+		BREAK
+		CASE 9346
+			CALL tes:MISCentrada_cheque
+		BREAK
+		CASE 9356
+			CALL tes:MISCent_cheque_tes
+		BREAK
+		CASE 8776 // cada una de las salidas de valores de caja a administración regional
+			CALL MISCsal_val_caj_AR
+		BREAK
+		CASE 8796 // Cada una de las salidas de valores de tesoro a administración regional
+			CALL MISCsal_val_tes_AR
+		BREAK
+		CASE 8690 //salida por fallo de caja
+			IF (post:adt_mp_adm == "I") THEN
+				CALL tes:MISCsal_cheq_tes_caj("S",siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq)              
+				// Si es un cheque de giros
+				CALL CDStesocheq_load(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq)
+				IF (tes:teso_cheq_auto == "N") THEN
+					IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+						CALL giros:CDSupd_estado_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq,"B")
+					ELSE
+						CALL giros:CDSupd_estado_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq,"E")
+					END IF
+				END IF
+			END IF
+		BREAK
+		CASE 8890 //entrada por fallo de caja
+			IF (post:adt_mp_adm == "I") THEN
+				CALL siaf:MISCent_falla_caj
+			END IF
+		BREAK
+		;CASE 8650 // salida tesoro externa especies valorizadas
+		CASE 8656
+		CASE 8651 // reversa de 8650
+		CASE 9246 // Salida de epecies de Tesoro a otra sucursal
+		CASE 9256 // Salida de especies de Tesoro a tesoro provincial
+			CALL MISCsalida_tesoro_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_tesoro_id,"S",0,siaf:importe)
+		BREAK
+		;CASE 8810 // carga positiva caja especies valorizadas
+		CASE 8816
+		CASE 8811 // reversa de 8810 especies valorizadas
+		CASE 9306 // Entrada de Esp.Val a Caja de Otra Suc.
+		CASE 9316 // Entrada de Esp.Val a Caja de Tes.Pcial.
+			CALL MISCentrada_caja_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",siaf:importe,0)
+			BREAK
+		CASE 8820 // entrada caja
+		CASE 8821 // reversa de 8820
+			IF (siaf:continua_transaccion == "S" || \
+				TESTFLAG(tlr:tran_flags,correction)) THEN //el pase NO es rechazado
+				CALL MISCentrada
+			ELSE
+				//limpiar campo indirecto de totales para que no lo ejecute
+				CLEARFIELD tlr:INDtots_append
+			END IF
+		BREAK
+		CASE 8860 // entrada caja especies valorizadas.Encabezado
+			CALL MISCentrada_cabe_ev 
+		BREAK
+		CASE 8866 // entrada caja especies valorizadas
+		CASE 8861 // reversa de 8860 especies valorizadas
+			CALL MISCentrada_ev
+			IF (siaf:continua_transaccion == "S" || \
+				TESTFLAG(tlr:tran_flags,correction)) THEN //el pase NO es rechazado
+				CALL MISCentrada_caja_ev
+				CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",siaf:importe,0)
+			END IF
+		BREAK
+		CASE 8830 // entrada tesoro
+		CASE 8831 // reversa de 8830
+			IF (siaf:continua_transaccion == "S" || \
+				TESTFLAG(tlr:tran_flags,correction)) THEN //el pase NO es rechazado
+				CALL MISCentrada
+				CALL MISCentrada_tesoro
+			END IF
+		BREAK
+		CASE 8870 // entrada tesoro especies valorizadas.Encabezado
+			CALL MISCentrada_cabe_ev
+		BREAK
+		CASE 8876 // entrada tesoro especies valorizadas
+		CASE 8871 // reversa de 8830 especies valorizadas
+			CALL MISCentrada_ev
+			IF (siaf:continua_transaccion == "S" || \
+				TESTFLAG(tlr:tran_flags,correction)) THEN //el pase NO es rechazado
+				CALL MISCentrada_tes_ev
+				CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_tesoro_id,"S",siaf:importe,0)
+			END IF
+		BREAK
+		CASE 8840 // entrada tesoro externo
+		CASE 8841 // reversa de 8840
+		CASE 9201 // reversa de 9200
+		CASE 9211 // reversa de 9210
+		CASE 6870 //Etrada Efectivo de ATM
+			CALL MISCentrada_tesoro
+		BREAK
+		;CASE 8880 // entrada tesoro externo especies valorizadas
+		CASE 8886
+		CASE 8881 // reversa de 8880
+		CASE 9266 // Entrada de epecies a Tesoro de otra sucursal
+		CASE 9276 // Entrada de especies a Tesoro de tesoro provincial
+			CALL MISCentrada_tes_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_tesoro_id,"S",siaf:importe,0)
+		BREAK
+		CASE 40001 // Ajuste de Merchandising
+			CALL post:MISCstock_merch
+		BREAK
+		CASE 40002 // Venta de Merchandising
+			//gpb:NI50479
+			//valido que no sea una Nota de Credito PED en Origen
+			//valido que no sea una Refacturacion PED
+			IF (!TESTFLAG(post:sesion_ped_flags,genera_nc_ped) && !TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN		
+				CALL post:MISCventa_merch
+			END IF
+		BREAK
+		CASE 40003 // Salida de productos Suc-Almacen
+		CASE 40005 //cgw: Salida Productos a CM
+			CALL post:MISCsal_pv
+		BREAK
+		CASE 40004 // Entrada de Merchandising
+		CALL post:MISCent_pv
+		BREAK
+		CASE 8900
+			CALL MISCent_cabe_cheq
+		BREAK
+		CASE 8906 // entrada de cheques a tesoro
+			CALL MISCentrada_cheq
+			IF (siaf:continua_transaccion == "S" || \
+				TESTFLAG(tlr:tran_flags,correction)) THEN //el pase NO es rechazado
+				CALL MISCent_cheq_tes
+			END IF
+		BREAK
+		CASE 8920 // entrada de cheques a caja
+			CALL MISCent_cabe_cheq
+		BREAK
+		CASE 8926 // entrada de cheques a caja
+			//ML Duek
+			CALL MISCentrada_cheq
+		BREAK
+		CASE 9010 // entrada pase forzado de marca de tesoro
+			;CALL tes:MISCentrada_pft
+		BREAK
+		CASE 8940 // Deposito efvo en caja buzon
+			CALL MISCsalida_tesoro
+		BREAK
+		CASE 8970 // Deposito de Cheques en Caja Buzon
+			CALL MISCdep_cheq_tes
+		BREAK
+		CASE 8960
+		CASE 8980
+			;Se transfieren todos los cheques de esa caja buzon y esa bolsa
+			;al operador
+			CALL CDSupd_op_cheque("B",tes:buzon,tes:bolsa,"O",op:op_operator_id," ")
+		BREAK
+		CASE 9100 // Deposito de Esp Val de caja en Caja Buzon
+			CALL MISCsalida_caja_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",0,siaf:importe)
+		BREAK
+		CASE 9110 // Deposito de Esp Val de Tesoro en Caja Buzon
+			CALL MISCsalida_tesoro_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_tesoro_id,"S",0,siaf:importe)
+		BREAK
+		CASE 9120
+		CASE 9130
+			CALL MISCentrada_caja_ev
+			CALL post:MISCumev_asig_datos(op:op_branch_id,espv_cod,espv_subcod,op:op_operator_id,"N",siaf:importe,0)
+		BREAK
+#ifdef giros
+		// agregado para giros
+		CASE 9900
+		CASE 9906
+		CASE 9910
+		CASE 9926
+		CASE 9920
+		CASE 9930
+			CALL tes:MISCupdate_sesion
+		BREAK
+// agregado para giros
+#endif
+		CASE 99099
+		CASE 99097 // cgw:Captura para medio de pago del tipo cheque para cliente cuentacorrentista
+			IF (post:Tipo_Adm == "I") THEN
+				CALL MISCcapturo_cheque
+			END IF
+		BREAK
+		CASE 99060
+			CALL MISCmulti_cheques
+		BREAK
+		CASE 99020 // Entrega de piezas al cliente en ventanilla
+			CALL post:CDSupdate_stockp
+			IF (post:adt_stockp_destino == DSC:post:PED_desc) THEN
+				//rutina que graba 1 registro en la tabla estadoPED con el nuevo estado
+				//de la pieza para mandar al host por el rtbatch
+				post:estadoPED_pieza = SUBSTR(post:Pieza,0,13)		
+				post:estadoPED_id_pieza = post:stockp_idPieza_ped
+				post:estadoPED_NISorig = post:stockp_NISorig_ped
+				post:estadoPED_NISdest = post:stockp_NISdest_ped
+				IF (post:adt_stockp_en_devol == "S") THEN
+					l_estado_ped = "EEO"
+				ELSE
+					l_estado_ped = "EED"
+				END IF
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSsave_estadoPED(l_estado_ped,"D") //Directa
+				ELSE
+					CALL post:CDSsave_estadoPED(l_estado_ped,"C") //Cancelacion
+				END IF
+			END IF            
+		BREAK
+		
+		
+		CASE 30101
+			IF (post:pzaPed_regul == "S")
+				//rutina que graba 1 registro en la tabla estadoPED con el nuevo estado
+				//de la pieza para mandar al host por el rtbatch
+				post:estadoPED_pieza = SUBSTR(post:Pieza,0,13)		
+				post:estadoPED_id_pieza = post:id_pieza_ped //stockp_idPieza_ped
+				post:estadoPED_NISorig = post:stockp_NISorig_ped //post:NisOrigen_ped
+				post:estadoPED_NISdest = post:NisDestino_ped
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSsave_estadoPED("EEO","D") //Directa
+					//actualizo la NCpedEnOrigen con la marca de pieza regularizada
+					CALL post:CDSactMarcaRegul("S")
+				ELSE
+					CALL post:CDSsave_estadoPED("EEO","C") //Cancelacion
+					//lompio la marca de pieza regularizada en la NCpedEnOrigen
+					CALL post:CDSactMarcaRegul("")
+				END IF
+			END IF
+			BREAK
+		
+		
+		CASE 99124 // Endas con Poliza
+			; En la reversa borro lo que había actualizado de la stockp
+			IF (TESTFLAG(tlr:tran_flags,correction) && (post:EnPol_Boton == 2 || post:EnPol_Boton == 3)) THEN
+				CALL post:CDSborro_EP_stockp
+			END IF
+			; En la directa genero las NovTT
+			IF (!TESTFLAG(tlr:tran_flags,correction) && (post:EnPol_Boton == 2 || post:EnPol_Boton == 3)) THEN
+				IF (hcomm:tran_status < HOST_REJECTED)
+					post:Pieza = post:EnPol_Track
+					CALL post:CDSgrabo_EP_stockp
+					CALL post:MISCgenero_scanP_EP(post:Pieza)
+					CALL post:MISCGeneroObserv(post:Pieza)
+				END IF
+			END IF
+		BREAK
+		CASE 99005 //Recepción de Piezas
+			IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+				; Borro la pieza de la tabla stockp_recep
+				CALL post:CDSstockp_recep_del
+				; Borro los scaneos correspondientes a dicha Transacción
+				CALL post:CDSBorro_Scaneos("R")
+			END IF
+		BREAK
+		CASE 99010 //Asignacion de Piezas a Destino
+			IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+				// Borro la pieza de la stockp
+				CALL post:CDSstockp_update
+				// Actualizo la marca Asigna_Destino de la stockp_recep (por si la pieza fue recibida sin destino)
+				CALL post:CDSstockp_recep_rev
+				//Borro los scaneos correspondientes a dicha Transacción
+				CALL post:CDSBorro_Scaneos("R")
+			END IF
+			IF (post:stockp_destino == DSC:post:PED_desc) THEN
+				post:estadoPED_pieza = SUBSTR(post:stockp_pieza,0,13)		
+				post:estadoPED_id_pieza = post:stockp_idPieza_ped
+				post:estadoPED_NISorig = post:stockp_NISorig_ped
+				post:estadoPED_NISdest = post:stockp_NISdest_ped        			
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					//Genero estadoPED
+					CALL post:CDSsave_estadoPED(post:stockp_estado_ped,"D") //Directa
+					//Actualizo en la PEDpend que la pieza ha sido recibida
+					CALL post:CDSupd_PEDpend("RECI")
+				ELSE	
+					//Genero estadoPED cancelacion
+					CALL post:CDSsave_estadoPED(post:stockp_estado_ped,"C") //Cancelacion
+					//Actualizo en la PEDpend que la pieza ha sido reversada y queda como pendiente
+					CALL post:CDSupd_PEDpend("PEND")
+				END IF
+			END IF
+		BREAK
+		CASE 99012 // Observacion de Poliza
+		CASE 99014
+			// Si es Reversa borro lo que habia actualizado en la stockp
+			IF ((post:EnPol_Boton == "" || post:EnPol_Boton == 4) && (TESTFLAG(tlr:tran_flags,correction))) THEN
+				CALL post:MISCReverso_ObsReenc
+				IF (RETVAL < 0) THEN
+					MSGBOX "LA PIEZA NO PUEDE REVERSARSE.",0X00,"ERROR"
+					RETURN -2
+				END IF
+			END IF
+			// En la directo actualizo la stockp
+			IF ((post:EnPol_Boton == "" || post:EnPol_Boton == 4) && (!testflag(tlr:tran_flags,correction)) \
+				&& (siaf:codigo_siaf == 99012)) THEN
+				post:adt_stockp_pieza = post:Pieza
+				CALL post:CDSActualizo_Stockp
+			END IF
+		BREAK
+		;CASE 99200 // reeemplazo de cheque Vta. UP Diferida
+		CASE 99205 // cancelacion de reemplazo de cheque x Vta. UP diferida
+		CASE 99245
+		/*
+			IF (siaf:moneda != 0) && (siaf:importe != 0) THEN
+				post:adt_mp_cod = siaf:moneda
+				CALL post:CDSadt_MedPago_load
+				IF ((post:adt_mp_adm == "I") && (post:adt_mp_admban == "S")) THEN
+					loc_imp = post:importe_origen
+					post:importe_origen = siaf:importe_chq
+					CALL MISCcheque_UP
+					post:importe_origen = loc_imp
+				END IF
+			END IF
+		BREAK
+		*/
+			CALL MISCcheque_UP
+		BREAK
+		CASE 99200 //Reemplazo de Cheque Rech./Obs.    
+			; Doy de baja El cheque a reemplazar
+			CALL MISCsal_cheq_tes_caj("Z",post:cheqrech_moneda,tes:banco_codigo,siaf:cheqcuenta,siaf:nro_cheque)
+		BREAK
+		CASE 99240 //cgw:Reemplazo Cheque Robado en Sucursal
+		CASE 99242 //cgw: Reemplazo Cheque Robado Empresa Recaud.
+			//cgw: Actualiza estado de Reemplazado para el cheque Robado en TesoCheq.
+			CALL MISCsal_cheq_tes_caj("Z",post:cheqrech_moneda,post:cod_banco,post:cuenta,post:nro_cheque)
+		BREAK
+		; MLD Agrego para Reingenieria
+		CASE 9600
+			CALL tes:CDSarqueo_tesoro
+		BREAK
+		CASE 8990 // salida sub tesoro
+		CASE 8991 // reversa de 8630
+			CALL MISCsalida_subteso
+			CALL MISCsalida  // Para que grabe el pase
+		BREAK
+		CASE 8910 // entrada sub tesoro
+		CASE 8911 // reversa de 8630
+			CALL MISCentrada_subteso
+		BREAK
+		CASE 8536
+			CALL MISCmarco_rend
+		BREAK
+		CASE 99215
+			IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+				post:sequence_aux = tlr:jnl_sequence_corr
+				CALL post:CDSBorro_Scaneos("U")
+				CALL post:CDSdel_stockpUPpieza
+				IF (post:tipo_piezaUP == "SIMPLES NAC" ||post:tipo_piezaUP == "SIMPLES INTER") THEN
+					CALL post:CDSsaveStockpUP_simp(post:NisUP,post:tipo_piezaUP,post:cantidad)
+					IF (!post:rev_porCabecera) THEN
+						//si estoy reversando por cabecera Simples nacionales o internacionales,
+						//pongo en cero la cantidad y el vector de interfaz usado por Nina.
+						CALL post:CDSupdCantCero
+					END IF
+				END IF
+			END IF
+		BREAK
+		CASE 99235
+		IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+			post:sequence_aux = tlr:jnl_sequence_corr
+			CALL post:CDSBorro_Scaneos("U")
+			CALL post:CDSback_StockpUP
+		END IF
+		BREAK
+		CASE 99190
+			CALL tes:MISCrecepcion_cheque
+		BREAK 
+		CASE 99195
+			CALL tes:MISCcancel_recep
+		BREAK               
+		CASE 99280
+			CALL MISCsal_cheq_tes_caj("C",siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque)
+		BREAK   
+		CASE 8700 // Salida de efectivo del tesoro a tesorería regional
+		CASE 8710 // Salida de efectivo del tesoro a otra sucursal
+			CALL MISCsalida_tesoro
+			IF (post:track_trace.NUMCHARS > 0)
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSTT_VDI("GTT")
+				ELSE
+					CALL post:CDSTT_VDI("BTT")
+				END IF
+			END IF
+		BREAK
+		CASE 9200
+		CASE 9210
+			CALL MISCentrada_tesoro
+			IF (post:track_trace.NUMCHARS > 0)
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSsave_tt_vdi
+				ELSE
+					CALL post:CDSreverso_tt
+				END IF
+			END IF
+		BREAK
+		CASE 9320 // Salida de cheque de caja a otra sucursal
+		CASE 9330 // Salida de cheque del tesoro a otra sucursal
+		CASE 8720 // Salida de cheque del tesoro a tesorería regional
+		CASE 8750 // Salida de cheque de caja a tesorería regional
+		CASE 8730 // Salida de efectivo caja a tesorería regional
+		CASE 8740 // Salida de efectivo de caja a otra sucursal       
+		;CASE 9220 // Entrada de efectivo a caja de tesorería regional
+		;CASE 9230 // Entrada de efectivo a caja de otra sucursal
+			IF (post:track_trace.NUMCHARS > 0) THEN
+				IF (!testflag(tlr:tran_flags,correction)) THEN
+					CALL post:CDSTT_VDI("GTT")
+				ELSE
+					CALL post:CDSTT_VDI("BTT")
+				END IF
+			END IF
+		BREAK
+		CASE 99008 // Registro VAP
+			CALL post:CDSupd_stockp_vap
+		break
+			CASE 99093 //Registro RPP
+			CASE 18100 // Servicio RPP
+			CALL post:CDSupd_stockp_rpp
+		BREAK
+	END SELECT
+	; Las transacciones de Cuentas Bancarias las manejamos aparte
+	CALL MISCjnlCuentas
+    
+	//Las tx VAP tienen un tratamiento aparte
+	IF (post:jnl_flia_tran == "VAP") THEN
+		CALL post:CDSupd_stockp_vap
+	END IF
+    
+END SUB
+
+/*******/

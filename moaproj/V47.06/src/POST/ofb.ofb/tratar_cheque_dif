@@ -1,0 +1,163 @@
+/****o* Tratamiento de Cheques/OFB:post:tratar_cheque_dif
+* NOMBRE
+*   OFB:post:tratar_cheque_dif
+* DESCRIPCION
+*   FGB 12.11.2002: En esta rutina se encuentra todo el bloque de sentencias referidas a la venta con cheque diferido
+*   y que estaba inmersa en el codigo del OFB:tlr:tlr_fb11.
+*   Ahora en OFB:tlr:tlr_fb11 solo hay un llamado al presente OFB    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:presu_adicionales
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:tratar_cheque_dif
+
+/*MFM (18.03.2002) - Adelanto de la captura de datos de Cheque Diferido*/
+CALL post:MISCRecup_DatosDif
+//BUG 15719 - Se pregunta que no sea Facturacion de Comprobantes pendientes, ya que en este caso, por mas que 
+//se haya indicado pagar con cheque diferido no se puede.
+If (post:pago_diferido == "S" && !post:OperacionAut && (post:cli_tipo == CLIUP || post:cli_tipo == CLIMED)) Then
+//If (post:pago_diferido == "S") THEN
+	/*22.03.2002 - Verifico si las transacciones auxiliares se confirmaron, si encuentra al menos
+	una que si, entonces no muestra la pantalla de Pago Diferido*/
+	CALL post:MISCVerif_TxConf
+	If (RETVAL < 0) Then
+		//Excepcion Venta UP
+		If (post:consulta_excepcion == "S") Then
+		    //Calculo importe de venta neto y bruto, importe de bonificacion, importe de impuestos
+		    CALL post:MISCCalc_MontoImp("S")
+		    If (retval == 0) Then
+			//tengo que controlar que el monto de la venta bruto, o sea, sin la bonificación, coincida \
+			//exactamente con el de la venta por excepción.
+    			If (post:monto_bruto != post:excep_venta) Then
+				MSGBOX "El monto de la venta difiere del importe acordado de venta por excepción.",0x00,"ERROR"
+				let drv:button = TFB11
+				CALL drv:but_up_enable
+				call drv:but_enable
+				/* MFM - Limpio post:det_presu_line1*/
+				clearfield post:det_presu_line1
+				refresh post:det_presu_line1
+				return -2
+			End if
+		     else
+			call post:tratar_MontoImp(retval)
+			return RETVAL
+		     endif;agregado
+		Endif
+		
+	        /*MFM - Segunda Etapa Cliente Medio - Multiples Cheques */
+		If (post:cli_tipo == CLIMED && post:consulta_excepcionCM == "S") Then
+	    		//Borro los intereses generados y recalculo totales
+			call post:MISCchqMultCount
+	    		//Borro la TotMedioPago
+			call post:CDSdelChqTotMedPago
+			//Regenero la grilla
+			call post:MISCgrilla_sesion
+			//busco el tipo de Excepcion
+			call post:CDSexcep_tmpCM_load
+			//desmarco Cheques Usados
+			call post:CDSDesMarcaChqUsado
+
+			//Calculo importe de venta neto y bruto, importe de bonificacion, importe de impuestos
+		    	CALL post:MISCCalc_MontoImp("S")
+			If (retval == 0) Then
+
+				//verifico si para el total de venta existe una excepcion habilitada
+				if (post:excepCM_tipo == EXCEP_DIFERIDA) then
+					call post:CDSverifExcepHab
+					//si devuelve -2, te deja continuar y no marca la excepcion como usada.
+				else
+					retval = 0
+				endif
+				if (retval == 0) then
+	    				//Pantalla de Pago Diferido Multiple
+	    				call plataf:f12_popup_init // restauro el mapeo de teclas
+		    			POPUP post:SCRNchqMult2, post:PRESchqMultInt, post:PCOLchqMult, post:SVALchqMultInt
+		    			call plataf:f12_popup_exit // limpio el mapeo de teclas
+	    			end if
+	    	  	else
+			     call post:tratar_MontoImp(retval)
+			     return RETVAL
+	    	  	endif;agregado
+	    	  else
+			//Borro los intereses generados y recalculo totales
+			call post:CDSborrarIntPagoDif
+			//Regenero la grilla
+			call post:MISCgrilla_sesion
+			refresh post:Total_importe
+			
+			//Calculo importe de venta neto y bruto, importe de bonificacion, importe de impuestos
+		    	CALL post:MISCCalc_MontoImp("S")
+			If (retval == 0) Then
+			
+				//Pantalla de Pago Diferido
+				if (!post:OperacionAut) then
+					call plataf:f12_popup_init // restauro el mapeo de teclas
+					POPUP SCR:post:SCRNPago_Diferido,post:PRESPago_Diferido,post:PRECPago_Diferido,post:SVALPago_Diferido
+					DO
+						if (post:OperacionCob  && LASTKEY == RT_ESC) then
+							clearfield drv:last_key
+							POPUP SCR:post:SCRNPago_Diferido,post:PRESPago_Diferido,post:PRECPago_Diferido,post:SVALPago_Diferido
+						else
+							break
+						end if
+					LOOP
+					call plataf:f12_popup_exit // limpio el mapeo de teclas
+				end if
+			else
+				call post:tratar_MontoImp(retval)
+				return RETVAL
+			endif ;agregado
+		endif
+		if (LASTKEY == RT_ESC)
+			if (post:cli_tipo == CLIMED)
+				//Borro el descuento cm generado y recalculo totales
+				if (post:ConvenioSesionV) then
+					call post:MISCVerif_TxConf
+					if (RETVAL < 0) then
+						CALL post:CDSDelete_99300
+					end if
+				endif
+			endif
+			if (post:cli_tipo == CLIUP) then
+				if (post:ConsumoAnticipo) then			
+					call post:CDSdel_99456
+				endif
+			endif
+			//Regenero la grilla
+			call post:MISCgrilla_sesion
+			refresh post:Total_importe
+		endif
+		Call post:MISCControl_PagoUP
+        	If (RETVAL < 0) THEN
+	         	if (post:cli_tipo == CLIMED && post:ConvenioSesionV) then
+	    			call post:MISCVerif_TxConf
+				if (RETVAL < 0) then
+					CALL post:CDSDelete_99300
+					//Regenero la grilla
+        			end if
+			endif
+			if (post:cli_tipo == CLIUP && post:ConsumoAnticipo) then	
+				call post:CDSdel_99456
+			endif
+			//Regenero la grilla
+			call post:MISCgrilla_sesion
+			refresh post:Total_importe
+		       	RETURN -2
+    	        End If
+	
+    End If
+End If
+
+END SUB
+
+/*******/

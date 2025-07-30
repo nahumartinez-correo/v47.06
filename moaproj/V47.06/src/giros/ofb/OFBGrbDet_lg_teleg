@@ -1,0 +1,103 @@
+/****o* Lista de Giros/OFB:giros:OFBGrbDet_lg_teleg
+* NOMBRE
+*   OFB:giros:OFBGrbDet_lg_teleg
+* DESCRIPCION
+*   Se setean los campos para grabar los giros emitidos en la tabla PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:OFBGrDet_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBGrbDet_lg_teleg
+	
+	local ind         like siaf:i
+	local ProvEmiSell like siaf:ProvImpuesto
+	local codigo_aux  like siaf:codigo_siaf
+
+	es_emision_postal = "N"
+	es_emision_tele   = "S"
+	es_envio_WU       = "N"
+	es_emision_correohoy = "N"
+
+	post:destino 	= post:adt_tarif_dest
+	post:unidad_fac = post:adt_tarif_um
+
+	//giros:Comision_fld = ComisionSinIva_fld + IvaComision_fld 
+	post:ImporteConIva = giros:Comision_fld + post:adt_tarif_fijo + post:costo_opc
+	post:ImporteSinIva = giros:ComisionSinIva_fld + TasaSinIva_fld
+	post:ImporteIva    = giros:IvaComision_fld
+	post:tarifa = giros:Comision_fld + post:adt_tarif_fijo
+		
+	post:ImpServUP = giros:Comision_fld
+
+	ind = 0
+	while (ind < post:cant_opc)
+	    post:ImporteSinIva = post:ImporteSinIva + post:siniva_opc[ind]
+	    ind = ind + 1
+	end while
+
+	// Rutina de tratamiento de Sellados 
+	siaf:ProvImpuesto = giros:SucSel2_fld
+
+	if ( giros:ImporteSelloEmis != 0 )
+		ProvEmiSell  = substr(common:sucursal_activa,0,1)
+		giros:Impuesto =  giros:ImporteSelloEmis
+		call giros:CDSdesc_impuesto(ProvEmiSell,post:adt_serv_serv,"E")
+	end if
+	
+	if ( giros:ImporteSelloPag != 0 )
+		giros:Impuesto_abonado = giros:ImporteSelloPag
+		call giros:CDSdesc_impuesto(SucSel2_fld,post:adt_serv_serv,"A")
+	end if
+ 
+ //ya estaria calculado!!
+  call post:MISCImpSellosTratam("ING/EGR")
+
+	siaf:ImporteConIva = post:ImporteConIva
+	siaf:ImporteSinIva = post:ImporteSinIva
+
+    siaf:importe = post:costo_opc + Comision_fld + post:adt_tarif_fijo + \
+	giros:ImporteNeto
+	
+	call csr:cleararray(post:fliatran_vec)
+	call csr:cleararray(post:impciva_vec)
+	call csr:cleararray(post:impsiva_vec)
+
+	call MISCsumo_a_vectores\
+	(siaf:adt_tran_fliatran,Comision_fld,ComisionSinIva_fld)
+
+	call MISCsumo_a_vectores\
+	(post:adt_tarif_uneg,post:adt_tarif_fijo,TasaSinIva_fld)
+
+	ind = 0
+	while (ind < post:cant_opc)
+		call MISCsumo_a_vectores\
+		(post:flia_opc[ind],post:cos_opc[ind],post:siniva_opc[ind])
+	        ind = ind + 1
+	end while
+
+	call SVALgralFormCalGiro
+	
+	giros:consulta = 0
+	siaf:siaf_status = HOST_ACCEPTED
+
+	post:PreDForFis = post:adt_serv_formfiscal
+	call post:MISCAcumTotalesSes
+	
+	post:INDPresuD_Dat = OFB:giros:CDSappend70050
+	call post:MISCGrabaDetalleTrn
+	call post:MISCgrabo_sinsesion
+
+	
+END SUB
+
+/*******/

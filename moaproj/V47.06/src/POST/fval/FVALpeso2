@@ -1,0 +1,88 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpeso2
+* NOMBRE
+*   OFB:post:FVALpeso2
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpeso2
+    LOCAL peso_limi LIKE peso_en_grs
+    LOCAL peso_cant LIKE peso_en_grs
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+        IF (post:peso_en_grs == 0 && post:peso_en_kgs == 0) THEN
+	        MSGBOX "DEBE PESAR EL ENVIO",0x00,"ERROR"
+	        RETURN (-2)
+        ELSE
+            IF (adt_serv_req_ad == "S" && common:br_aduana == "N")
+                peso_limi = post:adt_serv_max_serv * 1000
+            ELSE
+                peso_limi = post:adt_serv_limite * 1000
+            END IF
+	        IF (post:adt_serv_umstd == "KGS") THEN
+	            /* Si el Servicio lo estaba pesando en */
+	            /* Kilos lo paso primero a gramos */
+	            post:peso_en_grs = post:peso_en_kgs * 1000
+	        END IF
+	        IF (post:peso_en_grs > peso_limi) THEN
+                MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+                /* Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009*/
+                CLEARFIELD peso_en_grs
+                CLEARFIELD peso_en_kgs
+                REFRESH peso_en_grs
+                REFRESH peso_en_kgs          
+	            RETURN (-2)
+	        END IF
+	        IF (post:estado_presu == 1) THEN
+	            CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx \
+   		            WHERE (adt_tarif_serv == post:tipo_produc2) &&\
+   		            (adt_tarif_dest == FLD:post:adt_tarif_dest) &&\
+   		            (adt_tarif_um == adt_serv_umstd) && \
+		            (adt_tarif_desde <= post:peso_en_grs) &&\
+		            (adt_tarif_hasta >= post:peso_en_grs)
+	                CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+	                IF (CDSRETVAL == 0) THEN
+		                CDS EXTRACT dsc:Tarifas_ctx post:adt_tarif_hasta
+		                post:peso_en_grs = post:adt_tarif_hasta
+		                REFRESH post:peso_en_grs
+	                END IF
+    	            CDS ENDSELECT dsc:Tarifas_ctx
+	            END IF
+            END IF
+            /*Carina - Cuando es Cliente Interno la tarifa debe ser $0,00*/
+            IF (!TESTFLAG(uso_int_flag,uso_interno))
+            	CALL MISCactualizo_tarifa
+            	IF (RETVAL < 0)
+                    /* Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009*/
+                    CLEARFIELD peso_en_grs
+                    CLEARFIELD peso_en_kgs
+                    REFRESH peso_en_grs
+                    REFRESH peso_en_kgs          
+            	    RETURN (-2)
+            	END IF
+            END IF
+            /*Fin Carina*/
+            
+            /*COMBOS:Valido que el peso ingresado sea validado para los inrtervalos 
+            configurados para el combo.NBA*/
+            CALL post:CDScheckRangoCombo (post:peso_en_grs)
+            IF (RETVAL != 0)
+                RETURN (-2)
+            ENDIF
+            
+    END IF
+    RETURN (0)
+END SUB
+
+/*******/

@@ -1,0 +1,142 @@
+/****o* Expedicion/OFB:post:FVALDesasignarDesp
+* NOMBRE
+*   OFB:post:FVALTrackContSFVALDesasignarDespaca
+* DESCRIPCION
+*   Desasigna pieza/ contenedor / saca del despacho.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SCRNcorteLinea
+* DOCUMENTACION
+*   50580 - Agilizacion Corte de Linea
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALDesasignarDesp
+	LOCAL cod_pieza_cont LIKE common:csr_string
+	LOCAL l_cdsretval LIKE lib:err_retval
+	LOCAL l_flag_longitud LIKE siaf:i
+	LOCAL cant_cont_saca LIKE post:adt_cont_saca
+	
+	CALL CSR:trimfield (post:pza_saca)
+	l_flag_longitud = 0
+	
+	IF (post:pza_saca.numchars > 0) THEN
+		LET cod_pieza_cont = post:pza_saca
+		 //RESGUARDO CONTADOR
+	  LET cant_cont_saca = post:adt_cont_saca
+	  
+		//Si supera la longitud del campo entonces no es una caratula valida
+		IF (post:pza_saca.numchars < 21) THEN
+    		//consulto si es una saca
+    	    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+            (op:op_operator_id == op:op_operator_id && \
+            post:CaratulaSaca == cod_pieza_cont)
+            
+            CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+             
+            LET l_cdsretval = CDSRETVAL
+        ELSE
+             LET l_cdsretval = -801
+             LET l_flag_longitud = 1
+        END IF
+       
+	    IF (l_cdsretval == -801) THEN
+	        
+	        IF (l_flag_longitud == 0) THEN
+	    	    CDS ENDSELECT DSC:post:DetTmp_ctx
+	    	END IF
+	    	
+	    	LET l_flag_longitud = 0
+	    	
+	    	//Si supera la longitud del campo entonces no es un contentedor valido
+	    	IF (post:pza_saca.numchars < 9) THEN
+    	    //consulto si es un contenedor
+    			 CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+    			 (op:op_operator_id == op:op_operator_id && \
+    			 post:jnl_guia_cont == cod_pieza_cont)
+    			
+    			 CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+    			
+    			 LET l_cdsretval = CDSRETVAL
+				ELSE
+           LET l_cdsretval = -801
+           LET l_flag_longitud = 1
+				END IF
+			
+	    	IF (l_cdsretval == -801) THEN
+    	      IF (l_flag_longitud == 0) THEN
+    	    	    CDS ENDSELECT DSC:post:DetTmp_ctx
+    	    	END IF
+	    		
+	    		//Si supera la longitud del campo entonces no es una pieza valida
+	    		IF (post:pza_saca.numchars < 33) THEN
+    	    		//consulto si es una pieza
+    	    		CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+    				(op:op_operator_id == op:op_operator_id && \
+    				post:Pieza_id == cod_pieza_cont)
+    	    		
+    				CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+    				LET l_cdsretval = CDSRETVAL
+    			ELSE
+    			     LET l_cdsretval = -801
+    			END IF	
+    				
+		    	IF (l_cdsretval == -801) THEN
+			    	MSGBOX "LA PIEZA/CONTENEDOR/SACA\n NO EXISTE PARA EXPEDIR.",0x00,"ERROR"
+					CDS UNLOCK DSC:post:DetTmp_ctx
+					CDS ENDSELECT DSC:post:DetTmp_ctx
+					CLEARFIELD post:pza_saca 
+					REFRESH post:pza_saca
+					RETURN -2
+				END IF
+			END IF
+    	END IF
+				
+		CDS EXTRACT DSC:post:DetTmp_ctx ALL 
+		CDS CLEARBUFFER DSC:post:DetTmp_ctx
+		
+		//restauro contadores
+		LET post:adt_cont_saca = cant_cont_saca
+		
+		IF (post:MarcaBorrado == "*")
+		    //no es necesario enviar el mensaje MSGBOX "LA PIEZA YA SE ENCUENTRA DESASIGNADA.",0x00,"ERROR"
+				CDS UNLOCK DSC:post:DetTmp_ctx
+		    CDS ENDSELECT DSC:post:DetTmp_ctx
+				CLEARFIELD post:pza_saca 
+				REFRESH post:pza_saca
+				RETURN -2
+		END if
+		
+		CLEARFIELD DetalleContenidoGC
+   
+	    FPRINT post:DetalleContenidoGC, "%-32.32s %-10.10e %-2.2s %-1.1s", \
+			post:Pieza_id, \
+			post:FechaCteLinMDisp, \
+			post:GruCorteCodRecSaca, \
+			post:MarcaBorrado
+		
+		REFRESH post:DetalleContenidoGC
+		            
+		CDS UNLOCK DSC:post:DetTmp_ctx
+		CDS ENDSELECT DSC:post:DetTmp_ctx
+		
+		CALL post:PBmarcaDetCteLin
+	
+		//NI 50580 - Contador de cantidad de saca
+  //  CALL post:MISCcontadores_exp
+	
+		NEXTFIELD post:pza_saca
+		CLEARFIELD post:pza_saca
+		REFRESH post:pza_saca
+	
+	END IF
+	
+End Sub
+
+/*******/

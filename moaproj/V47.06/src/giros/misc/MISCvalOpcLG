@@ -1,0 +1,136 @@
+/****o* Lista de Giros/OFB:giros:MISCvalOpcLG
+* NOMBRE
+*   OFB:giros:MISCvalOpcLG
+* DESCRIPCION
+*   Validacion de los opcionales del giro de la Lista de Giros a Importar
+* ENTRADAS
+*   P_registro_3 = Datos del beneficiario - opcionales 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCvalRegLG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+ 
+SUB giros:MISCvalOpcLG(P_registro_3)
+	LOCAL l_registro_3 LIKE common:csr_string_4096
+	LOCAL x LIKE post:cantidad
+	LOCAL z LIKE post:cantidad
+	LOCAL l_aux LIKE common:csr_string
+	
+	LET l_registro_3 = P_registro_3
+ 
+  CALL  CSR:cleararray (post:cod_opc)
+
+  //Agrego los opcionales a los campos
+  post:cod_opc[0] = SUBSTR(l_registro_3,0,4)     //Item 1
+  post:cod_opc[1] = SUBSTR(l_registro_3,19,4)    //Item 2
+  post:cod_opc[2] = SUBSTR(l_registro_3,38,4)    //Item 3
+  post:cod_opc[3] = SUBSTR(l_registro_3,57,4)    //Item 4
+ 
+	CALL post:MISCFtrim(post:cod_opc[0])
+	CALL post:MISCFtrim(post:cod_opc[1])
+	CALL post:MISCFtrim(post:cod_opc[2])
+	CALL post:MISCFtrim(post:cod_opc[3])
+
+	x = 0
+	WHILE (x < 4)
+		//Borro los repetidos, porque serian eliminados
+		z = 0
+		WHILE (z < 4)
+			IF (x != z) THEN
+				CALL  CSR:fld_to_upper (post:cod_opc[x])
+				CALL  CSR:fld_to_upper (post:cod_opc[z])
+				IF (post:cod_opc[x] ==  post:cod_opc[z]) THEN
+					post:cod_opc[x] = ""
+				END IF
+			END IF
+			z = z + 1
+		END WHILE
+		x = x + 1
+	END WHILE
+
+	//ordeno el array
+	x = 0
+ 	WHILE (x < 4)
+ 		IF (post:cod_opc[x] == "") THEN
+			z = 0
+				WHILE (z < 4)
+					IF (post:cod_opc[z] != "" && x < z) THEN
+						post:cod_opc[x] = post:cod_opc[z]
+						CLEARFIELD post:cod_opc[z]
+						BREAK
+					END IF
+					z = z + 1
+				END WHILE
+ 		END IF
+ 		x = x + 1
+ 	END WHILE 
+
+  x = 0
+  WHILE (x < 4)
+		IF (post:cod_opc[x] != "") THEN
+			CALL  CSR:fld_to_upper (post:cod_opc[x])
+			post:sel_opc = post:cod_opc[x]
+			
+			CDS SELECT FROM DSC:post:OPC_TAB BECOMES DSC:post:OPC_CTX WHERE \
+			post:adt_opc_opci == post:sel_opc
+			CDS FINDFIRST DSC:post:OPC_CTX NOLOCK
+			IF (CDSRETVAL == 0) THEN		   		
+;				//Borro los repetidos, porque serian eliminados
+;				z = 0
+;				WHILE (z < 4)
+;					IF (x != z) THEN
+;						IF (post:cod_opc[x] ==  post:cod_opc[z]) THEN
+;							post:cod_opc[z] = ""
+;						END IF
+;					END IF
+;					z = z + 1
+;				END WHILE
+			
+				//Valido la tarifa valor de cada opcional	
+		   	CDS SELECT FROM DSC:post:TABopc_lg BECOMES DSC:post:CTXopc_lg WHERE  \
+						post:op_operator_id == op:op_operator_id && \
+						post:adt_itemlg_codprod == post:tipo_produc2 && \
+						post:adt_itemlg_destino == post:adt_tarif_dest && \
+						post:adt_opclg_codopc == post:sel_opc && \
+						post:adt_itemlg_rdesde <= giros:ImporteNeto
+		
+				CDS FINDFIRST DSC:post:CTXopc_lg LOCK
+				IF (CDSRETVAL == -801 ) THEN
+					//LET l_mensaje_log = "NO SE PUEDE DETERMINAR LA TARIFA DEL OPCIONAL POR NO HALLARSE EN EL TARIFARIO"
+					CDS ENDSELECT DSC:post:CTXopc_lg
+					//GOTO errorLog
+					RETURN (-1)
+				END IF
+	   		
+				//Tratamiento de carga del opcional a partir del codigo instanciado en post:sel_opc
+				CALL giros:MISCsel_opc_lg
+				
+				//actualizo el importe total
+				giros:ImporteTotal_fld = (((((post:costo_opc + giros:Impuesto) + giros:Impuesto_abonado) + giros:Comision_fld) + post:adt_tarif_fijo))
+				giros:ImporteTotal_fld = giros:ImporteTotal_fld + giros:ImporteNeto
+				
+				REFRESH giros:ImporteTotal_fld
+			ELSE 
+				//LET l_mensaje_log = "NO EXISTE EL OPCIONAL EN LA PARAMETRIA"
+				CDS ENDSELECT DSC:post:OPC_CTX
+				//GOTO errorLog
+				RETURN (-2)
+			END IF
+	ELSE
+		//Esta vacio el campo
+	END IF
+	x = x + 1
+	END WHILE
+	
+	RETURN (0)
+    
+END SUB
+
+/*******/

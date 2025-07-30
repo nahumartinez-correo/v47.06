@@ -1,0 +1,127 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALpase_subteso
+* NOMBRE
+*   OFB:tes:SVALpase_subteso
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALpase_subteso
+local varl_subtesoro_orig like op:op_subtesoro
+local varl_subtesoro_dest like op:op_subtesoro
+
+
+	clearfield siaf:importe
+    
+	/* Realizo el pedido de la password del subtesoro destino */
+	protfield tes:tes_login_dest
+	clearfield tes:tes_passwd
+	popup tes:SCRNingresa_password
+	if (lastkey == RT_ESC) then
+		return (-2)
+	end if
+
+	call ovr:MISCValidaPassNT(tes:tes_login_dest,tes:tes_passwd)
+	IF (retval != 0) THEN        
+		return -2
+	END IF 
+    
+	/* El sub tesoro destino confirmo el cambio => Realizo el cambio de marca */
+	CDS BEGINWORK // comienzo LUW
+	// selecciono los registros del orig. y el dest de la tabla profiles
+	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+	CDS SELECT op:op_subtesoro FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+	WHERE (op:op_login_id == tes:tes_login_orig && \
+	op:op_operator_id == tes:tes_operator_id_orig) || \
+	(op:op_login_id == tes:tes_login_dest && \
+	op:op_operator_id == tes:tes_operator_id_dest) && \
+	op:op_borrado_logico != "S"
+	if (cdsretval == 0) then
+		// busco el primero de los registros
+		CDS FINDFIRST DSC:op:adt_op_context LOCK
+		if (cdsretval == 0) then
+			// guardo las marcas de tesoro en las variables xxx_orig
+			CDS EXTRACT DSC:op:adt_op_context \
+			op:op_subtesoro INTO varl_subtesoro_orig
+			if (cdsretval == 0) then
+				// busco el segundo de los registros
+				CDS FINDNEXT DSC:op:adt_op_context LOCK
+				if (cdsretval == 0) then
+					// guardo las marcas de tesoro en las variables xxx_dest
+					CDS EXTRACT DSC:op:adt_op_context \
+					op:op_subtesoro INTO varl_subtesoro_dest
+					
+					if (cdsretval == 0) then
+						// INTERCAMBIO LAS MARCAS
+						CDS CLEARBUFFER DSC:op:adt_op_context
+						CDS APPEND DSC:op:adt_op_context \
+						varl_subtesoro_dest AS op:op_subtesoro
+						CDS FINDFIRST DSC:op:adt_op_context LOCK
+						if (cdsretval == 0) then
+							// actualizo el primer registro con las marcas
+							// que tenia el segundo
+							CDS UPDATE DSC:op:adt_op_context LOCK
+							if (cdsretval == 0) then
+								CDS CLEARBUFFER DSC:op:adt_op_context
+								CDS APPEND DSC:op:adt_op_context \
+								varl_subtesoro_orig AS op:op_subtesoro			
+								CDS FINDNEXT DSC:op:adt_op_context LOCK
+								if (cdsretval == 0) then
+									// actualizo el segundo registro con las
+									// marcas que tenia el primero
+									CDS UPDATE DSC:op:adt_op_context LOCK
+									if (cdsretval == 0) then
+										// si llegue hasta aca es porque:
+										// TODO SALIO BIEN !!!!
+										CDS UNLOCK DSC:op:adt_op_context
+										CDS ENDSELECT DSC:op:adt_op_context
+										CDS COMMITWORK // fin LUW
+
+                                       	/* Si la transaccion la hace el administrador 
+                                        de claves no tiene registro de totales.
+                                        Journaliza en la JNLout_of_tran y no entra a la
+                                        tlr:JNLtran */
+                                        if (op:op_users_auth == "X")
+                                        	let tlr:INDdcol_scrn[0] = SCR:tes:SCRNpase_subteso
+                                   		    MOVE "" TO siaf:adt_mot_desc
+                                       	    let FLD:tlr:INDjnl_append = OFB:tes:JNLcambio_subteso
+                                       		call tlr:JNLout_of_tran
+                                       		clearfield tlr:INDjnl_append
+                                       		move "YYNYYN Pase Forzado de sub tesoro" to drv:header
+                                        end if
+
+										//En caso de ser pase forzadode marca, me fijo si el pase es 
+										//realizado al operador logeado, de ser asi la marca la actualizo en S
+										if (tes_operator_id_dest == op:op_operator_id) then
+											op:op_subtesoro = "S"
+											refresh op:op_subtesoro
+										end if
+										/*Pongo la marca de cambio de perfil en la Sucursal Activa - Gabriel Falciola*/
+										call CDSCambioPerfil(common:sucursal_activa,"MARCA")									
+										return (0)
+									end if
+								end if
+							end if
+						end if
+					end if
+				end if
+			end if
+		end if
+	end if
+	// si llego hasta aca es porque ALGO SALIO MAL !!!!!
+	CDS ROLLBACKWORK // vuelvo atras los cambios hechos en la LUW
+	return (-2)
+END SUB
+
+/*******/

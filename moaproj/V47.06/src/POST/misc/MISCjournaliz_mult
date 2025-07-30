@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjournaliz_mult
+* NOMBRE
+*   OFB:post:MISCjournaliz_mult
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCjournaliz_mult
+
+    Local ErrorCds like lib:err_retval
+
+    ; Req. 4697. (si se caia mientras journalizaba el primer medio de pago, despues
+    ; se podian agregar transacciones y generaba un mal funcionamiento)
+    let PresEst = 2
+    CALL CDSadt_presu_estado //marca el presupuesto como finalizado
+
+    /*Recorro la Tabla y Journalizo. Está indexada por Diferido para
+      que journalice primero Cheque DIferido por si viene la tx rechazada*/
+    Cds SELECT FROM Dsc:TblImpreMedio BECOMES DSC:CtxImpreMedio WHERE \
+	(fld:post:op_operator_id == fld:post:op_operator_id \
+	&& journalizacionOk == "N") SORT "Diferido"
+    Cds FINDFIRST DSC:CtxImpreMedio  Lock
+    let lib:err_retval = cdsretval
+
+    /*En el fin de sesión se grabará esta variable que indica
+      si fue una venta a una up con pago diferido.
+      Esta variable se consulta en el caso de anulación de documentos
+      para forzar una cancelación total*/
+    CLEARFIELD post:VentaUP_Diferida
+    post:VentaUP_Diferida = "N"
+
+    While (lib:err_retval == 0 && !rechazoDiferido)
+	   CLEARFIELD reg_up_dif
+	   //Falta Marcar la ya procesadas
+	   CLEARFIELD post:es_diferido
+	   Cds Extract DSC:CtxImpreMedio  all
+
+	   /*MFM - Reemplazo en Sesión*/
+	   call post:CDSverif_99200
+	   if (retval < 0) then
+	       CALL post:MISCarmo_viaje_UP
+	   endif
+
+	   medio_pago_desc = DescripMedPag
+	   drv:INDscr = SCR:post:SCRNcaptura_adiciona
+	   If (siaf:importe < 0)
+	       siaf:importe = siaf:importe * -1
+	       post:importe_origen  = post:importe_origen * -1
+	       siaf:codigo_siaf = 99098
+	   Else
+	       if (post:cli_tipo == 1 && post:adt_mp_admban == "S" && post:adt_mp_adm == "I") then
+	           /*cgw: si es cliente cuentacorrentista y el medio de pago es de tipo cheque,
+	               la captura se journaliza con siaf:codigo_siaf = 99097.
+	           */
+	       	   siaf:codigo_siaf = 99097
+	       else	
+	           siaf:codigo_siaf = 99099
+	       end if    
+	   End If
+	   Call siaf:CDSadt_tran_load
+	   //Esto es necesario porque sino no entra a la rutina MD
+    	   tes:es_tesoro = "S"
+	   If (ovr:ovr_sup_id.numchars != 0)
+	       SetFlag tlr:tran_flags,supovr_granted
+	   End If
+	   // MLD 02-01-2001
+	   // El cheque que se captura debe ser de calculo automatico
+	   tes:teso_cheq_auto = "S"
+
+	   /*MFM (21.01.2002)- Resguardo el importe del cheque para luego calcular el interes
+	   IF (TESTFLAG(giros:tran_send_mode,ventaUP_diferida)) THEN
+	       CLEARFIELD post:Total_importe_aux
+	       post:Total_importe_aux = siaf:importe
+	   END IF*/
+
+	   Call tlr:JNLtran
+	   IF (siaf:codigo_siaf == 99097) THEN
+	       //cgw:Luego de journalizar vuelvo a recuperar el siaf:codigo_siaf de la captura original.
+	       siaf:codigo_siaf = 99099
+	   END IF	
+	   Cds ClearBuffer DSC:CtxImpreMedio
+	   journalizacionOk = "S"
+	   Cds Append DSC:CtxImpreMedio  journalizacionOk
+
+	   /* CSZ - Si es Up y Ch. Dif ya hizo el viaje ==> veo cual es la respuesta
+	      y determino el camino a seguir*/
+	   IF (TESTFLAG(giros:tran_send_mode,ventaUP_diferida)) THEN
+	       CLEARFIELD drv:INDhcomm_rtn
+	       CLEARFIELD drv:INDspc_rtn[1]
+	       CLEARFIELD post:Cheques
+	       CALL MISCresp_reg_up
+	       IF (RETVAL < 0)
+		   // FGB (reing): ya no puede decidir si cancela o no... si o si debe cancelar
+		   msgbox "LA SESION DEBERA SER CANCELADA",OFB_OK,"Advertencia"
+		   ;MSGBOX "DESEA REVERSAR LA SESION AUTOMATICAMENTE?",0X04,"ADVERTENCIA"
+		   //IF (RETVAL == 6) THEN//SI
+		   rechazoDiferido = true
+		   CALL CDSadt_presuact_save
+		   //ELSE
+		   //	SETFLAG tlr:state_flags,tran_active
+		   //	RETURN (-2)
+		   //END IF
+	       ELSE
+		   CALL post:MISCclear_reg_up
+		   /*MFM (27.12.2001) Actualizo el campo moneda_status de la tabla TotMedioPago para
+		   el registro del cheque diferido.
+		   Tambien grabo la tasa de iva y de interés que me devuelve el switch*/
+		   post:moneda_status = 003
+		   Cds Append DSC:CtxImpreMedio \
+		       post:moneda_status \
+		       post:jnl_interes_diferido \
+		       post:jnl_iva_int_dif \
+		       post:iva_Porcentaje
+	       END IF
+		       RESETFLAG giros:tran_send_mode,ventaUP_diferida
+	   END IF
+
+	   IF (!rechazoDiferido) THEN
+
+	       /*En esta tabla grabo los cheques que deberan quedar registrados en el host*/
+	       call post:MISCpaga_cheque
+	       /**/
+
+	       cds Update  DSC:CtxImpreMedio  Lock
+
+	       Cds FINDNEXT DSC:CtxImpreMedio  Lock
+	       ErrorCds = cdsretval
+	       let PresEst = 2
+	       CALL CDSadt_presu_estado //marca el presupuesto como finalizado
+	       let lib:err_retval = ErrorCds
+	       /*Agrego esta pregunta porque si ya no hay más registros, al hacer el findagain
+	         genera un error en el out del servicio - Gabriel Falciola*/
+	       if (lib:err_retval == 0) then
+		   Cds FINDAGAIN DSC:CtxImpreMedio  Lock
+	       end if
+	   END IF
+
+    End While
+    Cds EndSelect DSC:CtxImpreMedio
+    Clearfield  drv:INDjnl_rtn
+    Clearfield  post:Tipo_Adm
+
+    call MISCajusteUP
+
+END SUB
+
+/*******/

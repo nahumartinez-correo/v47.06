@@ -1,0 +1,232 @@
+/****o* Pendientes de agrupación/OFB:post:SVALPago_Diferido
+* NOMBRE
+*   OFB:post:SVALPago_Diferido
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSVAL.h"
+
+SUB post:SVALPago_Diferido
+
+    LOCAL imp_int LIKE siaf:importe
+    LOCAL imp_diferido LIKE siaf:importe
+    LOCAL imp_afectado LIKE siaf:importe
+    LOCAL LMensaje LIKE common:ExecString
+    LOCAL loc_interes LIKE post:ImporteConIva
+    
+    clearfield loc_interes
+    
+    //Validar que no exista el cheque
+    if (monto_chk_dif.numchars != 0)
+        call tes:CDSverif_cheque_tes2(post:adt_mp_cod,cod_banco,cuenta,nro_cheque,"","")
+	If (Retval < 0)
+	    MSGBOX "Los Datos de este medio de pago ya fueron registrados" OFB_OK "ERROR"
+	    nextfield siaf:moneda
+            Return (-2)
+        Endif
+    Endif
+
+    IF (monto_chk_dif > 0) THEN
+	//valido que los campos de la pantalla esten completos
+	if (cod_banco.numchars == 0) then
+	    errmsg LST:common:errmsg_list,"INGRESE EL BANCO" 		
+	    nextfield cod_banco
+	    RETURN -2
+	end if
+	if (cuenta.numchars == 0) then
+	    errmsg LST:common:errmsg_list,"INGRESE EL NRO DE CUENTA" 		
+	    nextfield cuenta
+	    RETURN -2
+	end if
+	if (nro_cheque <= 0) then
+	    errmsg LST:common:errmsg_list,"INGRESE EL NRO DE CHEQUE" 		
+	    nextfield nro_cheque
+	    RETURN -2
+	end if
+
+	Call post:FVALfecha_emision1
+	if (retval < 0)
+	    return -2
+	end if
+	/*if (fec_e.numchars == 0) then
+	      errmsg LST:common:errmsg_list,"FECHA INVALIDA" 		
+	      nextfield fec_e
+	      RETURN -2
+	end if*/
+	if (fec_d.numchars == 0) then
+	    errmsg LST:common:errmsg_list,"FECHA INVALIDA" 		
+	    nextfield fec_d
+	    RETURN -2
+	end if
+	/* cgw:se elimina el clearing
+	if (tes:clearing.numchars == 0) then
+	    errmsg LST:common:errmsg_list,"INGRESE EL CLEARING" 		
+	    nextfield tes:clearing
+	    RETURN -2		
+	end if
+	*/
+	imp_diferido = monto_chk_dif
+	RESETFLAG giros:tran_send_mode,cancelacion
+
+	if (post:cli_tipo != OCASIONAL) then
+	    /*RUTINA DE RECUPERACION DE TRAN CAIDAS EN VUELO*/
+	    /*CSZ - 2002-01-30*/
+	    CALL MISCrec_caidas_UP
+	    IF (RETVAL == TRAN_CAIDA_VUELO )
+		MSGBOX "Problemas de Comunicación. Inténtelo nuevamente",0x00,"Atencion"
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+		CLEARFIELD lib:stat_message
+		REFRESH lib:stat_message		
+		RETURN (-2)
+	    END IF
+
+	    //HACER EL VIAJE DE REGISTRO EN MODO CONSULTA!!!
+	    SETFLAG giros:tran_send_mode,ventaUP_diferida
+
+	    //CSZ
+	    //Seteo el flag de consulta simple para que funcione como tal, por ejemplo en el caso
+	    // de que se produzca una caida en vuelo, no intente grabarla en la jnl_caidas
+	    SETFLAG giros:tran_send_mode,consulta_simple
+
+	    if ( post:cli_tipo == CLIUP )
+		//Asigno las rutinas de mensajeria a los campos indirectos correspondientes
+		hcomm:INDhost_sndrt = OFB:post:SENDPagoModoConsulta
+		//Se journaliza como hcomm:INDhos_sndrt
+		hcomm:INDhost_rcvrt = OFB:post:RCVEPago_Cancel_UP
+		//Se journaliza como hcomm:INDhost_rcvrt
+	    else
+		if (post:cli_tipo == CLIMED)
+		    post:consulta_pagodif = 1
+		    giros:codigo_procesamiento = 997002
+		    giros:hora_viaje = common:time_of_day
+		    giros:dia_viaje  = common:system_date
+		    hcomm:INDhost_sndrt = OFB:post:SENDclimed_pagodif
+		    hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_pagodif
+		end if
+	    end if
+
+	    CALL hcomm:COMM_stat_init
+	    IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RESETFLAG giros:tran_send_mode,consulta_simple
+		RETURN (-2)
+	    END IF 		
+
+	    //Calculo el STAN
+	    Call post:CDSobtiene_secuen("STAN")
+
+	    /*Envio la consulta*/
+	    CALL hcomm:COMM_host_tran
+	    if (giros:err_firma == -1 )    // Error en Verificacion Firma 
+  	        common:trap_reset = OFB:drv:KEYSreset_esc
+   	        KEYDEF CLEAR
+   	        CALL drv:KEYSnavigation
+	        RESETFLAG giros:tran_send_mode,consulta_simple
+	        monto_chk_dif = imp_diferido
+	        return -2
+    	    end if
+ 
+	    common:trap_reset = OFB:drv:KEYSreset_esc
+	    CLEARFIELD lib:stat_message
+	    REFRESH STATUSLINE
+	    If (hcomm:tran_status != HOST_ACCEPTED) THEN
+	        RESETFLAG giros:tran_send_mode,consulta_simple
+	        monto_chk_dif = imp_diferido
+	        RETURN -2
+	    ELSE
+	        CLEARFIELD lib:stat_message
+	        REFRESH lib:stat_message
+	    END IF
+   	    RESETFLAG giros:tran_send_mode,consulta_simple
+
+   	else
+   	    clearfield post:jnl_interes_diferido
+   	    clearfield post:jnl_iva_int_dif
+   	    clearfield post:ImporteSinIva
+   	    clearfield post:ImporteConIva
+   	endif   		
+   	
+	/*MFM - (2002.03.26) Se graban los campos necesarios para el calculo de ingresos brutos*/
+	/*Importe sin Iva*/
+	post:ImporteSinIva = post:jnl_interes_diferido
+	siaf:ImporteSinIva = post:ImporteSinIva
+	/*Importe con Iva*/
+	INIT 22,1
+	post:jnl_iva_int_dif = (post:jnl_interes_diferido * post:iva_Porcentaje ) / 100
+	post:ImporteConIva = post:jnl_interes_diferido + post:jnl_iva_int_dif
+	INIT 22,0
+	loc_interes = post:ImporteConIva //cgw:conservo el interes (con iva) del pago diferido
+	siaf:ImporteConIva = post:ImporteConIva
+	/*Importe Total*/
+	siaf:importe = post:ImporteConIva
+	/*cargo el formulario asociado para la transaccion de interes -
+	Ver en que tabla cargarlo para no hardcodearlo*/
+	post:PreDForFis = "FACTU"
+	if (PreDForFis.numchars == 0)
+	    EstadoFormu = SIN_FORM
+	else
+	    EstadoFormu = CON_FORM
+	end if
+
+	/*MFM - Acumula a los totales de la sesion los datos de la transacción*/
+	call CDSAcumImpSes(0,0,post:ImporteConIva,post:ImporteSinIva,siaf:adt_tran_fliatran,siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+
+	/*Acumulo Medios de Pago - Se actualiza la PresuPag*/
+	//estos dos campos se setean aquí para que no queden con valores erroneos de
+	//procesos anteriores
+	post:imp_d = 0 
+	monedaNC = siaf:moneda
+	call MISCActMedPago
+
+	/*MFM - Genero Iva*/
+	CALL post:MISCgenerarIva
+
+	/* MLD Controlo Restricciones para Vta Diferida */
+	call post:MISCRestFlia
+
+	/*MFM - Rutina para generar el Interes por financiación */
+	call MISCagregTrnInt
+
+	/*guardo el campo de interes y del iva en la presuact
+	call CDSadt_presuact_save*/
+
+	//Resguardo el importe que afectará el saldo
+	imp_afectado =  post:imp_afecta_saldo
+	/*MFM - Se deben recalcular los impuestos!!!*/
+	;CALL PCOLconfirma_presu
+	call calculo_subtot_presu
+	call CDSpresu_CobraPaga(post:PresNro)
+
+	/*MFM - Guardo en la Presu el importe ingresado a pagar con cheque diferido,
+	el importe neto de venta y el importe de todos los impuestos (incluyendo los intereses)
+	//SI SE CAE EL SISTEMA, ESTO LO TENGO QUE VOLVER A HACER...SIEMPRE Y CUANDO SE HAYA GRABADO LA 99160*/
+	CALL MISCCalc_MontoImp("N")
+    	//restauro el importe del cheque ingresado por el RSC
+    	monto_chk_dif = imp_diferido
+    	post:imp_afecta_saldo = imp_afectado 
+    	//post:importe_sesion = monto_vta_neta + monto_impuestos
+    	CALL CDSGraboImp_Presu
+
+        /* cgw:por el momento no se muestra
+        IF (loc_interes > 0) THEN
+            //Mostrar importe de Intereses
+            fprint FLD:LMensaje "Interes Pago Diferido: %e", loc_interes
+            MSGBOX FLD:LMensaje,OFB_OK,"AVISO"
+        END IF    
+        */ 		
+    END IF   
+END SUB
+
+/*******/

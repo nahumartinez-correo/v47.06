@@ -1,0 +1,167 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgenPic_est_ses
+* NOMBRE
+*   OFB:post:MISCgenPic_est_ses
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenPic_est_ses
+	//LOCAL imp_tx LIKE valor_dec
+	LOCAL imp_tx LIKE total_importe
+	LOCAL tran_afec_efvo_tx LIKE siaf:adt_tran_afec_efvo
+	LOCAL l_caratula_gm LIKE giros:caratula_lote_gm
+	LOCAL l_adicional LIKE post:total_importe
+	LOCAL l_ComboNro LIKE post:combo_nro
+	LOCAL l_ComboCod LIKE post:adt_concb_cod
+	LOCAL l_ComboPpl LIKE post:adt_concb_principal
+
+ 	IF (post:estado_presu > 1 && post:PresNro != 0) THEN
+		//limpio el vector que almacena los datos de la grilla
+		CALL csr:cleararray(est_ses_vec)
+	
+		//limpio contador de tx de la PresuDet
+		CLEARFIELD post:cant_tx_sesion
+	
+	 	//genero el picklist que va a guardar las tx incluidas en el presupuesto actual
+		CALL CSR:f_sadroppl "Txs_Presupuesto"
+		CALL CSR:f_sanewpl "Txs_Presupuesto",PIC:post:PICtxsPresupuesto
+	
+		//cgw:recupero estos valores, dado que pueden limpiarse en algun momento
+		post:op_operator_id = op:op_operator_id
+		post:fecha = common:system_date
+
+		//Levanto los datos de la PresuDet para cargar el picklist
+
+		//Acá hay que restringir las tx a levantar. Puede ser por jerarquía o
+		//por código_siaf o por tx ya confirmadas, etc...
+		//Por el momento no restrinjo nada hasta que funcione, al menos algo... :)
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+			WHERE post:fecha == FLD:post:fecha && \
+			post:op_operator_id == FLD:post:op_operator_id && \
+			post:PresNro == post:PresNro
+			// && siaf:adt_tran_fliatran != "PCL"
+			
+		CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+		LET lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0) THEN
+			RETURN 0
+		END IF
+		
+		WHILE (lib:err_retval != -801)
+	    CLEARFIELD post:tx_ses_jer
+	    CLEARFIELD post:tx_ses_nro
+	    CLEARFIELD post:tx_ses_imp
+	    CLEARFIELD post:tx_ses_codigo
+	    CLEARFIELD tran_afec_efvo_tx
+	    ;CLEARFIELD post:adt_concb_cod
+	    ;CLEARFIELD post:adt_concb_principal
+	    l_adicional  = 0
+	    l_ComboNro = 0
+
+			CDS EXTRACT DSC:CONPresuDeta \
+				siaf:adt_tran_jer_pres INTO tx_ses_jer \
+				PreDNroTrn INTO tx_ses_nro \
+				siaf:importe INTO tx_ses_imp \
+				siaf:codigo_siaf INTO tx_ses_codigo \
+				siaf:adt_tran_afec_efvo INTO tran_afec_efvo_tx \
+				post:adt_concb_cod INTO l_ComboCod \
+				post:adt_concb_principal INTO l_ComboPpl \
+				post:combo_nro INTO l_ComboNro
+	
+			IF (tx_ses_codigo != 99099 && tx_ses_codigo != 99023 && tx_ses_codigo != 6860) THEN
+	      /*COMBOS DE PRODUCTOS: solo se muestra el precio del combo. No se visualizan las tx asociadas*/
+	      IF (l_ComboNro > 0) THEN
+	        IF (l_ComboPpl == "S") THEN
+	          /*Es el header => si el combo tiene giros tengo que
+	          agregar al importe del cbo el importe del giro*/
+	          CALL post:CDSbuscoImporteGiro (l_adicional,l_ComboNro)
+	        ElSE /*Si no es el principal lo salto*/
+	        	GOTO siguiente /*puaj!! un goto... */
+	        END IF
+	      END IF
+	
+				// FGB (rein): esto es lo que se me ocurrio para diferenciar la caratula de
+				// giros masivos, de las emisiones... si alguien tiene una mejor idea,
+				// bienvenida sea!
+				IF (tx_ses_codigo == 70610) THEN
+					CLEARFIELD l_caratula_gm
+					CDS EXTRACT DSC:CONPresuDeta giros:caratula_lote_gm INTO l_caratula_gm
+					IF (CDSRETVAL == 0) THEN
+						IF (l_caratula_gm.NUMCHARS > 0) THEN
+							GOTO siguiente
+						END IF
+					END IF
+				END IF
+				// fgb fin
+	
+				//Obtengo la descripcion abreviada de la transac...
+				CALL CDSdesc_tran_ses
+				
+				//Paso el importe de la tx a un campo mas chico para que entre en la grilla
+				imp_tx = tx_ses_imp
+	
+				//Genero la Descripcion tx + importe para mostrarlo en la grilla
+				IF (tran_afec_efvo_tx == "-") THEN
+					imp_tx = imp_tx * -1
+				END IF
+	
+				/*COMBOS DE PRODUCTOS: me fijo si es un combo; si es asi;
+				sumo al importe del combo el importe emitido */
+				IF (l_ComboNro > 0) THEN
+					imp_tx = imp_tx + l_adicional
+				END IF
+	
+;				IF (tx_ses_codigo == 70610 && chq_acre_GM.numchars > 0) THEN
+;					//cgw:marco en la grilla existencia de cheque acreditado Giros Masivos (no acumula)
+;					FPRINT common:csr_string "%-24.24s#%9.9e",siaf:adt_tran_desc_abrev,imp_tx
+;				ELSE
+;					FPRINT common:csr_string "%-24.24s %9.9e",siaf:adt_tran_desc_abrev,imp_tx
+;				END IF
+
+				IF (tx_ses_codigo == 70610 && chq_acre_GM.numchars > 0) THEN
+					//cgw:marco en la grilla existencia de cheque acreditado Giros Masivos (no acumula)
+					FPRINT common:csr_string "%-19.19s#%14.14e",siaf:adt_tran_desc_abrev,imp_tx
+				ELSE
+					FPRINT common:csr_string "%-19.19s %14.14e",siaf:adt_tran_desc_abrev,imp_tx
+				END IF
+
+				//Al importe lo guardo igual, por las dudas ya que para mostrarlo en la grilla
+				//lo estoy truncando...
+				FPRINT common:csr_string, "%s %-08.8s %05.5e %08.8e %1.1e %10.10e %12.12e %-05.05s", \
+				common:csr_string,post:fecha,post:op_operator_id,post:PresNro, \
+				tx_ses_jer,tx_ses_nro,tx_ses_imp,tx_ses_codigo
+				CALL csr:f_saaddpl("Txs_Presupuesto",common:csr_string)
+				cant_tx_sesion = cant_tx_sesion + 1
+			END IF
+			
+siguiente:
+			;CDS FINDAGAIN DSC:CONPresuDeta NOLOCK
+			CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+			LET lib:err_retval = CDSRETVAL
+		END WHILE
+		CDS ENDSELECT DSC:CONPresuDeta
+
+		//limpio algunos campos...
+		CALL MISCinic_est_ses //MISClimpio_tran
+
+		//Cargo en los pb de la grilla, las descripciones de las txs
+		//que componen el presupuesto para poder elegirlas
+		CALL MISCshow_est_ses //MISCproc_tran_anul
+
+	END IF
+
+END SUB
+
+/*******/

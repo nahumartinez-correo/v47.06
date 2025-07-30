@@ -1,0 +1,174 @@
+/****o* Pendientes de agrupación/OFB:siaf:FVALafip_codbarras
+* NOMBRE
+*   OFB:siaf:FVALafip_codbarras
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafFVAL.h"
+
+SUB siaf:FVALafip_codbarras
+	LOCAL loc_sf1_secuencia LIKE common:csr_string
+	LOCAL TerminalAFIP LIKE common:csr_string
+	LOCAL LRetVal LIKE lib:err_retval
+	LOCAL Proyecto LIKE common:csr_string
+	LOCAL Indice LIKE post:tipo_produc
+	LOCAL LBarraLeidos LIKE post:sf1_comprobante
+	LOCAL LBarraFaltan LIKE post:sf1_comprobante
+	LOCAL Lplataforma LIKE giros:checkpoint_emision
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	IF (post:estado_presu == 4) THEN
+		RETURN (0)
+	END IF        
+	
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		RETURN
+	END IF
+
+	CALL siaf:FVALcampo_requerido
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	IF (post:estado_presu == 4) THEN
+		IF (post:sf1_codbarras_tmp != post:sf1_codbarras) THEN
+			MSGBOX "La Factura No se Corresponde con el Comprobante Ingresado", OFB_OK,"Error"
+			RETURN (-2)
+		ELSE
+			RETURN (0)
+		END IF
+	END IF
+
+	CLEARFIELD siaf:afip_codbarras
+	LET post:sf1_codbarras_tmp = post:sf1_codbarras
+	
+	CALL csr:get_profile_string("project","description",Proyecto)
+	;common:csr_string = SUBSTR(common:csr_string,0,4)
+	CALL  csr:str_search (Proyecto, " ", Indice)
+	IF (RETVAL >= 0) THEN
+		Proyecto = SUBSTR(Proyecto,0,Indice)
+	END IF
+	FPRINT common:csr_string "rt%s" ,Proyecto
+
+	DLL FindWindowA(common:csr_string,"Olivetti North America Branch Automation")
+	post:rt_handle = RETVAL
+
+	DLL bob_do (post:rt_handle, "inicio", 0)
+	DLL bob_do (post:rt_handle, "afip", 0)
+
+   IF ( RETVAL > 0 ) THEN
+		CALL post:CDSmoneda_sf1_load
+		IF (RETVAL < 0) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//ERRMSG lst:common:errmsg_list,"Medio de Pago inexistente en Tabla Medios de Pago/Pago Facil"
+			FPRINT l_descPagoFacil,"Medio de Pago inexistente en Tabla Medios de Pago/%s",DSC:post:descPagoFacil
+			ERRMSG LST:common:errmsg_list,FLD:l_descPagoFacil
+			
+			CALL post:MISClimpia_sf1
+			CALL post:MISCrefresh_sf1
+			RETURN (-2)
+		END IF
+      
+		post:sf1_moneda = post:adt_sf1_moneda
+		post:sf1_med_pago = post:adt_sf1_med_pago
+		
+		CLEARFIELD siaf:serv_msgerror
+		CLEARFIELD siaf:serv_coderror
+
+		// Agrego las variables necesarias al Bob
+		DLL free_variables()
+		DLL agregar_variables ("preprocesaAfip", post:sf1_codbarras)
+	
+		/*Se agrega la variable para especificar la Plaraforma - Gabriel Falciola*/
+		LET Lplataforma = "M"
+		DLL agregar_variables ("plataforma", Lplataforma)
+      
+		DLL bob_execute (post:rt_handle, "preprocesaAfip", 0, 0, 0)
+		IF (RETVAL != 1) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (ERROR DE EJECUCION %s)" \
+			RETVAL
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			CALL post:MISClimpia_sf1
+			CALL post:MISCrefresh_sf1
+			RETURN -2
+		END IF
+
+		DLL MOSAIC_get_variable ("mensaje_de_error",siaf:serv_msgerror, 60)
+		DLL MOSAIC_get_variable ("codigo_de_error", siaf:serv_coderror, 5)
+		IF (siaf:serv_msgerror.NUMCHARS > 0) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (%s) %s",siaf:serv_coderror, siaf:serv_msgerror
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			CALL post:MISClimpia_sf1
+			CALL post:MISCrefresh_sf1
+			RETURN -2
+		END IF
+
+		;Si llego hasta aca, anduvo todo bien.
+		;singlestep on
+		DLL MOSAIC_get_variable ("grupo_form",siaf:grupo_form, 2)
+		DLL MOSAIC_get_variable ("form",siaf:adt_formulario, 4)
+		DLL MOSAIC_get_variable ("cb_pantalla",FLD:LBarraFaltan, 2048)
+		DLL MOSAIC_get_variable ("cb_campos",FLD:LBarraLeidos, 2048)
+
+		IF (LBarraFaltan.NUMCHARS > 0) THEN
+			//Hay datos faltantes en el codigo de barras, asi que llamo a una 
+			//rutina que pide el ingreso de los datos al operador.
+			CALL MISCget_missing_var(FLD:LBarraFaltan)
+			IF (RETVAL < 0) THEN
+				RETURN (-2)
+			END IF
+		ELSE
+			//valido el formulario en forma definitiva
+			LET siaf:formulario = siaf:adt_formulario
+			CALL CDSbuscar_grupo 
+			IF (RETVAL != 0) THEN
+				RETURN (-2)
+			END IF
+			FPRINT siaf:afip_codbarras "%4.4d" siaf:adt_formulario
+			CALL MISCbobs_val_form
+			IF (RETVAL != 0) THEN
+				RETURN (-2)
+			END IF
+		END IF
+
+		//Cargo campos que se tienen que journalizar...
+		IF (LBarraLeidos.NUMCHARS > 0) Then
+			CALL MISCafip_parse_cb(LBarraLeidos)
+			LET siaf:adt_mot_desc_tmp = siaf:adt_form_des
+			LET post:sf1_serv_desc = siaf:adt_form_des
+			REFRESH    post:sf1_serv_desc
+		ELSE
+			//no hay datos leidos... posible ticket de rechazo.
+			IF (post:sf1_ticket.NUMCHARS > 0) THEN
+				CALL csr:str_search(FLD:post:sf1_ticket,"ACUSE DE RECHAZO",Indice)
+				IF (RETVAL == 0 && Indice > 0) THEN
+					LET siaf:adt_mot_desc_tmp = "ACUSE DE RECHAZO"
+					LET post:sf1_serv_desc = "ACUSE DE RECHAZO (ERROR EN DISKETTE)"
+					REFRESH post:sf1_serv_desc
+				END IF
+			END IF
+		END IF
+		LET siaf:importe = serv_importe / 100
+		REFRESH siaf:importe
+		
+		SETVALDONE post:sf1_codbarras
+
+	ELSE
+		MSGBOX "No se Encontro el Archivo Inicio.bob (BOBLIB)",OFB_OK,"Error"
+		RETURN -2
+	END IF
+
+END SUB
+
+/*******/

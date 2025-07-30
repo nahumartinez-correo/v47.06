@@ -1,0 +1,129 @@
+/****l* Admision RPP/OFB:post:SVALadmisionRPP
+* NOMBRE
+*   OFB:post:SVALadmisionRPP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+* post:TRANadmisionRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALadmisionRPP
+	LOCAL loc_retval like lib:err_retval
+	
+	
+	loc_retval = 0
+
+	select (post:estado_presu)
+		case 2
+			IF (TESTFLAG(admin:mode_flags,grb)) then
+				RESETFLAG admin:mode_flags,grb
+				call post:MISCadd_RPP_tmp	
+				if (retval < 0) then
+					//	return (-2)
+				else
+//					RESETFLAG admin:mode_flags,grb
+					CALL CSR:proc_list(F_CLEAR,LST:LISTadmRPP)
+					CALL CSR:proc_list(F_REFRESH,LST:LISTadmRPP)
+					CALL CSR:proc_list(F_PROTECT,LST:LISTadmRPP)	
+					UNPROTFIELD serv_admRPP_cod  //Habilito el campo de codigo de SERVICIO
+    			ENABLECONTROL drv:PBcb0
+					CALL drv:MISCdis_enablePB_ABM(0,0,0)
+				endif
+				return -2
+			END if
+			
+			IF (TESTFLAG(admin:mode_flags,act)) then
+				RESETFLAG admin:mode_flags,act
+				call post:MISCadd_RPP_tmp
+				if (retval < 0) then
+						//return (-2)
+				else
+//					RESETFLAG admin:mode_flags,act
+					//Si quiere que siga estando cargada la etiqueta:
+					CALL CSR:proc_list(F_CLEAR,LST:LISTadmRPP)
+					CALL CSR:proc_list(F_REFRESH,LST:LISTadmRPP)
+					CALL CSR:proc_list(F_PROTECT,LST:LISTadmRPP)
+					CALL drv:MISCdis_enablePB_ABM(1,0,0)
+					UNPROTFIELD serv_admRPP_cod  //Habilito el campo de codigo de SERVICIO
+	    		ENABLECONTROL drv:PBcb0
+				endif
+				return (-2)
+			END if
+			//BORRAR	
+			if (TESTFLAG(admin:mode_flags,bor)) then
+				RESETFLAG admin:mode_flags,bor
+				call MISCAdmRPP_del
+				
+				//gpb:Inicializo pantalla
+				CALL post:PRECadmisionRPP
+				
+				return (-2)
+			END IF
+
+			IF (TESTFLAG(admin:mode_flags,todos)) then
+				RESETFLAG admin:mode_flags,todos
+				;utilizado para ejecutar todas las fval en la selección de piezas
+				return (-2)
+			END if
+			
+			CDS SELECT FROM "AdmRPP_tmp" BECOMES "AdmRPP_tmp_ctx" WHERE \
+				post:operador_RPP == op:op_operator_id && \
+				post:PresNro_RPP == post:PresNro
+			CDS FINDFIRST "AdmRPP_tmp_ctx" LOCK
+			loc_retval = cdsretval
+			if (loc_retval == -801) then
+				CDS ENDSELECT "AdmRPP_tmp_ctx"
+				MSGBOX "¡NO SE CARGARON PIEZAS PARA REGISTRAR!",0x00,"Error"
+				return -2
+			END IF
+			CALL drv:MISCdis_enablePB_ABM(0,0,0)
+			
+		case 3    
+			WHILE (loc_retval == 0)
+				if (post:estado_presu == 2) then
+				CALL CSR:proc_list(F_CLEAR,LST:LISTadmRPP)
+				CALL CSR:proc_list(F_REFRESH,LST:LISTadmRPP)
+					CDS EXTRACT "AdmRPP_tmp_ctx" ALL
+				end if
+				
+				DISABLECONTROL drv:PBcb1
+		
+				CALL post:MISCdatosScaneoO_RPP //Recupero de nuevo por si cambia la apertura
+		
+				post:cantidad = 1                
+				CALL post:MISCGrabaDetalleTrn
+				
+				if (post:estado_presu == 2) then
+					CDS FINDAGAIN "AdmRPP_tmp_ctx" LOCK
+					CDS DELETE "AdmRPP_tmp_ctx"
+					CDS FINDNEXT "AdmRPP_tmp_ctx" LOCK
+					loc_retval = cdsretval
+				else
+					break
+				end if
+			END WHILE   
+		break
+	
+		case 4
+	
+			tes:es_tesoro = "S"
+			ver_anulacion = "S"
+	
+			//Si llego aca es porque se hace solo el registro para clientes Minoristas.
+			//No se totaliza, no se journaliza el servicio, no se factura.
+			CALL post:MISCGrabaDetalleTrn
+	
+	end select
+END SUB
+
+/*******/

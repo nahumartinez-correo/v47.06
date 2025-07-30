@@ -1,0 +1,164 @@
+/****o* Pendientes de agrupación/OFB:post:MISCverif_item
+* NOMBRE
+*   OFB:post:MISCverif_item
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCverif_item
+	local idx_aux like siaf:cant
+	local Encontro like tes:es_tesoro
+	local dest_aux like post:item_destino
+	local peso_aux like post:item_peso
+	local cant_aux like post:item_cantidad
+	local um_aux like post:item_um
+	local hasta_aux like post:item_hasta
+	local serv_aux like post:item_servicio
+	local prodvs_aux like post:item_prodvs_cod
+	local impaux_aux like post:item_impaux
+
+	Encontro = "N"
+	cds select from dsc:TABrem_item_aux becomes dsc:CONrem_item_aux where \
+	post:op_operator_id == op:op_operator_id && \
+	item_codigo_trx == item_codigo_trx
+
+	cds findfirst dsc:CONrem_item_aux lock
+	DO
+		if (cdsretval != 0 || Encontro == "S") then
+			break
+		end if
+		cds extract dsc:CONrem_item_aux \
+		item_destino into dest_aux \
+		item_peso into peso_aux \
+		array post:item_opc_opci into array post:item_opc_aux \
+		item_cantidad into cant_aux \
+		item_um into um_aux \
+		item_hasta into hasta_aux \
+		item_servicio into serv_aux \
+		item_prodvs_cod into prodvs_aux \
+		item_impaux into impaux_aux
+
+		/* Busco la familia de la transacción */
+		CDS SELECT FROM DSC:siaf:adt_tran_table BECOMES DSC:siaf:adt_tran_context WHERE  \
+		siaf:adt_tran_codigo == FLD:item_codigo_trx
+		cds findfirst dsc:siaf:adt_tran_context nolock
+		if (cdsretval == 0) then
+			cds extract dsc:siaf:adt_tran_context siaf:adt_tran_fliatran
+		end if
+		cds endselect dsc:siaf:adt_tran_context
+		select (siaf:adt_tran_fliatran)
+			case "CSP"
+			case "CSE"
+				/*MFM -La Carta Factura no debe acumularse*/
+				if (post:item_codigo_trx == 11105)
+					Encontro = "N"
+				else
+					if (post:item_destino == dest_aux && post:item_um == um_aux && \
+					post:item_hasta == hasta_aux) then
+					/* Verifico qu etenga los mismo opcionales */
+						call post:MISCcomparo_arrays
+						if (retval == 0) then
+							Encontro = "S"
+						end if
+					end if
+				endif
+				break
+			case "VAP" 
+				if (post:item_destino == dest_aux && post:item_um == um_aux && \
+					post:item_hasta == hasta_aux) then
+					Encontro = "S"
+				end if			
+				break
+			case "CST"
+				if (post:item_destino == dest_aux && post:item_um == um_aux && \
+				post:item_hasta == hasta_aux && post:item_servicio == serv_aux ) then
+				/* Verifico qu etenga los mismo opcionales */
+					call post:MISCcomparo_arrays
+					if (retval == 0) then
+						Encontro = "S"
+					end if
+				end if
+				break
+			case "CME"
+				if (post:item_prodvs_cod == prodvs_aux ) then
+					Encontro = "S"
+				end if
+				break
+		end select
+		if (Encontro == "S") then
+			cds clearbuffer dsc:CONrem_item_aux
+			item_cantidad = cant_aux + item_cantidad
+			item_impaux = impaux_aux + item_impaux //cgw:acumulo el importe total
+
+			cds append dsc:CONrem_item_aux \
+			    item_cantidad \
+			    item_impaux
+
+			cds update dsc:CONrem_item_aux lock
+		end if
+		cds findnext dsc:CONrem_item_aux lock
+
+	LOOP
+	if (Encontro == "N") then
+		cds clearbuffer dsc:CONrem_item_aux
+		CDS APPEND DSC:CONrem_item_aux \
+		post:op_operator_id    AS post:op_operator_id \
+		post:remito_nro \
+		post:item_nro \
+		post:item_codigo_trx \
+		post:item_servicio \
+		post:item_especie \
+    	post:item_subespecie \
+    	post:item_motivo \
+    	post:item_mod_motivo \
+    	post:item_submod_motivo \
+    	post:item_nis \
+		post:item_importe \
+		post:item_comprob_motivo \
+		post:item_prodvs_cod \
+		post:item_cantidad \
+		post:item_cant_pal \
+		post:item_peso \
+		post:item_aforo1 \
+		post:item_aforo2 \
+		post:item_aforo3 
+		CDS APPEND DSC:CONrem_item_aux \
+		post:item_destino  \
+		post:item_tipo_caja \
+		post:item_cant_opci \
+		post:item_dcto \
+		post:item_bonifCM \
+		post:item_categoria \
+		array post:item_opc_opci \
+		array post:item_opc_bonif \
+		array post:item_opc_importe \
+		array post:item_opc_imp_oc \
+	    post:item_desc_factura \
+	    post:item_importe_oc \
+	    post:item_prodvarios \
+		post:item_um \
+		post:item_hasta \
+		post:item_impaux \
+		post:item_efvo \
+		post:item_bien_cambio \
+		post:item_imp_bloq \
+		post:item_nis_impos
+
+		cds insert dsc:CONrem_item_aux lock
+	end if
+
+END SUB
+
+/*******/

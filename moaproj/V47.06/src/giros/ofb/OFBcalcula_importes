@@ -1,0 +1,209 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBcalcula_importes
+* NOMBRE
+*   OFB:giros:OFBcalcula_importes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBcalcula_importes
+
+	local letra           like giros:Serie_fld
+	local importe         like giros:ImporteEmis_fld
+	
+	// DATOS (PIN) DEL CLIENTE.
+	/*
+	giros:clie_pin_fld       = giros:clie_pin_comm
+	giros:clie_pin_text_fld  = giros:clie_pin_text_comm
+	*/
+
+	REFRESH clie_pin_fld
+	REFRESH clie_pin_text_fld
+	
+	// TASA DE CONVERSION.
+	giros:TasaConversion_fld = tasa_conver_comm
+	refresh giros:TasaConversion_fld
+
+	// SCALING FACTOR.
+	if ( giros:ImporteEmis_fld.numchars != 0 )
+
+		siaf:importe2 = giros:ImportePagar_comm
+		siaf:importe2 = siaf:importe2 / 100
+
+		select ( giros:Scale_Factor_comm )
+
+			case 2
+			importe  = siaf:importe2 * 100
+			break
+
+			case 3
+			importe  = siaf:importe2 * 1000
+			break
+
+			case 4
+			importe  = siaf:importe2 * 10000
+			break
+
+			case else
+			importe  = siaf:importe2
+		end select
+	end if
+
+	if ( giros:ImportePago_fld.numchars != 0 )
+
+		siaf:importe2 = giros:Importe_comm
+		siaf:importe2 = siaf:importe2 / 100
+
+		select ( giros:Scale_Factor_comm )
+
+			case 2
+			importe  = siaf:importe2 * 100
+			break
+
+			case 3
+			importe = siaf:importe2 * 1000
+			break
+
+			case 4
+			importe = siaf:importe2 * 10000
+			break
+
+			case else
+			importe  = siaf:importe2
+		end select
+
+		// Si se ingreso Importe de Pago  y la moneda de pago
+		// es igual a la moneda de emision en el importe de emision
+		// se le asigna el de pago.
+
+		if ( giros:Importe_comm.numchars == 0  && \
+		     monpas_codmonwu == monpas_codmonpag )
+			importe = giros:ImportePago_fld
+		end if
+
+	end if
+
+	if ( giros:TipoConversion_fld == "F" )
+		giros:ImporteEmis_fld = importe
+	else
+		giros:ImportePago_fld = importe
+	end if
+	
+	// IMPORTE TOTAL WU.
+	siaf:importe2 = giros:ImporteTotalWU_comm
+	giros:ImporteTotal_WU = siaf:importe2 / 100
+	giros:ImporteNeto = giros:ImporteEmis_fld
+	refresh	giros:ImporteEmis_fld
+	refresh	giros:ImportePago_fld
+
+
+	if ( giros:ImporteEmis_fld == 0 || giros:ImportePago_fld == 0 )
+		MSGBOX \
+		"IMPORTE DE EMISION/PAGO NO PUEDE SER CERO",OFB_OK,"Error"
+		return -2
+	end if
+
+	refresh giros:ImporteEmis_fld
+
+	//PS 10832
+	/*if ( giros:ImporteEmis_fld > MAX_INTER_LIMITE )
+	      msgbox "IMPORTE SUPERA LIMITE PERMITIDO.",OFB_OK,"Error"
+	      return -2
+	end if*/
+
+	// Calculo de Importes de opcionales, delivery service, comision.
+	//--------------------------------------------------------------
+
+	call csr:cleararray post:cod_opc
+	call csr:cleararray post:ali_opc
+	call csr:cleararray post:cos_opc
+	call csr:cleararray post:comb_opc
+	call csr:cleararray post:siniva_opc
+	call csr:cleararray post:flia_opc
+	clearfield post:cant_opc
+	clearfield post:costo_opc
+	
+	clearfield opc_impsiniva[2]
+	clearfield opc_impiva[2]
+	refresh opc_impsiniva[2]
+	refresh opc_impiva[2]
+	
+	if (testflag(giros:opcionales_inter,opc_avis_msg))
+
+		siaf:importe2 = giros:tarifa_msg_comm
+		giros:opc_impsiniva[2] = siaf:importe2 / 100
+		refresh giros:opc_impsiniva[2]
+		
+		// TARIFA DEL MSG AL BENEFICIARIO.
+	
+		call giros:OFBcalcula_mensaje
+		if ( retval < 0 )
+			return -2
+		end if
+	end if
+
+	// COMISION.
+	siaf:importe2 = giros:Comision_comm
+	giros:comision_siniva = siaf:importe2 / 100
+	refresh giros:comision_siniva
+
+	call giros:OFBcalcula_comision
+	if ( retval < 0 )
+		return -2
+	end if
+
+	clearfield CargosAdic_fld
+	clearfield CargosIva_fld
+	clearfield serv_impsiniva
+	clearfield serv_impiva
+	refresh serv_impsiniva
+	refresh serv_impiva
+
+	if (testflag(delivery_service,entre_domicilio)  || \
+	    testflag(delivery_service,aviso_telefonico) || \
+	    testflag(delivery_service,aviso_telegrafico)) then
+	
+		// VALOR DEL DELIVERY SERVICE.
+
+		siaf:importe2 = giros:cargo_adic_comm
+		giros:CargosAdic_fld = siaf:importe2 / 100
+		
+		call giros:OFBcalcula_cargos
+		if ( retval < 0 )
+			return -2
+		end if
+
+	end if
+
+	post:costo_opc = giros:opc_impsiniva[2] + giros:opc_impiva[2] + \
+			 giros:serv_impsiniva +  giros:serv_impiva
+
+        giros:Impuesto = 0
+
+	letra = "E"
+	CALL MISCcalculo_impuesto(giros:SucSoli_fld,ImporteNeto,letra,post:adt_serv_serv,"")
+	ImporteSelloEmis = Impuesto
+	refresh ImporteSelloEmis
+
+	call giros:MISCcalcula_impuesto
+	
+        siaf:importe = Comision_fld + CargosAdic_fld + CargosIva_fld + opc_impsiniva[2] + opc_impiva[2] + ImporteEmis_fld
+
+    	giros:ImporteTotal_fld = ImporteEmis_fld + Comision_fld + CargosAdic_fld + CargosIva_fld + opc_impsiniva[2] + opc_impiva[2] + ImporteSelloEmis
+
+	refresh siaf:importe
+	refresh giros:ImporteTotal_fld
+END SUB
+
+/*******/

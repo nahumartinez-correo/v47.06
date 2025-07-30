@@ -1,0 +1,117 @@
+/****o* Reportes/OFB:tes:MISCpasa_buzon_str
+* NOMBRE
+*   OFB:tes:MISCpasa_buzon_str
+* DESCRIPCION
+*   Esta rutina arma el listado de Valores Depositados en Caja Buzon (Efectivo y Cheque)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:TRANcons_est_buzon,OFB:tes:MISCimpri_inf_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCpasa_buzon_str
+    local moneda_ant   like tes:teso_cheq_moneda
+    local listar like teso_cheq_estado
+    local total_caja like siaf:importe
+    local total_moneda like siaf:importe
+    local buzon_ant like tes:buzon
+    local LRetval like lib:err_retval
+    
+    /*NI 50183
+    let siaf:lineas_cl = 0 // inicializo el conteo de lineas
+    let fld:tes:INDsheet_header = OFB:tes:MISCencab_simple
+    call tes:MISCencab_simple*/
+
+    let listar = "N"
+
+    cds select from DepBuzon_tbl becomes DepBuzon_ctx where \
+    tes:adt_depbuzon_suc == common:sucursal_activa && \
+    tes:adt_depbuzon_tipo == "T" ascending sort "DepB_ord"
+    cds findfirst dsc:DepBuzon_ctx nolock
+    LRetval = cdsretval
+    if (LRetval < 0) then
+       /* Para que no mande el mensaje en caso de ser un cierre */
+       if (drv:descrip == "ESTBUZON") then
+           move "(L) No hay depositos para listar" to common:csr_string
+           msgbox common:csr_string,OFB_OK,"Aviso"
+       end if
+       cds endselect dsc:DepBuzon_ctx
+       return (-8)
+    else
+        cds extract dsc:DepBuzon_ctx all
+        let buzon_ant = tes:adt_depbuzon_caja
+        let moneda_ant = tes:adt_depbuzon_moneda
+    end if
+
+    While (LRetval == 0) then
+        fprint common:csr_string  \
+        "  NRO DE CAJA: %s",adt_depbuzon_caja
+        call MISCwrite_file1(5,fld:common:csr_string)
+        let total_caja = 0
+	//NI 50183
+	fprint common:csr_string "-----------------------------------------------------------------------------"
+        call MISCwrite_file1(5,fld:common:csr_string)
+         fprint common:csr_string  \
+        "       BOLSA       FECHA/HORA DEPOSITO    OPERADOR               IMPORTE"
+         call MISCwrite_file1(5,fld:common:csr_string)
+         fprint common:csr_string "-----------------------------------------------------------------------------"
+         call MISCwrite_file1(5,fld:common:csr_string)
+
+        While (LRetval == 0 && adt_depbuzon_caja == buzon_ant)
+             let post:adt_mp_cod = adt_depbuzon_moneda
+             call post:CDSadt_MedPago_load
+             fprint common:csr_string  \
+             " %s - %-15s",adt_depbuzon_moneda,post:adt_mp_desc
+             call MISCwrite_file1(5,fld:common:csr_string)
+
+             move " " to common:csr_string
+
+             call MISCwrite_file1(5,fld:common:csr_string)
+             let total_moneda = 0
+             While (LRetval == 0 && adt_depbuzon_caja == buzon_ant && adt_depbuzon_moneda == moneda_ant) then
+		//NI 50183 - SE AGREGA LA HORA DEL DEPOSITO
+         	 FPRINT common:csr_string,"       %-8s    %e %e      %5s        %15e", \
+                 adt_depbuzon_bolsa,adt_depbuzon_fecha,adt_depbuzon_hora,adt_depbuzon_op,adt_depbuzon_importe
+                 call MISCwrite_file1(5,fld:common:csr_string)
+                 let total_moneda = total_moneda + adt_depbuzon_importe
+                 cds findnext dsc:DepBuzon_ctx nolock
+                 let LRetval = cdsretval
+                 if (LRetval == 0)
+                    cds extract dsc:DepBuzon_ctx all
+                 end if
+             Endwhile
+             let moneda_ant = adt_depbuzon_moneda
+             fprint common:csr_string "-----------------------------------------------------------------------------"
+             call MISCwrite_file1(5,fld:common:csr_string)
+
+             fprint common:csr_string,"             TOTAL                                         %13s",total_moneda
+             call MISCwrite_file1(5,fld:common:csr_string)
+
+
+             move " " to common:csr_string
+             call MISCwrite_file1(5,fld:common:csr_string)
+
+             let total_caja = total_caja + total_moneda
+         EndWhile
+         let buzon_ant = adt_depbuzon_caja
+         fprint common:csr_string,"  TOTAL CAJA BUZON ........................................%13s",total_caja
+         call MISCwrite_file1(5,fld:common:csr_string)
+
+         move " " to common:csr_string
+         call MISCwrite_file1(5,fld:common:csr_string)
+         move " " to common:csr_string
+         call MISCwrite_file1(5,fld:common:csr_string)
+   EndWhile
+   cds endselect dsc:DepBuzon_ctx
+ 
+END SUB
+
+/*******/

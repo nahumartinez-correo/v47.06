@@ -1,0 +1,123 @@
+/****o* Expedición/OFB:post:CDScheckSumCont
+* NOMBRE
+*   OFB:post:CDScheckSumCont
+* DESCRIPCION
+*   Rutina que calcula el checksum de las piezas que se contenerizan (TX cierre contenedor) por grupo de corte y apertura
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:CDScheckSum,post:CDScheckSum_Linea,post:CDScheckSum_Dev
+* REFERENCIADO POR
+*  post:PRTcontGeneFra
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScheckSumCont(tipo)
+ 
+
+LOCAL lpieza_aux LIKE post:Pieza
+LOCAL lpieza_aux2 LIKE post:Pieza
+
+
+    clearfield itemcheck
+    clearfield itemcheckV23
+    
+    SELECT (tipo)
+    	case "NoReenc"
+    		CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+		 	(op:op_operator_id == op:op_operator_id && \
+		 	post:jnl_grucorte_cod == post:jnl_grucorte_cod && \
+	    	post:jnl_apertura_cod ==  post:jnl_apertura_cod && \
+		     post:MarcaBorrado != "*" && jnl_simp_esp != "S" && \
+    		(jnl_stockp_reenc != "S" || \
+     		 jnl_stockp_reenc == "S" && jnl_stockp_reenc_cul != "S"))
+    		break
+    	case "Reenc"
+    		CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+		 	(op:op_operator_id == op:op_operator_id && \
+		 	post:jnl_grucorte_cod == post:jnl_grucorte_cod && \
+	    	post:jnl_apertura_cod ==  post:jnl_apertura_cod && \
+		     post:MarcaBorrado != "*" && \
+	    	 jnl_stockp_reenc == "S" && jnl_stockp_reenc_cul == "S")
+    		break
+    END SELECT
+    
+    CDS FINDFIRST DSC:DetTmp_ctx LOCK
+   
+    DO
+		IF (CDSRETVAL < 0) THEN
+			break
+		ENDIF
+		/*MFM - Requerimiento 1690*/
+		clearfield post:track_trace
+		clearfield post:Pieza 
+			
+		CDS EXTRACT DSC:DetTmp_ctx ALL
+
+		call csr:trimfield track_trace
+		call csr:trimfield Pieza
+		
+				
+			/*MFM (14.01.2002)Calculo el checksum de las piezas*/
+			If (track_trace.numchars != 0) THEN
+				if (substr(track_trace,0,2) != "SU" && substr(track_trace,0,2) != "SR" && \
+    				substr(track_trace,0,2) != "GS" && substr(track_trace,0,2) != "GR") then
+					call MISCes_TT(track_trace)
+					IF (RETVAL == 0) THEN
+						//PS 7686 - Modificar el calculo del checksum para las piezas que van a la transferencia					
+						//Recupero de la tabla de RelMod el campo del tipo de despacho
+							CALL CDSLoadTipoDesp
+						if ((post:adt_desptipos_cod == "TR") || (post:adt_relMod_desptipos == "TR")) then
+							fprint lpieza_aux "%13.13s%1.1s", post:track_trace," "
+							call MISCCalcChkSum(lpieza_aux, 14, itemcheck)
+							//PS 7686 - Generar el checksum de la nueva version de T&T
+							fprint lpieza_aux2 "%13.13s%16.16s", post:track_trace,"                "
+							call csr:ChecksumTT(lpieza_aux2, 29, itemcheckV23)
+            				itemcheckV23 = retval
+						else
+							call MISCCalcChkSum(track_trace, 13, itemcheck)
+							itemcheckV23 = itemcheck
+						endif
+					END IF
+				endif
+			else
+				if (Pieza.numchars != 0) then
+					if (substr(Pieza,0,2) != "SU" && substr(Pieza,0,2) != "SR" && \
+    					substr(Pieza,0,2) != "GS" && substr(Pieza,0,2) != "GR") then
+						call MISCes_TT(Pieza)
+						IF (RETVAL == 0) THEN
+							//PS 7686 - Modificar el calculo del checksum para las piezas que van a la transferencia
+							//Recupero de la tabla de RelMod el campo del tipo de despacho
+							CALL CDSLoadTipoDesp
+							if ((post:adt_desptipos_cod == "TR") || (post:adt_relMod_desptipos == "TR")) then
+								fprint lpieza_aux "%13.13s%1.1s", post:Pieza," "
+								call MISCCalcChkSum(lpieza_aux, 14, itemcheck)
+								//PS 7686 - Generar el checksum de la nueva version de T&T
+								fprint lpieza_aux2 "%13.13s%16.16s", post:Pieza,"                "
+								call csr:ChecksumTT(lpieza_aux2, 29, itemcheckV23)
+            					itemcheckV23 = retval
+							else
+								call MISCCalcChkSum(Pieza, 13, itemcheck)
+								itemcheckV23 = itemcheck
+							endif
+						END IF
+					endif
+				end if
+			end if
+		
+	   
+		CDS FINDNEXT DSC:DetTmp_ctx LOCK
+		
+    LOOP
+    
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+    
+END SUB
+
+/*******/

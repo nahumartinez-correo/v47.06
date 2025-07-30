@@ -1,0 +1,79 @@
+/****o* Modificación de Piezas/OFB:post:CDSrecalculo_guarda
+* NOMBRE
+*   OFB:post:CDSrecalculo_guarda
+* DESCRIPCION
+*   Esta rutina recalcula el Plazo de Guarda de las piezas modificadas.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:FVALplazo_guarda_CM
+* REFERENCIADO POR
+*   OFB:post:CDSactPieza_stockp
+* DOCUMENTACION
+*   SC50211.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=619898&
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:CDSrecalculo_guarda(l_fecha)
+
+Local cod_ttrace like stockp_pieza
+LOCAL plazo LIKE post:stockp_plazoguarda
+LOCAL imp_desc LIKE common:csr_string
+
+   	cod_ttrace = substr(Pieza,0,2)
+    	CDS SELECT FROM DSC:adt_plagua_tbl BECOMES DSC:adt_plagua_ctx \
+    	WHERE (adt_plagua_ttcod == cod_ttrace && \
+    	adt_plagua_dest == stockp_destino && \
+    	adt_plagua_laboral == stockp_laboral)
+    	
+    	CDS FINDFIRST DSC:adt_plagua_ctx NOLOCK
+    	
+    	IF (CDSRETVAL == -801) THEN
+       	   	CDS ENDSELECT DSC:adt_plagua_ctx
+       		FPRINT imp_desc,"%s%s%s","LA PIEZA: ",post:Pieza," NO FUE MODIFICADA POR FALTAR DATOS DE PLAZO DE GUARDA PARA ESTE TIPO DE PRODUCTO, DESTINO Y MARCA LABORAL"
+                MSGBOX imp_desc,0x00,"ERROR"
+       		clearfield  post:stockp_plazoguarda
+       		clearfield  post:stockp_vtofecha
+       		RETURN -2
+    	END IF
+    	clearfield adt_plagua_mes
+    	clearfield adt_plagua_dias
+    	clearfield adt_plagua_habil
+    	CDS EXTRACT DSC:adt_plagua_ctx adt_plagua_mes adt_plagua_dias adt_plagua_habil
+    	
+    	/*Determino si hay que calcular el plazo de guarda a partir del mes siguiente*/
+    	If (adt_plagua_mes == "S") Then
+	    /*Calcular el mes siguiente*/
+    	    CALL MISCCalculo_mes_sgte(l_fecha)
+    	Else
+	     //stockp_vtofecha = common:system_date
+	     stockp_vtofecha = l_fecha
+	End If
+
+    	/* JPM - Si es a partir del mes siguiente es un dia menos */
+	plazo = adt_plagua_dias
+	IF (post:adt_plagua_mes == "S") THEN
+	    plazo = plazo - 1
+    	END IF
+
+	If (adt_plagua_habil == "S") Then
+        	plazo = plazo * 24//paso de dias a horas
+        	/*Calculo la fecha de vencimiento teniendo en cuenta dias no habiles y feriados*/
+        	CALL siaf:MISCcontrol_feriado(stockp_vtofecha,plazo, "O", siaf:INDfecha_acred)
+        	stockp_vtofecha = siaf:INDfecha_acred
+    	Else
+	        /*Calculo la fecha de vencimiento con dias corridos*/
+    	    	CALL  csr:date_add (stockp_vtofecha,  plazo,  "d", stockp_vtofecha)
+    	End If
+
+	CDS ENDSELECT DSC:adt_plagua_ctx
+    	stockp_plazoguarda = adt_plagua_dias
+    
+
+
+End Sub
+
+/*******/

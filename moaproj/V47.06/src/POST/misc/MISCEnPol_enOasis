@@ -1,0 +1,198 @@
+/****o* Pendientes de agrupación/OFB:post:MISCEnPol_enOasis
+* NOMBRE
+*   OFB:post:MISCEnPol_enOasis
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCEnPol_enOasis
+	/* Esta rutina verifica si una Poliza está en Oasis y trae sus datos */
+	RESETFLAG giros:tran_send_mode,cancelacion
+
+	/* RUTINA DE RECUPERACION DE TRAN CAIDAS EN VUELO - Si hay pendientes las recupero */
+	CALL MISCrec_caidas_UP
+	IF (RETVAL == TRAN_CAIDA_VUELO )
+		//No pongo ningun mensaje puesto que si no puede recuperar la caída de una tx, el operador
+		//no tiene por que enterarse
+		//MSGBOX "Problemas de Comunicación. Inténtelo nuevamente o seleccione otro medio de pago",0x00,"Atencion"
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+		CLEARFIELD lib:stat_message
+		REFRESH lib:stat_message		
+		RETURN (-2)
+	END IF	
+	
+	
+	// Seteo flag de Consulta Simple
+    SETFLAG giros:tran_send_mode,consulta_simple
+    giros:codigo_procesamiento = siaf:codigo_proc
+	
+	// Seteo Rutinas de Mensajeria
+	hcomm:INDhost_sndrt = OFB:post:SENDencomienda
+	hcomm:INDhost_rcvrt = OFB:post:RCVEencomienda
+
+	call hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RETURN (-2)
+	END IF 		
+
+	// Envio la Consulta
+	call hcomm:COMM_host_tran
+
+    if ( giros:err_firma == -1 )    // Error en Verificacion Firma 
+  		common:trap_reset = OFB:drv:KEYSreset_esc
+   		KEYDEF CLEAR
+   		CALL drv:KEYSnavigation
+		return -2
+    end if
+
+	lib:err_retval = retval
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	/* KEYDEF CLEAR
+	CALL drv:KEYSnavigation */
+	clearfield lib:stat_message
+	refresh lib:stat_message
+	if (lib:err_retval < 0) then
+		ungetkey RT_ESC
+		return -2
+	end if
+
+	if ( hcomm:tran_status == HOST_ACCEPTED )
+	
+		/* Verifico el Estado de la Poliza -  */
+		/* Si es 02 (Disponoble) o 10 (Cobrada) continuo, Sino Rechazo */
+		select (giros:EstadoGiro_comm)
+			case 01
+				MSGBOX "POLIZA ANULADA",0x00,"Error"
+				clearfield post:EnPol_Poliza
+				clearfield post:EnPol_Track
+				return -2
+				break
+			case 02
+				move "DISPONIBLE" to post:EnPol_DescEst
+				break
+			case 03
+				MSGBOX "POLIZA CON INCIDENTES",0x00,"Error"
+				clearfield post:EnPol_Poliza
+				clearfield post:EnPol_Track
+				return -2
+				break
+			case 10
+				move "COBRADA" to post:EnPol_DescEst
+				break
+			case 11
+				MSGBOX "POLIZA TRANSFERIDA",0x00,"Error"
+				clearfield post:EnPol_Poliza
+				clearfield post:EnPol_Track
+				return -2
+				break
+			case 12
+				move "POLIZA COBRADA 2 VECES" to post:EnPol_DescEst
+				break
+			case 13
+				/*MSGBOX "POLIZA COBRADA CON INCIDENTES",0x00,"Error"
+				clearfield post:EnPol_Poliza
+				clearfield post:EnPol_Track
+				return -2*/
+				move "COBRADA CON INCIDENTES" to post:EnPol_DescEst
+				break
+			case 14
+				MSGBOX "POLIZA COBRADA ANULADA",0x00,"Error"
+				clearfield post:EnPol_Poliza
+				clearfield post:EnPol_Track
+				return -2
+				break
+				
+		end select
+
+		move post:Poliza_comm        to post:EnPol_Poliza
+		move post:CodigoTT_comm      to post:EnPol_Track
+		move post:ImporteRcvePoliza   to post:EnPol_ImpPoliza
+		move post:Destinatario_comm  to post:EnPol_Desti
+		move post:Remitente_comm     to post:EnPol_Remit
+		move giros:EstadoGiro_comm    to post:EnPol_CodEst
+		move post:TipoPieza_comm	 to post:EnPol_TipoPieza
+		move post:CodProd1_comm      to post:EnPol_GesEnt      //Gestion Entrega
+		move post:CodProd2_comm      to post:EnPol_PresAd      // Presentacion Aduana
+		move post:DescProd1_comm     to post:EnPol_DescGEnt    // Gestion Entrega 
+		move post:DescProd2_comm     to post:EnPol_DescPAd    // Presentacion Aduana
+		move post:ImporteTPA_comm    to post:EnPol_ImpPresAd
+		move post:AlicuotaTPA_comm   to post:EnPol_TasaPresAd
+		move post:AlicuotaTGE_comm   to post:EnPol_TasaGestEn
+		move post:ImporteTGE_comm    to post:EnPol_ImpGestEn
+		
+		;INDICATIVO CONSULTA 1era.FASE DE LA OPERACION
+		post:consulta_poliza = 1
+	
+		//drv:next_screen = 1
+	else
+		clearfield lib:stat_message
+		refresh    lib:stat_message
+		common:trap_reset = OFB:drv:KEYSreset_esc
+		return -2
+	end if
+
+	/* Seteo el campo EnPol_PolizaCero dependiendo del importe de la poliza */
+	if (post:EnPol_ImpPoliza == 0.00) then
+		move "SI" to post:EnPol_PolizaCero
+	else
+		move "NO" to post:EnPol_PolizaCero
+	end if
+	
+
+	/* Calculo el Iva de la Presentacion a Aduana */
+	//SC 50170
+	CALL MISCdesglosaIva(EnPol_ImpPresAd,EnPol_TasaPresAd, 1,0)
+	EnPol_IvaPresAd = ImporteIva
+	PresSinIva = EnPol_ImpPresAd - EnPol_IvaPresAd
+	//SC 50170 - FACTURACION
+	PresSinIva4 = post:ImporteSinIva_bis
+	/* Calculo el Iva de la Gestión de Entrega */
+	//SC 50170
+	CALL MISCdesglosaIva(EnPol_ImpGestEn,EnPol_TasaGestEn, 1,0)
+	EnPol_IvaGestEn = ImporteIva
+	GestSinIva = EnPol_ImpGestEn - EnPol_IvaGestEn
+	//SC 50170 - FACTURACION
+	GestSinIva4 = post:ImporteSinIva_bis
+	
+	/* Calculo el Importe Total de la Transaccion */
+    	EnPol_ImpTotal = EnPol_ImpPoliza + EnPol_ImpPresAd + EnPol_ImpGestEn
+	siaf:importe = post:EnPol_ImpTotal
+	ImporteConIva = siaf:importe
+	ImporteSinIva = PresSinIva + GestSinIva 
+	
+	// sba Obs. 463 - Segun la Categoria de Iva discrimino o no campos en pantalla.
+	call post:CDSadt_ivacod_discri
+	//SUC-964:Resolución General N° 5614/2024: solo aplica para mostar el iva Contenido al final de la facturas B
+	if ( adt_cativa_discri == "S" && (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3) )
+		let EnPol_ImpPresAd_s = PresSinIva
+		let EnPol_TasaPresAd_s = EnPol_TasaPresAd
+		let EnPol_IvaPresAd_s = EnPol_IvaPresAd
+		let EnPol_ImpGestEn_s = GestSinIva
+		let EnPol_TasaGestEn_s = EnPol_TasaGestEn
+		let EnPol_IvaGestEn_s = EnPol_IvaGestEn
+	else // es una "N" No discrimina iva
+		let EnPol_ImpPresAd_s = EnPol_ImpPresAd
+		clearfield EnPol_TasaPresAd_s
+		clearfield EnPol_IvaPresAd_s
+		let EnPol_ImpGestEn_s = EnPol_ImpGestEn
+		clearfield EnPol_TasaGestEn_s
+		clearfield EnPol_IvaGestEn_s
+	end if
+		
+END SUB
+
+/*******/

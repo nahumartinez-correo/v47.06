@@ -1,0 +1,74 @@
+/****o* Notas de Credito CM/OFB:post:SVALanulacionNC
+* NOMBRE
+*   OFB:post:SVALanulacionNC
+* DESCRIPCION
+*   Rutina de validación de pantalla de la tran de Anulación de NC a CM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANanulacionNC
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALanulacionNC
+	
+	if (sesion_anul_string.numchars == 0)
+		msgbox "Debe seleccionar una Nota de Crédito" OFB_OK "Error"
+		return (-2)
+	end if
+
+	/*Seteo este campo que cuando es una Transacción de Teclas Rápidas queda vacio, pero, como
+	diría mi Maestro Pablo Massera, "Más vale prevenir que curar" - Gabriel Falciola*/
+	post:fecha = common:system_date
+	post:op_operator_id = op:op_operator_id
+
+	OperacionNC = 1
+	AnulOperNC = 1
+	
+    /*Pido Supervision antes de continuar*/
+	clearfield siaf:cartel
+	setflag  tlr:tran_flags, supovr_request
+	setflag  siaf:siaf_flags, req_tes
+	setflag  siaf:siaf_flags, req_sup1
+	call siaf:OVRsupovr_request
+	let lib:err_retval = retval
+	resetflag siaf:siaf_flags, req_tes
+	resetflag  tlr:tran_flags, supovr_request
+	resetflag  siaf:siaf_flags, req_sup1
+	IF (lib:err_retval < 0)THEN
+		clearfield giros:op_sup_id
+		return (-2)
+    	else
+		giros:op_sup_id = ovr:ovr_sup_id
+        	setflag tlr:tran_flags,supovr_granted
+	end if
+
+	/*Si confirma la anulacion, paso a la tabla NCtable todas las transacciones de la Sesion
+	agregandole los datos necesarios para saber que proceso es necesario para cada transaccion
+	Gabriel Falciola*/
+	call CDSPasoAnulNC_CM
+	if (retval != 0)
+		/*hubo un error con el viaje de cancelación*/
+		/*Restaruro el indice post:TranAnul_idx porque se pisaba */
+		return (-2)
+	end if
+
+	/*Anulación Parcial*/
+	call MISCanulParcial
+
+
+	/*Una vez que termina el proceso, se libera la memoria de los picklist y se borra la
+	tabla auxiliar se que utiliza para las sesiones - Gabriel Falciola*/
+	call ESCanulacionNC
+
+	clearfield drv:INDjnl_rtn
+END SUB
+
+/*******/

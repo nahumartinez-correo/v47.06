@@ -1,0 +1,157 @@
+/****o* Lista de Giros/OFB:giros:PRESlg_tele
+* NOMBRE
+*   OFB:giros:PRESlg_tele
+* DESCRIPCION
+*   Rutina PRES de la pantalla de datos de un giro telegrafico de Lista de Giro.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:giros:PRESlg_post
+* REFERENCIADO POR
+*   giros:PBingresarLG,giros:PBmodificarLG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girospres.h"
+
+SUB giros:PRESlg_tele
+    
+	call giros:MISCgmleotransac(70050)
+	siaf:nombre_transac = "CARGA MANUAL GIRO TELEGRAFICO"
+
+	siaf:codigo_proc = 992002
+	es_emision_tele = "S"
+    /********************************************************/
+    /* Protejo el campo Importe porque en las Transacciones */
+    /* Postales se calcula mediante una Funci¢n en vez de   */
+    /* ser digitado por el Cajero.			    */
+    /********************************************************/
+     PROTFIELD ImporteIva_fld
+     PROTFIELD Comision_fld
+     PROTFIELD ImpSellos_fld
+     PROTFIELD siaf:importe
+
+
+    /*********************************************************/
+    /* Por default asigno como Medio de Pago, Efectivo Pesos */
+    /* Despues se puede modificar, pero conviene asignarle   */
+    /* ese valor para agilizar ya que en el 95% de los casos */
+    /* se paga mediante ese Medio de Pago.		     */
+    /*********************************************************/
+    siaf:moneda = "00"
+    post:medio_pago_desc = "PESOS"
+    post:cantidad = 1
+
+    /*********************************************************/
+    /* Por default asigno a Producto-CLiente el valor en 0.   */
+    /*********************************************************/
+    post:prod_cli = "0000000000"
+
+    /* Inicio de Agregado para manejo de IVAS en Productos Telegraficos */
+    if (post:PresGrupoIva == "G2" && post:tipo_produc2.NUMCHARS != 0) then
+		post:tipo_produc = post:tipo_produc2
+    else
+		post:tipo_produc2 = post:tipo_produc
+    endif
+
+	//PS 9488
+    IF (siaf:codigo_siaf == 70050 && post:IvaCod == "SNC") THEN
+		post:tipo_produc  = 14123
+		post:tipo_produc2 = 14123
+    ENDIF
+	
+		
+    /*********************************************************/
+    /* Accedo a la Tabla de Servicios Postales para obtener  */
+    /* la parametria del producto.       		             */
+    /*********************************************************/
+    CALL giros:PRESserv_gral_giro
+    IF (RETVAL < 0) THEN
+		msgbox "SERVICIO NO EXISTE EN TABLAS",OFB_OK,"Error"
+		RETURN (-2)
+    END IF
+
+    /*********************************************************/
+    /* Verifico si el Servicio tiene definido Opcionales.    */
+    /* Lo necesito saber antes de dibujar la Pantalla de la  */
+    /* Transacci¢n para decidir si debo displayar el Combo   */
+    /* para seleccionar los Opcionales o no.		     */
+    /*********************************************************/
+    CALL post:PRESopc_gral
+    IF (RETVAL < 0) THEN
+	    RETURN (-2)
+    END IF
+
+    post:adt_tarif_dest = "BASICO NACIONAL"
+    post:adt_tarif_desde = 1
+	
+	call drv:but_number(OFB:giros:PBmodificarLG)
+	
+	if (retval != drv:button)
+		CALL CSR:proc_list(F_CLEAR,LST:giros:LISTlg_tele)
+	end if
+		
+	FechaEmision_fld = common:system_date
+    PROTFIELD FechaEmision_fld
+    PROTFIELD ProvBenef_fld
+    PROTFIELD Serie_fld
+    PROTFIELD NroGiro_fld
+    PROTFIELD digito_fld
+    PROTFIELD Comision_fld
+    PROTFIELD ImporteSelloEmis
+    PROTFIELD ImporteSelloPag
+    PROTFIELD ImporteTotal_fld
+    PROTFIELD post:adt_tarif_fijo
+    REFRESH FechaEmision_fld
+    REFRESH ProvBenef_fld
+    REFRESH Serie_fld
+    REFRESH NroGiro_fld
+    REFRESH digito_fld
+    REFRESH Comision_fld
+    REFRESH ImporteSelloEmis
+    REFRESH ImporteSelloPag
+    REFRESH ImporteTotal_fld
+    REFRESH post:adt_tarif_fijo
+
+	es_emision_postal = "N"
+	es_envio_WU = "N"
+    resetflag flags_back,no_habilitado
+	resetflag flags_back,enviado
+	es_emision_correohoy = "N"
+	resetflag flags_back,ya_pasado
+	resetflag flags_back,manual
+	resetflag flags_back,rechazado
+	resetflag flags_back,vencido
+	
+	call drv:but_number(OFB:giros:PBmodificarLG)
+	if (retval != drv:button)
+		resetflag camara_flags,clear1
+		resetflag camara_flags,clear2
+		resetflag camara_flags,emis1
+		resetflag camara_flags,emis2
+
+		resetflag env_post_flag,envia_postal
+		resetflag pers_jur_flag,nocuit_emis
+		resetflag pjurid_benef_flag,persona_juridica
+		resetflag pjurid_benef_flag,nocuit_benef
+		
+		 //PAGO ABIERTO - GENERA TELEGRAMA
+    giros:genera_teleg = "S"
+	endif
+	
+	clearfield post:peso_en_kgs
+
+    enablecontrol op:chk8
+    enablecontrol op:chk9
+    giros:orden_nispagadora = "orden_des"
+    altercontrolset op:chk8
+    altercontrolset op:chk9
+    
+   
+	
+END SUB
+
+/*******/

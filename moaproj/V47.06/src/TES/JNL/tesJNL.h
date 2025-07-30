@@ -1,0 +1,6 @@
+#include "csr.h"
+#include "cuentas.h"
+#include "giros.h"
+#include "tesoro.h"
+#include "impresio.h"
+#include "reporte.h"

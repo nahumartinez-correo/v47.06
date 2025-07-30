@@ -1,0 +1,266 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL7039n
+* NOMBRE
+*   OFB:giros:SVAL7039n
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL7039n
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL importe_aux LIKE siaf:importe
+	LOCAL afec_efvo_aux LIKE siaf:adt_tran_afec_efvo
+	local loc_RetVal	like lib:err_retval 
+
+	if ((siaf:codigo_siaf == 70392) && ( \
+		(testflag(opcionales_wu,opc1) && !testflag(opcionales_wu,chk1)) || \
+		(testflag(opcionales_wu,opc2) && !testflag(opcionales_wu,chk2)) || \
+		(testflag(opcionales_wu,opc3) && !testflag(opcionales_wu,chk3)) || \
+		(testflag(opcionales_wu,opc4) && !testflag(opcionales_wu,chk4)) || \
+		(testflag(opcionales_wu,opc5) && !testflag(opcionales_wu,chk5)) || \
+		(testflag(opcionales_wu,opc6) && !testflag(opcionales_wu,chk6)))) then
+		MSGBOX "Tiene Opcionales sin Chequear",OFB_OK,"Atención"
+	   	return (-2)
+	endif	
+	
+	//Reingenieria
+	/*if (siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70394 || siaf:codigo_siaf == 70395) then
+		POPUP SCRNemis2 PRESemis2 PCOLemis2 POSTCOLemis2
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+		setflag camara_flags,emis2
+
+		POPUP SCRNemis1 PRESemis1 PCOLemis1 POSTCOLemis1
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+		setflag camara_flags,emis1
+	end if*/
+
+	if (post:estado_presu < 4) then
+		
+		if (siaf:codigo_siaf == 70396) //Cambio Destino
+	    	//Envío consulta de límite de sucursal pagadora para Transferencia Nacional
+	    	CALL OFBconsLimPagoTNac
+	    	IF (retval < 0)
+				// -2 cuando el comm_stat_init da problemas
+				// -3 cuando es != HOST_ACCEPTED
+				giros:flia_giro_fld = giros:adt_giro_flia
+				RETURN -2
+			ELSE
+				IF (ImporteNeto > LimTranPago)
+					MSGBOX "EL IMPORTE DE LA TRANSFERENCIA SUPERA EL LIMITE MAXIMO PERMITIDO A PAGAR EN LA SUCURSAL PAGADORA",0x00,"ERROR"
+					giros:flia_giro_fld = giros:adt_giro_flia
+					RETURN -2
+				END IF
+			END IF
+			giros:flia_giro_fld = giros:adt_giro_flia
+		end if
+
+	
+		//Reingenieria
+		if (siaf:codigo_siaf == 70392 || siaf:codigo_siaf == 70394 || siaf:codigo_siaf == 70395) then
+			// sba 20030904 - Para el pago hay que completar los datos flatantes
+			if (siaf:codigo_siaf == 70392)
+				popup giros:SCRNemis2,PRESemis2_pago,PCOLemis2,POSTCOLemis2_pago
+			 if (lastkey == RT_ESC) then
+		        return (-2)
+				end if
+				// 2 ETAPA- COLECTAR NUEVOS CAMPOS BENEFICIARIO
+   			popup giros:SCRNemis3_pago,PRESemis3_pago,PCOLemis3_pago,POSTCOLemis3_pago
+			else
+				POPUP SCRNemis2 PRESemis2 PCOLemis2 POSTCOLemis2
+			end if
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+				setflag camara_flags,emis2
+	//EMISOR
+			POPUP SCRNemis1 PRESemis1 PCOLemis1 POSTCOLemis1
+			if (lastkey == RT_ESC) then
+				return (-2)
+			end if
+			setflag camara_flags,emis1
+			if (siaf:codigo_siaf == 70394) //CAMBIO DE EMISOR TN
+				 // 2 ETAPA REEMPLAZO DE CHEQUERAS POSTALES- NUEVA PANTALLA DATOS DE EMISOR 2
+         popup giros:SCRNemis3,PRESemis3,PCOLemis3,POSTCOLemis3
+        if (lastkey == RT_ESC) then
+            RESETFLAG flags_back,ya_pasado
+            return (-2)
+        end if
+        
+   		endif
+			
+		end if		
+		
+		//
+		giros:consulta = 1
+		//
+		
+		MSGBOX "¿Desea continuar y enviar el mensaje?",OFB_YESNO,"Atención"
+		If (retval != 6) then
+			ungetkey RT_ESC
+		   	return (-2)
+		end if
+		
+		/* Si la transaccion se cobra por porcentaje, esta SVAL deja la formula en el 
+		campo formuCalc para ser impreso en la factura*/
+		call SVALgralFormCalGiro		
+		
+	else		
+		consulta = 0
+	endif
+	//
+	post:ImporteConIva = imp_servicio_fld
+    //SC 50170
+    call post:MISCdesglosaIva(post:ImporteConIva,post:adt_serv_aliciva,1,0)
+    //SC 50170 FACTURACION
+		giros:ComisionSinIva4_fld =  post:ImporteSinIva_bis
+		
+	//
+	post:destino 	= post:adt_tarif_dest
+	post:unidad_fac = post:adt_tarif_um
+	//
+	select (siaf:codigo_siaf)
+		case 70392
+		siaf:importe = ImporteNeto - post:ImporteConIva
+		break
+		case 70393
+		siaf:importe  = post:ImporteConIva
+		siaf:importe2 = ImporteNeto
+		break
+		case else
+		siaf:importe  = post:ImporteConIva
+		break
+	end select
+	//
+	siaf:siaf_status = HOST_ACCEPTED
+	//
+	// FGB 7.10.03 - Lavado : resguardo los datos de la consulta simple en la duparea de los campos comm 
+	call csr:proc_list F_CPTODUP LST:LISTcomunic_fld
+	call csr:proc_list F_CPTODUP LST:LISTcomunic2_fld
+	call giros:MISCenvio_WU
+	loc_RetVal = retval 
+	// FGB 7.10.03 - Lavado : restauro los datos de la consulta simple en la storagearea de los campos comm ,
+	// para que sean estos valores los que se guarden en la PresuDet 
+	call csr:proc_list F_SWAP LST:LISTcomunic_fld
+	call csr:proc_list F_SWAP LST:LISTcomunic2_fld
+	if (loc_RetVal < 0) then /* consulta rechazada */
+		ungetkey RT_ESC
+		return (-2)
+	else
+		if (loc_RetVal == 2) then /* repetir la consulta */
+			return (-2)
+		end if
+		if (loc_RetVal == 1) then /* mandar la transaccion */
+			consulta = 0
+			call giros:MISCenvio_WU
+			if (retval == 2) then /* no confirma la transaccion o no ingresa supervisor */
+				ungetkey RT_ESC
+	   			return (-2)
+			end if
+		end if
+	end if
+	//
+	if (post:estado_presu == 1 || post:estado_presu == 4) then
+		//
+		IF (hcomm:tran_status != HOST_ACCEPTED) then
+			call MISCanulo_transac("NONE")
+			if (siaf:codigo_siaf == 70392) then
+				// FGB 5.6.2001: a pedido de Dario Lehocky, muestro un mensaje mas evidente en el caso de que 
+				// el mensaje al switch no venga aceptdo  
+				msgbox "IMPOSIBLE REALIZAR EL PAGO",OFB_ICONSTOP,"ATENCION!!"
+			endif
+		ELSE
+
+			if (siaf:codigo_siaf == 70392) then
+				//printdoc OFB:giros:PRT_ImprePagoWU,docprt,"Imprimiendo Comprobante..."	
+				/******************************************/
+				//IMPRIMIR NUEVO FORMULARIO DE PAGO
+				/*******************************************/ 
+					CALL giros:rutina_form_emision
+			
+			else //70393 - 70394 - 70395
+			//	msgbox "INGRESAR EL COMPROBANTE DE TRANSFERENCIA NACIONAL PARA IMPRIMIR",OFB_OK,"Atención"
+				printdoc OFB:giros:PRT_ImpreServWU,docprt,"Imprimiendo Comprobante..."	
+			end if	
+			
+			  /* Llamo a la MISCTotalTransac solo si la transacción fue ACEPTADA. Hernán 21/12/2000*/
+				
+				IF (siaf:codigo_siaf == 70393) //Reembolso
+
+					/*CSZ - resguardo el importe de la tx, el formulario fiscal y
+					el afecta efectivo de la tx*/
+					formulario_aux = post:PreDForFis
+					importe_aux = siaf:importe
+					afec_efvo_aux = siaf:adt_tran_afec_efvo
+
+					/*CSZ - Primero se llama a la rutina con el monto del giro emitido, el 
+					formulario fiscal vacio y el afecta efvo en "-" porque resta*/
+					CLEARFIELD post:PreDForFis
+					siaf:importe = ImporteNeto
+					siaf:adt_tran_afec_efvo = "-"
+					CALL post:MISCTotalTransac(siaf:codigo_siaf)
+			  	
+					/*CSZ - Luego se llama a la rutina con el monto del servicio(comision,
+					tasa y opcionales) que se cobra por la emision, el formulario fiscal
+					asociado al servicio y el afecta efectivo de la tx*/
+					siaf:importe = imp_servicio_fld
+					post:PreDForFis = formulario_aux
+					siaf:adt_tran_afec_efvo = afec_efvo_aux			  
+					CALL post:MISCTotalTransac(siaf:codigo_siaf)
+			  	
+					/*Restauro el importe de la tx*/
+					siaf:importe = importe_aux
+
+				ELSE
+					CALL post:MISCTotalTransac(siaf:codigo_siaf)
+				END IF
+		END IF
+		CLEARFIELD drv:INDhcomm_rtn
+		CLEARFIELD drv:INDspc_rtn[1]
+		CLEARFIELD drv:INDcur_tran
+		CLEARFIELD drv:INDjnl_rtn
+		CLEARFIELD drv:INDspc_rtn[0]
+	end if
+	//
+	siaf:ImporteConIva = post:ImporteConIva
+	siaf:ImporteSinIva = post:ImporteSinIva
+	//
+	select (siaf:codigo_siaf)
+		case 70392
+		siaf:importe = ImporteNeto - post:ImporteConIva
+		break
+		case 70393
+		siaf:importe = post:ImporteConIva - ImporteNeto
+		break
+		case else
+		siaf:importe  = post:ImporteConIva
+		break
+	end select
+	//
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+		post:PreDForFis = post:adt_serv_formfiscal
+		call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+	end if
+	//
+	call post:MISCGrabaDetalleTrn  // ---> Grabo el Detalle
+	if (siaf:codigo_siaf == 70392) then
+		siaf:importe = post:ImporteConIva - ImporteNeto
+	end if
+	call post:MISCgrabo_sinsesion
+END SUB
+
+/*******/

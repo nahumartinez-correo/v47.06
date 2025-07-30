@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCmov_ent_cheque
+* NOMBRE
+*   OFB:tes:MISCmov_ent_cheque
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCmov_ent_cheque(superviso)
+    local nombre_tran like siaf:nombre_transac
+    //  Entrada a caja
+    // Uso la misma SVALque para entrada a tesoro,
+    // entonces si es a tesoro grabo el cheque.
+
+    if (siaf:codigo_siaf == 8900) // Entrada a tesoro
+   	    let siaf:nombre_transac = "ENTRADA VALORES A TESORO"
+        move "TENTECH" to tlr:tran_mnemonic
+   	        
+    else        	
+       	let siaf:nombre_transac = "ENTRADA VALORES A CAJA"
+       	move "TENCACH" to tlr:tran_mnemonic
+        	
+       	if (siaf:continua_transaccion == "N")
+       	    clearfield drv:INDspc_rtn[0]
+       	else
+       	    let drv:INDspc_rtn[0] = LST:siaf:TOTS8820
+       	end if
+    end if
+    nombre_tran = siaf:nombre_transac
+
+    if (siaf:continua_transaccion == "N")       	     
+        fprint siaf:nombre_transac, "RECH %-s",siaf:nombre_transac       	 
+    end if
+    let siaf:codigo_siaf = siaf:codigo_siaf + 6
+    let post:importe = 0
+    cds select from dsc:tes:CheqMov2_tbl becomes dsc:tes:CheqMov2_ctx where \
+    chmov_fecha        == chmov_fecha      && \
+    chmov_moneda       == chmov_moneda     && \
+	chmov_op_id_orig   == chmov_op_id_orig && \
+	chmov_login_dest   == chmov_login_dest && \
+	chmov_hora_orig    == chmov_hora_orig  && \
+	chmov_nro_cheque   != 0                && \
+   (chmov_marca_ing    == " " || chmov_marca_ing == "E")
+    cds findfirst dsc:tes:CheqMov2_ctx NOLOCK
+    
+    let lib:err_retval = cdsretval
+    let drv:INDscr = scr:tes:SCRNrev_ent_cheq
+    
+    do
+        if (lib:err_retval < 0) then
+            break
+        end if
+        cds extract dsc:CheqMov2_ctx all
+	    move chmov_banco      to siaf:cod_banco
+	    move chmov_cuenta     to siaf:cheqcuenta
+	    move chmov_cuenta     to post:codigo_interno
+	    move chmov_nro_cheque to siaf:nro_cupcheq
+	    move chmov_importe    to post:importe_origen
+	
+	    call post:MISCconvierto_coti(post:importe_origen)
+	
+	    call ABMcheques_refresh
+        cds unlock dsc:CheqMov2_ctx
+        ungetkey 0x190
+	    cds unlock dsc:CheqMov2_ctx
+        call siaf:MISClleno_modalidad
+        
+        if (superviso == "S") then
+	        /* si la primera fue supervisada , marco todas */
+	        setflag tlr:tran_flags,supovr_granted
+	    end if
+	    tes:es_tesoro = "S"
+	    if (chmov_marca_ing == "E") then
+	        siaf:nombre_transac = nombre_tran
+	        call tes:MISCpongo_sec(tes:chmov_sequence_orig)	  
+	    end if
+	    if (siaf:continua_transaccion == "N")  //FLOR
+	        tes:chmov_marca_ing = "E"
+	    end if	  
+        call tlr:JNLtran          
+        cds findnext dsc:CheqMov2_ctx lock
+	    let lib:err_retval = cdsretval
+
+        fprint common:csr_string "%3s  %20.20e    %8.8e \n",\
+        siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cupcheq
+        call csr:f_saaddpl dsc:Cheque common:csr_string	    	                            
+        fprint common:csr_string "                        %13.13e \n",post:importe_origen
+        call csr:f_saaddpl dsc:Cheque common:csr_string	    	    
+	    let post:importe = post:importe + post:importe_origen 
+    loop
+    cds endselect dsc:CheqMov2_ctx
+END SUB
+
+/*******/

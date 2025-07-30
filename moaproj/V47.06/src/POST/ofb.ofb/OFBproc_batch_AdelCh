@@ -1,0 +1,133 @@
+/****o* Lista de Giros/OFB:post:OFBproc_batch_AdelCh
+* NOMBRE
+*   OFB:post:OFBproc_batch_AdelCh
+* DESCRIPCION
+*   Rutina que obtiene los datos de la tabla jnl_AdelantoChq para generar el mensaje de envio al host 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:batch:OFBrecupCaidasVuelo
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBproc_batch_AdelCh
+
+	local loc_retval_env  like lib:err_retval
+	local jnl_status_aux  like tlr:jnl_status
+	local loc_retval_res  like lib:err_retval
+	local loc_retval_jnl  like lib:err_retval
+
+    jnl_status_aux = CANCEL_REENVIE
+
+    setflag common:rt_flags,batch_mode
+ 
+    //Si hubo caida del rt luego de enviar el mensaje al host y antes de recibir la respuesta
+    //se debera chequear que no haya habido caida en vuelo y generar la jnl_caidas_ach
+    CALL OFBcaida_rtAdelChq
+    
+    //Recupero caidas de adelanto de cheques si es que existen
+    CALL OFBcaidas_AdelChq
+    IF (retval < 0)
+		fprint siaf:nota_1,"No se pudo recuperar la caida del Adelanto Monetario secuencia %e.\n Termina el proceso RT batch en forma anormal.",tlr:jnl_sequence
+		call batch:OFBlog_batch(siaf:nota_1,loc_retval_env,"S","S","AMBOS","N")
+		return -1
+	END IF
+    
+    
+
+    ;PROCESO TRATAMIENTO ACTUALIZACION DE SALDO MONETARIO PARA ROBO DE CHEQUE
+    ;------------------------------------------------------------------------
+    CDS SELECT FROM "jnl_AdelantoChq" BECOMES "jnl_AdelantoChq_ctx" WHERE  \
+    tlr:jnl_branch == FLD:common:sucursal_activa && \
+    tlr:jnl_status == UNPOSTED
+
+    CDS FINDFIRST "jnl_AdelantoChq_ctx" LOCK
+    lib:err_retval = CDSRETVAL
+
+    if (lib:err_retval != 0 )
+        fprint siaf:nota_1,"%s","Busqueda registros en tabla jnl_AdelantoChq"
+        call batch:OFBlog_batch(siaf:nota_1,lib:err_retval,"S","S","INFO","N")
+    end if
+
+    WHILE (lib:err_retval == 0)
+        CDS EXTRACT "jnl_AdelantoChq_ctx" ALL
+        CDS EXTRACT "jnl_AdelantoChq_ctx" journal_flags
+        fprint siaf:nota_1,"\n\n"
+        call batch:MISCgeneraLog(siaf:nota_1,"INFO","N")
+
+        fprint siaf:nota_1,"%s","Busqueda registros en tabla jnl_AdelantoChq."
+        call batch:OFBlog_batch(siaf:nota_1,lib:err_retval,"S","S","INFO","N")
+
+        fprint siaf:nota_1,\
+        "(SUC: %-5.5s OPER: %5.5s FECHA: %e HORA: %e SEC: %4.4s)",tlr:jnl_branch,\
+        tlr:jnl_operator,tlr:jnl_date,tlr:jnl_time,tlr:jnl_sequence
+        call batch:OFBlog_batch(siaf:nota_1,cdsretval,"N","N","INFO","N")
+
+        CDS CLEARBUFFER "jnl_AdelantoChq_ctx"
+
+        CDS APPEND "jnl_AdelantoChq_ctx" \
+                jnl_status_aux  AS FLD:tlr:jnl_status \
+                common:time_of_day AS FLD:siaf:adt_jnlc_locktime
+
+        CDS UPDATE "jnl_AdelantoChq_ctx" LOCK
+
+        fprint siaf:nota_1,"%s",\
+        "Actualizacion hora y estado 99 (RTbatch ) en tabla jnl_AdelantoChq"
+        call batch:OFBlog_batch(siaf:nota_1,cdsretval,"S","S","INFO","N")
+        
+       
+		op:op_branch_id = tlr:jnl_branch
+	    op:op_operator_id = tlr:jnl_operator
+	    op:op_login_id = tlr:jnl_op_login_id
+	    common:window_node = op:op_node_id        
+
+
+        
+        call post:OFBenvio_AdelChq
+        loc_retval_env = retval
+        SELECT (loc_retval_env )
+            CASE -2
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    loc_retval_res = -2
+                    break
+            CASE TRAN_CAIDA_VUELO
+                    CDS ENDSELECT DSC:tlr:jnl_context
+                    loc_retval_res = TRAN_CAIDA_VUELO
+                    break
+        END SELECT
+
+        CDS ENDSELECT DSC:tlr:jnl_context
+
+        CDS APPEND "jnl_AdelantoChq_ctx" \
+                hcomm:tran_status  AS tlr:jnl_status \
+                giros:CodRespuesta_comm
+
+        CDS UPDATE "jnl_AdelantoChq_ctx" LOCK
+        IF (CDSRETVAL < 0)
+            fprint siaf:nota_1,"No se pudo actualizar jnl_crem con el status con secuencia %e.\n Termina el proceso RT batch en forma anormal.",tlr:jnl_sequence
+            call batch:OFBlog_batch(siaf:nota_1,loc_retval_env,"S","S","AMBOS","N")
+            return -1
+        ELSE
+            fprint siaf:nota_1,"Actualizacion jnl_crem segun status : %s",\
+            hcomm:tran_status
+            call batch:OFBlog_batch(siaf:nota_1,cdsretval,"S","S","INFO","N")
+        END IF
+
+        CDS FINDNEXT "jnl_AdelantoChq_ctx" LOCK
+        lib:err_retval = CDSRETVAL
+    END WHILE
+
+    CDS ENDSELECT "jnl_AdelantoChq_ctx"
+    
+    
+    
+END SUB
+
+/*******/

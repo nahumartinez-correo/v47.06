@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:post:MISCAct_ScaneoX
+* NOMBRE
+*   OFB:post:MISCAct_ScaneoX
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCAct_ScaneoX
+
+Local fecha like post:adt_stockp_recepfech
+Local hora like post:adt_stockp_recephora
+Local fecha_hora like post:adt_novtt_fecha
+LOCAL fecha_aux LIKE post:adt_novtt_fecha
+
+FPRINT fecha_aux, "%s%s", post:FechaCteLinMDisp,"*"
+
+    fecha = siaf:fecha
+    //hora = h_llegada_trans + 1
+    //CALL MISCsumo_uno (hora)
+    //FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora_scaneo
+    
+    /*En el requerimiento de retiro automatico de piezas se especificó que la hora del scaneo X sea
+    igual a la hora del proceso del corte de linea.*/
+    hora = siaf:hora
+    FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora
+
+    /*CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx \
+    WHERE post:adt_novtt_guia_saca == post:adt_desppend_saca && \
+    adt_novtt_tipo == 24 && \
+    adt_novtt_listo == "N"*/
+    CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx \
+    WHERE adt_novtt_op == post:jnl_operator_ori && \
+    adt_novtt_fecha SMATCH fecha_aux && \
+    adt_novtt_sequence == post:jnl_sequence_ori && \
+    adt_novtt_tipo == 24 && \
+    adt_novtt_listo == "N"
+    
+    CDS FINDFIRST DSC:NovTT_ctx LOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS UNLOCK DSC:NovTT_ctx
+        CDS ENDSELECT DSC:NovTT_ctx
+        RETURN -2
+    END IF
+    CDS CLEARBUFFER DSC:NovTT_ctx
+    adt_novtt_linea = post:adt_codseq_nro
+    adt_novtt_fecha = fecha_hora
+    adt_novtt_transp = cod_transp
+    adt_novtt_listo = "S"
+    CDS APPEND DSC:NovTT_ctx post:adt_novtt_linea, post:adt_novtt_fecha,  post:adt_novtt_listo, adt_novtt_transp
+    CDS UPDATE DSC:NovTT_ctx LOCK
+    WHILE (CDSRETVAL == -836) THEN
+        CDS CLEARBUFFER DSC:NovTT_ctx
+        //hora = hora_scaneo + 1
+        hora = hora + 1
+        CALL MISCsumo_uno (hora)
+        FPRINT fecha_hora,"%8.8e%6.6e", fecha, hora_scaneo
+        adt_novtt_fecha = fecha_hora
+    //  adt_novtt_transp = cod_transp
+    //	adt_novtt_listo = "S"
+        CDS APPEND DSC:NovTT_ctx post:adt_novtt_linea, post:adt_novtt_listo, adt_novtt_transp, post:adt_novtt_fecha
+        CDS UPDATE DSC:NovTT_ctx LOCK
+    END WHILE
+    CDS UNLOCK DSC:NovTT_ctx
+    CDS ENDSELECT DSC:NovTT_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,73 @@
+/****o* Pendientes de agrupación/OFB:post:PBcancel_tran_presu
+* NOMBRE
+*   OFB:post:PBcancel_tran_presu
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBcancel_tran_presu
+	LOCAL INDscr_aux LIKE drv:INDscr
+	LOCAL INDtot_aux LIKE drv:INDscr
+	LOCAL INDtran_aux LIKE drv:INDscr
+	LOCAL INDlink_aux LIKE drv:INDscr
+	LOCAL INDjnl_aux LIKE drv:INDscr
+	LOCAL l_descPagoFacil LIKE common:csr_string
+
+	//Resguardo los campos de la lista por si se hace una cancelacion de giro
+	INDtot_aux = drv:INDspc_rtn[0]	//LST:post:TOTS99099
+	INDscr_aux = drv:INDscr			//SCR:post:SCRNcaptura_med_pag
+	INDtran_aux =	drv:INDcur_tran	//LST:post:TRAN99099
+	INDlink_aux = drv:INDspc_rtn[3]	//OFB:post:LINKPresu
+	INDjnl_aux = drv:INDjnl_rtn		//OFB:post:JNL99099
+
+	//cgw:Si cancela en la 2da.captura,debe verificarse si existen tx's Afip o Pago Facil,
+	//si existen,no puede cancelarse el presupuesto
+	IF (post:pasadaMP == CORRECCION) THEN
+		CALL post:MISCverif_AfipPFacil
+		IF (RETVAL == 0) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//MSGBOX "Existen transacciones de AFIP y/o PAGO FACIL.\nSolo puede cancelarse el presupuesto por journal\no anulacion de documentos.",OFB_OK,"Aviso"
+			FPRINT l_descPagoFacil,"Existen transacciones de AFIP y/o %s.\nSolo puede cancelarse el presupuesto por journal\no anulacion de documentos.",DSC:post:descPagoFacil
+			MSGBOX l_descPagoFacil,OFB_OK,"Aviso"
+			RETURN (-2)
+		END IF
+	END IF
+
+	IF (testflag(giros:giros_importacion,proc_em_lg)) THEN
+		MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE EMISION DE LISTA DE GIROS CON GIROS EMITIDOS",OFB_OK,"ERROR"
+		RETURN (-2)
+	END IF
+     
+	IF (post:es_WEB == "X") THEN
+		MSGBOX "NO SE PUEDE CANCELAR UNA SESION DE OPERACIONES WEB",OFB_OK,"ERROR"
+		RETURN (-2)
+	END IF
+
+	CALL MISCcancelaPres(post:estado_presu, false)
+
+	//aca tengo el valor del hcomm:tran_status
+	//Estos RETVAL se usan para el manejo de Cancelacion de Giros en el caso de que haya un problema:
+	IF (RETVAL < 0)
+		CALL MISCtratErrorCanc(RETVAL)
+		//Restauro los campos
+		drv:INDspc_rtn[0] = INDtot_aux 	//LST:post:TOTS99099
+		drv:INDscr = INDscr_aux			//SCR:post:SCRNcaptura_med_pag
+		drv:INDcur_tran = INDtran_aux	//LST:post:TRAN99099
+		drv:INDspc_rtn[3] = INDlink_aux	//OFB:post:LINKPresu
+		drv:INDjnl_rtn = INDjnl_aux		//OFB:post:JNL99099
+	END IF
+end sub
+
+/*******/

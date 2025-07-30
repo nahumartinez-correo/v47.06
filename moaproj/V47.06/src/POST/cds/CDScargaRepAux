@@ -1,0 +1,141 @@
+/****o* Pendientes de agrupación/OFB:post:CDScargaRepAux
+* NOMBRE
+*   OFB:post:CDScargaRepAux
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaRepAux
+local l_dump_cant like post:adt_dump_cant
+local l_dump_siniva like post:adt_dump_siniva
+local l_dump_tx like post:adt_dump_tx
+local l_dump_flia like post:adt_dump_flia
+local l_dump_desc like post:jnl_unicod_desc
+local l_dump_opc like post:adt_raux_opc
+local l_dump_descuento like post:descuento
+local l_destino like post:destino
+local l_rango like post:adt_tarif_hasta
+local l_tarifa like post:adt_dump_punit
+local l_opc like post:adt_dump_siniva
+local NoFinDumpRep like lib:err_retval
+local l_entro like siaf:pantalla_impreso
+local l_motivo like siaf:motivo
+local l_impre like post:adt_raux_impre
+local l_dump_impre like post:adt_raux_impre
+local l_cant_reg like mdata_nroRegistros
+local l_mensaje like common:csr_string
+
+	;ACA HAY QUE FILTRAR POR LAS FAMILIAS QUE PIDIERON
+	;Cuando se agregue en un futura el tipo de cliente en pantalla
+	;se saca esta asignación.
+	post:cli_tipo = 2
+	CDS SELECT FROM DSC:DumpRep_tbl BECOMES DSC:DumpRep_ctx \
+		WHERE post:adt_dump_fecha >= post:adt_promo_desde && \
+			  post:adt_dump_fecha <= post:adt_promo_hasta && \
+			  post:jnl_cli_tipo == post:cli_tipo && \
+			 (post:adt_dump_flia == "PO" || \
+			  post:adt_dump_flia == "TE" || \
+			  post:adt_dump_flia == "MO" || \
+			  post:adt_dump_flia == "VA")
+	CDS FINDFIRST DSC:DumpRep_ctx NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS AGGREGATE DSC:DumpRep_ctx count post:adt_dump_cant
+		CDS EXTRACT DSC:DumpRep_ctx post:adt_dump_cant INTO l_cant_reg
+	end if
+	fprint l_mensaje "Tabla: DumpRep - "
+	call post:MISCinicProgressBar(l_mensaje, l_cant_reg)
+	CDS SELECT FROM DSC:DumpRep_tbl BECOMES DSC:DumpRep_ctx \
+		WHERE post:adt_dump_fecha >= post:adt_promo_desde && \
+			  post:adt_dump_fecha <= post:adt_promo_hasta && \
+			  post:jnl_cli_tipo == post:cli_tipo && \
+			 (post:adt_dump_flia == "PO" || \
+			  post:adt_dump_flia == "TE" || \
+			  post:adt_dump_flia == "MO" || \
+			  post:adt_dump_flia == "VA")
+	CDS FINDFIRST DSC:DumpRep_ctx NOLOCK
+	let NoFinDumpRep = CDSRETVAL
+	IF (NoFinDumpRep == 0) THEN
+		CDS EXTRACT DSC:DumpRep_ctx ALL
+		l_dump_siniva = 0
+		l_dump_cant = 0
+		l_dump_opc = 0
+		l_dump_descuento = 0
+		l_dump_tx = post:adt_dump_tx
+		l_dump_flia = post:adt_dump_flia
+		l_dump_desc = post:jnl_unicod_desc
+		l_motivo = siaf:motivo
+		call post:MISCtipo_impre
+		l_dump_impre = retval
+		if (l_dump_impre != IMPRE_RANGO)
+			post:destino = 1
+			post:adt_tarif_hasta = 1
+			post:adt_dump_punit = 1
+		end if
+		l_destino = post:destino
+		l_rango = post:adt_tarif_hasta
+		l_tarifa = post:adt_dump_punit
+			call post:MISCactProgressBar("CARGANDO REGISTRO - ", 1, BARRAPORCENT, 1)
+	END IF
+
+	FYIMSG LST:common:fyimsg_list, ""
+	WHILE (NoFinDumpRep == 0)
+		;GRABO LO ACUMULADO EN RepAux
+		l_entro = "S"
+		IF ((l_dump_tx != post:adt_dump_tx) || (l_destino != post:destino) || \
+			(l_rango != post:adt_tarif_hasta) || (l_tarifa != post:adt_dump_punit)) THEN
+			CALL post:CDSgrabaRepAux(l_dump_flia,l_dump_tx,l_dump_desc,l_dump_cant,l_dump_siniva,l_destino,l_rango,l_tarifa,l_dump_descuento,l_dump_opc,l_impre)
+			l_dump_siniva = 0
+			l_dump_cant = 0
+			l_dump_opc = 0
+			l_dump_descuento = 0
+			l_dump_tx = post:adt_dump_tx
+			l_dump_flia = post:adt_dump_flia
+			l_dump_desc = post:jnl_unicod_desc
+			l_destino = post:destino
+			l_rango = post:adt_tarif_hasta
+			l_tarifa = post:adt_dump_punit
+		END IF
+		;ACUMULO
+		CALL post:MiscImporteReporte(post:adt_dump_siniva, post:descuento, l_opc)
+		l_dump_opc = l_dump_opc + l_opc
+		l_dump_descuento = l_dump_descuento + post:descuento
+		l_dump_siniva = l_dump_siniva + post:adt_dump_siniva
+		l_dump_cant = l_dump_cant + post:adt_dump_cant
+		l_impre = l_dump_impre
+		;LEO SIGUIENTE
+		CDS FINDNEXT DSC:DumpRep_ctx NOLOCK
+		let NoFinDumpRep = CDSRETVAL
+		IF (NoFinDumpRep == 0) THEN
+			CDS EXTRACT DSC:DumpRep_ctx ALL
+			call post:MISCtipo_impre
+			l_dump_impre = retval
+			if (l_dump_impre != IMPRE_RANGO)
+				post:destino = 1
+				post:adt_tarif_hasta = 1
+				post:adt_dump_punit = 1
+			end if
+				call post:MISCactProgressBar("CARGANDO REGISTRO - ", 1, BARRAPORCENT, 1)
+		END IF
+	END WHILE
+	CDS ENDSELECT DSC:DumpRep_ctx
+	;Grabo ultimo
+	IF (l_entro == "S") THEN
+		CALL post:CDSgrabaRepAux(l_dump_flia,l_dump_tx,l_dump_desc,l_dump_cant,l_dump_siniva,l_destino,l_rango,l_tarifa,l_dump_descuento,l_dump_opc,l_impre)
+	END IF
+	; finiquito barra.
+	call post:MISCfinProgressBar
+END SUB
+
+/*******/

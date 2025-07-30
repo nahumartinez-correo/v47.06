@@ -1,0 +1,115 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCllena_scr_chq
+* NOMBRE
+*   OFB:tes:MISCllena_scr_chq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCllena_scr_chq
+
+	CDS SELECT FROM DSC:CheqMov_tbl BECOMES DSC:CheqMov_ctx2 \
+		WHERE chmov_suc_id == op:op_branch_id \
+		&& chmov_fecha == common:system_date \
+		&& chmov_login_dest == op:op_login_id \
+		&& chmov_op_id_orig == chmov_op_id_orig \
+		&& chmov_login_orig == chmov_login_orig \
+		&& chmov_sequence_pase == chmov_sequence_pase \
+		&& chmov_importe != 0	\
+		&& (tes:chmov_marca_ing == "" || tes:chmov_marca_ing == "E" || tes:chmov_marca_ing == "S")
+	
+	PasesDisp_cant = 0
+	PasesDisp_idx = 0
+
+	CDS FINDFIRST DSC:CheqMov_ctx2 NOLOCK
+	lib:err_retval = CDSRETVAL
+	IF (lib:err_retval < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	cont1 = 0
+	DO
+		CDS EXTRACT DSC:CheqMov_ctx2 ALL
+		
+		post:adt_mp_cod = chmov_moneda
+		CALL post:CDSadt_MedPago_load
+
+		IF (cont1 < 10) THEN //Si sobrepasa el vector, solo grabo en el picklist
+			val_moneda[cont1] = chmov_moneda
+			cod_banco[cont1] = chmov_banco
+			nro_cupcheq[cont1] = chmov_nro_cheque	
+			cheqcuenta[cont1] = chmov_cuenta
+			termi_win_arr[cont1] = chmov_termi_win
+			
+			IF (post:adt_mp_admban == "N") THEN
+				IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+					codigo_interno[cont1] = chmov_cuenta
+					CLEARFIELD cheqcuenta[cont1]
+				ELSE
+					CLEARFIELD cheqcuenta[cont1]
+				END IF
+			ELSE
+				CLEARFIELD codigo_interno[cont1]
+			END IF
+			
+			val_importes[cont1] = chmov_importe
+			acepta_val_aux[cont1] = chmov_es_rechazo
+			
+			IF (chmov_marca_ing == "S") THEN //Si es "S", pongo un valor distinto de "N" al vector, para que no me habilite y no me deje rechazar.
+				acepta_val_aux[cont1] = "Y"
+			END IF
+			
+			sequence_val[cont1] = chmov_sequence_orig //Para identificar univocamente cada pase
+			REFRESH acepta_val_aux[cont1]
+			REFRESH val_moneda[cont1]
+			REFRESH cod_banco[cont1]
+			REFRESH nro_cupcheq[cont1]
+			REFRESH val_importes[cont1]
+			REFRESH codigo_interno[cont1]
+			REFRESH cheqcuenta[cont1]
+		END IF
+
+		//Agrego pase al picklist
+		IF (post:adt_mp_admban == "N") THEN
+			IF (post:adt_mp_auto == "S" && post:adt_mp_int == "S") THEN
+				post:codigo_interno = chmov_cuenta
+				CLEARFIELD chmov_cuenta
+			ELSE
+				CLEARFIELD chmov_cuenta
+			END IF
+		ELSE
+			CLEARFIELD post:codigo_interno
+		END IF
+
+		FPRINT common:csr_string "%-2s %-3s %-20s %-6s %-20s %13.13e %4s %4s %-40.40s",\
+			chmov_moneda,chmov_banco,chmov_cuenta,post:codigo_interno,chmov_nro_cheque,chmov_importe,chmov_sequence_orig,chmov_sequence_pase,chmov_termi_win
+		
+		CALL csr:f_saaddpl dsc:PICPasesDisp common:csr_string
+		PasesDisp_cant = PasesDisp_cant + 1
+		
+		CDS FINDNEXT DSC:CheqMov_ctx2 NOLOCK
+		lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0) THEN
+			BREAK
+		END IF
+		cont1 = cont1 + 1
+	LOOP
+	
+	CDS ENDSELECT DSC:CheqMov_ctx2
+    
+  CALL MISCinicializa_pase
+
+END SUB
+
+/*******/

@@ -1,0 +1,112 @@
+/****o* Pendientes de agrupación/OFB:op:MISCAll_UserSID
+* NOMBRE
+*   OFB:op:MISCAll_UserSID
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "opmisc.h"
+
+SUB op:MISCAll_UserSID
+    local LMensaje like common:csr_string
+    local opUserName like op:op_login_id
+    local LUserSID like op:op_NTUserSID
+    local LOP_SID like op:op_NTUserSID
+    local LRetVal like lib:err_retval
+    LOCAL AuxFileName LIKE common:ExecString
+    LOCAL MosaicServer LIKE common:ExecString
+    LOCAL LineaTexto LIKE common:ExecString
+    Local LContador like op:op_login_id
+
+    FLD:LContador = 0
+    ;Checkeo si a todos los operadores ya les fue asignado el SID NT
+    call op:MISCcheck_SIDchng
+    if (retval < 0) then
+        ERRMSG LST:common:errmsg_list, "NO SE PUEDE OBTENER PARAMETRIA DE TABLA LA SUCURSAL ACTIVA."
+        return -1
+    endif
+    ;Si ya fue actualizado, no ejecuto nuevamente
+    ;me doy cuenta porque en la tabla sucursal activa queda
+    ;el campo admin:adt_sucur_SIDchng con una "S".
+    ;Si no se ejecuto, deberia estar vacio.
+    if (admin:adt_sucur_SIDchng != "") then
+        return 0
+    end if
+    FYIMSG LST:common:fyimsg_list,"SINCRONIZANDO OPERADORES MOSAIC CON CUENTAS DE WINDOWS NT . . ."
+
+    ;SMC Nombre del Servidor
+    ;CALL csr:get_profile_string("cdsmain","CDS_PRIMARY_NP",MosaicServer)
+    let FLD:MosaicServer = "B9998001"
+    ;SMC Archivo Log
+    fprint AuxFileName "\\\\%s\\LOGS\\%s%8.8d_SID_PROFILES.LOG",FLD:MosaicServer,common:sucursal_activa,common:time_of_day
+    CALL csr:file_open(1,AuxFileName,"w+")
+    if (retval < 0) then
+        ;LMB - PS 9780 - 03.07.2008
+        ;fprint AuxFileName "c:\\TE MP\\%s%8.8d_SID_PROFILES.LOG",common:sucursal_activa,common:time_of_day
+        fprint AuxFileName "%s%s%8.8d_SID_PROFILES.LOG", common:dirTemporal, common:sucursal_activa,common:time_of_day
+        CALL csr:file_open(1,AuxFileName,"w+")
+    endif
+
+    ;Empezo busqueda de todos los operadores
+	CDS SELECT FROM DSC:op:adt_op_table  BECOMES  DSC:op:adt_op_context
+	CDS FINDFIRST DSC:op:adt_op_context LOCK
+	let LRetVal = CDSRETVAL
+
+    ;comienzo LOOP
+	while (LRetVal == 0)
+
+       	clearfield FLD:LUserSID
+       	clearfield FLD:LOP_SID
+       	CDS EXTRACT DSC:op:adt_op_context op:op_login_id into opUserName \
+                op:op_NTUserSID into FLD:LOP_SID
+
+        ;Grabo si no fue asignado un SID anteriormente
+        if (FLD:LOP_SID == "")
+            call op:MISCobtengo_SID(opUserName,FLD:LUserSID,"NO")
+            if (retval > 0) then
+                ;Actualizo SID del Operador
+                CDS CLEARBUFFER DSC:op:adt_op_context
+                CDS APPEND DSC:op:adt_op_context FLD:LUserSID AS op:op_NTUserSID
+                CDS UPDATE DSC:op:adt_op_context NOLOCK
+                fprint FLD:LineaTexto "SID del Operador MOSAIC (%s) Actualizado OK.\n",opUserName
+                let FLD:LContador = FLD:LContador + 1
+            else
+                fprint FLD:LineaTexto "ERROR: Identificador de Seguridad del Operador (%s) NO fue actualizado.\n",opUserName
+            end if
+        else
+                fprint FLD:LineaTexto "Operador MOSAIC (%s) ya posee un SID. NO fue actualizado.\n",opUserName
+                let FLD:LContador = FLD:LContador + 1
+        endif
+
+        ;Grabo Archivo LOG
+        CALL csr:file_write(1,LineaTexto)
+      	CDS FINDNEXT DSC:op:adt_op_context LOCK
+    	let LRetVal = CDSRETVAL
+	end while
+    CALL csr:file_close(1)
+  	CDS UNLOCK DSC:op:adt_op_context
+	CDS ENDSELECT DSC:op:adt_op_context
+
+    FYIMSG CLEAR
+    if (FLD:LContador > 0) then
+        ;Actualizo marca . A todos los operadores ya les fue asignado el SID NT
+        call op:MISCupdate_SIDchng
+        if (retval < 0) then
+            ERRMSG LST:common:errmsg_list, "NO SE PUEDE ACTUALIZAR PARAMETRIA DE TABLA LA SUCURSAL ACTIVA."
+            return -1
+        endif
+    endif
+    Return 0
+END SUB
+
+/*******/

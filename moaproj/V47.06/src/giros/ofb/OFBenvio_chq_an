@@ -1,0 +1,76 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBenvio_chq_an
+* NOMBRE
+*   OFB:giros:OFBenvio_chq_an
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+
+SUB giros:OFBenvio_chq_an
+
+	local varl_importe_aux like giros:ImporteNeto
+
+	giros:codigo_procesamiento = 991101
+	hcomm:INDhost_sndrt = OFB:giros:SEND70300
+	hcomm:INDhost_rcvrt = OFB:giros:RCVE70300_masivos
+
+	resetflag  giros:tran_send_mode,consulta_simple
+	resetflag  giros:tran_send_mode,consulta_multiple
+	siaf:codigo_siaf = 70300
+	giros:cod_mot_fld = "C0002"	
+	varl_importe_aux = giros:ImporteNeto
+	clearfield giros:ImporteNeto
+
+	call post:CDSobtiene_secuen("STAN")
+	let siaf:fecha = common:system_date
+	let siaf:hora = common:time_of_day
+	giros:hora_viaje = siaf:hora
+	giros:dia_viaje  = siaf:fecha
+
+	call hcomm:COMM_stat_init
+	call siaf:CDSchk_trxs_caidas
+    	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+    			clearfield hcomm:INDhost_sndrt 
+    			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    	elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    		clearfield hcomm:INDhost_sndrt
+    		clearfield hcomm:INDhost_rcvrt
+    	end if
+
+    	call giros:OFBdisable_bt_msg
+        call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    	call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh    lib:stat_message
+	refresh    statusline
+	giros:ImporteNeto = varl_importe_aux
+
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+		return -2
+	end if
+
+END SUB
+
+
+
+/*******/

@@ -1,0 +1,120 @@
+/****o* Lista de Giros/OFB:giros:MISCpicPendEmiLG
+* NOMBRE
+*   OFB:giros:MISCpicPendEmiLG
+* DESCRIPCION
+*   Trae los importes de los registros de la Lista de Giros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:OFBclimed_deudor_ape
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+          
+SUB giros:MISCpicPendEmiLG
+    LOCAL l_ImpTot      LIKE giros:SumImpGir_lg
+    LOCAL l_ImpNeto     LIKE giros:ImpTotGir_lg
+    LOCAL l_cont        LIKE giros:cantidad_lg
+    LOCAL l_cont2       LIKE common:csr_string
+    LOCAL str           LIKE common:csr_string
+    LOCAL l_err_cds     LIKE lib:err_retval 
+    LOCAL l_err_cds2    LIKE lib:err_retval
+    LOCAL l_climed_numero_lg LIKE giros:climed_numero_lg
+    LOCAL l_nro_sesion_lg LIKE giros:nro_sesion_lg
+    LOCAL l_fecha_imp_lg LIKE giros:tmp_monpas_fechB  
+    LOCAL l_line_csr LIKE common:csr_string_4096
+
+    LOCAL l_subcuentaDesc_CM LIKE post:subcuentaDesc_CM  
+    LOCAL l_CliRaz LIKE post:CliRaz
+    LOCAL l_CloCuit LIKE post:CloCuit
+    
+    LOCAL l_ordenamiento LIKE common:csr_string
+    
+    CALL post:MISCFtrim(l_subcuentaDesc_CM)  
+    l_CliRaz = post:CliRaz
+    CALL post:MISCFtrim(l_CliRaz)
+    l_CloCuit = post:CloCuit
+    CALL post:MISCFtrim(l_CloCuit)
+    
+    //Traigo el nro de cliente, nro de sesion y fecha de importacion
+    CDS SELECT SEMIDISTINCT giros:climed_numero_lg giros:nro_sesion_lg giros:fecha_imp_lg \
+        FROM DSC:giros:TABsesion_lg BECOMES "sesion_lg_ctx2" WHERE \
+        giros:estado_lg == "I" && giros:climed_numero_lg == post:climed_numero \
+        SORT "GrPndEmi"
+        
+    CDS FINDFIRST "sesion_lg_ctx2" NOLOCK
+    LET l_err_cds2 = CDSRETVAL
+
+	IF (l_err_cds2 < 0)
+		CDS ENDSELECT "sesion_lg_ctx2" 
+		RETURN (-1)
+	ENDIF
+    
+    WHILE (l_err_cds2 == 0) 
+        CLEARFIELD l_climed_numero_lg
+        CLEARFIELD l_nro_sesion_lg
+        CLEARFIELD l_fecha_imp_lg
+    
+		CDS EXTRACT "sesion_lg_ctx2" giros:climed_numero_lg INTO l_climed_numero_lg \
+    		giros:nro_sesion_lg INTO l_nro_sesion_lg\
+    		giros:fecha_imp_lg INTO l_fecha_imp_lg
+	
+	    //Calculo importe neto,importe total y cantidad de giros para el cliente dado la fecha de importacion
+        CDS SELECT FROM DSC:giros:TABsesion_lg BECOMES DSC:giros:CONsesion_lg WHERE \
+            giros:nro_sesion_lg == l_nro_sesion_lg && \
+            giros:climed_numero_lg == l_climed_numero_lg && \
+            giros:fecha_imp_lg == l_fecha_imp_lg  && \
+            giros:estado_lg == "I" \
+            SORT "primary"
+    	
+        CDS FINDFIRST DSC:giros:CONsesion_lg LOCK
+        LET l_err_cds = CDSRETVAL
+        
+    	IF (l_err_cds < 0)
+    		CDS ENDSELECT DSC:giros:CONsesion_lg 
+    		RETURN (-1)
+    	ENDIF
+    
+        CLEARFIELD l_line_csr
+        CLEARFIELD l_ImpTot
+        CLEARFIELD l_ImpNeto
+        CLEARFIELD l_cont
+    
+        CDS AGGREGATE DSC:giros:CONsesion_lg SUM   giros:ImporteTotal_fld   as l_ImpTot  \
+                                             SUM   giros:ImporteNeto        as l_ImpNeto \
+                                             COUNT giros:nro_sesion_lg      as l_cont
+    
+        CDS EXTRACT DSC:giros:CONsesion_lg  l_ImpTot \
+                                            l_ImpNeto \
+                                            l_cont
+        
+        CLEARFIELD l_ordenamiento
+        FPRINT l_ordenamiento,"%s%s%s%s",l_CloCuit,l_climed_numero_lg,l_fecha_imp_lg,l_nro_sesion_lg
+                                                
+		//Cargo el picklist 
+        FPRINT l_line_csr,\
+		    "%11.11s  %11.11s  %-40.40s           %6.6s %16.16e  %16.16e    %9.9s       %8e %s", \
+			l_CloCuit,l_climed_numero_lg,l_CliRaz,l_cont,l_ImpNeto,l_ImpTot,l_nro_sesion_lg,l_fecha_imp_lg,l_ordenamiento
+	
+		CALL csr:magic_saaddpl(DSC:post:lgirospendemi,l_line_csr)                                   
+                                            
+        CDS UNLOCK DSC:giros:CONsesion_lg
+        CDS ENDSELECT DSC:giros:CONsesion_lg	
+	
+		CDS FINDNEXT "sesion_lg_ctx2" NOLOCK
+		l_err_cds2 = CDSRETVAL
+	END WHILE
+	
+	CDS ENDSELECT "sesion_lg_ctx2" 
+	    
+	RETURN (0)  
+   
+END SUB
+
+/*******/

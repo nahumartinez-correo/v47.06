@@ -1,0 +1,344 @@
+/****o* Pendientes de agrupación/OFB:post:FVALsf1_codbarras
+* NOMBRE
+*   OFB:post:FVALsf1_codbarras
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALsf1_codbarras
+	LOCAL loc_PresNro LIKE common:csr_string
+	LOCAL loc_sf1_secuencia LIKE common:csr_string
+	LOCAL MuestraMensaje LIKE siaf:i
+	LOCAL Lplataforma LIKE giros:checkpoint_emision
+	LOCAL Proyecto LIKE common:csr_string
+	LOCAL Indice LIKE post:tipo_produc
+	LOCAL Lstring_aux LIKE common:csr_string
+	LOCAL esConsultaOL LIKE siaf:i
+	LOCAL loc_version_prepagas LIKE common:csr_string
+	LOCAL loc_tipo_viaje LIKE post:sf1_tipo_viaje
+	LOCAL loc_cod_len LIKE siaf:i
+	LOCAL loc_cod_len_new LIKE siaf:i
+	LOCAL loc_importe_codbarra LIKE common:csr_string
+	LOCAL l_descPagoFacil LIKE common:csr_string
+	
+	//Esto es para que no se ejecute la fval en la reversa porque si no en
+	//el caso de que sea una afip apareceria la pantalla de popup
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		RETURN
+	ENDIF
+	CALL siaf:FVALcampo_requerido
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	;PAW 30.07.2003 : Me fijo que no haya cambiado el codigo de barra de consulta online
+	;ya que en ese caso deberia ser un codigo de barra simple (sin viaje) para que me
+	;levante el popup de confirmacion luego.
+	esConsultaOL = (post:cant_barras == 0)
+	IF (post:sf1_codbarras1 != post:sf1_codbarras1_aux && esConsultaOL) THEN
+		IF (post:sf1_codbarras2.NUMCHARS != 0) THEN
+			post:cant_barras = 2
+		ELSE
+			post:cant_barras = 1
+		END IF
+		ALTERCONTROLSET TAG:post:CHK0
+		ALTERCONTROLSET TAG:post:CHK1
+		ALTERCONTROLSET TAG:post:CHK2
+	END IF
+
+	//FGB 1.11.2000: Agrego las modificaciones de SEPSA para el doble codigo
+	//TBC 30-08-00 Si estoy en la primer barra, en una transaccion con barra
+	//doble, no hago nada
+	IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras1.id) && (post:cant_barras == 2)) THEN
+		RETURN
+	END IF
+
+	//rearma el codigo de barra (segun si es de 1 o 2 barras)
+	IF (cant_barras == 1) THEN	//transaccion comun (una sola barra)
+		sf1_codbarras = sf1_codbarras1
+	ELSE
+		FPRINT common:csr_string, "%s%s",sf1_codbarras1, sf1_codbarras2
+		sf1_codbarras = SUBSTR(common:csr_string,0,60)
+		sf1_segunda_barra = SUBSTR(common:csr_string,60,60)
+	END IF
+	//FGB fin
+
+	IF (estado_presu == 4) THEN
+		IF (sf1_codbarras_tmp != sf1_codbarras)
+			FPRINT Lstring_aux "Error                                                            (%s/3)" contador
+			MSGBOX "La Factura No se Corresponde con el Comprobante Ingresado",OFB_OK,Lstring_aux
+			LET contador = contador + 1
+			IF (contador >= 4) THEN
+				SETVALDONE sf1_codbarras1
+				SETVALDONE sf1_codbarras2
+				UNGETKEY RT_SEND
+				RETURN (contador)
+			ELSE
+				RETURN (-2)
+			ENDIF
+		ELSE
+			RETURN (0)
+		ENDIF
+	ENDIF
+   
+	LET sf1_codbarras_tmp  = sf1_codbarras
+	LET sf1_codbarras_tmp1 = sf1_codbarras1
+	LET sf1_codbarras_tmp2 = sf1_codbarras2
+
+	CALL post:FVALsf1_serv_rep
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	//IF (sf1_codbarras.NUMCHARS < 5) THEN
+	//	UNPROTFIELD adt_emp_cuit
+	//	CALL post:FVALafip
+	//	PROTFIELD adt_emp_cuit
+	//	RETURN (RETVAL )
+	//ENDIF
+
+	MuestraMensaje = 2
+	CALL post:MISCget_version_bob(MuestraMensaje)
+	IF ( RETVAL < 0 ) THEN
+		// FGB 1.11.2000: Si estoy en el segundo campo de Cod. de Barra, y me da
+		// error, vuelvo al campo anterior (simil a nextfield)
+		IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+			UNGETKEY RT_BACKTAB
+		END IF
+		RETURN -2
+	END IF
+
+	CALL csr:get_profile_string("project","description",Proyecto)
+	;common:csr_string = SUBSTR(common:csr_string,0,4)
+	CALL  csr:str_search (Proyecto, " ", Indice)
+	IF (RETVAL >= 0) THEN
+		Proyecto = SUBSTR(Proyecto,0,Indice)
+	END IF
+	FPRINT common:csr_string "rt%s" ,Proyecto
+
+	DLL FindWindowA(common:csr_string,"Olivetti North America Branch Automation")
+	rt_handle = RETVAL
+
+  DLL bob_do (rt_handle, "inicio", 0)
+
+	IF ( RETVAL > 0 ) THEN
+		IF (post:sf1_nro_secuencia == 0) THEN
+			CALL post:CDSobtiene_secuen("PAGFA")
+			FPRINT common:csr_string,"%08.08s", adt_codseq_nro
+			FPRINT loc_PresNro, "%04.04s", SUBSTR(common:csr_string,4,4)
+			;post:sf1_nro_lote      = 1
+			//FGB - GAF 23.01.2002: se utiliza nro. de presupuesto para evitar trx's repetidas en interfaz
+			FPRINT Lstring_aux "%08.8s" post:PresNro
+			FPRINT post:sf1_nro_lote "%04.4d" SUBSTR(Lstring_aux,4,4)
+			post:sf1_nro_secuencia = loc_PresNro
+		END IF
+
+		CALL CDSmoneda_sf1_load
+		IF (RETVAL < 0) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//ERRMSG LST:common:errmsg_list,"Medio de Pago inexistente en Tabla Medios de Pago/Pago Facil"
+			FPRINT l_descPagoFacil,"Medio de Pago inexistente en Tabla Medios de Pago/%s",DSC:post:descPagoFacil
+			ERRMSG LST:common:errmsg_list,FLD:l_descPagoFacil		
+
+			CALL MISClimpia_sf1
+			CALL MISCrefresh_sf1
+			//FGB 1.11.2000: Si estoy en el segundo campo de Cod. de Barra, y me da
+			//error, vuelvo al campo anterior (simil a nextfield)
+			IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+				UNGETKEY RT_BACKTAB
+			END IF
+			RETURN (-2)
+		END IF
+		
+		CLEARFIELD post:utility_desc_prod
+		sf1_moneda = adt_sf1_moneda
+		sf1_med_pago = adt_sf1_med_pago
+		loc_sf1_secuencia = sf1_secuencia
+		loc_PresNro =  post:sf1_nro_secuencia
+
+		;FGB Se lee de la tabla TransacSF1 el numero de version de las treansacciones de IPLAN
+		CALL post:CDSchk_rubro_utility("IPLAN", post:sf1_codbarras1)
+		IF (RETVAL == 0) THEN
+			//FGB: con la descripcion obtenida de la tabla utility voy a buscar el código de transaccion y
+			//la versión de la tabla tran_sf1
+			CALL post:MISCgetTranVer_SF1(post:utility_desc_prod)
+		ELSE
+			IF (RETVAL == -1) THEN
+				//LET post:adt_tran_sf1_codigo = 6820
+				//LET post:adt_tran_sf1_ver = 1    
+				CALL post:MISCgetTranVer_SF1("XXXXX") // busco los datos por default
+			ELSE
+				RETURN (-2)
+			ENDIF
+		ENDIF
+		
+		;SMC Agrego para Version Iplan Carga/Recarga
+		;LET loc_version_prepagas = (post:adt_tran_sf1_ver - 1)
+		;SMC Agrego para Version Recarga Facil, para identificar esta version de versiones anteriores
+		LET loc_tipo_viaje = "1"
+		
+		;FGB trato de parametrizar
+		loc_version_prepagas = post:adt_tran_sf1_verprep
+      
+		//Agrego las variables necesarias al Bob
+		DLL free_variables()
+		DLL agregar_variables ("version_prepagas", loc_version_prepagas)      
+		DLL agregar_variables ("recarga_con_barra", loc_tipo_viaje)            
+		DLL agregar_variables ("codigo_de_barras", sf1_codbarras)
+		DLL agregar_variables ("codigo_de_barras2", sf1_segunda_barra)
+		DLL agregar_variables ("cajero",op:op_login_id)
+		DLL agregar_variables ("nro_secuencia",loc_PresNro)
+		DLL agregar_variables ("medio_de_pago",sf1_med_pago)
+		;DLL agregar_variables ("medio_de_pago","E01")
+		DLL agregar_variables ("codigo_de_moneda",sf1_moneda)
+		;DLL agregar_variables ("codigo_de_moneda","PES")
+		DLL agregar_variables ("modo_de_ingreso", "L")
+		DLL agregar_variables ("codigo_duplicado", post:sf1_cod_duplicado)
+		DLL agregar_variables ("codigo_secuencia", loc_sf1_secuencia)
+		DLL agregar_variables ("terminal", sf1_id_terminal)
+		//FGB 28.8.2001: Modificacion Bonos Pago Facil.
+		LET Lplataforma = "M"
+		DLL agregar_variables ("plataforma", Lplataforma)
+
+    CLEARFIELD siaf:serv_msgerror
+    CLEARFIELD siaf:serv_coderror
+
+    DLL bob_execute (rt_handle, "principal", 0, 0, 0)
+      
+		IF (RETVAL != 1) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (ERROR DE EJECUCION %s)",RETVAL
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			CALL MISClimpia_sf1
+			CALL MISCrefresh_sf1
+			//FGB 1.11.2000: Si estoy en el segundo campo de Cod. de Barra, y me da error, vuelvo al campo anterior (simil a nextfield)
+			IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+				UNGETKEY RT_BACKTAB
+			END IF
+			RETURN -2
+		END IF
+
+		DLL MOSAIC_get_variable ("mensaje_de_error",siaf:serv_msgerror, 60)
+		DLL MOSAIC_get_variable ("codigo_de_error", siaf:serv_coderror, 5)
+   
+   	IF (siaf:serv_msgerror.NUMCHARS > 0) THEN
+		  FPRINT common:csr_string_tmp "BOBLIB MSG (%s) %s",siaf:serv_coderror,siaf:serv_msgerror
+		  MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			CALL MISClimpia_sf1
+			CALL MISCrefresh_sf1
+			//FGB 1.11.2000: Si estoy en el segundo campo de Cod. de Barra, y
+			//me da error, vuelvo al campo anterior (simil a nextfield)
+			IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+				UNGETKEY RT_BACKTAB
+			END IF
+			RETURN -2
+		END IF
+
+    //Tomo los Datos que me deja el BoB
+    CALL post:MISCleo_datos_bob
+
+		;SMC Se agrega para transaccion de Recarga Facil
+		;Apartir de la version 3, el importe para mandar a IPLAN viene atras del codigo de barra.
+		SELECT (post:sf1_tipo_viaje)
+			CASE "R"
+				;fgb - Recarga por Afinidad es solo en sesión? 
+				IF ( estado_presu == 1 ) THEN
+					MSGBOX "Transacciones de Recarga solo disponible en modo presupuesto", OFB_OK, "Error"
+					RETURN -2
+				ENDIF
+				;SMC Me quedo con la cantidad de caracters de la barra por si lo necesito luego de que la modifiquen los bobs.
+				LET loc_cod_len = post:sf1_codbarras.NUMCHARS
+				LET loc_cod_len_new = post:sf1_codbarras_nuevo.NUMCHARS
+				loc_importe_codbarra = substr(post:sf1_codbarras_nuevo,loc_cod_len,loc_cod_len_new)				
+				;Levanto el importe a enviar a Iplan del codigo de barra nuevo
+				post:importe_aux = loc_importe_codbarra / 100
+				;fgb busco datos de las transacción de Pago Fácil
+				CALL post:MISCgetTranVer_SF1("RECPA")
+			BREAK
+			CASE ELSE
+				;Levanto el importe a enviar a Iplan de la cuenta 
+				post:importe_aux = post:sf1_cta_nro / 100
+				CALL post:MISCgetTranVer_SF1(post:utility_desc_prod)
+			BREAK
+		END SELECT
+
+		//SBA 20.01.2004 - Si el servicio que estoy ingresando es Iplan 
+		//me fijo que no haya en la misma sesion otra trx de Iplan
+		//Siempre Iplan es en modo sesion
+		IF (post:Modo != "R") THEN
+			CALL CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+			IF (RETVAL == 1) THEN
+				CALL post:CDShay_PFconViaje
+				IF (RETVAL < 0) THEN
+					RETURN -2
+				END IF
+			END IF
+			CALL post:CDSutility_cod_prod("IPLAN")
+			IF (RETVAL == 0 && post:utility_desc_prod == "RECAR") THEN
+				;SMC Cargo Numero para la Recarga (ID/Telefono/etc)
+				CALL post:MISCiplan_Recarga
+				IF (RETVAL < 0 ) THEN
+					RETURN -2
+				END IF
+			END IF
+		END IF
+      
+		//FGB 26.9.2001: Aviso que, si esta en modo sesion, por mas que elija un servicio con
+		//bonos, por el momento solo se puede pagar en efectivo.
+		IF (post:Modo != "R") THEN
+			IF (post:sf1_imp_max_bono > 0) THEN
+				//gbp:NI50455 CORREO PAGOS
+				//ERRMSG common:errmsg_list,"EL COBRO DE SERVICIOS DE PAGO FACIL, EN MODO SESION,\n SOLO PUEDE SER EN EFECTIVO-PESOS"
+				FPRINT l_descPagoFacil,"EL COBRO DE SERVICIOS DE %s, EN MODO SESION,\n SOLO PUEDE SER EN EFECTIVO-PESOS",DSC:post:descPagoFacil
+				ERRMSG common:errmsg_list,FLD:l_descPagoFacil
+				
+				CALL MISClimpia_sf1
+				CALL MISCrefresh_sf1
+				IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+					UNGETKEY RT_BACKTAB
+				END IF
+				RETURN (-2)
+			END IF
+		END IF
+		//FGB fin
+
+		CALL post:MISCformat_comprob(49)
+		
+		siaf:importe = sf1_importe /100
+		sf1_serv_desc = adt_serv_desc
+		CLEARFIELD adt_emp_cuit
+		
+		post:imp_max_bono_aux = post:sf1_imp_max_bono
+		IF (post:sf1_imp_max_bono > siaf:importe) THEN
+			post:sf1_imp_max_bono = siaf:importe
+		END IF
+
+		REFRESH siaf:importe
+		REFRESH post:sf1_serv_desc
+		PROTFIELD siaf:importe
+		//SETVALDONE sf1_codbarras
+		SETVALDONE sf1_codbarras1
+		SETVALDONE sf1_codbarras2
+   ELSE
+		MSGBOX "No se Encontro el Archivo Inicio.bob (BOBLIB)",OFB_OK,"Error"
+		//FGB 1.11.2000: Si estoy en el segundo campo de Cod. de Barra, y
+		//me da error, vuelvo al campo anterior (simil a nextfield)
+		IF ((CURRENTFIELD.id == FLD:post:sf1_codbarras2.id) && (post:cant_barras == 2)) THEN
+			UNGETKEY RT_BACKTAB
+		END IF
+		RETURN -2
+	ENDIF
+END SUB
+
+/*******/

@@ -1,0 +1,248 @@
+/****o* Pendientes de agrupación/OFB:tlr:JNLout_of_tran
+* NOMBRE
+*   OFB:tlr:JNLout_of_tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+SUB tlr:JNLout_of_tran
+    local Presu_Temp like post:PresNro
+    local EstadoPresuTmp like post:estado_presu
+    local OperadorTmp like op:op_operator_id
+    local TieneTotales like common:csr_string
+    local LSucurActCtx like common:csr_string
+    local Ljnl_branch like tlr:jnl_branch
+    local L_INDjnl_rtn like drv:INDjnl_rtn
+    ;SMC Resguardo valores que no quiero borrar    
+    swapdup tlr:INDjnl_append
+    swapdup tlr:INDdcol_scrn[0]
+    swapdup tlr:INDdcol_scrn[1]
+    swapdup tlr:INDdcol_scrn[2]
+    swapdup tlr:INDdcol_scrn[3]
+    swapdup tlr:INDdcol_scrn[4]
+    swapdup tlr:INDdcol_scrn[5]
+    swapdup tlr:INDdcol_scrn[6]
+    swapdup tlr:INDdcol_scrn[7]
+    swapdup tlr:INDdcol_scrn[8]
+    swapdup tlr:INDdcol_scrn[9]
+    swapdup common:VersionCorreo
+    
+    ;SMC Limpio Campos del header del journal para que no graben basura
+    call  CSR:proc_list(F_CLEARALL,LST:tlr:DBFMheader)
+    clearfield FLD:siaf:cuenta 
+    clearfield FLD:siaf:importe 
+    clearfield FLD:siaf:moneda 
+    clearfield FLD:post:medio_pago_desc 
+    clearfield FLD:siaf:modalidad
+    clearfield FLD:siaf:hora_reentry 
+    clearfield FLD:siaf:codigo_bull 
+    clearfield FLD:siaf:INDhost_snd_fv
+
+    ;SMC Recupero valores resguardados    
+    swapdup tlr:INDjnl_append
+    swapdup tlr:INDdcol_scrn[0]
+    swapdup tlr:INDdcol_scrn[1]
+    swapdup tlr:INDdcol_scrn[2]
+    swapdup tlr:INDdcol_scrn[3]
+    swapdup tlr:INDdcol_scrn[4]
+    swapdup tlr:INDdcol_scrn[5]
+    swapdup tlr:INDdcol_scrn[6]
+    swapdup tlr:INDdcol_scrn[7]
+    swapdup tlr:INDdcol_scrn[8]
+    swapdup tlr:INDdcol_scrn[9]
+    swapdup common:VersionCorreo
+    
+    let TieneTotales = 1
+    ;Pregunto si tiene registro de totales
+    call tlr:MISCtiene_totales(op:op_branch_id, op:op_operator_id)
+    if (retval < 0) then    
+            let TieneTotales = 0
+    end if            
+
+
+    ;SMC Limpio el numero de presupuesto para journalizar ya que esta rutna se usa para
+    ; journalizar fuera de Sesiones.
+    let Presu_Temp = post:PresNro
+    clearfield post:PresNro
+        
+    ;resguardo los valores de la lista de campos de la tabla transac
+    call  CSR:proc_list(F_SWAP,LST:siaf:LISTtransac_flds)
+
+    ;SMC Cuando llamo a la PRESfecha_hora, limpio estado_presu y op:op_operator_id para
+    ;    evitar inconvenientes.
+    let EstadoPresuTmp = post:estado_presu
+    let post:estado_presu = 0
+
+    let OperadorTmp = op:op_operator_id
+    let op:op_operator_id = 0
+    L_INDjnl_rtn = drv:INDjnl_rtn
+    clearfield drv:INDjnl_rtn
+    call siaf:PRESfecha_hora
+    drv:INDjnl_rtn = L_INDjnl_rtn                                   
+    ;Restauro Valores Originales                                       
+    let op:op_operator_id = OperadorTmp
+    let post:estado_presu = EstadoPresuTmp
+
+    tlr:bus_date = common:system_date
+    siaf:fecha = common:system_date
+    siaf:hora = common:time_of_day
+    
+
+    ;SMC Se agrega para que la sucursal que se graba, sea la de la sucursal activa,
+    ;    no la del administrador.
+    Let FLD:Ljnl_branch = op:op_branch_id
+    if (op:op_users_auth == "X") || (op:op_tables_auth == "X")then
+        move "SucurActTmp" to FLD:LSucurActCtx
+        cds select from dsc:siaf:adt_sucur_table becomes FLD:LSucurActCtx
+        cds findfirst FLD:LSucurActCtx nolock
+        if (retval == 0) then
+            cds extract FLD:LSucurActCtx siaf:adt_sucur_codigo into FLD:op:op_branch_id
+        endif
+        cds endselect FLD:LSucurActCtx
+    endif
+
+#ifdef SUCU_VIRTUAL
+    if (post:sucu_virtual != "S")
+        /* initialize normal journaling context */
+        cds select from DSC:TABjnl becomes DSC:CONjnl_write where\
+            jnl_branch == op:op_branch_id && \
+            jnl_operator == op:op_operator_id
+    
+        if (cdsretval != 0)
+            move DSC:ERRjnl_select to drv:error_msg
+            CALL  drv:error_msg
+            return (-2)
+        END IF
+    
+        /* get last jnl tran and leave locked in case update is needed */
+        cds findlast DSC:CONjnl_write nolock
+        ;Si no tiene registro de totales...
+        if (TieneTotales == 0) then
+            if (cdsretval == 0)
+                cds extract DSC:CONjnl_write jnl_bus_date jnl_sequence
+            END IF
+    
+            if (jnl_bus_date == common:system_date) then
+                let sequence = jnl_sequence
+            else 
+                let sequence = 0        
+            end if
+        end if
+    else
+        /*
+        cds select from DSC:TABjnl becomes DSC:CONjnl_write where\
+        jnl_branch == op:op_branch_id && \
+        jnl_operator == op:op_operator_id && \
+        jnl_bus_date == common:system_date
+        
+        cds findlast dsc:CONjnl_write nolock
+        if (cdsretval == 0)
+            cds extract DSC:CONjnl_write jnl_bus_date jnl_sequence
+            sequence = jnl_sequence
+        else
+            sequence = 0
+        end if
+        */
+        call tes:CDSinit_seq_jnl(common:system_date)
+   end if 
+#else
+    /* initialize normal journaling context */
+    cds select from DSC:TABjnl becomes DSC:CONjnl_write where\
+        jnl_branch == op:op_branch_id && \
+        jnl_operator == op:op_operator_id
+
+    if (cdsretval != 0)
+        move DSC:ERRjnl_select to drv:error_msg
+        CALL  drv:error_msg
+        return (-2)
+    END IF
+
+    /* get last jnl tran and leave locked in case update is needed */
+    cds findlast DSC:CONjnl_write nolock
+    ;Si no tiene registro de totales...
+    if (TieneTotales == 0) then
+        if (cdsretval == 0)
+            cds extract DSC:CONjnl_write jnl_bus_date jnl_sequence
+        END IF
+
+        if (jnl_bus_date == common:system_date) then
+            let sequence = jnl_sequence
+        else 
+            let sequence = 0        
+        end if
+    end if
+#endif
+
+    call csr:trimfield siaf:nombre_transac
+    fprint siaf:nombre_transac "%s (%s)" siaf:nombre_transac common:window_node
+    /* create the journal record */
+    cds clearbuffer DSC:CONjnl_write
+    CALL  OFB:jnl_header
+
+    let tlr:jscn_scrn_index = 1
+    let tlr:INDjscn_scrn = tlr:INDdcol_scrn[0]
+    ;CDS APPEND DSC:tlr:CONjnl_write tlr:INDjscn_scrn tlr:jscn_scrn_index
+
+
+    ;recupero los valores de la lista de campos de la tabla transac
+    ; y vuelvo a refrescar porque la PRESfechaHora hace un refresh con los campos 
+    ; de la transaccion de Actualizacion de tablas
+    call  CSR:proc_list(F_SWAP,LST:siaf:LISTtransac_flds)
+    call  CSR:proc_list(F_REFRESH,LST:siaf:LISTtransac_flds)
+    let post:PresNro = Presu_Temp
+
+    CALL  OFB:JNLcust_append
+    CALL  OFB:jnl_trailer
+
+    cds insert DSC:CONjnl_write nolock
+    if (cdsretval < 0)
+        CALL  OFB:lib:MISCcds_find_err /* display error msg */
+        return (-1)
+    END IF
+
+     ;SMC Restauro Sucursal del Operador   
+    let op:op_branch_id = FLD:Ljnl_branch
+    
+    ;Si tiene registro de totales, actualizo
+    if (TieneTotales == 1) then
+       CDS BEGINWORK
+       /* establish context */
+        cds select from DSC:TABtots becomes DSC:CONtots_write where \
+            ((tots_branch == tots_branch) \
+            && (tots_operator == tots_operator))
+                    
+        if (cdsretval == 0)
+            cds findfirst DSC:CONtots_write lock
+
+            if (cdsretval == 0)
+                CALL  OFB:TOTScommit 
+                Call  OFB:TOTSwait
+                
+                select (siaf:codigo_siaf)
+                    
+                    case 98050
+                        ;cierro el contexto si me voy
+                        Call  OFB:TOTSterminate
+                        break
+                end select
+            end if
+        endif
+    end if
+
+    clearfield tlr:INDjnl_append
+
+END SUB
+
+/*******/

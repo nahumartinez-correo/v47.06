@@ -1,0 +1,130 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCjnlAnula
+* NOMBRE
+*   OFB:tes:MISCjnlAnula
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCjnlAnula
+    local imp like siaf:importe
+    local Lduplicado	like post:sf1_cod_duplicado
+    LOCAL l_estado_ped like post:estadoPED_estado
+    select (siaf:codigo_siaf)
+        case 6820      // PAGO FACIL //
+            // FGB: Cuando se reversa una directa (hecha automaticamente
+            // mediante la anulacion parcial de una factura), tengo que
+            // borrar el registro en la tabla SF1_Cod para que no 
+            // aparezca como duplicada si se la quiere reingresar...
+            call post:CDStotal_utility_sf1
+            if (testflag(tlr:tran_flags,correction)) then
+                call siaf:CDSrev_SF1_Cod
+            else
+                // FGB: supuestamente, por aca solo pasa cuando se realizo una
+                // anulacion parcial y luego se genera la nueva sesion con las
+                // trx. no anuladas. Por lo tanto, no quiero que se verifique
+                // el tema de los servicios duplicados...
+                let Lduplicado = post:sf1_cod_duplicado
+                let post:sf1_cod_duplicado = 0
+                call siaf:CDSsave_SF1_Cod
+                let post:sf1_cod_duplicado = Lduplicado
+            end if
+            break
+        case 8500
+            /* Tengo que leer el saldo de la subespecie */
+            call tes:CDSget_imp_TesEspV(common:sucursal_activa,"N",op:op_operator_id,tes:espv_cod,tes:espv_subcod,imp)
+            tes:adt_espv_importe = imp
+            call post:MISCumev_asig_datos(op:op_branch_id,tes:espv_cod,tes:espv_subcod,op:op_operator_id,"N",0,tes:adt_evaux_importe)
+            break
+        case 40002
+            fld:post:adt_stock_codprod = post:adt_prodvs_cod
+            fld:post:adt_stock_coddep = 00
+            call post:CDSstock_load    
+            call post:MISCasig_datos_vta
+            call post:CDSumov_save            
+            break
+        case 99012 // Observacion de Poliza
+        	// Si es Reversa borro lo que habia actualizado en la stockp 
+		    If ((post:EnPol_Boton == "" || post:EnPol_Boton == 4) && (testflag(tlr:tran_flags,correction))) THEN
+            		call post:MISCReverso_ObsReenc
+            		// sba Aqui no va este mensaje de error
+            		/* IF (RETVAL < 0) THEN
+            			MSGBOX "LA PIEZA NO PUEDE REVERSARSE.",0X00,"ERROR"
+            			RETURN -2
+            		END IF */
+			end if
+			// En la directo actualizo la stockp
+		    If ((post:EnPol_Boton == "" || post:EnPol_Boton == 4) && (!testflag(tlr:tran_flags,correction))) THEN
+					post:adt_stockp_pieza = post:Pieza
+					call post:CDSActualizo_Stockp
+           	end if
+			break
+        case 99020 /*Entrega de piezas al cliente en ventanilla*/
+            CALL post:CDSupdate_stockp
+ 			IF (post:adt_stockp_destino == DSC:post:PED_desc) THEN
+				//rutina que graba 1 registro en la tabla estadoPED con el nuevo estado
+				//de la pieza para mandar al host por el rtbatch
+				post:estadoPED_pieza = SUBSTR(post:Pieza,0,13)		
+				post:estadoPED_id_pieza = post:stockp_idPieza_ped
+				post:estadoPED_NISorig = post:stockp_NISorig_ped
+				post:estadoPED_NISdest = post:stockp_NISdest_ped
+				IF (post:adt_stockp_en_devol == "S") THEN
+					l_estado_ped = "EEO"
+				ELSE
+					l_estado_ped = "EED"
+				END IF
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSsave_estadoPED(l_estado_ped,"D") //Directa
+				ELSE
+					CALL post:CDSsave_estadoPED(l_estado_ped,"C") //Cancelacion
+				END IF
+			END IF            
+            break
+		CASE 30101
+			IF (post:pzaPed_regul == "S")
+				//rutina que graba 1 registro en la tabla estadoPED con el nuevo estado
+				//de la pieza para mandar al host por el rtbatch
+				post:estadoPED_pieza = SUBSTR(post:Pieza,0,13)		
+				post:estadoPED_id_pieza = post:id_pieza_ped //stockp_idPieza_ped
+				post:estadoPED_NISorig = post:stockp_NISorig_ped //post:NisOrigen_ped
+				post:estadoPED_NISdest = post:NisDestino_ped
+				IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+					CALL post:CDSsave_estadoPED("EEO","D") //Directa
+					//actualizo la NCpedEnOrigen con la marca de pieza regularizada
+					CALL post:CDSactMarcaRegul("S")
+				ELSE
+					CALL post:CDSsave_estadoPED("EEO","C") //Cancelacion
+					//lompio la marca de pieza regularizada en la NCpedEnOrigen
+					CALL post:CDSactMarcaRegul("")
+				END IF
+			END IF
+			BREAK
+        case 99124 /*Endas con Poliza*/
+	    	/* En la reversa borro lo que había actualizado de la stockp */
+	    	If (testflag(tlr:tran_flags,correction) && (post:EnPol_Boton == 2 || post:EnPol_Boton == 3)) Then
+				CALL post:CDSborro_EP_stockp
+	    	End If
+	    	/* En la directa genero las NovTT */
+	    	If (!testflag(tlr:tran_flags,correction) && (post:EnPol_Boton == 2 || post:EnPol_Boton == 3)) Then
+				post:Pieza = post:EnPol_Track
+				CALL post:CDSgrabo_EP_stockp
+				CALL post:MISCgenero_scanP_EP(post:Pieza)
+				CALL post:MISCGeneroObserv(post:Pieza)
+	    	End If
+	    	break
+    end select
+
+END SUB
+
+/*******/

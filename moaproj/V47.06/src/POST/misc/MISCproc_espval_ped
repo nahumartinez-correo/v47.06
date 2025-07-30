@@ -1,0 +1,145 @@
+/****o* Pago en Destino/OFB:post:MISCproc_espval_ped
+* NOMBRE
+*   OFB:post:MISCproc_espval_ped
+* DESCRIPCION
+*   Procesa los datos de la Especie Valorizada a cargar en la PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVAL30050
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCproc_espval_ped
+	LOCAL l_codigo_agrupacion LIKE post:cod_agrupacion 
+	LOCAL l_fld_promo_imp LIKE post:fld_promo_imp
+
+	siaf:afecta_efectivo = "+"
+
+	tes:espv_cod = post:codesp_serv 
+	tes:adt_evaux_subcod = post:subcod_serv	
+	post:Dcto_CliMed = post:item_dcto_ev
+	
+	//Cargo el campo post:tarifa con el importe bonificado del bien de cambio 
+	//correspondiente y calculo el importe del descuento
+	IF (post:Dcto_CliMed > 0) THEN
+		INIT 22,1
+		post:Imp_DctoCliMed = (post:item_importe_ev * post:Dcto_CliMed) / 100
+		INIT 22,0
+		post:bonificaCM = "S"
+	ELSE
+		CLEARFIELD post:Imp_DctoCliMed
+		CLEARFIELD post:Dcto_CliMed
+	END IF
+	
+	tes:adt_espv_formfiscal  = ""	
+	
+	//traigo el tipo de formulario fiscal
+	CDS SELECT FROM "Especie" BECOMES "Especie_ctx" \
+		WHERE tes:adt_espv_cod == tes:espv_cod \
+		&& tes:adt_espv_subcod == tes:adt_evaux_subcod
+	CDS FINDFIRST "Especie_ctx" NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT "Especie_ctx" \
+			tes:adt_espv_formfiscal
+	END IF
+	CDS ENDSELECT "Especie_ctx" 
+	
+	tes:adt_evaux_cantidad = 1
+	tes:adt_evaux_importe = post:item_importe_ev
+	siaf:cantidad = 1
+	siaf:importe = post:item_importe_ev
+	tes:adt_espv_aliciva = post:item_alicuota_ev
+	post:imp_promo_epvs = ""            //lo tengo que calcular
+	
+	//consulto si aplica o no promocion post:promo_aplica
+	CALL tes:CDSpromo_aplicaEspV
+	
+	//desgloso el importe sin iva del servicio (tarifa)
+	CALL MISCdesglosaIva(post:item_importe_ev,post:adt_serv_aliciva,siaf:cantidad,0)
+	siaf:ImporteSinIva = post:ImporteSinIva
+	siaf:ImporteConIva = post:item_importe_ev
+	post:ImporteConIvaNeto = siaf:ImporteConIva
+	post:ImporteSinIvaNeto = siaf:ImporteSinIva
+	
+	//genero los datos de la Especie Valorizada para grabar en la AuxIva
+	//SC 50170-FACTURACION
+	CALL CDSUpdate_ImpreIva(tes:adt_espv_aliciva, post:ImporteSinIva_bis, post:ImporteIva_bis ,post:SobreTasaIva)
+	
+	//lo tengo del servicio
+	post:cod_agrupacion  = l_codigo_agrupacion
+	 
+	//consulto venta adicional post:secuencia_vta
+	post:secuencia_vta  = ESPECIE_SERV			
+
+	//Inicio tratamiento carga AuxEspV
+	/*Campos comunes a Caja y Cinta*/
+	tes:adt_evaux_suc = op:op_branch_id
+	IF (drv:dt_app == 4) THEN  //Por tesoro
+		LET tes:adt_evaux_op = op:op_tesoro_id
+		LET tes:adt_evaux_tesoro = "S"
+	ELSE
+		LET tes:adt_evaux_op = op:op_operator_id
+		LET tes:adt_evaux_tesoro = "N"
+	END IF
+	tes:adt_evaux_prestran = 0
+	tes:adt_evaux_envio    = "N"
+	tes:adt_evaux_es_venta = "S"
+	
+	/***Generar Vta de CAJA en la AuxEspV***/
+	tes:adt_evaux_codigo = tes:espv_cod
+	tes:espv_cod = tes:espv_cod
+	/*Para traer la subespecie*/
+	tes:adt_espv_cod = tes:espv_cod 
+	tes:adt_evaux_subcod = tes:adt_evaux_subcod
+	tes:adt_espv_subcod = tes:adt_evaux_subcod
+
+	CLEARFIELD tes:adt_espv_bonifCM
+	CALL tes:CDSadt_esp_load
+	tes:adt_evaux_cantidad = 1
+	tes:adt_espv_valor = post:item_importe_ev
+	tes:adt_evaux_importe  = tes:adt_evaux_cantidad * tes:adt_espv_valor
+	/*Cargo los campos para Ventas UP*/
+	post:ImpServUP = tes:adt_evaux_importe
+	post:AliServUP  = tes:adt_espv_aliciva
+	post:PreDForFis = tes:adt_espv_formfiscal
+	
+	/* Inicio consulta tabla transac */	
+	CDS SELECT FROM DSC:post:TRAN_TAB BECOMES DSC:post:TRAN_CTX \
+		WHERE siaf:adt_tran_codigo == 8500
+	
+	CDS FINDFIRST DSC:post:TRAN_CTX NOLOCK
+	CDS EXTRACT DSC:post:TRAN_CTX \
+		siaf:adt_tran_fliatran 
+	
+	CDS ENDSELECT DSC:post:TRAN_CTX		
+	/* Fin consulta tabla transac */
+	
+	l_fld_promo_imp = post:fld_promo_imp
+	post:fld_promo_imp = post:promo_tot_EspVdas
+	//CALL tes:CDSauxesp_save_vta
+	post:fld_promo_imp = l_fld_promo_imp
+
+	tes:SimporteCM = post:item_importe_ev
+	post:remito_nro = ""                 
+	post:Dcto_CMPres = ""               //lo tengo que calcular
+	tes:adt_evaux_seq_aux = ""          //lo tengo que calcular
+	post:NroCompPago = 0	
+	tes:importe_evaux = siaf:importe
+	
+	IF (post:PreDForFis.NUMCHARS == 0) THEN
+		post:EstadoFormu = SIN_FORM
+	ELSE
+		post:EstadoFormu = CON_FORM
+	END IF
+	
+END SUB
+
+/*******/

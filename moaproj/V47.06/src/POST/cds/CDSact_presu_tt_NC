@@ -1,0 +1,237 @@
+/****o* Anulación de Documentos/OFB:post:CDSact_presu_tt_NC
+* NOMBRE
+*   OFB:post:CDSact_presu_tt_NC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSact_presu_tt_NC
+/*Voy acumulando y actualizando los campos de la PresuDet que tienen que ver con el importe a
+medida que genero las directas de una transaccion que graba track_trace - Gabriel Falciola*/
+
+	local tarifa_aux like post:tarifa
+	local costo_opc_aux like post:costo_opc
+	local imp_bloques_aux like post:imp_bloques
+	local cantidad_aux like post:cantidad
+	local descuento_aux like post:descuento
+	local siniva_opc_aux[6] like post:costo_opc
+	local idx like siaf:i
+	local idx_esp like siaf:i
+	local promo_imp_srv_aux like promo_imp_srv_tot
+	local promo_imp_blq_aux like promo_imp_blq_tot
+	local promo_imp_opc_aux like promo_imp_tot_opc
+	local fld_promo_imp_aux like fld_promo_imp
+	local promo_tot_Serv_aux like promo_tot_Serv
+	local promo_opc_tot_aux[6] like promo_imp_tot_opc
+  	local jnl_flia_tran like siaf:adt_tran_fliatran
+  	local cant_esp like post:cantidad
+        local ali_opc_aux[6] like post:AliTrnCM
+ 	local l_siva like post:ImporteSinIva
+	local l_iva like post:ImporteIva
+	local l_siva_bis like post:ImporteSinIva_bis
+	local l_iva_bis like post:ImporteIva_bis
+
+	
+//SC 50170 resguardo campos
+	l_siva = post:ImporteSinIva
+	l_iva = post:ImporteIva
+	l_siva_bis = post:ImporteSinIva_bis
+	l_iva_bis = post:ImporteIva_bis
+	
+
+	cds select from "PresuDet" becomes "PresuTTCtx" where \
+	fecha == fld:common:system_date && op_operator_id == fld:op:op_operator_id && \
+	PresNro == fld:post:presNroNew && PresNro_tt == PresNro_tt && \
+    NroTrn_tt == NroTrn_tt
+    cds findfirst "PresuTTCtx" lock
+	
+	if (cdsretval == 0)
+    	/*Saco de la tabla los datos ya acumulados*/
+    	call csr:cleararray(promo_imp_opc_aux)
+    	call csr:cleararray(cos_opc)
+    	call csr:cleararray(siniva_opc)
+    	call csr:cleararray(promo_imp_opc_tot)
+    	call csr:cleararray(siniva_opc4)
+    	cds extract "PresuTTCtx" \
+	    	tarifa into tarifa_aux \
+	    	costo_opc into costo_opc_aux \
+	    	imp_bloques into imp_bloques_aux \
+	    	cantidad into cantidad_aux \
+	    	descuento into descuento_aux \
+	    	promo_imp_srv_tot into promo_imp_srv_aux \
+			promo_imp_blq_tot into promo_imp_blq_aux \
+			fld_promo_imp into fld_promo_imp_aux \
+			promo_imp_tot_opc into promo_imp_opc_aux \
+			promo_tot_Serv into promo_tot_Serv_aux\
+			siaf:adt_tran_fliatran into jnl_flia_tran
+    	cds extract "PresuTTCtx" \
+	    	cos_opc[0] cos_opc[1] cos_opc[2] cos_opc[3] cos_opc[4] cos_opc[5] 
+		//SC 50170
+		cds extract "PresuTTCtx" \
+			siniva_opc[0] siniva_opc[1] siniva_opc[2] siniva_opc[3] siniva_opc[4] siniva_opc[5]  \
+			siniva_opc4[0] siniva_opc4[1] siniva_opc4[2] siniva_opc4[3] siniva_opc4[4] siniva_opc4[5]
+
+		cds extract "PresuTTCtx" \
+			promo_imp_opc_tot[0] \
+			promo_imp_opc_tot[1] \
+			promo_imp_opc_tot[2] \
+			promo_imp_opc_tot[3] \
+			promo_imp_opc_tot[4] \
+			promo_imp_opc_tot[5]
+    	
+    	/*Acumulo el nuevo item*/
+    	if (enSesion != "S" && estAnul == "D1_")
+			cds findagain dsc:NC_CON lock
+			CDS EXTRACT dsc:NC_CON \
+    			cos_opc[0] into cos_opc_aux[0] \
+    			cos_opc[1] into cos_opc_aux[1] \
+    			cos_opc[2] into cos_opc_aux[2] \
+    			cos_opc[3] into cos_opc_aux[3] \
+    			cos_opc[4] into cos_opc_aux[4] \
+    			cos_opc[5] into cos_opc_aux[5] 
+    		//SC 50170 	
+    			 CDS EXTRACT dsc:NC_CON \
+		ali_opc[0] into ali_opc_aux[0] ali_opc[1] into ali_opc_aux[1] ali_opc[2] into ali_opc_aux[2]  \
+		ali_opc[3] into ali_opc_aux[3] ali_opc[4] into ali_opc_aux[4] ali_opc[5] into ali_opc_aux[5]
+			
+			/*CDS EXTRACT dsc:NC_CON \
+				siniva_opc[0] into siniva_opc_aux[0] \
+				siniva_opc[1] into siniva_opc_aux[1]  \
+			CDS EXTRACT dsc:NC_CON \
+				siniva_opc[2] into siniva_opc_aux[2] \
+				siniva_opc[3] into siniva_opc_aux[3] \
+			CDS EXTRACT dsc:NC_CON \
+				siniva_opc[4] into siniva_opc_aux[4] \
+				siniva_opc[5] into siniva_opc_aux[5] */
+			
+			CDS EXTRACT dsc:NC_CON \
+				siaf:importe tarifa costo_opc imp_bloques \
+				descuento fld_promo_imp promo_imp_srv_tot promo_imp_blq_tot \
+				promo_tot_Serv promo_imp_tot_opc post:cant_opc
+			//SC 50170
+			CDS EXTRACT dsc:NC_CON post:adt_serv_aliciva
+			
+			CDS EXTRACT dsc:NC_CON \
+				promo_imp_opc_tot[0] into promo_opc_tot_aux[0] \
+				promo_imp_opc_tot[1] into promo_opc_tot_aux[1] \
+				promo_imp_opc_tot[2] into promo_opc_tot_aux[2] \
+				promo_imp_opc_tot[3] into promo_opc_tot_aux[3] \
+				promo_imp_opc_tot[4] into promo_opc_tot_aux[4] \
+				promo_imp_opc_tot[5] into promo_opc_tot_aux[5]
+		else
+			;falta arreglar este lado
+			cds findagain dsc:post:Jounarl_anul_Ctx lock
+			CDS EXTRACT dsc:post:Jounarl_anul_Ctx \
+	    		cos_opc[0] into cos_opc_aux[0] \
+    			cos_opc[1] into cos_opc_aux[1] \
+    			cos_opc[2] into cos_opc_aux[2] \
+    			cos_opc[3] into cos_opc_aux[3] \
+    			cos_opc[4] into cos_opc_aux[4] \
+    			cos_opc[5] into cos_opc_aux[5] 
+			CDS EXTRACT dsc:Jounarl_anul_Ctx \
+				siniva_opc[0] into siniva_opc_aux[0] \
+				siniva_opc[1] into siniva_opc_aux[1] \
+				siniva_opc[2] into siniva_opc_aux[2] \
+				siniva_opc[3] into siniva_opc_aux[3] \
+				siniva_opc[4] into siniva_opc_aux[4] \
+				siniva_opc[5] into siniva_opc_aux[5] 
+			CDS EXTRACT dsc:Jounarl_anul_Ctx \
+				siaf:importe tarifa costo_opc imp_bloques \
+				descuento fld_promo_imp promo_imp_srv_tot promo_imp_blq_tot \
+				promo_tot_Serv promo_imp_tot_opc post:cant_opc
+			CDS EXTRACT dsc:Jounarl_anul_Ctx \
+				promo_imp_opc_tot[0] into promo_opc_tot_aux[0] \
+				promo_imp_opc_tot[1] into promo_opc_tot_aux[1] \
+				promo_imp_opc_tot[2] into promo_opc_tot_aux[2] \
+				promo_imp_opc_tot[3] into promo_opc_tot_aux[3] \
+				promo_imp_opc_tot[4] into promo_opc_tot_aux[4] \
+				promo_imp_opc_tot[5] into promo_opc_tot_aux[5]
+		end if
+		
+		do
+  			if (idx == 6)
+  			   	break
+  			end if
+  			;PS9490
+            CALL post:MISCopcCantPart(post:cod_opc[idx], post:tipo_produc, cant_esp)
+  			if (retval == 1)
+  		    	clearfield post:promo_imp_opc_tot[idx]
+  		   	end if
+  			idx = idx + 1
+  		loop
+   		tarifa = tarifa + tarifa_aux
+   		costo_opc = costo_opc + costo_opc_aux
+   		imp_bloques = imp_bloques + imp_bloques_aux   	
+   		cantidad = cantidad_aux + 1
+   		descuento = descuento + descuento_aux
+   		promo_imp_srv_tot = promo_imp_srv_tot + promo_imp_srv_aux
+		promo_imp_blq_tot = promo_imp_blq_tot + promo_imp_blq_aux
+		promo_imp_tot_opc = promo_imp_tot_opc + promo_imp_opc_aux
+		fld_promo_imp = fld_promo_imp + fld_promo_imp_aux
+		promo_tot_Serv = promo_tot_Serv + promo_tot_Serv_aux
+	    	siaf:importe = tarifa + costo_opc + imp_bloques - descuento
+	   	//SC 50170
+	    	if (enSesion != "S" && estAnul == "D1_")
+			call post:MISCdesglosaIva(imp_bloques,adt_serv_aliciva,cantidad,0)
+			imp_bloques_siva = post:ImporteSinIva
+			imp_bloques_siva4 = post:ImporteSinIva_bis
+		endif
+	    
+	    idx = 0
+	   	while (idx < post:cant_opc)
+			cos_opc[idx] = cos_opc[idx] + cos_opc_aux[idx]
+			promo_imp_opc_tot[idx] = promo_imp_opc_tot[idx] + promo_opc_tot_aux[idx]
+			//siniva_opc[idx] = siniva_opc[idx] + siniva_opc_aux[idx]
+			//SC 50170
+			if (enSesion != "S" && estAnul == "D1_")
+				call post:MISCdesglosaIva(cos_opc[idx],ali_opc_aux[idx],cantidad,0)
+				siniva_opc[idx] = post:ImporteSinIva
+				siniva_opc4[idx] = post:ImporteSinIva_bis
+				cds append "PresuTTCtx" siniva_opc4[idx]
+			else
+				siniva_opc[idx] = siniva_opc[idx] + siniva_opc_aux[idx]
+			endif
+			cds append "PresuTTCtx" \
+			cos_opc[idx] siniva_opc[idx] promo_imp_opc_tot[idx]
+			idx = idx + 1
+		end while
+		call csr:cleararray(promo_opc_tot_aux)
+		         		          
+   		/*Actualizo en la tabla*/
+   		cds append "PresuTTCtx" \
+   		siaf:importe tarifa costo_opc imp_bloques cantidad \
+		descuento fld_promo_imp promo_imp_srv_tot promo_imp_blq_tot \
+		promo_tot_Serv promo_imp_tot_opc imp_bloques_siva imp_bloques_siva4
+		
+   		cds update "PresuTTCtx" lock
+   	end if
+   	cds unlock "PresuTTCtx"
+	cds endselect "PresuTTCtx"
+	call csr:cleararray(promo_imp_opc_tot)
+	call csr:cleararray(promo_imp_opc_aux)
+    call csr:cleararray(cos_opc)
+    call csr:cleararray(siniva_opc)
+    call csr:cleararray(siniva_opc4)
+    
+    	//SC 50170 restauro campos
+	post:ImporteSinIva = l_siva
+	post:ImporteIva = l_iva 
+	post:ImporteSinIva_bis = l_siva_bis
+	post:ImporteIva_bis = l_iva_bis
+
+
+END SUB
+
+/*******/

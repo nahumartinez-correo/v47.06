@@ -1,0 +1,177 @@
+/****o* Pendientes de agrupación/OFB:post:SVALcli_cheq_otrasuc
+* NOMBRE
+*   OFB:post:SVALcli_cheq_otrasuc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALcli_cheq_otrasuc
+local varl_AltaChq	like siaf:i
+local imp_aux like siaf:importe
+
+	if (post:Recep_CliTipo.numchars == 0) then
+		msgbox "Por favor, ingrese el tipo de cliente.",OFB_OK,"ERROR"
+		return -2
+	endif
+	
+	if (tes:sucursal.numchars == 0) then
+		msgbox "Por favor, ingrese la sucursal de donde proviene el cheque.",OFB_OK,"ERROR"
+		return -2
+	else
+		call tes:FVALsuc_orig
+		if (retval < 0) then
+			return -2
+		endif
+		if (admin:adt_br_tipo == "SN" || admin:adt_br_tipo == "SE" || admin:adt_br_tipo == "SB" || \
+		    admin:adt_br_tipo == "NG" || admin:adt_br_tipo == "SF") then
+		    	let varl_AltaChq = 1
+		endif
+	endif
+
+	if (siaf:moneda.numchars == 0) then
+		msgbox "Por favor, ingrese el medio de pago.",OFB_OK,"ERROR"
+		return -2
+	endif
+	
+	if (post:Recep_CliTipo != CLIUP) then
+		if (post:adt_TipoDoc_tipo.numchars == 0) then
+			msgbox "Por favor, ingrese el Tipo de Documento.",OFB_OK,"ERROR"
+			return -2
+		endif
+		if (post:CloCuit.numchars == 0) then
+			msgbox "Por favor, ingrese el Nro. de Documento.",OFB_OK,"ERROR"
+			return -2
+		endif
+	endif		
+	
+	if (post:CliUP == "") THEN
+		msgbox "Por favor, ingrese la Razón Social del Cliente.",OFB_OK,"ERROR"
+		return -2
+	endif	
+		
+	SELECT (post:Recep_CliTipo)
+	CASE CTACTE
+	
+		post:climed_tipo = CTACTE_HOST
+		post:climed_numero = post:CloCuit
+		post:CliCuit = post:CloCuit
+		post:CliRaz = post:CliUP
+		//grabo la CliCC
+		CALL post:CDScliCC_save
+		break
+	CASE OCASIONAL
+		post:climed_tipo = OCASIONAL
+		call post:CDScli_dig_verif
+		if (retval == 0) then
+			post:climed_numero = CloCuit
+		else
+			FPRINT post:climed_numero,"%2.2s%-9.9s",post:adt_TipoDoc_tipo,post:CloCuit
+		endif
+		post:CliRaz = post:CliRazBusq 
+		break
+	CASE CLIUP
+		post:climed_tipo = 1
+		post:climed_numero = NisUP
+		break
+	CASE CLIMED
+		post:climed_tipo = CLIMED
+		break
+		
+	END SELECT
+
+        IF (post:Recep_CliTipo == CLIMED && post:climed_numero.numchars == 0) THEN
+            //cgw:Si se consulta CliMed localmente, no por el boton del combo debe obtener el numero de cliente medio.
+	    CALL post:MISCclimed_numero
+	END IF
+
+	IF (post:climed_numero.numchars == 0) THEN
+	    MSGBOX "Complete los datos del cliente.",OFB_OK,"AVISO"
+	    return -2
+	ENDIF
+	
+	if (varl_AltaChq) then
+		if (post:cod_banco.NUMCHARS == 0 || post:cuenta.NUMCHARS == 0 || post:nro_cheque.NUMCHARS == 0) then
+			msgbox "Complete los datos del Cheque que ingresa",OFB_OK,"Aviso"
+			return (-2)
+		endif
+		// verifico que el cheque no esté en la sucursal
+		call tes:CDSverif_cheque_tes(siaf:moneda,post:nro_cheque,post:cod_banco,post:cuenta)
+		if (retval < 0) then
+			select (tes:teso_cheq_estado)
+				case "S"	// Enviado a Tesorería Provincial
+				case "A"	// Enviado a Administración Regional
+				case "R"	// Depositado en Cuenta Recaudadora
+				case "U"	// Enviado a otra sucursal
+					break
+				case else
+					errmsg common:errmsg_list,"El estado del cheque no permite su recepción"
+					return (-2)
+			end select
+		endif
+	endif
+			
+	//seteo campos no autoclear
+	tes:jnl_suc_orig = tes:sucursal
+	tes:jnl_moneda   = siaf:moneda
+	tes:jnl_cli_tipo = post:Recep_CliTipo	
+	tes:jnl_NisUP    = post:NisUP
+	tes:jnl_CliUP    = post:CliUP
+	tes:jnl_tipo_doc = post:adt_TipoDoc_tipo
+	tes:jnl_cuit     = post:CloCuit
+	tes:jnl_cli_num  = post:climed_numero
+	tes:jnl_track_trace = track_trace
+	
+	// FGB 21.02.06: envío alta de cliente
+	// MFM PS 9527: Solo se manda el alta para los clientes eventuales
+	if (post:Recep_CliTipo == 2) then
+		call post:SVALalta_cliente
+		setflag giros:tran_send_mode,consulta_simple
+		call OFBalta_cliente
+		if (retval != 0) then
+			return (-2)
+			resetflag giros:tran_send_mode,consulta_simple
+		endif
+		resetflag giros:tran_send_mode,consulta_simple
+		clearfield show_msg_rech
+	endif
+	
+	// FGB 21.02.06: si la sucursal origen es No Automatizada:
+	//               --> doy de alta el cheque y hago la salida de la otra sucursal.
+	if (varl_AltaChq) then
+		show_msg_rech = "N"
+		imp_aux = siaf:importe
+		call MISCalta_cheque(DIRECTA)
+		if (retval != 0) then
+			clearfield show_msg_rech
+			siaf:importe = imp_aux
+			common:trap_reset = OFB:drv:KEYSreset_esc
+			return (-2)
+		endif
+		// proximamente...
+		call MISCgenera_salfor_os(DIRECTA)
+		if (retval != 0) then
+			clearfield show_msg_rech
+			siaf:importe = imp_aux
+			common:trap_reset = OFB:drv:KEYSreset_esc
+			return (-2)
+		endif
+	endif
+	clearfield show_msg_rech
+	
+	setflag giros:tran_send_mode,consulta_simple
+	
+END SUB
+
+/*******/

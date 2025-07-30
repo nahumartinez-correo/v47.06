@@ -1,0 +1,88 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgen_vec_iva
+* NOMBRE
+*   OFB:post:MISCgen_vec_iva
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgen_vec_iva
+    LOCAL x LIKE cantidad
+    LOCAL imp_serv LIKE siaf:importe
+    LOCAL sinIva_serv LIKE siaf:importe
+    LOCAL siniva_opc_aux LIKE siaf:ImporteSinIva
+    LOCAL cant_flias LIKE cantidad
+    LOCAL l_impciva_opc LIKE siaf:importe
+    LOCAL l_siniva_opc LIKE siaf:importe
+	LOCAL l_Cantidad LIKE post:cant_aux
+	LOCAL loc_retval like lib:err_retval
+	cant_flias = 0
+    x = 0
+    WHILE (x < cant_opc)
+
+        l_Cantidad = cantidad
+        CALL post:MISCopcCantPart(post:cod_opc[x], post:tipo_produc, l_Cantidad)
+        loc_retval = retval
+        /*Desgloso el iva de la bonificacion total de los opcionales*/
+        //SC 50170
+		CALL MISCdesglosaIva(promo_imp_opc_tot[x],ali_opc[x], l_Cantidad,0)
+		sinIva_serv = ImporteSinIva
+		/*acumulo el importe sin iva de los opcionales para restarlo al importe
+        sin iva de la transaccion*/
+        siniva_opc_aux = siniva_opc_aux + siniva_opc[x] - sinIva_serv
+        l_siniva_opc = siniva_opc[x] - sinIva_serv
+		l_impciva_opc = cos_opc[x] - promo_imp_opc_tot[x]
+        CALL MISCacum_iva_postal(l_impciva_opc,l_siniva_opc,flia_opc[x],x)
+        IF (RETVAL == 1)
+            /*Cargo los datos correspondientes a los opcionales con distinta
+            familia*/
+            LET fliatran_vec[cant_flias] = flia_opc[x]
+            LET impciva_vec[cant_flias] = l_impciva_opc
+            LET impsiva_vec[cant_flias] = siniva_opc[x] - sinIva_serv
+            post:siniva_opc_uni[cant_flias] = 0
+            post:coniva_opc_uni[cant_flias] = 0
+            ;PS9490
+        	if (loc_retval) then
+        		post:siniva_opc_uni[cant_flias] = post:siniva_opc[x] - sinIva_serv
+        		post:coniva_opc_uni[cant_flias] = l_impciva_opc
+        	end if
+            cant_flias = cant_flias + 1
+        ELSE
+            ;PS9490
+        	if (loc_retval) then
+        		post:siniva_opc_uni[cant_flias - 1] = post:siniva_opc_uni[cant_flias - 1] + post:siniva_opc[x] - sinIva_serv
+        		post:coniva_opc_uni[cant_flias - 1] = post:coniva_opc_uni[cant_flias - 1] + l_impciva_opc
+        	end if
+        END IF
+
+        x = x + 1
+    END WHILE
+
+    /*Cargo los datos correspondientes al servicio (transaccion)*/
+	imp_serv = tarifa + imp_bloques - descuento - promo_imp_blq_tot - promo_imp_srv_tot
+	/*Desgloso el iva de la Tarifa total sin los opcionales*/
+	//SC 50170
+	CALL MISCdesglosaIva(imp_serv, adt_serv_aliciva, cantidad,0)
+	sinIva_serv = ImporteSinIva
+    //x = x + 1
+    CALL MISCacum_iva_postal(imp_serv,sinIva_serv,siaf:adt_tran_fliatran,x)
+    IF (RETVAL == 1)
+        LET fliatran_vec[cant_flias] = siaf:adt_tran_fliatran
+        LET impciva_vec[cant_flias] = imp_serv
+        LET impsiva_vec[cant_flias] = sinIva_serv
+    END IF
+    ImporteSinIva = sinIva_serv + siniva_opc_aux
+END SUB
+
+/*******/

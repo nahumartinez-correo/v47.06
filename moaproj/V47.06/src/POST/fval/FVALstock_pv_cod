@@ -1,0 +1,97 @@
+/****o* Pendientes de agrupación/OFB:post:FVALstock_pv_cod
+* NOMBRE
+*   OFB:post:FVALstock_pv_cod
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALstock_pv_cod
+    LOCAL loc_importe   LIKE siaf:importe
+    LOCAL loc_tasa      LIKE post:adt_serv_aliciva
+    LOCAL loc_cantidad  LIKE post:cantidad
+
+    CDS SELECT FROM DSC:stock_pv_table BECOMES DSC:stock_pv_context
+    CDS FINDFIRST DSC:stock_pv_context LOCK
+    IF (CDSRETVAL == 0) THEN /* Encuentra al menos un registro */
+        IF (LASTKEY == 0x191) THEN /* Presiona "Enter" para Supervisacion */
+            setvaldone adt_depstock_cod
+            setvaldone cantidad2
+            setvaldone adt_motpv_motivo
+            setvaldone agrega_disc
+            CDS UNLOCK DSC:stock_pv_context
+            RETURN (0)
+        END IF
+    END IF
+
+    IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+        RETURN (0)
+    END IF
+
+    IF (adt_prodvs_cod.numchars == 0) THEN
+        CALL siaf:FVALcampo_requerido
+        IF (RETVAL < 0) THEN
+            RETURN (-2)
+        END IF
+    ELSE
+        CALL CDSprodvs_load
+        IF (retval < 0) THEN
+            ERRMSG LST:common:errmsg_list,ERRventa_subcod
+            CALL ABMprodvs_cg_clear
+            CALL ABMprodvs_cg_ref
+            RETURN (-2)
+        ELSE
+            call CDSstock_pv_load
+            if (retval < 0) then
+            	clearfield adt_stock_stock
+                clearfield adt_stock_fumst
+                clearfield adt_stock_tumst
+                clearfield adt_depstock_cod
+                clearfield agrega_disc
+                clearfield cantidad2
+                clearfield adt_motpv_motivo
+                clearfield adt_motpv_desc
+                clearfield siaf:observaciones
+                /*clearfield adt_prodvs_tarifa*/
+                refresh adt_prodvs_tarifa
+                clearfield siaf:importe
+            else
+            	/*Si esta dentro de un presupuesto, controlo el stock en las ventas*/
+            	if (estado_presu == 2) then
+            		call CDSstock_venta
+            	end if
+                drv:button = 5
+                call drv:but_enable
+                drv:button = 6
+                call drv:but_disable
+                drv:button = 7
+                call drv:but_enable
+                drv:button = 8
+                call drv:but_enable
+            end if
+            ;Agrego restriccion por REG, PROV, SUC y  CLI *** MDG
+    		call post:MISCventasRestGen("CME", siaf:codigo_siaf)
+    		if ( retval == -1)
+    			call ABMprodvs_cg_clear
+	    		CALL ABMprodvs_cg_ref
+	    		return (-2)
+    		end if
+            CALL ABMprodvs_cg_ref
+            SETVALDONE adt_prodvs_codbarra
+            SETVALDONE adt_prodvs_cod
+        END IF
+    END IF
+END SUB
+
+/*******/

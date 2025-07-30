@@ -1,0 +1,231 @@
+/****o* Sesión Correo/OFB:plataf:presu_adicionales
+* NOMBRE
+*   OFB:plataf:presu_adicionales
+* DESCRIPCION
+*   Dentro de esta rutina, se realizan los agregados necesarios para el calculo del TOTAL del presupuesto.
+* ENTRADAS
+*   
+* SALIDAS
+*   Devuelve un valor menor que cero si exite un error
+* IMPACTOS
+*   Imacta directamente en facturación
+* REFERENCIADO POR
+*   plataf:estado_presu_accion
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+*   http://jira.sibs.net/jira/browse/AUT-520
+*	http://jira.sibs.net/jira/browse/AUT-2402
+* SOURCE
+*/
+#include "platafOFB.OFB.h"
+
+/////////////////////////////////////////////////////////////
+// Dentro de esta rutina, realizo los agregados necesarios //
+// al TOTAL del presupuesto. Tener en cuenta que lo que se //
+// refiera a impuestos deberia ya estar calculado. Dichos  //
+// calculos se realizan al finalizar cada transaccion.     //
+// (ver rutina post:calculo_subtot_presu)                  //
+/////////////////////////////////// FGB 13.11.2002 //////////
+// Esta rutina funciona como una transaccion... o sea, to_ //
+// dos los campos que se instancien luego del TRAN_START,  //
+// y que sean autoclear, se deberan limpiar en cuando lle_ //
+// ga el TRAN_END.                                         //
+// Si se modifica esta rutina, tener cuidado de "como" se  //
+// la modifica y los impactos que puede tener...           //
+/////////////////////////////////// FGB  31.07.2003 /////////
+
+SUB plataf:presu_adicionales
+	local l_retval 	like lib:err_retval 
+       
+
+#if CORREO_DEBUG == CORREO_ON
+	;if (plataf:current_state == CONFIRMATION) then
+		call post:MISClogMenues("plataf:presu_adicionales")
+	;endif
+#endif
+
+    post:consulta_presu = "S" //deshabilita para presionar F12
+    
+	/////// INICIO TRANSACCION ///////
+	let plataf:INDconf_cur_list = OFB:plataf:presu_adicionales
+	call post:MISCdumpCampos
+	call csr:dt_tran DT_TRAN_START FLD:plataf:INDconf_cur_list
+	call post:MISClogCampos
+	//////////////////////////////////
+
+	let post:op_operator_id = op:op_operator_id 
+	call post:CDSadt_presuact_load
+	call post:CDSadt_presu_load
+
+	// consulta de descuento para Cliente Medio.
+	// MFM - Tratamiento Cliente Medio - ConvenioSesion por producto hago las validaciones, sino 
+	//muestro la pantalla.
+	// MFM - Si el Cliente tiene Modalidad Anticipo no se hacen estas validaciones
+	// MFM - Si es Cobranza, Facturacion de Intereses o Facturacion Automatica no entra
+	// MFM - Si está usando Orden De Compra no existen descuentos ni por producto ni por sesion
+	// MFM - Si está emitiendo nota de credito tampoco debe realizar estas validaciones (50249)
+	if (post:cli_tipo == CLIMED && !post:ModalidadAT && !post:OperacionCob && \
+		!post:OperacionInt && !post:OperacionAut && !post:OperacionNC && post:consulta_ordenCM != "S") then
+		CALL post:MISCVerif_TxConf
+        	If (RETVAL < 0) Then
+			CALL post:MISCDcto_Sesion
+			/* MFM - Limpio post:det_presu_line1*/
+			clearfield post:det_presu_line1
+			refresh post:det_presu_line1
+			if (retval < 0) then
+				//Bug 14412
+				if (post:cli_tipo == CLIMED && post:ConvenioSesionV) then
+				//HAY QUE VOLVER ATRAS EL DESCUENTO!
+				CALL post:CDSDelete_99300
+				post:estado_presu = 3
+        			CALL post:CDSadt_presuact_save
+				endif
+				clearfield post:consulta_presu //habilita para presionar F12
+				l_retval = (-2)
+			endif
+		Endif
+	End if
+
+	//MFM - Solicitud de Cambio 50092: OC por Monto Total, validar que el monto total
+	//de la venta no supere el monto pactado en la OC
+	if (l_retval >= 0) then
+		//se calcula el consumo_OC para los dos tipos de orden de compra
+		//ya que se usa para grabar el campo remi_importe de la tabla remitos
+		if (post:consulta_ordenCM == "S") then //&& post:ordenCM_tipo == "T") then
+			CALL post:CDSordenCM_saldo
+			if (retval < 0) then
+				l_retval = (-2)
+			endif
+		endif
+	endif
+/*PS 10493 - Se estaban pagando las notas de credito con el adelanto!!
+	// MFM - El anticipo no debe consumirse si es una venta por excepcion
+	// o una cobranza o una facturacion o si el importe de la sesion es cero!
+	//Solicitud 50073 - Permitir que se use el adelanto en una cobranza de remitos o facturas!!!
+	if (l_retval >= 0) then
+		call post:MISCconsumo_anticipo
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	*/
+	
+	//50244 - Consumo Adelanto UP
+	if (l_retval >= 0) then
+		call post:MISCconsumo_adel_UP
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	
+	//50249 - Emision de Nota de Credito
+	if (l_retval >= 0) then
+		call post:MISCemision_nc_cm
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	//50249 - Cobranza CM con Nota de Credito
+	if (l_retval >= 0) then
+		call post:MISCconsumoNC
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	
+	// MFM - El anticipo no debe consumirse si es una venta por excepcion
+	// o una cobranza o una facturacion o si el importe de la sesion es cero!
+	//Solicitud 50073 - Permitir que se use el adelanto en una cobranza de remitos o facturas!!!
+	//PS 10493 - Luego de descontar del post:Total_importe las notas de credito
+	//se calcula el consumo de adelanto.
+	if (l_retval >= 0) then
+		call post:MISCconsumo_anticipo
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	
+	//MFM -Clientes Medios Modalidades
+	if (l_retval >= 0) then
+		CALL plataf:MISCModalidadesCM
+		if (retval < 0) then
+			l_retval = (-2)
+		endif
+	endif
+	
+	if (l_retval >= 0) then
+		//MFM - Clientes Medios Operaciones
+		CALL plataf:MISCOperacionesCM
+	endif
+	//PS 10484
+	if (post:OperacionCob || post:OperacionAut) then
+		if (post:modalidad_CM != "D")
+			post:modalidad_CM = "C"
+			call post:CDSpresu_modCM
+		endif
+	endif
+	
+	
+	//MFM - Genero la tx de Marca de Uso de Excepción*/
+	if (l_retval >= 0) then
+	if (post:cli_tipo == CLIMED && post:consulta_excepcionCM == "S" \
+		&& post:pago_diferido == "N" && !post:ModalidadCC && !post:ModalidadCD)
+		call post:CDSdel_99410
+		call post:CDSexcep_tmpCM_load
+		//PS 7534
+		if (LASTKEY == RT_ESC && post:ExcepSesion) then
+		else
+			call post:MISCagreg_uso_excep	
+		endif	
+	end if		
+	end if
+	
+	//50244- Si se utilizan Transferencias Bancarias, se debe generar la TX de Aplicacion de TB 99451
+	if (l_retval >= 0) then
+		if (post:ModalidadTB) then
+			call post:MISCagregTrnTB
+		endif
+	end if
+	//50295 - Emision de Lista de Giros
+	if (l_retval >= 0) then
+		//Se genera el Consumo de Anticipo Monetario
+		if (testflag(giros:giros_importacion,proc_em_lg)) then
+			//grabar en la PresuDet una nueva TX de Consumo de Adelanto Monetario con código 99458 (similar a la TX 99450)
+   			CALL giros:MISCagregConsAdelMon 
+   			//CSZ - Se verifica si se debe eliminar la cabecera de la lista de giros (tabla cabec_lg) 
+     		//Este tratamiento se realiza para que no se visualiza como lista pendiente la lista de giro
+     		//en el caso de que se hayan emitidos todos los giros
+     		//CALL giros:CDScabec_lg_del(giros:nro_sesion_lg)
+		endif
+	end if
+	// Consulta de Cheque Diferido (obtengo intereses)
+	if (l_retval >= 0) then
+	call post:tratar_cheque_dif
+	if (retval < 0) then
+	    
+		IF (drv:INDstack_funct[drv:dt_app][drv:stack_cnt] != 0)
+		    drv:stack_cnt = drv:stack_cnt + 1
+		    ungetkey RT_ESC
+		END IF
+
+		clearfield post:consulta_presu //habilita para presionar F12
+		;return (retval)
+		l_retval = retval
+	endif
+	endif
+
+	//		- Mostrar importe de Intereses
+
+	/////// FIN TRANSACCION ///////
+	let plataf:INDconf_cur_list = OFB:plataf:presu_adicionales
+	call post:MISCdumpCampos
+	call csr:dt_tran DT_TRAN_END FLD:plataf:INDconf_cur_list
+	call post:MISClogCampos
+	///////////////////////////////
+
+    clearfield post:consulta_presu //habilita para presionar F12
+
+	return (l_retval)
+END SUB
+
+/*******/

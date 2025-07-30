@@ -1,0 +1,93 @@
+/****o* Mensajeria/OFB:post:OFBconsulta_cliente
+* NOMBRE
+*   OFB:post:OFBconsulta_cliente
+* DESCRIPCION
+*  Se realiza la consulta simple al host para Cliente Medio y UP,donde se traen los datos 
+*  del cliente.
+*  Se consulta unicamente los datos del bit 108 para recuperar el monto total de Transferencia Bancaria
+*  PROC_CODI : 997036
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBrep_transf_banc,post:OFBclimed_deudor_ape
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBconsulta_cliente
+local posicion  like post:cantidad
+local longitud  like post:Longitud_108
+local datos     like post:BulkFld_108 
+local varl_importe      like common:csr_string
+
+    setflag giros:tran_send_mode,consulta_simple
+    resetflag  giros:tran_send_mode,consulta_multiple
+    
+    call post:CDSobtiene_secuen("STAN")
+   // giros:codigo_procesamiento = 997021
+   giros:codigo_procesamiento = 997036
+    giros:hora_viaje = common:time_of_day
+    giros:dia_viaje  = common:system_date
+
+    hcomm:INDhost_sndrt = OFB:SENDclimed_simple
+    hcomm:INDhost_rcvrt = OFB:RCVEclimed_simple
+
+    call hcomm:COMM_stat_init
+    call siaf:CDSchk_trxs_caidas
+    if (retval == 0 && testflag(hcomm:state_flags,on_line))
+	FYIMSG drv:fyimsg_list,\
+	"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+	call siaf:CDSjnl_mayor_cien	
+	if (retval == TRAN_CAIDA_VUELO)
+    	    clearfield hcomm:INDhost_sndrt 
+    	    clearfield hcomm:INDhost_rcvrt 
+	end if
+	FYIMSG CLEAR
+    elseif (retval == -5) then
+	    // quedaron trx's pendientes de recuperacion por el proc. batch...
+    	    clearfield hcomm:INDhost_sndrt
+    	    clearfield hcomm:INDhost_rcvrt
+    end if
+
+    call giros:OFBdisable_bt_msg
+    call hcomm:COMM_host_tran
+    common:trap_reset = OFB:drv:KEYSreset_esc
+    call giros:OFBenable_bt_msg
+    clearfield lib:stat_message
+    refresh lib:stat_message
+    refresh statusline
+
+    if (hcomm:tran_status != HOST_ACCEPTED) then
+	   RETURN -2
+	
+    end if
+
+    clearfield post:convenio
+    clearfield post:excepcion
+    clearfield post:climed_ult_item
+
+    call csr:trimfield BulkFld_105
+    call csr:trimfield BulkFld_106
+    call csr:trimfield BulkFld_107	
+    call csr:trimfield BulkFld_108
+    call csr:trimfield BulkFld_109
+    call csr:trimfield BulkFld_111
+    call csr:trimfield BulkFld_112
+    
+    if (BulkFld_108.NUMCHARS != 0)
+	 fprint longitud,"%s",Longitud_108
+         fprint datos,"%s",BulkFld_108
+         posicion = 0
+    	
+   endif
+   
+     
+END SUB
+
+/*******/

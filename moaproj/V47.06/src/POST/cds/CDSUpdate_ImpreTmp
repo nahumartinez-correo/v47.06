@@ -1,0 +1,701 @@
+/****o* Sesion Correo/OFB:post:CDSUpdate_ImpreTmp
+* NOMBRE
+*   OFB:post:CDSUpdate_ImpreTmp
+* DESCRIPCION
+*   Esta rutina graba los registros en la tabla ImpreTmp. Cada registro es un item de la Factura/Nota de Credito
+* ENTRADAS
+*   Tipo_Datos
+*	alicuota = tasa de iva correspondiente al item.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCActua_OpcInter,OFB:post:MISCgenero_ImpreTmp,OFB:post:CDSRecuperoTXNC
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSUpdate_ImpreTmp(Tipo_Datos,alicuota)
+	LOCAL Error_Cds LIKE lib:err_retval
+	LOCAL y LIKE cantidad
+	LOCAL calculo LIKE common:csr_string
+	LOCAL doc_trim LIKE post:PreDForFis
+	LOCAL monto LIKE post:tarifa
+	LOCAL trnVacia LIKE post:NroTrn_tt
+	LOCAL totalDec LIKE valor_dec
+	LOCAL descImpre_tmp LIKE desc_impre
+	LOCAL valdec_min LIKE tiene_vd
+	LOCAL esGiros LIKE siaf:i
+	LOCAL loc_desc_opc LIKE msg_opc 
+	LOCAL mes	LIKE common:csr_string
+	LOCAL l_destino LIKE post:destino
+	
+	//gpb:resguardo el valor por si es VAP
+	LET l_destino = post:destino
+    
+	tipo_impre = Tipo_Datos
+	longDesc = 0
+	post:impAnexo = "N"
+	
+	//Levante
+	CALL post:CDSPresu_load_factor
+	CDS SELECT FROM DSC:TblImpreTmp BECOMES DSC:CtxImpreTmp \
+		WHERE (post:op_operator_id == post:op_operator_id ) \
+		&& (post:codigo_impre == codigo_impre ) \
+		&& (post:PreDNroTrn == post:PreDNroTrn ) \
+		&& (post:tipo_impre == tipo_impre) \
+		&& siaf:adt_tran_fliatran != "CSM" //Familia de Giros
+    
+	CDS FINDFIRST DSC:CtxImpreTmp LOCK
+	Error_Cds = CDSRETVAL
+	IF (Error_Cds != -801) THEN
+		MSGBOX "Clave Repetida (ImpreTmp)", OFB_OK, "ERROR"
+		RETURN
+		; Error no puede existir uno igual
+	ELSE
+		IF (Tipo_Datos != SERVICIO) THEN
+			CLEARFIELD post:destino
+		END IF
+
+		esGiros = (Tipo_Datos == OPCGIROS || Tipo_Datos == TASAGIROS || Tipo_Datos == SERVGIROS)
+		
+		IF (Tipo_Datos != BONIF_PROD && Tipo_Datos != DESCUENTO && Tipo_Datos != OPCIONAL && post:noImprimir != "S" && !esGiros) THEN
+			itemFact =  itemFact + 1
+		END IF
+        
+		CDS CLEARBUFFER DSC:CtxImpreTmp
+		SELECT (Tipo_Datos)
+			CASE SERVGIROS
+				adt_cativa_discri = "N"
+				post:adt_cativa_cod = IvaCod
+				CALL  post:CDS_CatIva_Load
+				IF ( adt_cativa_discri == "S" ) THEN
+				//SUC-964:Resolución General N° 5614/2024:  solo discriminar el iva al final de la factura, no en el cuerpo
+					if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3)
+							CALL post:MISCdesglosaIva(post:tarifa,alicuota,1,0)
+							INIT 22,1
+							giros:ImporteGiros4_fld = post:ImporteSinIva_bis
+							INIT 22,0
+					else
+						giros:ImporteGiros4_fld = post:tarifa
+					endif
+				ELSE
+					giros:ImporteGiros4_fld = post:tarifa
+				END IF
+				CDS APPEND DSC:CtxImpreTmp adt_serv_serv \
+					giros:ImporteGiros4_fld
+            
+			CASE SERVICIO
+			//CASE MAYORISTAS
+				CALL CDStieneControl
+				IF ((RETVAL > 0) || (cant_opc > 0) || leyenlar_bloq.NUMCHARS != 0) THEN
+					impAnexo = "S"
+				ELSE
+					impAnexo = "N"
+				END IF
+				
+				IF (post:adt_oc_nro.NUMCHARS != 0) THEN              
+					desc_impre = item_desc_factura
+					longDesc = post:item_desc_factura.NUMCHARS              
+				ELSE
+					CALL post:CDSserv_desc_load
+					/*CSZ - Para el caso de servicios que tienen la opcion desde = 0*/
+					CALL CSR:trimfield(post:desc_impre)
+					CALL CSR:trimfield(post:adt_serv_desc)
+					CALL CSR:trimfield(unidad_fac)
+					CALL CSR:trimfield(post:destino)
+					CALL CSR:trimfield(post:adt_opc_desc)
+					CALL CSR:trimfield(post:adt_tarif_um_eq)
+					longDesc = post:adt_serv_desc.NUMCHARS
+					IF (adt_tarif_modo == "D") THEN
+						/* Si es Cuenta correntista el Cliente, en el IR solo se imprimirá Hasta equivalente*/
+						/* Unidad de medida equivalente para SAP. Se elimina adt_tarif_desde, adt_tarif_hasta,*/
+						/* y adt_tarif_um. Esto fue solicitado por Nina para todos los productos - Maricel 23/6/2000*/
+						IF (post:cli_tipo == 1) THEN
+							/*FPRINT desc_impre "%s %s %s(%s) %s", post:adt_serv_desc desc_impre unidad_fac post:adt_tarif_um_eq post:destino */
+							//post:fixed2int = post:adt_tarif_hasta_eq
+							//CALL csr:pat_it(fixed2int,common:csr_string)
+							FPRINT common:csr_string "%s" post:adt_tarif_hasta_eq
+							CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+							
+							/* En la variable common:csr_string_171 guardo adt_tarif_hasta_eq sin ceros a derecha */
+							//FPRINT desc_impre "%s %s %s %s", post:adt_serv_desc common:csr_string_171 post:adt_tarif_um_eq post:destino
+							// Martin.. guardo un campo que utilizo en la impresion.
+							//TERMICA
+							FPRINT desc_impre "%s", post:adt_serv_desc 
+							FPRINT desc_impre_tm "%s %s %s" common:csr_string_171 post:adt_tarif_um_eq post:destino
+
+							CDS APPEND DSC:CtxImpreTmp  post:adt_tarif_um_eq 
+						ELSE
+							IF (siaf:codigo_siaf != 70041 && siaf:codigo_siaf != 95000) THEN
+								// NINA PIDIO QUE SE SACARAN LOS CEROS A DERECHA DE MAS
+								//post:fixed2int = post:adt_tarif_desde
+								//CALL csr:pat_it(fixed2int,common:csr_string)
+								FPRINT common:csr_string "%s" adt_tarif_desde
+								CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+								IF (post:adt_tarif_desde == post:adt_tarif_hasta) THEN
+									FPRINT desc_impre "de %s", common:csr_string_171
+								ELSE
+									FPRINT desc_impre "%s", common:csr_string_171
+									//post:fixed2int = post:adt_tarif_hasta
+									//CALL csr:pat_it(fixed2int,common:csr_string)
+									FPRINT common:csr_string "%s" adt_tarif_hasta
+									CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+									FPRINT desc_impre "%s a %s", desc_impre common:csr_string_171
+								END if
+								common:csr_string_171 = post:desc_impre
+								//FPRINT desc_impre "%s %s %s %s", post:adt_serv_desc desc_impre unidad_fac post:destino
+								//impresora termica - se divide en varios renglones la impresion de estos datos
+								
+							FPRINT desc_impre_tm "%s %s %s" post:desc_impre post:unidad_fac post:destino
+							FPRINT post:desc_impre "%s" post:adt_serv_desc
+							ELSE
+								common:csr_string_171 = post:desc_impre
+								FPRINT desc_impre "%s", post:adt_serv_desc
+							END IF
+						END IF
+
+						IF (desc_impre.NUMCHARS > LONGITUDDESC) THEN
+							CALL post:MISCrecorto_descrip(desc_impre,desc_impre.NUMCHARS)
+							//CALL post:MISCrecorto_desc(desc_impre,desc_impre.NUMCHARS)
+						END IF
+					ELSE
+						/*Cuando es Transferencia internacional no saca el importe de la tabla de tarifas
+						por lo que no es necesario determinar el rango*/
+						IF (siaf:codigo_siaf != 70383 && siaf:codigo_siaf != 70041 && siaf:codigo_siaf != 95000) THEN
+							CALL MISCarmo_desc_rango
+						END IF
+						IF (siaf:adt_tran_fliatran == "CSM") THEN
+							IF (siaf:codigo_siaf == 70383 || siaf:codigo_siaf == 70388 || siaf:codigo_siaf == 70041 || siaf:codigo_siaf == 95000) THEN
+								/*Cdo es Transf. Intern. unicamente debe aparecer la descripcion del servicio*/
+								FPRINT desc_impre "%s", post:adt_serv_desc
+							ELSE
+								//FPRINT desc_impre "%s %s %s %s", post:adt_serv_desc desc_impre post:unidad_fac post:destino
+							 //impresora termica - se divide en varios renglones la impresion de estos datos
+								FPRINT desc_impre "%s", post:adt_serv_desc
+							FPRINT desc_impre_tm "%s %s %s", desc_impre post:unidad_fac post:destino
+							END IF
+						ELSE
+							FPRINT desc_impre "%s", post:adt_serv_desc
+						END IF
+					END IF
+                
+					//gpb:Si es VAP
+					IF (post:fliatran_EP == "VAP") THEN
+					//se imprime destino en otra linea junto con el rango (campo post:desc_impre_tm)
+						//FPRINT desc_impre "%s %s",desc_impre,l_destino
+						FPRINT desc_impre "%s",desc_impre
+				
+					END if
+					//RPP
+					IF (post:cod_EP == "18100" || post:item_servicio == 18100 || siaf:codigo_siaf == 18100 || post:item_servicio == 18101 || siaf:codigo_siaf == 18101) THEN
+						FPRINT desc_impre,"RPP: %s",post:desc_impre
+					endif
+					
+					//FPRINT desc_impre "%-57.57s", desc_impre
+					//TERMICA LONG MAXIMA 47
+					FPRINT desc_impre "%-47.47s", desc_impre					
+					//NI 50466 - tratamiento para imprimir la formula de peso volumetrico
+					IF (siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE") THEN
+						IF (rel_vol > peso_en_kgs) THEN
+							//Se debe imprimir la formula del calculo volumetrico
+							FPRINT desc_impre_rv "       MEDIDA %03.3sx%03.3sx%03.3s cm",post:rel_vol_l1,post:rel_vol_l2,post:rel_vol_l3
+						ELSE
+							CLEARFIELD desc_impre_rv
+						END IF
+					END IF
+				END IF
+				 
+        CDS APPEND DSC:CtxImpreTmp \
+          post:nro_ctrol post:cantidad \
+          post:adt_serv_piezacont post:cant_opc \
+          post:PresNro_tt post:NroTrn_tt \
+          post:desc_impre_rv
+                
+      BREAK
+      CASE TASAGIROS
+				adt_cativa_discri = "N"
+				post:adt_cativa_cod = IvaCod
+				CALL  post:CDS_CatIva_Load
+				IF ( adt_cativa_discri == "S" ) theN
+			//SUC-964:Resolución General N° 5614/2024:  solo discriminar el iva al final de la factura, no en el cuerpo
+				  if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3)			
+						CALL post:MISCdesglosaIva(post:tarifa,alicuota,1,0)
+						INIT 22,1
+						giros:ImporteGiros4_fld = post:ImporteSinIva_bis
+						INIT 22,0
+					else
+						giros:ImporteGiros4_fld = post:tarifa
+					ENDIF
+				ELSE
+					giros:ImporteGiros4_fld = post:tarifa
+				END IF
+				
+				CDS APPEND DSC:CtxImpreTmp adt_serv_serv \
+					giros:ImporteGiros4_fld
+            
+			BREAK
+			CASE OPCGIROS
+				adt_cativa_discri = "N"
+				post:adt_cativa_cod = IvaCod
+				CALL  post:CDS_CatIva_Load
+					IF (adt_cativa_discri == "S" ) THEN
+				//SUC-964:Resolución General N° 5614/2024:  solo discriminar el iva al final de la factura, no en el cuerpo
+					if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3)
+							CALL post:MISCdesglosaIva(post:tarifa,alicuota,1,0)
+							INIT 22,1
+							giros:ImporteGiros4_fld = post:ImporteSinIva_bis
+							INIT 22,0
+					else
+						giros:ImporteGiros4_fld = post:tarifa
+					ENDIF
+				ELSE
+					giros:ImporteGiros4_fld = post:tarifa
+				END IF
+				
+				CDS APPEND DSC:CtxImpreTmp adt_serv_serv \
+					giros:ImporteGiros4_fld
+
+			CASE OPCIONAL
+				impAnexo = "S"
+				CLEARFIELD post:adt_opc_formfiscal
+				IF (leyenlar_bloq.NUMCHARS == 0) THEN
+					CALL post:CDSopc_desc_load
+					CDS APPEND DSC:CtxImpreTmp post:adt_tarif_modo post:info_opc_impre post:cant_aux
+					monto = tarifa
+					; PJM 21/12/98 se agrego para que se descrimine el Iva tambien para las Facturas B
+					IF (adt_cativa_discri == "S") THEN
+					//SUC-964:Resolución General N° 5614/2024:  solo discriminar el iva al final de la factura, no en el cuerpo
+							if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3) 
+								//SC 50170	
+								monto = importeSinIva_impre
+								//monto = monto - importeIva_impre
+							endif
+					END IF
+					IF (adt_tarif_modo == "V" || adt_tarif_modo == "P" ) THEN // Modo en que se calcula el Opcional
+						IF (info_opc_impre != "N") THEN
+	            CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX \
+		            WHERE post:adt_opcserv_serv == post:adt_serv_serv \
+		           	&& post:adt_opcserv_opci == post:codigo_impre \
+		            && post:adt_opcserv_montomin > 0
+                            
+							CDS FINDFIRST OPC_SERV_CTX NOLOCK
+							IF (CDSRETVAL != -801) THEN
+								CDS EXTRACT OPC_SERV_CTX \
+									post:adt_opcserv_montomin INTO siniva_opc_impre
+							ELSE
+								CLEARFIELD siniva_opc_impre
+							END IF
+							CDS ENDSELECT OPC_SERV_CTX
+                            
+							; [PAW] --> Fin agregado.
+							siniva_opc_impre = siniva_opc_impre  * cant_aux
+							IF (cos_opc_impre != siniva_opc_impre) THEN
+								totalDec = valor_dec * cant_aux
+								IF (cli_tipo == 1) THEN // ctas ctes
+									//FPRINT calculo "%7.7e$ ", totalDec
+									FPRINT calculo "%10.10e$ ", totalDec
+								ELSE
+								//	FPRINT calculo "%7.7e$ %5.5e%% = %7.7e$", totalDec, porcentaje_opc, monto
+								//FPRINT calculo "%10.10e$ %5.5e%% = %10.10e$", totalDec, porcentaje_opc, monto
+								//IMPRESORA TERMICA DEBE ACORTARSE EL CALCULO, SE ELIMINA EL MONTO
+								FPRINT calculo "%10.10e$ %5.5e%%", totalDec, porcentaje_opc
+
+								END IF
+								CLEARFIELD valdec_min
+							ELSE
+								IF (cli_tipo == 1) THEN // si es cta ctes.
+									CLEARFIELD totalDec
+									totalDec = valor_dec * cant_aux
+									//FPRINT calculo "%7.7e$", totalDec
+									FPRINT calculo "%10.10e$", totalDec
+								ELSE
+									valdec_min = "S"
+									//FPRINT calculo "%7.7e$", monto
+									FPRINT calculo "%10.10e$", monto
+								END IF
+							END IF
+						ELSE
+							FPRINT calculo " "
+						END IF
+					ELSE
+						IF (valor_dec > 0) THEN
+							;IF (post:tarifa > 0) THEN
+								;FPRINT calculo "%7.7e$          %7.7e$", valor_dec, post:tarifa
+							;ELSE
+							IF (cli_tipo == 1) THEN // ctas ctes.
+								CLEARFIELD totalDec
+								LET totalDec = valor_dec * post:cant_aux
+								//FPRINT calculo "%7.7e$", totalDec
+								FPRINT calculo "%10.10e$", totalDec
+							ELSE
+								//FPRINT calculo "%8.8e$", valor_dec
+								FPRINT calculo "%10.10e$", valor_dec
+							END IF
+							/*
+							END IF
+							ELSE
+								IF (post:tarifa > 0) THEN
+									FPRINT calculo "%7.7e$", post:tarifa
+								END IF*/
+						END IF
+					END IF
+					IF ( post:adt_opc_formfiscal.NUMCHARS != 0) THEN
+						CALL CSR:trimfield(post:adt_opc_desc)
+						loc_desc_opc = post:adt_opc_desc
+						//post:longDesc = post:adt_opc_desc.numchars
+						
+						/*El importe que se cobra por el VADC no supera el minimo*/
+						IF (valdec_min == "S") THEN
+							//TERMICA SE MUESTRA EN 2 RENGLONES EL OPCIONAL CON CALCULO (VADC)
+							if (calculo != "") then
+								FPRINT desc_impre "%s\n",loc_desc_opc
+								FPRINT desc_impre_tm "(min) %s", calculo
+							else
+									FPRINT desc_impre "%s",loc_desc_opc
+									clearfield desc_impre_tm
+							endif
+						else
+								//TERMICA SE MUESTRA EN 2 RENGLONES EL OPCIONAL CON CALCULO (VADC)
+								if (calculo != "") then
+									FPRINT desc_impre "%s\n",loc_desc_opc
+									FPRINT desc_impre_tm "%s", calculo
+								else
+									FPRINT desc_impre "%s",loc_desc_opc
+									clearfield desc_impre_tm
+								endif
+						END IF
+						post:longDesc = desc_impre.NUMCHARS
+						PreDForFis = adt_opc_formfiscal
+					ELSE
+						; Si sale por else quiere decir que no tiene formulario asosiado
+						RETURN
+					END IF
+				ELSE
+					// [PAW] --> pedido por Maricel (Mariano Gecik) bloq. adicionales.
+					// ---------------------------------------------------------------
+					codigo_impre = siaf:codigo_siaf
+					//desc_impre = leyenlar_bloq 
+					//ACA PODRIAMOS USAR LA CORTA PARA LA TM	
+					desc_impre = leyencor_bloq
+					
+					/* Le saco los blancos a la leyenda larga y corta - maricel 23/6/2000*/
+					CALL CSR:trimfield(post:leyencor_bloq)
+					CALL CSR:trimfield(post:leyenlar_bloq)
+					//PS 9683 - Se comenta esto.
+					/*//PS 9374
+					IF (post:adt_oc_nro.numchars != 0) THEN
+						post:imp_bloques = post:item_imp_bloq * cant_bloq
+					END IF*/
+                    
+					; se agrego para que se descrimine el Iva tambien para las Facturas B, en Telegrafia
+					IF (adt_cativa_discri == "S" && siaf:adt_tran_fliatran == "CST") THEN
+						//SC 50170
+						imp_bloques = importeSinIva_impre
+						//imp_bloques = imp_bloques - importeIva_impre
+					END IF
+					
+					CDS APPEND DSC:CtxImpreTmp \
+						leyencor_bloq \
+						leyenlar_bloq \
+						imp_bloques
+				END IF
+                
+			BREAK
+			CASE DESCUENTO
+				impAnexo = "N"
+				CALL post:CDSdesco_desc_load
+				//FPRINT desc_impre " Desc :%s",adt_descto_desc
+				//TERMICA Se elimina la leyenda Desc: para acortar la linea pues se desfasa
+			FPRINT desc_impre "%s",adt_descto_desc
+			BREAK
+			CASE BONIF_PROD
+				impAnexo = "N"
+				FPRINT desc_impre " %s",post:promo_desc
+				//SC 50170 SETEAR EL CAMPO post:importeSinIva_impre en negativo
+				IF (post:ImporteSinIva.NUMCHARS == 0) THEN
+					post:importeSinIva_impre = post:promo_tot - post:promo_iva
+				ELSE
+					post:importeSinIva_impre = post:ImporteSinIva * -1
+				END IF
+				post:importeIva_impre = post:promo_iva
+				post:tarifa = post:promo_tot
+			
+			BREAK
+			CASE INGRVARIOS
+				trnVacia = 0
+				post:longDesc = post:desc_impre.NUMCHARS
+				CDS APPEND DSC:CtxImpreTmp \
+					nro_ingrvario \
+					trnVacia AS post:NroTrn_tt
+                
+			BREAK
+			CASE ACTVARIAS
+				/* Agrego para reemplazo UP */
+				IF (siaf:codigo_siaf != 99200 && siaf:codigo_siaf != 99240 && siaf:codigo_siaf != 99242) THEN
+					CALL CSR:trimfield(post:desc_impre)
+					CALL CSR:trimfield(descImpre_tmp)
+					CALL CSR:trimfield(unidad_fac)
+					post:longDesc = post:desc_impre.NUMCHARS
+					IF (adt_tarif_modo == "D") THEN
+						// NINA PIDIO QUE SE SACARAN LOS CEROS A DERECHA DE MAS
+						// post:fixed2int = post:adt_tarif_desde
+						// CALL csr:pat_it(fixed2int,common:csr_string)
+						FPRINT common:csr_string "%s" adt_tarif_desde
+						CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+						// NINA PIDIO QUE SI EL DESDE y el HASTA  son iguales salga esta otra leyenda
+						IF (post:adt_tarif_desde == post:adt_tarif_hasta) THEN
+							FPRINT desc_impre "de %s", common:csr_string_171
+						ELSE
+							FPRINT desc_impre "%s", common:csr_string_171
+							//post:fixed2int = post:adt_tarif_hasta
+							//CALL csr:pat_it(fixed2int,common:csr_string)
+							FPRINT common:csr_string "%s" adt_tarif_hasta
+							CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+							FPRINT desc_impre "%s a %s", desc_impre common:csr_string_171
+						END IF
+            common:csr_string_171 = post:desc_impre
+            //FPRINT desc_impre "%s %s %s %s", post:adt_serv_desc desc_impre unidad_fac post:destino
+						//TERMICA
+						FPRINT desc_impre "%s", post:adt_serv_desc
+						IF (post:fliatran_EP == "VAP") THEN
+								FPRINT desc_impre_tm "%s %s %s", common:csr_string_171, unidad_fac l_destino
+						else
+							FPRINT desc_impre_tm "%s %s %s", desc_impre unidad_fac post:destino
+						endif
+						IF (rel_vol > peso_en_kgs) THEN
+							//Se debe imprimir la formula del calculo volumetrico
+							FPRINT desc_impre_rv "       MEDIDA %03.3sx%03.3sx%03.3s cm",post:rel_vol_l1,post:rel_vol_l2,post:rel_vol_l3
+						ELSE
+							CLEARFIELD desc_impre_rv
+						END IF
+						CDS APPEND DSC:CtxImpreTmp \
+							desc_impre_rv 
+
+						IF (desc_impre.NUMCHARS > LONGITUDDESC) THEN
+							CALL post:MISCrecorto_descrip(desc_impre,desc_impre.NUMCHARS)
+						END IF
+					ELSE
+						//50249
+						IF (OperacionNC) THEN
+							//tengo que recuperar el mes y año de la emision de la factura!!!
+							mes = SUBSTR(post:fact_fec_emis,4,2)
+							CALL siaf:MISCmes_a_letra(mes) 
+							FPRINT desc_impre "%s %s%s%s %s %e%s","AJUSTE ACORDADO MES",siaf:nombre_mes,"/",substr(post:fact_fec_emis,0,4),"ALICUOTA IVA",alicuota,"%"
+						ELSE
+							//Para los servicios que requieran formula y que el cliente sea CuentaCorrentista
+							IF (cli_tipo == 1) THEN //CuentaCorrentista
+								FPRINT desc_impre "%s %s",adt_serv_desc,detalle_cant
+							ELSE
+								CLEARFIELD desc_impre
+								FPRINT desc_impre "%s", post:adt_serv_desc
+							END IF
+						END IF
+					END IF
+				END IF
+				//gpb:Si es VAP
+				IF (post:fliatran_EP == "VAP") THEN
+					//FPRINT desc_impre "%s %s",desc_impre,l_destino
+					FPRINT desc_impre "%s",desc_impre,
+
+				END IF
+				FPRINT desc_impre "%-47.47s", desc_impre
+
+			BREAK
+			CASE TESORERIA
+				impAnexo = "N"
+				
+				CDS APPEND DSC:CtxImpreTmp \
+					tes:espv_cod
+					
+			BREAK
+			CASE MAYORISTAS
+				FPRINT desc_impre "%s", post:adt_pmaux_descmat
+				
+				CDS APPEND DSC:CtxImpreTmp \
+					post:adt_pmaux_um
+				//gpb:Si es VAP
+				IF (post:fliatran_EP == "VAP") THEN
+					FPRINT desc_impre "%s%s",desc_impre,l_destino
+				//	FPRINT desc_impre "%s",desc_impre
+
+				END IF
+                
+        FPRINT desc_impre "%-47.47s", desc_impre
+                
+      BREAK
+      CASE ENCINTVIRTUAL_ENTREGA
+      CASE ENCINTVIRTUAL_ADUANERO
+				//gpb:Si es VAP
+				IF (post:fliatran_EP == "VAP") THEN
+					FPRINT desc_impre "%s%s",desc_impre,l_destino
+					//	FPRINT desc_impre "%s",desc_impre
+				END IF
+            		
+        FPRINT desc_impre "%-47.47s", desc_impre
+        CDS APPEND DSC:CtxImpreTmp \
+          post:PresNro_tt \
+          post:NroTrn_tt \
+          giros:desc_impre2 \
+          post:adt_nis_guarda_web
+                
+			BREAK
+			CASE COMBOSERV
+				CALL CDStieneControl
+				IF (RETVAL > 0) THEN
+					impAnexo = "S"
+				ELSE
+					impAnexo = "N"
+				END IF
+	                
+				CALL post:CDSserv_desc_load
+				LET unidad_fac = adt_serv_umstd
+				CALL CSR:trimfield(post:desc_impre)
+				CALL CSR:trimfield(post:adt_serv_desc)
+				CALL CSR:trimfield(unidad_fac)
+				CALL CSR:trimfield(post:adt_tarif_um_eq)
+				longDesc = post:adt_serv_desc.NUMCHARS
+                
+				IF (cli_tipo == 1) THEN
+					FPRINT common:csr_string "%s" post:adt_tarif_hasta_eq
+					CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+					/* En la variable common:csr_string_171 guardo adt_tarif_hasta_eq sin ceros a derecha */
+					//cgw:solo se guarda el servicio venta de combo.
+					//FPRINT desc_impre "%s %s %s",post:adt_serv_desc,common:csr_string_171,post:adt_tarif_um_eq                    
+					FPRINT desc_impre "%s",post:adt_serv_desc
+				ELSE
+					FPRINT common:csr_string "%s" adt_tarif_desde
+					CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+					IF (post:adt_tarif_desde == post:adt_tarif_hasta )
+						FPRINT desc_impre "de %s", common:csr_string_171
+					ELSE
+						FPRINT desc_impre "%s", common:csr_string_171
+						FPRINT common:csr_string "%s" adt_tarif_hasta
+						CALL post:MISCsaco_ceros_der(common:csr_string,common:csr_string.NUMCHARS,common:csr_string_171)
+						FPRINT desc_impre "%s a %s", desc_impre common:csr_string_171
+					END IF
+                    
+					//cgw:solo se guarda el servicio venta de combo.
+					//FPRINT desc_impre "%s %s %s", post:adt_serv_desc desc_impre unidad_fac
+					FPRINT desc_impre "%s", post:adt_serv_desc
+					IF (desc_impre.NUMCHARS > LONGITUDDESC) THEN
+						CALL post:MISCrecorto_descrip(desc_impre,desc_impre.NUMCHARS)
+					END IF
+				END IF
+		END SELECT
+	END IF
+
+	; Si es 99019, el código de agrupación también debe ser cero.
+	IF (!(post:cod_agrupacion != 0 && (Tipo_Datos == INGRVARIOS)) || post:codigo_impre == 99019) THEN
+		post:cod_agrupacion = 0
+	ELSE
+		CALL CSR:trimfield (siaf:adt_mot_formfiscal, doc_trim)
+		IF (doc_trim.NUMCHARS != 0 && exisMotSinForFis == "S") THEN
+			impAnexo = "S"
+		ELSE
+			impAnexo = "N"
+		END IF
+	END IF
+	
+	IF (siaf:codigo_siaf != 70041 && siaf:codigo_siaf != 95000) THEN
+		FPRINT giros:desc_impre3,"           %s%s",giros:ImporteNeto," $\n"
+	END IF
+	
+	IF (formuCalc.NUMCHARS != 0) THEN
+		impAnexo = "S"
+	END IF
+	
+	// FGB 2.2.2001: Cuando el factor de conversion es cero se cae la aplicacion (lo cual parece logico, no?
+	// algo dividido por cero es infinito...). Por lo menos pasa en las trx. de  servicio de giros.
+	IF (factor_conversion > 0) THEN
+		post:tarifa = post:tarifa / factor_conversion
+		post:importeIva_impre  = post:importeIva_impre / factor_conversion
+	END IF
+	// FGB fin
+    
+	CDS APPEND DSC:CtxImpreTmp \
+		post:op_operator_id post:codigo_impre \
+		post:PreDNroTrn post:tipo_impre \
+		post:desc_impre post:PreDForFis \
+		post:cantidad AS post:cantid_impre \
+		post:tarifa AS post:importe_impre \
+		post:importeIva_impre siaf:afecta_efectivo \
+		post:adt_tarif_modo post:adt_opc_desc \
+		post:impAnexo post:cod_agrupacion \
+		post:noImprimir post:longDesc \
+		post:formuCalc post:itemFact \
+    post:cp  \
+    post:desc_impre_tm
+
+	CDS APPEND DSC:CtxImpreTmp \
+    PreDForFis \
+    giros:desc_impre2 \
+    giros:desc_impre3 \
+    giros:es_opc \
+    adt_tarif_desde \
+    adt_tarif_hasta \
+    post:destino
+//RPP
+if (cod_EP == "18100")
+	CDS APPEND DSC:CtxImpreTmp post:Pieza
+	
+endif
+	//gpb:Si es VAP
+	IF (post:fliatran_EP == "VAP")
+		//Si es vap appendeo el track_trace en la ImpreTmp
+		CDS APPEND DSC:CtxImpreTmp  \
+			post:fliatran_EP AS siaf:adt_tran_fliatran \
+			post:Pieza
+	ELSE
+		IF (siaf:adt_tran_fliatran == "VAP")
+			CDS APPEND DSC:CtxImpreTmp post:Pieza
+		END IF
+		CDS APPEND DSC:CtxImpreTmp  \
+			siaf:adt_tran_fliatran
+	END IF  
+
+	CDS APPEND DSC:CtxImpreTmp  \
+		array FLD:giros:desc_impre \
+		array FLD:giros:formuCalc
+    
+	//SC 50170 FACTURACION
+	adt_cativa_discri = "N"
+	post:adt_cativa_cod = IvaCod
+	CALL  post:CDS_CatIva_Load
+	IF (precio_unitario.NUMCHARS > 0  && adt_cativa_discri == "S" ) THEN
+		//SUC-964:Resolución General N° 5614/2024:  solo discriminar el iva al final de la factura, no en el cuerpo
+		if (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3)
+				CALL post:MISCdesglosaIva(precio_unitario,alicuota,1,0)
+				INIT 22,1 //??
+				post:precio_unitario = post:ImporteSinIva_bis
+				INIT 22,0 //??
+		ENDIF
+	END IF
+
+	CDS APPEND DSC:CtxImpreTmp  \
+		post:precio_unitario  \
+		post:importeSinIva_impre
+	
+	//FIN FACTURACION
+
+	IF (Tipo_Datos == COMBOSERV) THEN
+		CDS APPEND DSC:CtxImpreTmp \
+			combo_nro
+	END IF
+	
+	IF (Error_Cds == -801) THEN
+		// Inserto porque uno Nuevo
+		CDS INSERT  DSC:CtxImpreTmp  LOCK
+	END IF
+	
+	CDS ENDSELECT DSC:CtxImpreTmp
+	impAnexo = "N"
+	CLEARFIELD post:adt_opc_desc
+	CLEARFIELD post:desc_impre_tm
+END SUB
+
+
+/*******/

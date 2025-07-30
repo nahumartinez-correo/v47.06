@@ -1,0 +1,131 @@
+/****o* Pendientes de agrupación/OFB:post:MISCRepDetaFDV
+* NOMBRE
+*   OFB:post:MISCRepDetaFDV
+* DESCRIPCION
+*   Reporte Detallado Fe de Vida)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALreportes_fdv
+* DOCUMENTACION
+*   NI 50508 - Fe de Vida
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRepDetaFDV(p_fec_d,p_fec_a,p_tipo_ope,p_cuil_benef)
+	LOCAL link_num       LIKE siaf:i             //canal de comunicacion del archivo
+	LOCAL file_name      LIKE common:csr_string  //nombre del archivo
+	LOCAL f_rep          LIKE siaf:i             //si es > 0 entonces se imprimio por lo menos un reporte
+	LOCAL l_out          LIKE common:csr_string  //tipo de salida
+	LOCAL l_fec_d LIKE post:fec_d
+	LOCAL l_fec_a LIKE post:fec_a
+	LOCAL l_tipo_ope LIKE post:rep_tipo_ope_fdv
+	LOCAL l_cuil_benef LIKE post:rep_cuil_benef_fdv
+	LOCAL l_filtro LIKE siaf:i 
+	LOCAL l_ope LIKE post:fdv_operacion
+	
+	l_fec_d = p_fec_d
+	l_fec_a = p_fec_a
+	l_tipo_ope = p_tipo_ope
+	l_cuil_benef = p_cuil_benef
+	
+	f_rep = 0 
+	l_out = siaf:pantalla_impreso
+	link_num = 4
+	file_name = "FeDeVida.lis"	
+
+	//COMBINACIONES FILTROS:
+	IF (l_tipo_ope == "TODOS" && l_cuil_benef.NUMCHARS == 0) THEN
+		l_filtro = 0
+	END IF
+	
+	IF (l_tipo_ope == "TODOS" && l_cuil_benef.NUMCHARS > 0) THEN
+		l_filtro = 1
+	END IF
+	
+	IF (l_tipo_ope != "TODOS" && l_cuil_benef.NUMCHARS == 0) THEN
+		l_filtro = 2
+		IF (l_tipo_ope == "ALTAS") THEN
+			l_tipo_ope = "A"
+		ELSE
+			l_tipo_ope = "M"
+		END IF
+	END IF
+
+	IF (l_tipo_ope != "TODOS" && l_cuil_benef.NUMCHARS > 0) THEN
+		l_filtro = 3
+		IF (l_tipo_ope == "ALTAS") THEN
+			l_tipo_ope = "A"
+		ELSE
+			l_tipo_ope = "M"
+		END IF
+	END IF
+
+	SELECT (l_filtro)
+		CASE 0 //Tipo Operacion == "TODOS"
+			CDS SELECT FROM DSC:post:fe_de_vida_tbl BECOMES DSC:post:fe_de_vida_ctx \
+				WHERE post:fdv_fecha >= l_fec_d && post:fdv_fecha <= l_fec_a \
+				SORT "Estado"
+		BREAK
+		CASE 1 //Tipo Operacion == "TODOS" - CUIL Beneficiario
+			CDS SELECT FROM DSC:post:fe_de_vida_tbl BECOMES DSC:post:fe_de_vida_ctx \
+				WHERE (post:fdv_fecha >= l_fec_d && post:fdv_fecha <= l_fec_a) \
+				&& post:fdv_benef_cuil == l_cuil_benef \
+				SORT "Estado"
+		BREAK
+		CASE 2 //Tipo Operacion != "TODOS" 
+			CDS SELECT FROM DSC:post:fe_de_vida_tbl BECOMES DSC:post:fe_de_vida_ctx \
+				WHERE (post:fdv_fecha >= l_fec_d && post:fdv_fecha <= l_fec_a) \
+				&& post:fdv_operacion == l_tipo_ope \
+				SORT "Estado"
+		BREAK		
+		CASE 3 //Tipo Operacion != "TODOS" - CUIL Beneficiario 
+			CDS SELECT FROM DSC:post:fe_de_vida_tbl BECOMES DSC:post:fe_de_vida_ctx \
+				WHERE (post:fdv_fecha >= l_fec_d && post:fdv_fecha <= l_fec_a) \
+				&& post:fdv_operacion == l_tipo_ope \
+				&& post:fdv_benef_cuil == l_cuil_benef \
+				SORT "Estado"
+		BREAK	
+ 	END SELECT 
+	
+	IF (CDSRETVAL < 0) THEN
+		//No hay se encontraron registros
+		MSGBOX "No se encontraron datos para listar",0x00,"AVISO"
+		RETURN (-2)
+	END IF
+
+	//abro el archivo
+	CALL post:MISCRepDetaFDV_open (file_name,link_num)
+
+	//si no pudo abrir el archivo
+	IF (RETVAL == -2) THEN
+		RETURN RETVAL
+	END IF
+	
+	FYIMSG LST:common:fyimsg_list, "(L) PROCESANDO LISTADO..."
+	common:csr_string_tmp = "REPORTE DETALLADO FE DE VIDA"
+
+	//rutina que arma el encabezado del reporte
+	CALL post:MISCRepDetaFDV_enc
+		
+	CALL post:MISClst_RepDetaFDV(link_num)
+	IF (RETVAL == 0) THEN 
+		f_rep = f_rep + 1
+	END IF 
+
+	IF (f_rep > 0) THEN
+		CALL giros:MISCImpVisorEditor(file_name,siaf:pantalla_impreso,link_num) 
+	ELSE 
+		MSGBOX "No se encontraron datos para listar",0x00,"AVISO"
+		CALL giros:MISCdeleteFile(file_name)
+		RETURN 
+	END IF		
+		
+END SUB
+
+/*******/

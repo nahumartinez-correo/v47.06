@@ -1,0 +1,65 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_cctrl
+* NOMBRE
+*   OFB:post:MISCjnl_cctrl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_cctrl
+    /*journaliza los bolsines*/
+	LOCAL cont LIKE cant_opc
+	LOCAL mensaje LIKE common:csr_string
+	cont_jnl = 0
+
+	/*para que no se llame a la rutina que verifica que sea la ultima transaccion del presupuesto*/
+	IF (post:estado_presu == 4) THEN
+		ctrol_ult_tt = "S"
+	END IF
+
+	CDS SELECT FROM cod_ctrl_tbl BECOMES cod_ctrl_ctx WHERE \
+	fecha == common:system_date && \
+	operador_tt == op:op_operator_id && \
+	PresNro_tt == PresNro
+	CDS FINDFIRST cod_ctrl_ctx LOCK
+
+	WHILE (cont_jnl < cant_aux)
+		CDS EXTRACT cod_ctrl_ctx ALL
+		/*MFM - Verifico si es un TT válido y si es prioritario*/
+		CALL MISCes_TT (cod_ctrol)
+		IF (RETVAL == 0) THEN
+			CALL MISCverif_prior (cod_ctrol)
+		ELSE
+			es_prioritaria = "N"
+		END IF
+		/*Cuando se esta en la ultima journalizacion se limpia la vble para que se llame a la rutina*/
+		/*que verifica que sea la ultima transaccion del presupuesto*/
+		IF (cont_jnl == cant_aux - 1) THEN
+			CLEARFIELD ctrol_ult_tt
+		END IF
+		/*si requiere nivel superv. journaliza c/u con el numero de supervisor y la leyenda corresp.*/
+		IF (niv_sup_aux == "S") THEN
+			SETFLAG tlr:tran_flags, supovr_granted
+		END IF
+
+		CLEARFIELD drv:INDspc_rtn[2]
+		cantidad = 1/*se pone en uno el campo cantidad porque se journalizan por separado*/
+		CALL tlr:JNLtran
+		cont_jnl = cont_jnl + 1
+		CDS FINDNEXT cod_ctrl_ctx LOCK
+	END WHILE
+	CDS ENDSELECT cod_ctrl_ctx
+END SUB
+
+/*******/

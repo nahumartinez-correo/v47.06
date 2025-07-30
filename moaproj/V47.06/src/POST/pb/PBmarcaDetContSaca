@@ -1,0 +1,140 @@
+/****o* Expedicion/OFB:post:PBmarcaDetContSaca
+* NOMBRE
+*   OFB:post:PBmarcaDetContSaca
+* DESCRIPCION
+*  Tx de Cierre de Saca: Boton Marca/Desmarca
+*  Esta rutina asigna la pieza/contenedor seleccionada del picklist a la saca. (Le saca el * del campo post:MarcaBorrado de la DetTmp)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:FVALpieza_saca
+* DOCUMENTACION
+*  INICIATIVA 50571 (2019)
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBmarcaDetContSaca
+    /* Corte Operativo: Marca o desmarca el selec.  */
+    /* Jun. 1998 - B. Petrella -                */
+
+	/* MFM - Agosto 2000 - Cambio el campo adt_relMod_grucorte por adt_novtt_grupo*/
+	//MFM 50571 
+	LOCAL pzas_saca LIKE post:adt_pzas_saca
+	LOCAL cont_saca LIKE post:adt_cont_saca
+	LOCAL l_marca LIKE post:MarcaBorrado
+	
+	call csr:save_currentfield
+
+	let drv:button = 2 /* Combo asoc al cpo. Det. Cont. */
+	call drv:but_disable
+
+	let drv:button = 5 /* Marca - Desmarca */
+	call drv:but_disable
+
+  clearfield SiNoTT
+
+	//MFM 50571 -controlar concurrencia solo si esta tratando de incluir la pieza/contenedor en la saca 
+	l_marca = substr(post:DetalleContenidoGC,49,1)
+  IF (l_marca == "*") THEN
+		//Si ingresa a la TX y va directo a seleccionar Marca/desmarca, el campo post:Pieza_id tiene el valor de otra pieza que no es la que esta mostrandose en el campo post:DetalleContenidoGC.
+		post:Pieza_id = substr(post:DetalleContenidoGC,11,32)
+		call csr:trimfield (post:Pieza_id)
+		CALL CDSVerifPzaSaca (post:Pieza_id)
+		if (RETVAL < 0) then
+				CLEARFIELD post:Pieza2 
+				REFRESH post:Pieza2
+				let drv:button = 2 /* Combo asoc al cpo. Det. Cont. */
+	      call drv:but_up_enable
+	      let drv:button = 5 /* Marca - Desmarca */
+	      call drv:but_up_enable
+	      call csr:restore_currentfield
+	      INIT 33,0
+			  RETURN -2
+		end if
+END IF		 
+	//MFM - 50571
+CDS BEGINWORK
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+	(op:op_operator_id == op:op_operator_id && \
+	 post:orden == post:orden)
+    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+   //MFM 50571 - Asignacion rapida
+    pzas_saca = post:adt_pzas_saca
+    cont_saca =  post:adt_cont_saca
+   
+   	 CDS EXTRACT DSC:post:DetTmp_ctx ALL
+   
+    //MFM 50571 - Asignacion rapida
+    post:adt_pzas_saca = pzas_saca
+    post:adt_cont_saca = cont_saca 
+    /* si esta marcado como borrado, se lo desmarca y viceversa */
+    IF (MarcaBorrado == "*")
+		LET MarcaBorrado = " "
+    ELSE
+		LET MarcaBorrado = "*"
+    END IF
+
+	//Agrego German
+	IF (post:TipoContenido == "C") THEN
+		IF (MarcaBorrado == " ") THEN
+			LET post:adt_cont_saca = post:adt_cont_saca + 1
+		ELSE
+			LET post:adt_cont_saca = post:adt_cont_saca - 1
+		END IF
+	ELSE
+		IF (MarcaBorrado == " ") THEN
+			LET post:adt_pzas_saca = post:adt_pzas_saca + 1
+		ELSE
+			LET post:adt_pzas_saca = post:adt_pzas_saca - 1
+		END IF
+	END IF
+  //Agrego German
+  IF (post:adt_cont_saca == "") THEN
+    	post:adt_cont_saca = 0
+	END IF
+
+    IF (post:adt_pzas_saca == "") THEN
+    	post:adt_pzas_saca = 0
+	END IF
+
+    REFRESH post:adt_cont_saca
+    REFRESH post:adt_pzas_saca
+
+    cds clearbuffer DSC:post:DetTmp_ctx
+
+    CALL CDSreplaceDetSaca
+
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+
+CDS COMMITWORK
+	clearfield DetalleContenidoGC
+	FPRINT post:DetalleContenidoGC,"%-10.10e" FLD:tlr:jnl_date
+    //move post:Pieza_id to substr(DetalleContenidoGC,12,32)
+    /*  move post:adt_relMod_grucorte to substr(DetalleContenidoGC,46,2)*/
+    //move post:adt_novtt_grupo to substr(DetalleContenidoGC,46,2)
+    //move post:MarcaBorrado to substr(DetalleContenidoGC,48,1)
+ 	 /*MFM (9.11.2001) PS 4445*/
+ 	 move post:Pieza_id to substr(DetalleContenidoGC,11,32)
+    move post:adt_novtt_grupo to substr(DetalleContenidoGC,44,2)
+    move post:jnl_stockp_reenc_cul to substr(DetalleContenidoGC,47,1)
+    move post:MarcaBorrado to substr(DetalleContenidoGC,49,1)
+    refresh DetalleContenidoGC
+
+    let drv:button = 2 /* Combo asoc al cpo. Det. Cont. */
+    call drv:but_up_enable
+
+    let drv:button = 5 /* Marca - Desmarca */
+    call drv:but_up_enable
+
+    call csr:restore_currentfield
+    INIT 33,0
+
+END SUB
+
+/*******/

@@ -1,0 +1,107 @@
+/****o* Reportes/OFB:tes:MISCflowPDF
+* NOMBRE
+*   OFB:tes:MISCgeneraPDF
+* DESCRIPCION
+*   Rutina que separa el flujo del tratamiento del archivo PDF
+* ENTRADAS
+*   p_file_name:Ruta completa del archivo a convertir a PDF
+*   p_fecha_cierre:Fecha en la que se efectua el cierre
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:MISCImpVisorEditor,OFB:post:MISCimprime_irregu,OFB:post:MISCimprimeGirosEmit,OFB:post:MISCimprimeGirosPaga,OFB:post:MISCImpVisorRepCCT,
+*   OFB:post:MISCImpVisorRepCREM, OFB:post:MISCImpVisorRepVAP,OFB:post:MISCImpVisorRepWeb,OFB:post:MISClst_docPED_close,OFB:post:MISCpfdetalle_tot,
+*		OFB:post:MISCRep_CremRendCent,OFB:post:MISCRep_RendGirCrem,OFB:post:MISCRepConsFDV,OFB:post:MISCReportes_CliMed,OFB:post:MISCtotales_sf1,
+*		OFB:post:TOTSlista_prod_stock,OFB:post:TOTStotal_fact_res,OFB:post:TRANlist_Rep_DPCT,OFB:post:TRANlst_adel_rec,OFB:post:TRANlst_comp_pdte,
+*		OFB:post:TRANlst_fact_dif,OFB:post:TRANlst_franq_ModCC,OFB:post:TRANlst_pzas_vto,OFB:post:TRANlst_recep_UP,OFB:siaf:MISCconsoltots_ct,
+*		OFB:siaf:TOTSlista_por_motivo,OFB:tes:TOTScons_mov_ctas,OFB:tes:TRANbloque_suc,OFB:tes:TRANbloque_tes,OFB:tes:TRANcons_chequeras,
+*		OFB:tes:TRANcons_den_suc,OFB:tes:TRANcons_est_buzon,OFB:tes:TRANcons_est_cheq,OFB:tes:TRANcons_tes_ev,OFB:tes:TRANlist_analitico,
+*		OFB:tes:TRANrealiza_est_suc,OFB:tes:TRANlistado_espv,OFB:tes:TRANrealiza_cons_tes,post:MISCumov,post:MISClst_RepExp_close
+* DOCUMENTACION
+*   NI50572 - Digitalizacion de Reportes
+*		NI50614 - Digitalizacion de Reportes Cierre de Caja
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCflowPDF (p_FileIn)
+	LOCAL l_FileIn LIKE common:csr_string
+	LOCAL l_FileOut LIKE common:csr_string
+	LOCAL mensaje LIKE common:csr_string
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL l_MoveFile LIKE common:csr_string
+	LOCAL l_FileP LIKE common:csr_string
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	LOCAL l_retval LIKE lib:err_retval
+
+	LET copias_aux = 1
+	LET l_retval = 0
+		
+	//Si no es Cierre/Forzado de Sucursal/Tesoro
+	//Si no es cierre de caja
+	IF (siaf:codigo_siaf_list != 8540 && siaf:codigo_siaf_list != 8550 && siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550 && siaf:codigo_siaf_list != 9580) THEN
+		//Se agrega esta condicion para reportes que no son del Cierre/Forzado de Sucursal/Tesoro/Caja
+		if (post:adt_list_incluye_99 != "S")
+				RETURN -5
+		endif
+	END IF
+	
+	LET l_FileIn = p_FileIn
+	LET siaf:hora_proceso = common:time_of_day
+	//Creo el PDF en el temp local
+	CALL tes:MISCgeneraPDF(l_FileIn)
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	//Creo el nombre del archivo de salida con la misma estructura que lo arma TEXT-PDF.jar!!!
+	FPRINT l_FileOut, "%s_%s_%s%s.pdf" common:sucursal_activa, siaf:reporte_codigo, common:system_date, siaf:hora_proceso
+
+	//Si va a ser envia a OnBase
+	IF (siaf:reporte_onbase == "S") THEN
+		FPRINT LineaComando "cmd /c copy %-s%-s %-s%-s", common:dirTemporal, l_FileOut, common:adt_pdf_EnvMoaOnBase, l_FileOut
+		CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+
+		FPRINT l_MoveFile "%s%s" common:adt_pdf_EnvMoaOnBase, l_FileOut
+		CALL post:MISCfile_exists(l_MoveFile)
+		IF (RETVAL < 0) THEN			
+			FPRINT mensaje ,"NO SE PUDO MOVER EL ARCHIVO [%s] A [%s]" l_FileOut, common:adt_pdf_EnvMoaOnBase
+			MSGBOX mensaje,0x00,"Aviso"
+			l_retval = -2
+		END IF
+	END IF
+	
+	FPRINT LineaComando "cmd /c mkdir %-s%-s", common:adt_pdf_MoaPDF, common:system_date
+	CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+
+	CLEARFIELD LineaComando
+	
+	//Copio el archivo del Temp al directorio de envio a MoaPDF
+	FPRINT LineaComando "cmd /c copy %-s%-s %-s%-s\\%s", common:dirTemporal, l_FileOut, common:adt_pdf_MoaPDF,common:system_date, l_FileOut
+	CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+
+	FPRINT l_MoveFile "%s%s\\%s" common:adt_pdf_MoaPDF, common:system_date, l_FileOut
+	CALL post:MISCfile_exists(l_MoveFile)
+	IF (RETVAL < 0) THEN
+		FPRINT mensaje ,"NO SE PUDO MOVER EL ARCHIVO [%s] A [%s%s]" l_FileOut, common:adt_pdf_MoaPDF, common:system_date
+		MSGBOX mensaje,0x00,"Aviso"
+		l_retval = -2
+	END IF
+	
+	//Realizo la impresion del PDF
+	IF (siaf:pantalla_impreso == "I" || l_retval == -2) THEN
+		WHILE (copias_aux <= siaf:nro_copias)
+			CALL tes:MISCprintPDF(l_FileOut)
+			LET copias_aux = copias_aux + 1
+		END WHILE
+	END IF
+
+	//Elimino el archivo del Temp
+	FPRINT LineaComando "cmd /c del %-s%-s", common:dirTemporal, l_FileOut
+	CALL csr:create_process LineaComando,SW_HIDE ,CSR_NOWAIT
+
+END SUB
+
+/*******/

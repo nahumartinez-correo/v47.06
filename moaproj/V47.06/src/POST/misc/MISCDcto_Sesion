@@ -1,0 +1,91 @@
+/****o* Pendientes de agrupación/OFB:post:MISCDcto_Sesion
+* NOMBRE
+*   OFB:post:MISCDcto_Sesion
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCDcto_Sesion
+	
+/*MFM - Tratamiento si Convenio se aplica sobre el total de venta bruta*/
+	If (ConvenioSesion && !ConvenioSesionV) Then
+		CALL CDSVerif_DctoPCM
+		If (RETVAL < 0) tHEN
+			//Se hizo descuento por producto, entonces NO muestro la pantalla de Descuento por SEsion, pero realizo las validaciones correspondientes.
+			//Calculo el importe bruto de sesion (de los productos que admiten descuento a Cliente Medio)
+			CALL CDSDcto_Sesion("P")
+			//Calculo el Neto
+			TotalNetoCM = TotalSesionCM - Imp_DctoCliMed
+			//Calculo el porcentaje de descuento 
+			Dcto_CliMed = ( 1 - (TotalNetoCM/TotalSesionCM)) * 100
+			//Verifico que dicho porcentaje esté dentro del rango pactado
+			CALL post:CDSCVerifDctoSesion //(TotalSesionCM)
+			//Lo borro porque sino queda sucio y se arma despiole
+			clearfield Dcto_CliMed
+			IF (RETVAL == 0) THEN
+				RETURN 0
+			END IF
+			IF (RETVAL == -2) THEN
+				MSGBOX "No existen descuentos pactados para los importes que se intentan bonificar. Deberá cancelarlos.",0x00,"ATENCION"
+				call post:OFBventas_productos
+				RETURN -2
+			END IF
+			IF (RETVAL == -1) THEN
+				MSGBOX "Los descuentos aplicados en productos superan el descuento pactado por convenio.\nPor favor, modifiquelos.",0x00,"ATENCION"
+				//MOSTRAR LA GRILLA CON LOS PRODUCTOS A LOS QUE SE LES HICIERON DESCUENTOS
+				call post:OFBventas_productos
+				RETURN -2
+			ENDIF
+			
+		End if
+	Else
+		if (!ExcepSesion) then //siempre es por total de venta!!! Entonces siempre muestro la pantalla
+			RETURN 0
+		endif
+	End If
+	
+	//Calculo el importe bruto de sesion
+	CALL CDSDcto_Sesion("S")
+	//MFM - PS 7534 - Si estoy en una venta por excepción me fijo si 
+	//el importe total de la venta esta dentro de un rango pactado.
+	//Demo 09/10/2003 - El descuento lo debe poner automaticamente el sistema cuando 
+	//el cliente tiene una modalidad de pago!
+	If (consulta_excepcionCM == "S" || \
+	   (ConvenioSesion && (ModalidadCC || ModalidadCD || ConsumoAnticipo))) then
+		call post:CDSCVerifDctoSesion //(TotalSesionCM)
+		if (retval == -2) then
+			if (consulta_excepcionCM != "S") then
+				RETURN 0
+				//MSGBOX "El importe de la venta difiere de lo pactado en el Convenio.\n Deberá realizar esta venta en otra factura.",0X00,"AVISO"
+			endif
+			RETURN -2
+		endif
+	End if
+	
+		
+	If (TotalSesionCM > 0) Then
+		clearfield siaf:importe //limpio para que no arrastre valores
+		call plataf:f12_popup_init	 // preparo teclas para el popup
+		POPUP post:SCRNDcto_Sesion,post:PRESDcto_Sesion, post:PCOLDcto_Sesion, SVALDcto_Sesion
+		If (LASTKEY == RT_ESC) Then
+			call plataf:f12_popup_exit // restauro estado teclas
+			RETURN -2
+		End if	
+		call plataf:f12_popup_exit // restauro estado teclas
+	End if
+	
+END SUB
+
+/*******/

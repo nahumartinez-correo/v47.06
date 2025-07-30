@@ -1,0 +1,170 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCfind_tot_tlr_ant
+* NOMBRE
+*   OFB:tes:MISCfind_tot_tlr_ant
+* DESCRIPCION
+*	Este OFB busca en la tabla de tots_aux registro por registro de la
+*	sucursal, verifica que el operador sea cajero o retaguardia en la
+*	tabla de profiles y si lo es escribe en el archivo los saldos
+*	pedidos
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCfind_tot_tlr_ant(varl_moneda)   //MISCbusca_tot_tlr
+    LOCAL operador   LIKE op:op_login_id
+    LOCAL nro_oper   LIKE op:op_operator_id
+    LOCAL saldo_inic LIKE siaf:aux_suma_monto
+    LOCAL saldo_efec LIKE siaf:aux_suma_monto
+    LOCAL indice     LIKE siaf:i
+    
+    LOCAL total      LIKE tes:total_imp_mov
+    Local var_idx like siaf:idx
+    local loc_tot_fis   like siaf:aux_suma_monto
+     
+    //LOCAL LIKE tes:total_imp_mov
+
+    ;siaf:lineas_cl = 0
+    op:adt_branch_id = op:op_branch_id
+
+    ;CALL post:MISCllena_tot_aux
+
+    CALL post:PRESrep_dia_ante  //porque el codigo_siaf quedo con basura
+
+    CDS SELECT FROM DSC:tlr:TABtots_aux BECOMES DSC:tlr:CONtots_write_aux
+    CDS FINDFIRST DSC:tlr:CONtots_write_aux LOCK
+    lib:err_retval = CDSRETVAL
+
+    MOVE "  " TO common:csr_string
+    CALL MISCwrite_file1(5,common:csr_string)
+    common:csr_string = "  INFORMACION DE CAJAS: "
+    CALL MISCwrite_file1(5,common:csr_string)
+    MOVE "  " TO common:csr_string
+    CALL MISCwrite_file1(5,common:csr_string)
+    MOVE "  " TO common:csr_string
+    CALL MISCwrite_file1(5,common:csr_string)
+    common:csr_string = "-DATOS CAJERO--------------------------------------------------------------------"
+    CALL MISCwrite_file1(5,common:csr_string)
+    common:csr_string = " NOMBRE        No.OP  SALDO INICIAL   TOTAL DISP. TOTAL EN PASES  TOTAL FISICO"
+    CALL MISCwrite_file1(5,common:csr_string)
+    MOVE "---------------------------------------------------------------------------------" \
+    TO common:csr_string
+    CALL MISCwrite_file1(5,common:csr_string)
+    MOVE "  " TO common:csr_string
+    CALL MISCwrite_file1(5,common:csr_string)
+
+
+	loc_tot_fis = 0
+    DO
+        CLEARFIELD operador
+        CLEARFIELD nro_oper
+        call csr:cleararray(siaf:monto_efec_vec)
+        call csr:cleararray(siaf:monto_inic_vec)
+        
+        IF (lib:err_retval == -801) THEN
+          BREAK
+        END IF
+        
+        CDS EXTRACT DSC:tlr:CONtots_write_aux          \
+        FLD:tlr:tots_operator        INTO FLD:nro_oper \
+        array FLD:siaf:tefectivo_vec INTO array siaf:monto_efec_vec
+        
+        CDS SELECT FROM "journal" BECOMES "journal_ctx2" WHERE \
+        tlr:jnl_branch    == FLD:op:op_branch_id            && \
+        tlr:jnl_tran_name == "INICAJ"                       && \
+        tlr:jnl_bus_date  == siaf:fecha_proceso             && \
+        post:CodOperador  == nro_oper
+        CDS FINDFIRST "journal_ctx2" NOLOCK
+        
+        var_idx = 0
+        If (cdsretval == 0) then         
+        do
+            if (var_idx >= MP_ARRAY)
+                break
+            end if
+            cds extract "journal_ctx2" \
+            tes:saldo_inic[var_idx]                
+            var_idx = var_idx + 1
+        loop
+          
+          
+        indice = 0
+        ;While (indice < 20)	      
+        While (indice < MP_ARRAY)
+            siaf:monto_inic_vec[indice] = tes:saldo_inic[indice]
+            indice = indice + 1
+        endwhile
+
+       END IF
+
+       saldo_efec = siaf:monto_efec_vec[varl_moneda] + siaf:monto_inic_vec[varl_moneda]
+       saldo_inic = siaf:monto_inic_vec[varl_moneda]
+
+       CDS SELECT op:op_tlr_auth op:op_ret_auth op:op_login_id FROM "profiles" BECOMES "prof_ctx2" WHERE \
+       op:op_operator_id == FLD:nro_oper && \
+       op:op_branch_id   == FLD:op:adt_branch_id
+       CDS FINDFIRST "prof_ctx2" NOLOCK
+       lib:err_retval = CDSRETVAL
+
+       IF (lib:err_retval == -801) THEN
+	      operador = "DESCON."
+       ELSE
+	      CDS EXTRACT "prof_ctx2"                     \
+	      FLD:op:op_login_id INTO FLD:operador        \
+	      FLD:op:op_tlr_auth INTO FLD:op:adt_tlr_auth \
+	      FLD:op:op_ret_auth INTO FLD:op:adt_ret_auth	      
+
+	      // No listar desconocidos
+	      IF ((op:adt_tlr_auth == "X") || (op:adt_ret_auth == "X")) THEN
+	         
+	         clearfield tes:total_imp_mov
+	         total = 0
+	         
+	         CALL tes:MISCpases_pend_ante(varl_moneda,siaf:fecha_proceso,common:sucursal_activa,nro_oper,"N",OPERADOR_LIST,tes:total_imp_mov)
+	         total = saldo_efec + tes:total_imp_mov
+	         FPRINT common:csr_string,\
+	         "%-14.14s  %5.5e %13.13e %13.13e  %13.13e %13.13e",operador,nro_oper, \
+	         saldo_inic,saldo_efec,tes:total_imp_mov,total
+	         CALL MISCwrite_file1(5,common:csr_string)
+
+			 loc_tot_fis = loc_tot_fis + total
+			 
+             /* Efectivo */
+             if (post:adt_mp_adm == "G")
+                matriz_dinero[post:adt_mon_cod][2] = matriz_dinero[post:adt_mon_cod][2] + total
+             endif
+             /* Cheque */
+             if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")               
+                matriz_dinero[post:adt_mon_cod][3] = matriz_dinero[post:adt_mon_cod][3] + total
+             end if
+
+             total_moneda = total_moneda + saldo_efec
+	      END IF
+       END IF
+
+       CDS endselect "journal_ctx2"
+       CDS FINDNEXT DSC:tlr:CONtots_write_aux NOLOCK
+       lib:err_retval = CDSRETVAL
+    LOOP
+    let common:csr_string = "--------------------------------------------------------------------------------- "
+    call MISCwrite_file1(5,fld:common:csr_string)
+    
+    fprint common:csr_string \
+    "TOTAL                                                            %13.13e",loc_tot_fis
+    call MISCwrite_file1(5,common:csr_string)
+
+    CDS ENDSELECT "journal_ctx2"
+    CDS ENDSELECT "prof_ctx2"
+    CDS ENDSELECT DSC:tlr:CONtots_write_aux
+END SUB
+
+/*******/

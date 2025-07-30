@@ -1,0 +1,391 @@
+/****o* Giros/OFB:giros:MISCupdate_jnl
+* NOMBRE
+*   OFB:giros:MISCupdate_jnl
+* DESCRIPCION
+*   journaliza vuelta del Switch
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tlr:jnl_update_tran
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCupdate_jnl(codTran,Aplicacion)
+    local esIplan like siaf:i
+    local loc_importe_aux like siaf:importe_aux
+    local l_codbarra like post:sf1_codbarras_nuevo
+    local loc_encryp_pin like post:sf1_codbarras_nuevo
+
+    if (testflag(giros:giros_masivos_trx,proc_trx_masivos))
+	// Transacciones postales y telegraficas realizadas
+	// por el modulo de giros masivos.
+	return
+    end if
+  /*  if (testflag(giros:giros_masivos,proc_gir_masivos) && \
+	siaf:codigo_siaf == 99023 )
+	// Finalizacion presupuesto de giros masivos.
+	resetflag giros:giros_masivos,proc_gir_masivos
+    end if
+	//50295
+	if (testflag(giros:giros_importacion,proc_em_lg	) && \
+	siaf:codigo_siaf == 99023 )
+	// Finalizacion presupuesto de emision de lista de giros.
+		resetflag giros:giros_importacion,proc_em_lg	
+	end if*/
+
+    //cgw:NI50295:Se agrega control de validacion para las trx's distinta a 70640 (Importacion LG).
+    //50295 - Para la emision de lista de giro tampoco se debe actualizar estos campos.
+    if (post:jnl_flia_tran == "CSM") && \
+       (codTran != 70370) && (codTran != 70440) && (codTran != 70441) && \
+       (codTran != 70381)  && (codTran != 72380) && (codTran != 70321) && \
+       (codTran != 70382)  && (codTran != 70398) && (codTran != 70399) && \
+       (codTran != 70320) && (codTran != 70380) && \
+       (codTran != 70610) && (codTran != 70620) && \
+       (codTran != 70630) && (codTran != 70640) && \
+       (codTran != 70650) then
+
+	IF (!TESTFLAG(tlr:tran_flags,correction)) THEN			
+	    CDS APPEND dsc:CONjnl_write FLD:giros:clave_hdr_giros \
+	    	post:adt_codseq_nro \
+	    	FLD:giros:Firma_comm \
+	    	FLD:giros:firma_enviada \
+	    	FLD:giros:hora_viaje \
+	    	FLD:giros:CodRespuesta_comm \
+        
+	    IF (!TESTFLAG(tran_send_mode,cancelacion))
+	    	//Si estoy en una cancelacion no debo actualizar el codigo de 
+	    	// procesamiento porque me lo pisa con el de la cancelacion
+	    	// y deberia journalizarse el de la tx que se esta cancelando
+	    	RESETFLAG tran_send_mode,cancelacion
+	    	CDS APPEND dsc:CONjnl_write \
+	    	    FLD:giros:codigo_procesamiento
+	    END IF
+        
+	    // fgb: resguardo el codigo de secuencia del journal de la trx principal
+	    giros:jnl_seq_auditoria = tlr:jnl_sequence
+        
+	    /*se agrego la firma enviada */
+	    //SC REEMPLAZO GIRO POSTAL - EL AUTORIZADOR DEVUELVE EL NRO DE GIRO-HAY QUE ACTUALIZARLO EN EL JOURNAL EMSION GP/GPO / GP CREM
+	    if (codTran == 70030  || codTran == 70040  || codTran == 70041  ||codTran == 70050 || codTran == 70060 || codTran == 70323) then
+		CDS APPEND dsc:CONjnl_write \
+		    FLD:giros:Serie_fld \
+		    FLD:giros:NroGiro_fld \
+		    FLD:giros:digito_fld
+	    elseif (codTran == 70383) then
+		    CDS APPEND dsc:CONjnl_write \
+		    FLD:giros:cons_nro_ctrol
+		elseif (codTran == 70385) then
+		    	CDS APPEND dsc:CONjnl_write \
+		    	    FLD:giros:esta_transf_inter \
+	                    FLD:giros:desc_transf_inter
+		    elseif (codTran == 70386) then
+		    	    CDS APPEND dsc:CONjnl_write \
+		    	        FLD:giros:Comision_fld \
+		    	        FLD:giros:CargosAdic_fld \
+		    	        FLD:giros:ImporteTotComi_fld \
+		    	        FLD:giros:comision_iva
+	            end if
+	     if (Aplicacion == 6) then
+		 if (codTran != 70400 && codTran != 70410 && codTran != 70420 \
+		     && codTran != 70430 && codTran != 70431) then
+		     CDS APPEND dsc:CONjnl_write FLD:giros:ImporteRcve \
+		    	 FLD:giros:EmisorNombre_comm FLD:giros:Emisor_Apell_comm \
+		    	 FLD:giros:TipoDocEmis_comm FLD:giros:NroDocEmis_comm \
+		         FLD:giros:Nombre_comm FLD:giros:Apellido_comm \
+		         FLD:giros:TipoDoc_comm FLD:giros:NroDoc_comm
+		 end if
+		 if (codTran == 70846) then
+		     CDS APPEND dsc:CONjnl_write FLD:giros:ComisionSinIva_fld \
+		         FLD:giros:IvaComision_fld \
+		         FLD:giros:ImporteSelloPag FLD:giros:ImporteSelloEmis \
+		         FLD:post:cod_opc[0] FLD:post:vec_opc2[0] FLD:post:iva_opc[0] \
+		         FLD:post:cod_opc[1] FLD:post:vec_opc2[1] FLD:post:iva_opc[1] \
+		         FLD:post:cod_opc[2] FLD:post:vec_opc2[2] FLD:post:iva_opc[2] \
+		         FLD:post:cod_opc[3] FLD:post:vec_opc2[3] FLD:post:iva_opc[3] \
+		         FLD:post:cod_opc[4] FLD:post:vec_opc2[4] FLD:post:iva_opc[4] \
+		         FLD:post:cod_opc[5] FLD:post:vec_opc2[5] FLD:post:iva_opc[5]
+		 end if
+	     end if
+        elseif (codTran != 9900 && codTran != 9906 && codTran != 9910 && codTran != 9920 && codTran != 9926) then
+      		CDS APPEND DSC:CONjnl_write \
+      	  	    FLD:giros:clave_hdr_giros \
+      	  	    FLD:giros:hora_viaje \
+		    FLD:giros:CodRespuesta_comm \
+		    FLD:giros:codigo_procesamiento \
+		    FLD:giros:codigo_anulacion
+	    end if     
+    end if
+
+    /***********************************************************************/
+    /******* VENTAS UP ********/
+
+    select (siaf:codigo_siaf)
+	    case 7590 //cgw: Debito en Cuenta - Cheque depositado rechazado.
+	        //cgw: No se actualiza journal para 7580, ya que no realiza viajes.
+	        fprint post:climed_tipo "%1s" post:cli_tipo_aux
+	        CDS APPEND dsc:CONjnl_write \
+		    post:climed_tipo \
+		    post:climed_numero
+	    case 99190
+	    case 99195
+	    case 99200
+	    case 99205
+	    case 99170
+	    case 99175
+	    case 99097  //cgw:Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+	    case 99099
+	    case 99410
+	    case 99415
+	    case 99450
+	    case 99455
+	    case 99435
+	    case 99430
+	    case 99460
+	    case 99465
+	    case 99470
+	    case 99475
+	    case 99445
+	    case 99440
+	    case 99480
+	    case 99485
+	    case 99060
+	    case 7616 
+	    case 7536 
+	    case 8950
+	    case 8726 
+	    case 8756 
+	    case 7590 //cgw: Debito en Cuenta - Cheque depositado rechazado. No se actualiza journal para 7580, ya que no realiza viajes.
+	    case 9346
+	    case 9356
+	    case 7646
+	    case 7566
+	    case 9326
+	    case 9336
+	    case 99240
+	    case 99242
+	    case 99245
+	    case 99453 //aplicacion de TB a Adelantos
+	    case 99454 //cancelacion de aplicacion de TB a Adelantos
+	    case 99461 //cobranza facturas vencidas
+	    case 99462 //cancelacion cobranza facturas vencidas
+	    case 99456 //consumo adelanto UP
+	    case 99457 //cancelacion consumo adelanto UP
+	    
+	    
+		 IF (!TESTFLAG(tlr:tran_flags,correction)) THEN			
+		      CDS APPEND dsc:CONjnl_write \
+			  post:adt_codseq_nro \
+			  FLD:giros:Firma_comm \
+			  FLD:giros:firma_enviada \
+			  FLD:giros:hora_viaje \
+			  FLD:giros:dia_viaje\
+			  FLD:giros:CodRespuesta_comm
+
+		      if (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242) then
+			  CDS APPEND dsc:CONjnl_write FLD:post:cliente
+		      end if
+                      //cgw:(99097)- Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+		      IF (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097)
+			  CDS APPEND dsc:CONjnl_write FLD:giros:clave_hdr_giros
+		      END IF
+
+		      IF (!TESTFLAG(tran_send_mode,cancelacion))
+			   //Si estoy en una cancelacion no debo actualizar el codigo de 
+			   // procesamiento porque me lo pisa con el de la cancelacion
+			   // y deberia journalizarse el de la tx que se esta cancelando
+			   RESETFLAG tran_send_mode,cancelacion
+			   CDS APPEND dsc:CONjnl_write \
+			       FLD:giros:codigo_procesamiento
+		      END IF
+
+		 ELSE
+		    IF (siaf:codigo_siaf == 99060)
+                        CDS APPEND DSC:tlr:CONjnl_write \
+		            FLD:giros:firma_enviada \
+		            FLD:giros:Firma_comm
+                    END IF 
+		    CDS APPEND DSC:CONjnl_write \
+	      	  	FLD:giros:clave_hdr_giros \
+	      	  	FLD:giros:hora_viaje \
+	      	  	FLD:giros:dia_viaje \
+			FLD:giros:CodRespuesta_comm \
+			FLD:giros:codigo_procesamiento
+
+                    //cgw:(99097) - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+		    IF (siaf:codigo_siaf == 99099 || siaf:codigo_siaf == 99097)
+			CDS APPEND dsc:CONjnl_write FLD:giros:codigo_anulacion
+		    END IF    
+		 END IF
+
+
+		 /*Esta actualizacion se hace por si el operador ingresa mal el importe del
+		   cheque en el momento de recepcionarlo ya que el switch me devuelve el importe original
+		   en el bit #6; y para actualizar la comision que me devuelve el switch en el bit #15*/
+		 IF (siaf:codigo_siaf == 99190 && siaf:cancelacion.numchars == 0)
+		     /*MLD Actualizo los importes también porque los devuelve el switch */
+		     post:importe_origen = post:monto_chk_dif
+		     ;siaf:moneda = post:cheqrech_moneda
+	             call post:MISCconvierto_coti(post:importe_origen)
+	             tlr:jnl_amount_1 = siaf:importe
+
+		     CDS APPEND dsc:CONjnl_write \
+			 FLD:post:monto_chk_dif \
+			 FLD:post:comision_rechazo \
+			 FLD:post:fec_e \
+			 FLD:post:fec_d \
+			 fld:post:importe_origen \
+			 fld:siaf:importe \
+			 fld:tlr:jnl_amount_1
+		 END IF
+		 break
+    end select
+    /******* FIN VENTAS UP ********/
+    /****************************************************************************/
+
+    /***********************************************************************/
+    /******* POLIZAS ********/
+    IF (siaf:codigo_siaf == 99124 && post:EnPol_Transac != "ENTREGA DE POLIZA") || \
+	(siaf:codigo_siaf == 99125 && post:EnPol_Transac != "ENTREGA DE POLIZA")
+
+	 IF (!TESTFLAG(tlr:tran_flags,correction)) THEN			
+	      CDS APPEND dsc:CONjnl_write \
+		  post:adt_codseq_nro \
+		  FLD:giros:Firma_comm \
+		  FLD:giros:firma_enviada \
+		  FLD:giros:hora_viaje \
+		  FLD:giros:dia_viaje\
+		  FLD:giros:CodRespuesta_comm
+
+
+	      IF (!TESTFLAG(tran_send_mode,cancelacion))
+		   //Si estoy en una cancelacion no debo actualizar el codigo de 
+		   // procesamiento porque me lo pisa con el de la cancelacion
+		   // y deberia journalizarse el de la tx que se esta cancelando
+		   RESETFLAG tran_send_mode,cancelacion
+		   CDS APPEND dsc:CONjnl_write \
+		       FLD:giros:codigo_procesamiento
+	      END IF
+
+	 ELSE
+	      CDS APPEND DSC:CONjnl_write \
+      	  	  FLD:giros:clave_hdr_giros \
+      	  	  FLD:giros:hora_viaje \
+      	  	  FLD:giros:dia_viaje \
+		  FLD:giros:CodRespuesta_comm \
+		  FLD:giros:codigo_procesamiento
+
+	 END IF
+		
+    END IF
+    /******* FIN POLIZA ********/
+
+    /////////////////////////
+    //  PAGO FACIL - IPLAN //
+    /////////////////////////
+
+    IF (siaf:codigo_siaf == 6820) then //********************************************************** (A)
+	// agrego condiciones para que este campo no se actualice durante la reversa o 
+	// reimpresión o anulación
+	if (!testflag(tlr:tran_flags,correction) && post:NotaCredito != "S" && \
+	     post:NotaCreditoRev != "S" && post:enSesion != "S" && post:enSesion != "P") then //*** (B)
+	     // FGB 7.3.05: para todas las trxs de PFacil que tienen viaje
+	     call post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+	     if (retval == 1) then //************************************************************* (C)
+	 	 // sba - Para el codigo de barra queda el importe de siaf:importe
+		 loc_importe_aux = siaf:importe * 100
+/*		 l_codbarra = post:sf1_codbarras_nuevo
+	      	 fprint loc_encryp_pin ,"%s%s%s%s%s", substr(post:result_pin,6,2), \
+	      	  	substr(post:result_pin,4,2), \
+			substr(post:result_pin,8,1), \
+			substr(post:result_pin,2,2), \
+			substr(post:result_pin,0,2)
+		 fprint post:sf1_codbarras_nuevo, "%s%06.06s%s", post:sf1_codbarras, \
+			loc_importe_aux, \
+			loc_encryp_pin
+*/
+
+		 post:HoraSF1 = siaf:hora
+
+		 CDS APPEND DSC:CONjnl_write \
+		     post:result_pin \
+		     post:result_id \
+		     post:result_id_orig \
+		     hcomm:MessageId \
+		     hcomm:orig_line_status \
+		     post:terminal \
+		     post:operador_tmpl \
+		     post:ticket \
+		     siaf:mensaje \
+		     post:sf1_codbarras_nuevo \
+		     post:sf1_ticket \
+		     post:codigo_cliente \
+		     post:HoraSF1 \
+		     post:sf1_firma \
+		     post:sf1_cta_nro \
+		     post:result_id_pin
+
+;		     post:sf1_codbarras_nuevo = l_codbarra
+	     endif //**************************************************************************** (C)
+	endif //********************************************************************************** (B)
+	if (tlr:jnl_status > HOST_REJECTED) //**************************************************** (D)
+	    post:PFcaidaEnVuelo = true
+	    CDS APPEND DSC:CONjnl_write \
+		post:PFcaidaEnVuelo
+	endif //********************************************************************************** (D)
+    endif //************************************************************************************** (A)
+
+    /*TRATAMIENTO DE CHEQUE*/
+    SELECT (siaf:codigo_siaf)
+	    CASE 99280//ROBO DE CHEQUE
+		 post:climed_tipo = substr(post:Cliente_comm,0,1)
+		 IF (post:climed_tipo == CTACTE_HOST) THEN //ES CTA CTE
+		     post:climed_tipo = CTACTE 
+		 ELSE
+		     IF (post:climed_tipo == CTACTE) THEN  //ES UP
+		    	 post:climed_tipo = CLIUP
+		     ENDIF
+		 ENDIF
+		 post:climed_numero = substr(post:Cliente_comm,1,11)
+		 CDS APPEND DSC:tlr:CONjnl_write \
+		     post:climed_tipo \
+		     post:climed_numero 
+                 CDS APPEND DSC:tlr:CONjnl_write \
+		     FLD:giros:firma_enviada \
+		     FLD:giros:Firma_comm
+	         BREAK
+	    CASE 8726 //SAL. DE CHEQ. DE TES A TES. PROV.
+	    CASE 8756 //SAL. DE CHEQ. DE CAJA A TES. PROV.
+	    CASE 8950 //ENTREGA DE BOLSAS 
+	         CDS APPEND DSC:tlr:CONjnl_write \
+		     FLD:tes:fecha_valor \
+		     FLD:post:RegularizaContingen \
+		     FLD:siaf:mensaje
+	         BREAK
+    END SELECT
+    
+    //Fe de vida
+    IF (siaf:codigo_siaf == 6635)
+		CDS APPEND DSC:tlr:CONjnl_write \
+		    post:fec_prox_vto_fdv \
+			giros:CodRespuesta_comm    
+	END IF    
+	
+	//Ver que pasa con la reversa
+	IF (siaf:codigo_siaf == 6630)
+		CDS APPEND DSC:tlr:CONjnl_write \
+			post:cant_tikos_simon \
+			post:cantRegBulk \
+			post:bits_tickoSimon \
+			post:RespuestaAdic_comm
+	END IF
+	
+END SUB
+
+/*******/

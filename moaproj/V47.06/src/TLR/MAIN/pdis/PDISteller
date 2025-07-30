@@ -1,0 +1,113 @@
+/****o* Pendientes de agrupación/OFB:tlr:PDISteller
+* NOMBRE
+*   OFB:tlr:PDISteller
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "mainpdis.h"
+
+SUB tlr:PDISteller
+
+    /*ACP-Graba en PresuAct el campo post:pasadaMP en 1 */
+    CALL plataf:CDSset_pasadaMP(op:op_operator_id,PRIMER_PASADA)
+
+    /*COMBOS DE PRODUCTOS => de haber combos colgados, de ser asi las cacelo. NBA*/
+    CALL post:MISCcancelaCombos
+
+    /* MLD 11/12/98 Si el operador pertenece a otra sucursal,
+       no se le permitirá el ingreso a la caja */
+    if (common:sucursal_activa != op:op_branch_id) then
+        let common:csr_string = "Operador no pertence a la Sucursal Activa"
+        errmsg common:errmsg_list,FLD:common:csr_string
+        return (-1)
+    end if
+	;Limpio este campo por las dudas. Se usa en facturación automática por Jefe de Oficina
+	post:FechaAnt = FALSE
+	
+	SELECT ( drv:screen_active )
+		case 0
+			CALL  set_speed_key
+			let drv:screen_active = drv:next_screen
+            		let drv:button = TFB3
+            		CALL  drv:but_up_enable
+			if (testflag(state_flags,tran_menu))
+	            		let drv:button = TFB2
+                		CALL  drv:but_down_disable
+				let drv:screen_active = TRAN_MENU
+				resetflag state_flags,tran_menu
+			else
+	            		let drv:button = TFB2
+	            		CALL  drv:but_up_enable
+    				CALL  APPLinit
+
+				// CALL siaf:MISCset_req
+				// No funcionalidad de reentry
+				// Automatico.
+            		END IF
+			if ( drv:screen_active == TLR_OPEN_DAY)
+				CALL  PRETopen_day
+				/* transaction specific setup */
+				move "OPENDAY"  to tran_mnemonic
+				clearfield hcomm:INDhost_sndrt /* no snd rtn means "MEMO"  */
+				let INDjnl_append = LST:DBFMopen_day
+				let INDtots_append = ofb:TOTSopen_day
+				clearfield INDdocs_list
+				CALL  PDISopen_day
+				return 0
+			END IF
+		break
+	END SELECT
+	select (drv:screen_active)
+		case SPEED_KEY1
+		case SPEED_KEY2
+			if (link_list[0] != 0)
+			/*  we are just linking into teller for a few transactions
+			   and then returning to previous application
+			*/
+				let drv:screen_active = LINK_TO_TLR
+				IF (!testflag(tlr:tran_flags,from_micr)) THEN
+					setflag state_flags,linked_from_na
+				END IF
+			endif
+
+		   	//Verificar si existen piezas PED Pendientes de recibir y alertar al operador
+   			CALL post:CDShay_PEDpend
+   			IF (RETVAL == 0)
+   				MSGBOX "EXISTEN PIEZAS PED PENDIENTES DE TRATAMIENTO",0x00,"ADVERTENCIA"
+   			END IF	
+
+			// FGB - Reing: fijo un estado inicial para el modo de busqueda de trx's.
+			call plataf:MISCpick_desc_load // <- queda cargado en memoria...
+			call plataf:MISCmenu_mode_init
+
+		break
+	end select
+	setflag siaf:siaf_flags,cajero
+	resetflag siaf:siaf_flags,retaguardia
+	
+   // avisa al operador si consumio la excepcion (Venta UP Diferida)
+	call post:MISCexcepConsumida
+	
+	//MSG ORDEN DE COMPRA
+	call post:MISCmsg_orden_compra
+	
+    //SC 50364
+    IF (post:es_WEB == "X" && post:estado_presu == "2") THEN
+      	CALL post:MISCcaidas_WEB 
+    END IF
+
+
+END SUB
+
+/*******/

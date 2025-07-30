@@ -1,0 +1,128 @@
+/****o* Pendientes de agrupación/OFB:post:FVALvueltoMP
+* NOMBRE
+*   OFB:post:FVALvueltoMP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+Sub post:FVALvueltoMP
+	local decimales like siaf:importe
+	local entero like siaf:nro_comprobante
+	local bExiste like siaf:i
+	local i like siaf:i
+	local mpHab like siaf:i
+	local col like siaf:i
+	local saldoCaja like siaf:importe
+
+
+	if (rechazoDiferido)
+		return 0
+	endif
+
+    call csr:getrowcol MontoEntMedioPago
+    col = Retval
+
+	siaf:moneda = MonedaMedioPago[col]
+
+	Call csr:trimfield(siaf:moneda)
+	If (siaf:moneda.numchars == 0 && (MontoEntMedioPago[col] + 0) != 0)
+   		MSGBOX "Debe seleccionar un medio de pago.",0x00,"ERROR"
+		return -2
+	End If
+	if ((MontoEntMedioPago[col] + 0) == 0)
+		clearfield MontoEntMedioPago[col]
+		refresh MontoEntMedioPago[col]
+	endif
+
+	post:adt_mp_cod = siaf:moneda
+	call post:CDSadt_MedPago_load
+    If (Retval < 0 || siaf:moneda.numchars == 0)
+	    If ((ImporteMedioPago[col] + 0) != 0 || (CotizacionMedioPago[col] + 0) != 0 )
+	    	VueltoMedioPago[col].HIGHLITE = 0
+		   	refresh VueltoMedioPago[col]
+			MSGBOX "Medio de pago invalido.",0x00,"ERROR"
+			return -2
+		else
+			return 0
+		endif
+	endif
+
+    If ((ImporteMedioPago[col] + 0) != 0 && (CotizacionMedioPago[col] + 0) == 0 )
+    	VueltoMedioPago[col].HIGHLITE = 0
+	   	refresh VueltoMedioPago[col]
+		MSGBOX "Debe ingresar el importe.",0x00,"ERROR"
+		return -2
+	endif
+
+    adt_mp_cod = MonedaMedioPago[col]
+    CALL post:CDSadt_MedPago_load
+
+	// PAW - Me fijo si permite ingresar decimales. (post:adt_mp_decimales esta en la MedPago)
+	if (post:adt_mp_decimales != "S")
+		// todo esto se hizo porque el operador / no funciona con negativos.
+		// y el operador % no funciona con numeros reales.
+		if (MontoEntMedioPago[col] < 0)
+			entero = (-1 * MontoEntMedioPago[col]) / 1
+			decimales = MontoEntMedioPago[col] + entero
+		else
+			entero = MontoEntMedioPago[col] / 1
+			decimales = MontoEntMedioPago[col] - entero
+		endif
+		if (decimales != 0)
+			MSGBOX "Este medio de pago no permite decimales" OFB_OK "ERROR"
+			Return -2
+		endif
+	endif
+
+
+
+	call post:MISCexisteDenom(MonedaMedioPago[col],MontoEntMedioPago[col])
+	bExiste = retval
+	if (!bExiste) then
+    	VueltoMedioPago[col].HIGHLITE = 0
+	   	refresh VueltoMedioPago[col]
+		msgbox "No existe denominacion para el monto entregado",0x00,"ERROR"
+		return -2
+	endif
+
+	siaf:moneda = MonedaMedioPago[0]
+	call CDSmone_MedioPago
+	If (adt_mp_mon != adt_emp_moneda)
+		VueltoMedioPago[0] = MontoEntMedioPago[0] -  CotizacionMedioPago[0]
+	else
+		VueltoMedioPago[0] = MontoEntMedioPago[0] -  ImporteMedioPago[0]
+	endif
+	// Pedido por fede: si el vuelto es negativo en un cobro o positivo en un pago no mostrarlo.
+	if (VueltoMedioPago[0] * CotizacionMedioPago[0] < 0) then
+		clearfield VueltoMedioPago[0]
+		refresh VueltoMedioPago[0]
+	endif
+	refresh VueltoMedioPago[col]
+
+	if ((CotizacionMedioPago[0]+ 0) == 0) then
+		VueltoMedioPago[0] = 0
+		MontoEntMedioPago[0] = 0
+		refresh MontoEntMedioPago[0]
+	endif
+	if ((VueltoMedioPago[0] + 0) != 0) then
+   		VueltoMedioPago[0].HIGHLITE = 1
+   	else
+   		VueltoMedioPago[0].HIGHLITE = 0
+   	endif
+	refresh VueltoMedioPago[0]
+
+End Sub
+
+/*******/

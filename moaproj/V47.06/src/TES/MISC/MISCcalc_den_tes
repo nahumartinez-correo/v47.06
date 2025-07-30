@@ -1,0 +1,242 @@
+/****o* Reportes/OFB:tes:MISCcalc_den_tes
+* NOMBRE
+*   OFB:tes:MISCcalc_den_tes
+* DESCRIPCION
+*   Reporte Consolidado de Denominaciones. Arma lineas de impresión segun los distintos medios de pagos.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No encontro registros en la tabla "den_mon".
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCprt_den_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcalc_den_tes
+    local i                like siaf:i
+    local loc_err          like lib:err_retval
+    local indice           like siaf:i
+    local total_final_cons like siaf:aux_suma_monto
+    local total_cant_cons  like tes:cant
+    local total_final_caj  like siaf:aux_suma_monto
+    local total_cant_caj   like tes:cant
+    local total_final_tes  like siaf:aux_suma_monto
+    local total_cant_tes   like tes:cant
+    local sin_arquear      like siaf:importe
+    local imp_no_arq       like siaf:importe
+    local loc_tes_cant     like siaf:aux
+    local suma_imp         like siaf:importe
+    local suma_cant        like tes:cant
+    local tot_gral_caj     like siaf:importe
+    local tot_gral_cons    like siaf:importe
+
+
+    
+    tot_gral_caj  = 0
+    tot_gral_cons = 0
+    IF (post:adt_mp_adm == "G" && post:adt_mp_monet  == "S") //si es del tipo efvo
+        call CDScons_tes_denom // obtiene datos de tabla "den_mon"
+        if (retval < 0)
+            return (-2)
+        end if
+    end if
+        
+    //cgw:SC50282 - Controles de salto de pagina. Cambia el Medio de Pago (imprime su descripcion).
+    //    Cuando cambia el medio de pago y la linea a imprimir con su descripcion es la 58, no tiene
+    //    sentido imprimir esta linea, sin corte de pagina. En este caso, fuerza el salto de pagina.
+    IF (siaf:lineas_cl > 57 && siaf:lineas_cl < 61) THEN
+        ; Provoca Salto de pagina.
+        ; Salto de pagina
+        siaf:lineas_cl = 60
+        common:csr_string = "<FORMFEED>"
+        CALL tes:MISCwrite_file2(5,fld:common:csr_string)
+        //cgw: La proxima linea que se quiera imprimir, sera la 62, por lo que realizara
+        //     el corte de hoja e imprimira el encabezado. La pagina imprime hasta 61 lineas.
+    END IF
+    fprint common:csr_string "MEDIO DE PAGO: %-20s",post:adt_mp_desc
+    call MISCwrite_file2(5,fld:common:csr_string)
+    call MISCwrite_file2(5,"         ")
+
+    IF (post:adt_mp_adm == "G" && post:adt_mp_monet  == "S") //si es del tipo efvo    
+        //move "  " to common:csr_string
+        //call MISCwrite_file1(5,fld:common:csr_string)
+       ; let common:csr_string = "                   TESORO                 CONSOLIDADO"
+        move "------------------------------------------------------------" to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+       	let common:csr_string = "                                         TESORO"
+        call MISCwrite_file2(5,fld:common:csr_string)
+        let common:csr_string = "DENOMINACION                        CANT      IMPORTE"
+        call MISCwrite_file2(5,fld:common:csr_string)
+        move "------------------------------------------------------------" to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+        move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+
+        indice      = 0
+        sin_arquear = 0
+
+        call csr:cleararray tes:importes
+        call csr:cleararray tes:cantidades
+        call csr:cleararray tes:tes_importes
+
+        let total_final_cons = 0
+        let total_cant_cons  = 0
+        let total_final_caj  = 0
+        let total_cant_caj   = 0
+        let total_final_tes  = 0
+        let total_cant_tes   = 0
+    
+        clearfield tes_total
+        
+        ;/**Buscar valor de las denominaciones de la moneda**/
+        cds select from dsc:den_mon_table becomes dsc:den_mon_context \
+        where tes:den_moneda == post:adt_mp_cod
+        
+        cds findfirst dsc:den_mon_context nolock
+
+        if (cdsretval == 0)
+            cds extract dsc:den_mon_context all
+        end if
+        cds endselect dsc:den_mon_context
+        
+        
+        ;/****** CAJEROS CON DENOMINACIONES  *****/    
+        cds select from dsc:rend_caj_table becomes dsc:rend_caj_context where \
+        tes:rend_suc_id == common:sucursal_activa
+
+        cds findfirst dsc:rend_caj_context nolock
+        do
+            if (cdsretval < 0)
+                break
+            end if
+            cds extract dsc:rend_caj_context all
+      
+            call MISCTotalSinArq(tes:rend_op_id,imp_no_arq,post:adt_mp_cod)
+            sin_arquear = sin_arquear + imp_no_arq
+                
+            cds findnext dsc:rend_caj_context nolock
+        loop
+        cds endselect dsc:rend_caj_context
+    
+        ;/* Agrego al total sin arquear el total en pases pendientes */
+        call tes:CDSmov_pend_suc(post:adt_mp_cod,imp_no_arq)
+        sin_arquear = sin_arquear + imp_no_arq
+
+    
+        ;/****** TESORO ******/
+        cds select from dsc:tesoro_table becomes dsc:tesoro_context  where \
+        tes:tes_suc_id == op:op_branch_id && \
+        tes:tes_moneda == tes:tes_moneda
+        cds findfirst dsc:tesoro_context nolock
+        let loc_err = cdsretval
+        if (loc_err == 0)
+            cds extract dsc:tesoro_context all
+        else
+            clearfield tes_fecha
+        end if        
+    
+    	if (tes:tes_marca_arqueo == "S") then
+	        let i = 0
+	        do
+	 	        if ((i > 13) || (den_texto[i] == "")) then
+		            break    
+		        end if	   
+	            loc_tes_cant = tes_arqueo[i]/den_valor[i]
+
+	            suma_cant = loc_tes_cant
+	            suma_imp  = tes_arqueo[i]	   	   	          
+
+	            total_final_tes = total_final_tes + tes_arqueo[i]
+	            total_cant_tes  = total_cant_tes + loc_tes_cant
+
+
+		        fprint common:csr_string "%-14.14s                     %4.4e   %13.13e" den_texto[i],suma_cant,suma_imp
+	            call MISCwrite_file2(5,fld:common:csr_string)
+
+		        let i = i + 1
+	        loop
+	                ;/****** CAJEROS SIN DENOMINACIONES  *****/    
+		        ;move "------------------------------------------------------------------------------" to common:csr_string
+		        move "------------------------------------------------------------" to common:csr_string
+        		call MISCwrite_file2(5,fld:common:csr_string)
+        		fprint common:csr_string "TOTAL                              %4.4e   %13.13e" total_cant_tes,total_final_tes
+        		call MISCwrite_file2(5,fld:common:csr_string)    
+        		move "  " to common:csr_string
+        		call MISCwrite_file2(5,fld:common:csr_string)    
+		else
+
+		        ;move "------------------------------------------------------------------------------" to common:csr_string
+		        move "------------------------------------------------------------" to common:csr_string        
+        		call MISCwrite_file2(5,fld:common:csr_string)
+        		fprint common:csr_string "TOTAL TESORO SIN ARQUEAR                  %13.13e    " tes:tes_total
+        		call MISCwrite_file2(5,fld:common:csr_string)    
+        		move "  " to common:csr_string
+        		call MISCwrite_file2(5,fld:common:csr_string)    
+		end if
+        cds endselect dsc:tesoro_context
+
+
+        ;/****** CAJEROS SIN DENOMINACIONES  *****/    
+        fprint common:csr_string "TOTAL CAJAS...............................%13.13e" sin_arquear
+        call MISCwrite_file2(5,fld:common:csr_string)
+        move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)    
+        tot_gral_cons = total_final_tes + sin_arquear
+        call tes:MISCbusca_tot_fondo
+	    move "  " to common:csr_string
+    	call MISCwrite_file2(5,fld:common:csr_string)
+        tot_gral_cons = tot_gral_cons + tes:subtes_total
+
+        //cgw:NI50276 - Se resalta en negrita el importe Total General del efectivo.
+        if (siaf:pantalla_impreso ==  "P") then
+        	fprint common:csr_string "TOTAL GENERAL                             %13.13e"  tot_gral_cons
+        else	
+;           fprint common:csr_string "TOTAL GENERAL                            <st>1</st>%13.13e"  tot_gral_cons
+
+           fprint common:csr_string "<st>3</st>%-42.42s%13.13e", "TOTAL GENERAL",  tot_gral_cons
+           
+        end if   
+        call MISCwrite_file2(5,fld:common:csr_string)
+
+    end if
+
+    move "  " to common:csr_string
+    call MISCwrite_file2(5,fld:common:csr_string)
+    call tes:MISCtot_buzon_cons
+    IF (post:adt_mp_adm == "G" && post:adt_mp_monet  == "S") //si es del tipo efvo
+        move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)    
+        call tes:MISCbusca_tot_ctaban
+    end if
+    if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") then
+        move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)        	
+    	call tes:MISCcheques_recep
+    end if
+
+    //DOS LINEAS DE SEPARACION ENTRE MEDIOS DE PAGOS.
+    //cgw: SC50282 - Si es una linea blanco luego del encabezado, no tiene sentido imprimirla.
+    //     El encabezado son 10 lineas (la ultima linea de este es en blanco)
+
+    IF (siaf:lineas_cl != 10) THEN
+    	move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+    END IF
+    IF (siaf:lineas_cl != 10) THEN
+    	move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+    END IF
+    /* cgw:SC50282 - Se elimina una linea para que exista menos separacion entre medios de pagos.
+    IF (siaf:lineas_cl != 10) THEN    
+        move "  " to common:csr_string
+        call MISCwrite_file2(5,fld:common:csr_string)
+    END IF
+    */
+END SUB
+
+/*******/

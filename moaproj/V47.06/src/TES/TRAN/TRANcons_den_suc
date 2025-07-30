@@ -1,0 +1,149 @@
+/****o* Reportes/OFB:tes:TRANcons_den_suc
+* NOMBRE
+*   OFB:tes:TRANcons_den_suc
+* DESCRIPCION
+*   Genera Reporte de Consolidado de Denominaciones de la Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MENUconsulta_est_suc
+*   post:MENUconsulta_vs_efec
+*   tes:MENUreporte_var
+*   LST:tes:TRANcons_den_suc
+*   tes:MISClist_auto
+*   tes:MISClist_cieforsuc
+*   tes:MISClist_cierre_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesTRAN.h"
+
+SUB tes:TRANcons_den_suc
+	LOCAL LineaComando LIKE common:ExecString
+	LOCAL copias_aux LIKE siaf:i //para el contador de cant. de copias
+	LOCAL NTServer LIKE common:ExecString
+	LOCAL MosaicServer LIKE common:ExecString
+	LOCAL DumpFileName LIKE common:ExecString
+	LOCAL DumpName LIKE common:ExecString
+	LOCAL l_tmp LIKE common:csr_string
+	LOCAL listado_totmot_aux LIKE siaf:listado_totmot
+
+	listado_totmot_aux = siaf:listado_totmot //cgw:reservo tipo de letra del listado anterior.
+	siaf:listado_totmot = 0 //cgw:instancio tipo de letra, para no arrastrar valores de otros listados.
+	LET copias_aux = 1
+
+	/* Veo si tengo que crear el picklist */
+	LET siaf:pick_titulo = "est_suc"
+	UNDISPLAY SCRNcons_den_suc
+	IF (siaf:pantalla_impreso ==  "P") THEN
+		CALL csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+	ELSE
+		IF (post:sucu_virtual != "S") THEN
+			;LMB - PS 9870 - 12.06.2008
+			FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal,"est_suc.lis"
+			CALL MISCopen_file(common:tmpDirTemporal,5)
+		ELSE
+			CALL csr:get_profile_string("sucuVirt","pathLogs",l_tmp)
+			IF (RETVAL != 0) THEN
+				;LMB - PS 9780 - 04.07.2008
+				LET l_tmp = common:dirTemporal  
+			END IF
+
+			FPRINT DumpFileName "%s\\L2%5.5s%-8.8d%4.4d.txt",\
+				l_tmp, \
+				common:sucursal_activa,\
+				post:fecha_virtual,\
+				post:hora_virtual
+
+			CALL tes:MISCopen_file(DumpFileName,5)
+		END IF
+	END IF
+
+	LET siaf:lineas_cl = 0
+	/* pongo encabezado */
+	LET siaf:indica_calcu = 0 // inicializa cant. de hojas
+	LET FLD:tes:INDsheet_header = OFB:tes:MISCencab_den_suc
+	CALL MISCencab_den_suc
+
+	/* Genero el listado */
+	CALL MISCprt_den_suc // saca totales de toda la sucursal
+ 
+	IF (RETVAL < 0) THEN
+		LET common:csr_string = "(L) Error realizando listado"
+		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		
+		;LMB - PS 9870 - 12.06.2008
+		FPRINT common:tmpDirTemporal "%s%s" common:dirTemporal,"est_suc.lis"
+		CALL MISCclose_file(common:tmpDirTemporal,5)
+		siaf:listado_totmot = listado_totmot_aux //cgw:recupero calor del tipo de letra del listado previo.
+		RETURN (-2)
+	END IF
+
+	IF (post:sucu_virtual != "S" && siaf:pantalla_impreso ==  "I") THEN
+		/* cgw: Genero listado Valores Declarados */
+		CALL tes:MISCprt_VDI
+		/* cgw:NI50276: Genero Reporte Compromisos de Pagos */
+		CALL tes:MISCprt_compromiso                 
+	END IF         	
+
+	/* en caso de ser el listado por cierre de tesoro */
+	//Esto se habría dejado de utilizar. El listado no sale en el cierre de tesoro.
+	IF (drv:descrip == "CIERRDIA" && siaf:pantalla_impreso == "I") THEN
+		CALL MISCbottom_lines2
+	END IF
+
+	IF (siaf:pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+		;LMB - PS 9870 - 12.06.2008
+		FPRINT common:csr_string, "%s%s", common:dirTemporal, "est_suc.lis"
+		
+		KEYDEF PUSH
+		CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+		KEYDEF POP
+	ELSE
+		IF (post:sucu_virtual != "S") THEN
+			;LMB - PS 9870 - 12.06.2008
+			FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "est_suc.lis"
+			CALL MISCclose_file(common:tmpDirTemporal,5)
+
+			//gpb:NI50752
+			CALL tes:MISCflowPDF("est_suc.lis")
+  	  //Si es impreso y no es Cierre /Cierre Forzado de Sucursal/Tesoro
+;;	  IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN		
+		  IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+		 			//Genero el PDF y lo imprimo
+					CALL tes:MISCcrearPDF("est_suc.lis")
+
+;;				FYIMSG LST:common:fyimsg_list, "(L) SE ESTA IMPRIMIENDO EL LISTADO DE CONSOLIDADO DE DENOM"
+;;				LET copias_aux = 1
+;;				WHILE (copias_aux <= siaf:nro_copias)
+;;					;LMB - PS 9870 - 12.06.2008
+;;					FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "est_suc.lis"	 			
+;;					CALL siaf:MISCfile_prt_cierre(common:tmpDirTemporal, "predeterminada","N")
+;;					
+;;					LET copias_aux = copias_aux + 1
+;;				END WHILE
+		  END IF
+
+			CALL post:MISCfile_exists(common:tmpDirTemporal)
+			IF (RETVAL == 0)  THEN
+				CLEARFIELD common:csr_string	
+		    FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "est_suc.lis"
+		    CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT        
+		    EXEC common:csr_string
+			END IF 
+		ELSE
+			CALL tes:MISCclose_file(DumpFileName,5)
+		END IF
+	END IF
+	UNDISPLAY siaf:SCRNcomo_lista
+  siaf:listado_totmot = listado_totmot_aux //cgw:recupero valor del tipo de letra del listado previo.
+  
+END SUB
+
+/*******/

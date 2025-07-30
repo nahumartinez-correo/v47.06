@@ -1,0 +1,254 @@
+/****o* Pendientes de agrupación/OFB:giros:verifico_camara
+* NOMBRE
+*   OFB:giros:verifico_camara
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+sub giros:verifico_camara
+	local len      like common:local_int
+	local item     like siaf:i
+	local strsql   like common:local_ascii
+	local ceros    like common:local_int
+	local xx       like common:local_int
+	local contador like giros:cont
+	
+	clearfield PicDisplay_fld[0]
+	clearfield PicDisplay_fld[1]
+	clearfield PicDisplay_fld[2]
+	clearfield PicDisplay_fld[3]
+	clearfield PicDisplay_fld[4]
+	clearfield PicDisplay_fld[5]
+	clearfield PicDisplay_fld[6]
+	clearfield PicError_fld[0]
+	clearfield PicError_fld[1]
+	clearfield PicError_fld[2]
+	clearfield PicError_fld[3]
+	clearfield PicError_fld[4]
+	clearfield PicError_fld[5]
+	clearfield PicError_fld[6]
+	clearfield PicDescripcion_fld[0]
+	clearfield PicDescripcion_fld[1]
+	clearfield PicDescripcion_fld[2]
+	clearfield PicDescripcion_fld[3]
+	clearfield PicDescripcion_fld[4]
+	clearfield PicDescripcion_fld[5]
+	clearfield PicDescripcion_fld[6]
+	resetflag camara_flags,0
+	resetflag camara_flags,1
+	resetflag camara_flags,2
+	resetflag camara_flags,3
+	resetflag camara_flags,4
+	resetflag camara_flags,5
+	resetflag camara_flags,6
+	disablecontrol giros:PBcb0
+	disablecontrol giros:PBcb1
+	disablecontrol giros:PBcb2
+	disablecontrol giros:PBcb3
+	disablecontrol giros:PBcb4
+	disablecontrol giros:PBcb5
+	disablecontrol giros:PBcb6
+	altercontrolset PBcb0
+	altercontrolset PBcb1
+	altercontrolset PBcb2
+	altercontrolset PBcb3
+	altercontrolset PBcb4
+	altercontrolset PBcb5
+	altercontrolset PBcb6
+	refresh window
+	DECLARE "DBfetch" LIB "odb.dll" (BYVAL /*query_def_handle*/)
+	DECLARE "DBdefineQuery" LIB "odb.dll" (BYOBJ, BYVAL, DATAREF, BYVAL, DATAREF, BYOBJ, ...)
+	DECLARE "DBqclose" LIB "odb.dll" (BYVAL /*query_def_handle*/)
+
+	if (siaf:codigo_siaf == 70380) then
+		 /* sba 20000920 - Por default lo ordeno por Banco */
+		 strsql = "select banco,serie,cheque_nro,dv_cheque,importe,error from camara_compensadora where nis = '"
+		 /* SJS - 20000531 - No se busca por fecha, porque en la tabla quedan solo los registros
+		 	del ultimo dia procesado */
+		 /*fprint strsql "%s%s%s",strsql,CodSucPag_fld,"' and ingre_fecha = ?"*/
+		 fprint strsql "%s%s%s",strsql,CodSucPag_fld,"' order by banco"
+		call csr:f_sanewpl ("PLBCamara",PIC:giros:PICCamara)
+	/*--------------------------------------------------------------------------------*/
+	/*la parte de conexión con ODBC se realiza al inicirse la aplicación*/
+	/*---------------------------------------------------------------------------------*/
+		 /* SJS - 20000531 - No se busca por fecha, porque en la tabla quedan solo los registros
+		 	del ultimo dia procesado */
+		/*DLL DBdefineQuery(query_handle,odbc:db_handle_giros,"camara",1,strsql,common:system_date,0,odbc_serie,odbc_cheque_nro,odbc_dv_cheque,odbc_importe,odbc_error,0)*/
+		DLL DBdefineQuery(query_handle,odbc:db_handle_giros,"camara",1,strsql,0,odbc_banco,odbc_serie,odbc_cheque_nro,odbc_dv_cheque,odbc_importe,odbc_error,0)
+		if (retval != 0) then
+			msgbox "Ha ocurrido un error. Por favor reintente la operación",OFB_OK,"Error"
+			return (-2)
+		end if
+		cont = 0
+		do
+				init 23,46
+		      	DLL DBfetch(query_handle)
+		      	init 23,44
+		      	
+			if (retval == DB_NO_DATA) then
+				break
+			end if
+			if (odbc_error.numchars == 0) then
+				odbc_error = "000"
+			end if
+			if (odbc_cheque_nro.numchars < 6) then
+				xx = odbc_cheque_nro.numchars
+				ceros = (6 - xx)
+				do
+					fprint odbc_cheque_nro, "%s%s","0",odbc_cheque_nro
+					ceros = ceros -1
+					if (ceros == 0) then
+						break
+					end if
+				loop
+				refresh odbc_cheque_nro
+			end if
+
+			/* sba 20000920 - Si viene de la base con R08 no se quede modificar */
+			/* Creo una marca en el picklist - R08=>S  - != R08 => N */
+			if (odbc_error == "R08") then
+				post:SiNo = "S"
+			else
+				post:SiNo = "N"
+			end if
+							
+			fprint common:csr_string "%3.3s%s%s%s%6.6s%s%s%s",odbc_banco," ",odbc_serie," ",\
+			odbc_cheque_nro," ",odbc_dv_cheque," "
+			fprint common:csr_string "%s%8.8e%s%3.3s%s",common:csr_string,odbc_importe,\
+			" ",odbc_error,post:SiNo
+			call csr:f_saaddpl "PLBCamara" common:csr_string
+			cont = cont + 1
+			
+		loop	
+		dll DBqclose(query_handle)
+		/* SJS - 20000601 - No se muestran los cheques rechazados */
+		/*call giros:leo_camara_aux*/
+		/*
+		common:csr_string = "fin"
+		call csr:f_saaddpl "PLBCamara" common:csr_string */
+		if (cont == 0) then
+			msgbox "No hay giros para esa sucursal",OFB_OK,"Información"
+			return (-2)
+		end if
+		total = cont
+		cont = 0
+		item = PL_GETITEM
+		
+		contador = 0
+		WHILE (contador <= 6)
+			call csr:myPickcontrol("PLBCamara",PicDisplay_fld[cont],item)
+			if (PicDisplay_fld[cont] == "") then
+				break
+			end if
+			;len = PicDisplay_fld[cont].numchars - 3
+			len = PicDisplay_fld[cont].numchars - 4
+			if (substr(PicDisplay_fld[cont],len,3) == "R06" || \
+			substr(PicDisplay_fld[cont],len,3) == "R08" || \
+			substr(PicDisplay_fld[cont],len,3) == "M01" || \
+			substr(PicDisplay_fld[cont],len,3) == "M02" || \
+			substr(PicDisplay_fld[cont],len,3) == "M03" || \
+			substr(PicDisplay_fld[cont],len,3) == "M04" || \
+			substr(PicDisplay_fld[cont],len,3) == "M05" || \
+			substr(PicDisplay_fld[cont],len,3) == "M06" || \
+			substr(PicDisplay_fld[cont],len,3) == "M07" || \
+			substr(PicDisplay_fld[cont],len,3) == "M08" || \
+			substr(PicDisplay_fld[cont],len,3) == "M09" || \
+			substr(PicDisplay_fld[cont],len,3) == "M10") then
+				PicError_fld[cont] = substr(PicDisplay_fld[cont],len,3)
+				PicDisplay_fld[cont] = substr(PicDisplay_fld[cont],0,len)
+				select (cont)
+					case 0
+						setflag camara_flags,0
+						altercontrolset giros:PBcb0
+						break
+					case 1
+						setflag camara_flags,1
+						altercontrolset giros:PBcb1
+						break
+					case 2
+						setflag camara_flags,2
+						altercontrolset giros:PBcb2
+						break
+					case 3
+						setflag camara_flags,3
+						altercontrolset giros:PBcb3
+						break
+					case 4
+						setflag camara_flags,4
+						altercontrolset giros:PBcb4
+						break
+					case 5
+						setflag camara_flags,5
+						altercontrolset giros:PBcb5
+						break
+					case 6
+						setflag camara_flags,6
+						altercontrolset giros:PBcb6
+						break
+				end select
+			else
+				if (substr(PicDisplay_fld[cont],len,3) == "R00") then
+					PicDisplay_fld[cont] = substr(PicDisplay_fld[cont],0,len)
+					PicError_fld[cont] = ""
+				end if
+			end if
+			/*
+			if (PicDisplay_fld[cont] == "fin") then
+				clearfield PicDisplay_fld[cont]
+				refresh PicDisplay_fld[cont]
+				return (-2)
+			end if */
+			refresh PicDisplay_fld[cont]
+			refresh PicError_fld[cont]
+			if (PicDisplay_fld[cont].numchars > 0) then
+				select (cont)
+					case 0
+						enablecontrol PBcb0
+						break
+					case 1
+						enablecontrol PBcb1
+						break
+					case 2
+						enablecontrol PBcb2
+						break
+					case 3
+						enablecontrol PBcb3
+						break
+					case 4
+						enablecontrol PBcb4
+						break
+					case 5
+						enablecontrol PBcb5
+						break
+					case 6
+						enablecontrol PBcb6
+						break
+				end select
+				call giros:CDSpongo_descripcion(cont)
+				cont = cont + 1
+				posicion = item
+				item = item + 1
+			end if
+			index = cont
+			contador = contador + 1
+		END WHILE	
+		/* Habilito los Botones de la Pantalla */
+		enablecontrol PBcb9
+		enablecontrol PBcb10
+		enablecontrol PBcb11
+	end if
+end sub
+
+/*******/

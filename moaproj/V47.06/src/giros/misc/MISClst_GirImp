@@ -1,0 +1,154 @@
+/****o* Lista de Giros/OFB:giros:MISClst_GirImp
+* NOMBRE
+*   OFB:giros:MISClst_GirImp
+* DESCRIPCION
+*   Graba en un archivo el reporte de Importación de lista de giros
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:OFBreporListaGiros
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISClst_GirImp(link_num)
+    
+    LOCAL sub_header_lg         LIKE common:csr_string
+    LOCAL sub_header_enc        LIKE common:csr_string_171
+    LOCAL sub_header_pie        LIKE common:csr_string
+    LOCAL split                 LIKE common:csr_string_171
+    LOCAL line_csr              LIKE common:csr_string
+    LOCAL line_csr_aux          LIKE common:csr_string
+    LOCAL l_length              LIKE post:cantidad
+    
+    LOCAL l_ImpTot      LIKE giros:ImpTotGir_lg
+    LOCAL l_ImpNeto     LIKE giros:ImpTotGir_lg
+    LOCAL l_cont        LIKE post:cantidad
+    LOCAL l_ImpTot_acum LIKE giros:ImpTotGir_lg
+    LOCAL l_ImpNeto_acum LIKE giros:ImpTotGir_lg
+    LOCAL l_cont_acum   LIKE post:cantidad
+    
+    LOCAL l_retval_pos  LIKE lib:err_retval
+    LOCAL l_retval_tel  LIKE lib:err_retval
+    
+    CDS SELECT FROM  DSC:post:TABPresu BECOMES DSC:post:CONPresu \
+               WHERE FLD:post:PresNro == FLD:post:PresNro
+    
+    CDS FINDFIRST DSC:post:CONPresu LOCK
+    LET lib:err_retval = CDSRETVAL
+    
+    IF (lib:err_retval == -801) THEN
+        CDS UNLOCK DSC:post:CONPresu
+        CDS ENDSELECT DSC:post:CONPresu
+        RETURN (-2)
+    END IF
+
+    CDS EXTRACT DSC:post:CONPresu giros:nro_sesion_lg \
+                                  post:CloCuit        \
+                                  post:climed_numero  \
+                                  post:CliRazon
+
+    CDS UNLOCK DSC:post:CONPresu
+    CDS ENDSELECT DSC:post:CONPresu
+
+
+    line_csr = ""
+
+    //seteo las variables del subencabezado
+    split          = "---------------------------------------------------------------------------------------------------------------------------------------------------------"
+    sub_header_lg  = "<st>1</st>LISTAS DE GIROS -"
+    sub_header_enc = "<st>2</st>NRO CLI       SUBCUENTA   RAZON SOCIAL                                        TIPO  CANT.GIROS         IMP.GIRO        IMP.TOTAL       FECHA IMPORTACION"
+    sub_header_pie = "<st>2</st>NOTA: En la emisión los impuestos pueden variar por lo tanto el monto a cobrar podrá ser diferente al calculado en la importación."
+    
+    FPRINT sub_header_lg "%s %s" sub_header_lg, giros:nro_sesion_lg
+    CALL tes:MISCwrite_file_Land2(link_num,sub_header_lg)
+    CALL tes:MISCwrite_file_Land2(link_num,split)
+    CALL tes:MISCwrite_file_Land2(link_num,sub_header_enc)
+    CALL tes:MISCwrite_file_Land2(link_num,split)
+
+    call giros:MISClst_GirImp_sum("P",l_ImpTot,l_ImpNeto,l_cont)
+    l_retval_pos = RETVAL
+ 
+    CALL post:MISCFtrim(post:CloCuit)
+    l_length = 11 - post:CloCuit.NUMCHARS
+    MOVE post:CloCuit           TO SUBSTR(line_csr,l_length,11)
+
+    CALL post:MISCFtrim(post:climed_numero)
+    l_length = 23 - post:climed_numero.NUMCHARS
+    MOVE post:climed_numero     TO SUBSTR(line_csr,l_length,23)
+
+    MOVE post:CliRazon          TO SUBSTR(line_csr,26,76)
+    MOVE "P"                    TO SUBSTR(line_csr,79,80)
+    
+    CALL post:MISCFtrim(l_cont)
+    l_length = 94 - l_cont.NUMCHARS
+    MOVE l_cont                 TO SUBSTR(line_csr,l_length,94)
+    
+    FPRINT line_csr,"%s %16.16e",line_csr,l_ImpNeto
+    
+    FPRINT line_csr,"%s %16.16e",line_csr,l_ImpTot
+    
+    MOVE giros:fecha_imp_lg TO giros:tmp_monpas_fechB
+    FPRINT line_csr,"%s           %8e",line_csr, giros:tmp_monpas_fechB
+    CALL tes:MISCwrite_file_Land2(link_num,line_csr)
+
+    l_ImpTot_acum  = l_ImpTot
+    l_ImpNeto_acum = l_ImpNeto
+    l_cont_acum    = l_cont
+    
+    CLEARFIELD post:CloCuit
+    CLEARFIELD post:climed_numero
+    CLEARFIELD post:CliRazon
+    CLEARFIELD line_csr
+   
+    call giros:MISClst_GirImp_sum("T",l_ImpTot,l_ImpNeto,l_cont)
+    l_retval_tel = RETVAL
+
+    MOVE "T"                    TO SUBSTR(line_csr,79,80)
+
+    CALL post:MISCFtrim(l_cont)
+    l_length = 94 - l_cont.NUMCHARS
+    MOVE l_cont                 TO SUBSTR(line_csr,l_length,94)
+
+    FPRINT line_csr,"%s %16.16e",line_csr,l_ImpNeto
+    
+    FPRINT line_csr,"%s %16.16e",line_csr,l_ImpTot
+    
+    MOVE giros:fecha_imp_lg TO giros:tmp_monpas_fechB
+    FPRINT line_csr,"%s           %8e",line_csr, giros:tmp_monpas_fechB
+    CALL tes:MISCwrite_file_Land2(link_num,line_csr)
+    
+    IF (l_retval_tel == 0 || l_retval_pos == 0) THEN
+        l_ImpTot_acum  = l_ImpTot_acum  + l_ImpTot
+        l_ImpNeto_acum = l_ImpNeto_acum + l_ImpNeto
+        l_cont_acum    = l_cont_acum    + l_cont
+        CLEARFIELD line_csr
+        
+        MOVE "TOTALES"              TO SUBSTR(line_csr,75,82)
+        
+        CALL post:MISCFtrim(l_cont_acum)
+        l_length = 94 - l_cont_acum.NUMCHARS
+        MOVE l_cont_acum            TO SUBSTR(line_csr,l_length,94)
+        
+        FPRINT line_csr,"%s %16.16e",line_csr,l_ImpNeto_acum
+        
+        FPRINT line_csr,"%s %16.16e",line_csr,l_ImpTot_acum
+        
+        CALL tes:MISCwrite_file_Land2(link_num,line_csr)
+    
+        CALL tes:MISCwrite_file_Land2(link_num,split)
+        CALL tes:MISCwrite_file_Land2(link_num,sub_header_pie)
+    ELSE
+        RETURN -2
+    END IF
+
+    RETURN 0
+END SUB
+
+/*******/

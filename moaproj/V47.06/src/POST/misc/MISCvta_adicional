@@ -1,0 +1,400 @@
+/****o* Bienes de Cambio/OFB:post:MISCvta_adicional
+* NOMBRE
+*   OFB:post:MISCvta_adicional
+* DESCRIPCION
+*   Esta rutina genera automaticamente una venta de Caja y/o Cinta si corresponde
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCBienes_Cambio,OFB:post:SVALventa_prodvs
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-2355
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvta_adicional(CodTran,CodProd,CodEspecie,SubCodigo,Cant,seq)
+	LOCAL loc_imp LIKE siaf:importe
+	LOCAL loc_cant LIKE siaf:cantidad
+	LOCAL loc_codtx LIKE siaf:codigo_siaf
+	LOCAL loc_INDtx LIKE tlr:INDtran_name
+	LOCAL loc_INDlist LIKE drv:INDcur_list
+	LOCAL loc_forfis LIKE post:PreDForFis
+	LOCAL loc_impconiva LIKE post:TotalSinIva
+	LOCAL loc_impsiniva LIKE post:TotalSinIva
+	LOCAL loc_totsiniva LIKE post:TotalSinIva
+	LOCAL NroTrn LIKE post:PreDNroTrn
+	LOCAL HayPresu LIKE lib:err_retval
+	LOCAL NroAux LIKE tes:adt_evaux_prestran
+	LOCAL loc_BonifCM	LIKE post:bonificaCM
+	LOCAL loc_DctoCM LIKE post:Dcto_CliMed
+	LOCAL loc_AdmiteMP LIKE post:AdmiteMP
+	LOCAL lcodigo	LIKE siaf:codigo_siaf
+	LOCAL lflia	LIKE siaf:adt_tran_fliatran
+	LOCAL ltarifa	LIKE post:tarifa
+	LOCAL lnro_presudet LIKE post:PreDNroTrn
+	LOCAL lnro_asoc	LIKE post:PreDNroTrnAsoc
+	LOCAL l_fld_promo_imp LIKE post:fld_promo_imp
+
+	/*Esta rutina genera automaticamente una venta de Caja y/o Cinta si corresponde*/
+	loc_imp  = 0
+	loc_cant = 0
+
+	secuencia_vta = seq
+	
+	//PS Cliente Medio - Bienes de Cambio : Se resguarda el campo Dcto_CliMed y Tarifa
+	loc_DctoCM = post:Dcto_CliMed
+	ltarifa    = post:tarifa
+
+	SELECT (CodTran)
+		CASE 8500
+			CALL CDSBuscoVtaAsoc(8500,seq)
+			IF (RETVAL == 0) THEN
+				NroAux = tes:adt_evaux_prestran
+				HayPresu = 0
+			ELSE
+				NroAux = 0
+				HayPresu = 1
+			END IF
+	
+			IF (post:estado_presu != 4) THEN
+				/*Campos comunes a Caja y Cinta*/
+				tes:adt_evaux_suc = op:op_branch_id
+				IF (drv:dt_app == 4) THEN  //Por tesoro
+					LET tes:adt_evaux_op = op:op_tesoro_id
+					LET tes:adt_evaux_tesoro = "S"
+				ELSE
+					LET tes:adt_evaux_op = op:op_operator_id
+					LET tes:adt_evaux_tesoro = "N"
+				END IF
+				tes:adt_evaux_prestran = 0
+				tes:adt_evaux_envio    = "N"
+				tes:adt_evaux_es_venta = "S"
+	
+				/***Generar Vta de CAJA en la AuxEspV***/
+				IF (Cant < cantidad) THEN
+					tes:adt_evaux_codigo = CodEspecie
+					tes:espv_cod = CodEspecie
+					/*Para traer la subespecie*/
+					tes:adt_espv_cod = CodEspecie
+					tes:adt_evaux_subcod = SubCodigo
+					tes:adt_espv_subcod = SubCodigo
+					
+					IF (post:estado_presu == 3) THEN
+						tes:adt_evaux_prestran = NroAux
+					END IF
+					
+					CLEARFIELD tes:adt_espv_bonifCM
+					CALL tes:CDSadt_esp_load
+					;tes:adt_evaux_cantidad = cantidad - cant
+					tes:adt_evaux_cantidad = cantidad - Cant
+					tes:adt_evaux_importe  = tes:adt_evaux_cantidad * tes:adt_espv_valor
+					/*Cargo los campos para Ventas UP*/
+					post:ImpServUP  = tes:adt_evaux_importe
+					post:AliServUP  = tes:adt_espv_aliciva
+					post:PreDForFis = tes:adt_espv_formfiscal
+					siaf:adt_tran_fliatran = "TES"
+					IF (post:estado_presu == 3 && HayPresu == 0) THEN
+						CALL tes:CDSauxesp_vta_exis
+					ELSE
+						l_fld_promo_imp = post:fld_promo_imp
+						post:fld_promo_imp = promo_tot_EspVdas
+						CALL tes:CDSauxesp_save_vta
+						post:fld_promo_imp = l_fld_promo_imp
+					END IF
+				END IF
+			END IF
+		BREAK
+		CASE 40002
+			;CALL CDSBuscoVtaAsoc(40002,CodProd,"","")
+			CALL CDSBuscoVtaAsoc(40002,seq)
+			IF (RETVAL == 0) THEN
+				NroAux = tes:adt_evaux_prestran
+				HayPresu = 0
+			ELSE
+				NroAux = 0
+				HayPresu = 1
+			END IF
+			post:cantidad2 = cantidad - Cant
+			adt_prodvs_cod = CodProd
+			CALL post:CDSprodvs_load
+		BREAK
+	END SELECT
+
+  ;IF (post:estado_presu != 4) THEN
+	/*Grabar en la PresuDet*/
+	/*Resguardar campos*/
+	IF (Cant < cantidad) THEN
+		loc_forfis  = post:PreDForFis
+		loc_imp     = siaf:importe
+		loc_cant    = siaf:cantidad
+		loc_codtx   = siaf:codigo_siaf
+		loc_INDtx   = tlr:INDtran_name
+		loc_INDlist = drv:INDcur_list
+		loc_impconiva = siaf:ImporteConIva
+		loc_impsiniva = siaf:ImporteSinIva
+		loc_totsiniva = post:TotalSinIva
+		loc_BonifCM = post:bonificaCM
+		//loc_DctoCM = post:Dcto_CliMed
+		loc_AdmiteMP = post:AdmiteMP
+		CALL post:MISCCampos_Tran(CodTran)
+	END IF
+
+;	//gbp:Original
+;	//PS Dcto Cliente Medio - Bienes de Cambio
+;	IF (post:cli_tipo == CLIMED && post:estado_presu == 3) THEN
+;		IF (HayPresu == 0) THEN
+;			PreDNroTrnAsoc = NroAux //le asocio el nro de la tx de bien de cambio
+;		END IF
+;		//resguardo el codigo y la flia
+;		lcodigo = siaf:codigo_siaf
+;		lflia = siaf:adt_tran_fliatran
+;	END IF
+
+	//PS Dcto Cliente Medio - Bienes de Cambio
+	IF (post:estado_presu == 3) THEN
+		//gbp:NI50479
+		IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED)) THEN
+			IF (HayPresu == 0) THEN
+				PreDNroTrnAsoc = NroAux //le asocio el nro de la tx de bien de cambio
+			END IF
+			//resguardo el codigo y la flia
+			lcodigo = siaf:codigo_siaf
+			lflia = siaf:adt_tran_fliatran
+		END IF
+	END IF
+
+	//NI 50324 
+	SELECT (CodTran)                                                                                                             
+		CASE 8500   
+			//gpb:Original
+;			//Cargo el campo post:tarifa con el importe bonificado del bien de cambio                                                
+;			//correspondiente y calculo el importe del descuento                                                                     
+;			IF (post:cli_tipo == CLIMED  && post:bonificaCM == "S") THEN                                                             
+;				post:tarifa = post:ImpServUP                                                                                     
+;				INIT 22,1                                                                                                        
+;				post:Imp_DctoCliMed = (post:tarifa * post:Dcto_CliMed) / 100                                                     
+;				INIT 22,0                                                                                                        
+;			ELSE                                                                                                                     
+;				CLEARFIELD post:tarifa                                                                                           
+;				CLEARFIELD post:Imp_DctoCliMed                                                                                   
+;				CLEARFIELD post:Dcto_CliMed                                                                                      
+;			END IF  
+
+			//Cargo el campo post:tarifa con el importe bonificado del bien de cambio                                                
+			//correspondiente y calculo el importe del descuento                                                                     
+			IF (post:bonificaCM == "S") THEN  
+				//gbp:NI50479  
+				IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED)) THEN                                                          
+					post:tarifa = post:ImpServUP                                                                                     
+					INIT 22,1                                                                                                        
+					post:Imp_DctoCliMed = (post:tarifa * post:Dcto_CliMed) / 100                                                     
+					INIT 22,0     
+				ELSE
+					CLEARFIELD post:tarifa                                                                                           
+					CLEARFIELD post:Imp_DctoCliMed                                                                                   
+					CLEARFIELD post:Dcto_CliMed 				
+				END IF                                                                                                   
+			ELSE                                                                                                                     
+				CLEARFIELD post:tarifa                                                                                           
+				CLEARFIELD post:Imp_DctoCliMed                                                                                   
+				CLEARFIELD post:Dcto_CliMed                                                                                      
+			END IF 
+		BREAK                                                                                                                  
+		CASE 40002
+			//NI 50324                                                                                                       
+			//Cargo el campo post:tarifa con el importe bonificado del bien de cambio                                        
+			//correspondiente y calculo el importe del descuento                                                             
+			IF (post:DctoCM_bc > 0) THEN                                                                                     
+				post:tarifa = post:ImpServUP                                                                             
+				INIT 22,1                                                                                                
+				post:Imp_DctoCliMed = (post:tarifa * post:DctoCM_bc) / 100                                               
+				INIT 22,0                                                                                                
+			ELSE                                                                                                             
+				CLEARFIELD post:tarifa                                                                                   
+				CLEARFIELD post:Imp_DctoCliMed                                                                           
+				CLEARFIELD post:DctoCM_bc                                                                                
+			END IF                                                                                                            
+		BREAK
+	END SELECT 
+
+	;CALL CDSgenera_presudet(post:PresNro,post:PreDNroTrn)
+
+	/*Limpio los vectores de la transaccion postal que quedan sucios*/
+	CALL CSR:cleararray(fliatran_vec)
+	CALL CSR:cleararray(impciva_vec)
+	CALL CSR:cleararray(impsiva_vec)
+	
+	IF (Cant < cantidad) THEN
+		/* Me fijo las restricicones de Medio de pago Dif */
+		CALL post:MISCRestFlia
+		/*Si alguna especie posee bonificacion se pone el campo post:promo_aplica en S
+		y si alguna inhibe UP se pone post:promo_inhibeUp en S*/
+		IF (post:estado_presu != 4) THEN
+			CALL tes:CDSpromoAplicaEV_srv
+			CALL tes:CDSinhibeUpEspV_srv
+		END IF
+		SELECT (post:estado_presu)
+			CASE 2
+				CALL post:MISCAcumTotalesSes
+				CALL post:MISCGrabaDetalleTrn
+				CALL MISCTotalTransac(siaf:codigo_siaf)
+			BREAK
+			CASE 3
+				IF (HayPresu == 0) THEN
+					/* Existe y debo actaulizar nomas*/
+					NroTrn = post:PreDNroTrn
+					tes:EscVta = "S"
+					post:PreDNroTrn = tes:adt_evaux_prestran
+					CALL post:MISCAcumTotalesSes
+					CALL post:MISCGrabaDetalleTrn
+					CALL MISCTotalTransac(siaf:codigo_siaf)
+					post:PreDNroTrn = NroTrn
+					CLEARFIELD tes:EscVta
+				ELSE
+					/*Debo dar de alta, d-is me ayude con lo que voy a hacer!!*/
+					post:estado_presu = 2
+					CALL post:MISCAcumTotalesSes
+					CALL post:MISCGrabaDetalleTrn
+					CALL MISCTotalTransac(siaf:codigo_siaf)
+					post:estado_presu = 3
+					CALL post:CDSadt_presuact_upd
+				END IF
+			BREAK
+		END SELECT
+
+		//gpb:Original
+;		//PS Cliente Medio - Bienes de Cambio - Genero Dcto para el Bien de Cambio
+;		IF (post:cli_tipo == CLIMED) THEN
+		//gbp:NI50479  
+		IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED)) THEN  		
+			lnro_presudet = post:PreDNroTrn
+			CALL MISCCliMed_BCambio(CodTran,HayPresu,Cant)
+		END IF
+	ELSE
+		IF (post:estado_presu == 3) && (HayPresu == 0) THEN
+			//Resguardo el PreDNroTrnAsoc
+			lnro_asoc = post:PreDNroTrnAsoc
+			CALL post:MISCanulo_adic(NroAux,0)
+			/*Se Actualiza el Total del Importe*/
+			CALL post:CDSTotSesionPag
+			
+			INIT 22,1
+			//cgw:SC 50170 (Redondea a dos decimales)
+			Total_importe = post:importe
+			INIT 22,0
+
+			CALL post:CDSadt_presuact_save
+
+			//gpb:Original
+;			//PS Cliente Medio - Bienes de Cambio - Genero Dcto para el Bien de Cambio
+;			IF (post:cli_tipo == CLIMED) THEN
+			//gbp:NI50479  
+			IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED)) THEN  
+				//seteo el codigo y la flia del bien de cambio
+				siaf:codigo_siaf = CodTran
+				IF (CodTran == 8500) THEN
+					siaf:adt_tran_fliatran = "TES"
+				ELSE
+					siaf:adt_tran_fliatran = "CME"
+				END IF
+				//restauro el PreDNroTrnAsoc
+				post:PreDNroTrnAsoc = lnro_asoc
+				CALL MISCCliMed_BCambio(CodTran,HayPresu,Cant)
+			END IF
+		END IF
+	END IF
+
+	//gbp:Original
+;	//PS Cliente Medio - Bienes de Cambio : Restauro campos de codigo y flia
+;	IF (post:cli_tipo == CLIMED && post:estado_presu == 3) THEN
+;		siaf:codigo_siaf = lcodigo
+;		siaf:adt_tran_fliatran = lflia
+;	END IF
+
+	//PS Cliente Medio - Bienes de Cambio : Restauro campos de codigo y flia
+	IF (post:estado_presu == 3) THEN
+		//gpb:NI50479
+		IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED)) THEN  
+			siaf:codigo_siaf = lcodigo
+			siaf:adt_tran_fliatran = lflia
+		END IF
+	END IF
+
+	/*
+	IF (post:estado_presu == 2 && CodTran == 8500) THEN
+		CALL tes:MISCactuali_AuxEspV
+	END IF
+	*/
+	
+	/*Restaurar campos*/
+	IF (Cant < cantidad) THEN
+		post:INDPresuD_Dat   = OFB:post:CDSgral_append
+		tlr:INDtran_name     = loc_INDtx
+		drv:INDcur_list      = loc_INDlist
+		siaf:importe         = loc_imp
+		siaf:cantidad        = loc_cant
+		siaf:codigo_siaf     = loc_codtx
+		post:PreDForFis      = loc_forfis
+		siaf:adt_tran_codigo = siaf:codigo_siaf
+		siaf:ImporteConIva   = loc_impconiva
+		siaf:ImporteSinIva   = loc_impsiniva
+		post:TotalSinIva     = loc_totsiniva
+		post:bonificaCM 	 = loc_BonifCM
+		//post:Dcto_CliMed     = loc_DctoCM
+		post:AdmiteMP 		 = loc_AdmiteMP
+		
+		CALL siaf:CDSadt_tran_load
+		/*Fin Grabar en la PresuDet*/
+	END IF
+	
+	//gpb:Original
+;	//PS Dcto CliMed - Bienes de Cambio
+;	IF (post:cli_tipo == CLIMED && ((HayPresu == 1) || (HayPresu == 0 && post:Dcto_CliMed > 0))) THEN
+;		IF (tes:adt_espv_bonifCM == "S") THEN
+;			/*
+;			IF (HayPresu == 0 && post:Dcto_CliMed > 0) THEN*/
+;			CALL tes:CDSAct_PreDNroTrnCM
+;			IF (HayPresu == 0 && post:Dcto_CliMed > 0) THEN
+;				CLEARFIELD tes:adt_evaux_descCM //para que no quede sucio cuando se llama a la CDSauxesp_vta_exis
+;			END IF
+;			//END IF
+;		ELSE
+;			CLEARFIELD post:PreDNroTrnCM
+;		END IF
+;		post:PreDNroTrn = lnro_presudet //Para que se grabe bien el tes:adt_evaux_prestran de la AuxEspV
+;	END IF
+
+	//PS Dcto CliMed - Bienes de Cambio
+	//gpb:NI50479
+	IF (post:cli_tipo == CLIMED || (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && Dcto_CliMed > 0) \
+		&& ((HayPresu == 1) || (HayPresu == 0 && post:Dcto_CliMed > 0))) THEN
+		IF (tes:adt_espv_bonifCM == "S") THEN
+			/*
+			IF (HayPresu == 0 && post:Dcto_CliMed > 0) THEN*/
+			CALL tes:CDSAct_PreDNroTrnCM
+			IF (HayPresu == 0 && post:Dcto_CliMed > 0) THEN
+				CLEARFIELD tes:adt_evaux_descCM //para que no quede sucio cuando se llama a la CDSauxesp_vta_exis
+			END IF
+			//END IF
+		ELSE
+			CLEARFIELD post:PreDNroTrnCM
+		END IF
+		post:PreDNroTrn = lnro_presudet //Para que se grabe bien el tes:adt_evaux_prestran de la AuxEspV
+	END IF
+
+	IF (post:estado_presu == 2 || post:estado_presu == 3) && (CodTran == 8500) && (Cant < cantidad) THEN
+		CALL tes:MISCactuali_AuxEspV
+	END IF
+
+	//PS Cliente Medio - Bienes de Cambio : Restauro el campo del descuento y la tarifa
+	post:Dcto_CliMed = loc_DctoCM
+	post:tarifa      = ltarifa
+
+End Sub
+
+/*******/

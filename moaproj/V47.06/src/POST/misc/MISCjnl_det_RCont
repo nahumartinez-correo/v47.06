@@ -1,0 +1,80 @@
+/****o* Contra Reembolso/OFB:post:MISCjnl_det_RCont
+* NOMBRE
+*   OFB:post:MISCjnl_det_RCont
+* DESCRIPCION
+*   Esta rutina journaliza los detalles de la TX de Rendicion de Piezas CDD (99092)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SENDRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCjnl_det_RCont
+
+    CDS SELECT FROM DSC:RecepCont_tbl BECOMES DSC:RecepCont_ctx \
+    WHERE stockp_operador == op:op_operator_id 
+    
+    CDS FINDFIRST DSC:RecepCont_ctx LOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS UNLOCK DSC:RecepCont_ctx
+        CDS ENDSELECT DSC:RecepCont_ctx
+        RETURN -2
+    END IF
+
+    DO
+       	call csr:proc_list(F_CLEAR,LST:post:LISTrecep_cont_fld)
+       	clearfield stockp_es_grancl
+       	clearfield entregaCont_date
+       	clearfield post:stockp_en_devol
+       			
+        CDS EXTRACT DSC:RecepCont_ctx \
+        	post:Pieza \
+        	post:CRimp_cobrado \
+        	post:entregaCont_date \
+        	post:stockp_ctaOM \
+        	post:stockp_tipo_doc \
+        	post:stockp_doc \
+        	post:stockp_rend_cent \
+        	post:stockp_rct \
+        	post:stockp_es_grancl \
+        	post:stockp_en_devol
+		
+       	siaf:adt_tran_codigo = 95016
+      	siaf:codigo_siaf = 95016
+       	tlr:tran_mnemonic = "RYECOND"
+       	siaf:nombre_transac = "DETALLE RECEPCION Y ENTREGA PIEZAS CONT"
+        drv:INDscr = SCR:SCRNrecep_cont
+        drv:INDjnl_rtn = OFB:JNLdet_recep_cont
+       	
+       	tlr:jnl_amount_1 = post:CRimp_cobrado
+       	siaf:importe = post:CRimp_cobrado
+       		
+        MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+        siaf:secuencia_aux = tlr:sequence + 1
+        siaf:hora = common:time_of_day //Linea Nueva
+        CALL tlr:JNLtran
+     
+        UNGETKEY RT_SEND
+        
+        CDS FINDNEXT DSC:RecepCont_ctx LOCK
+        IF (CDSRETVAL == -801) THEN
+            BREAK
+        END IF
+    LOOP
+   
+    CDS UNLOCK DSC:RecepCont_ctx
+    CDS ENDSELECT DSC:RecepCont_ctx
+    
+    CALL post:MISCclear_campos_jou
+
+END SUB
+
+/*******/

@@ -1,0 +1,103 @@
+/****o* Apertura de Tesoro/OFB:tes:MISCreapertura
+* NOMBRE
+*   OFB:tes:MISCreapertura
+* DESCRIPCION
+*   Controla si el tesoro fue cerrado, pudiendose reabrir.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETVAL (-2): No desea reabrir el tesoro.
+*   RETVAL (-2): No puede reabrir tesoro hasta que el operador-tesorero no reciba los fallos PCT.
+*   RETVAL (-2): Cancela la supervision nivel cajero-supervisor.
+*   RETVAL (-2): El dia esta abierto (caso pase de marca de tesoro).
+*   RETVAL (-2): El Dia Anterior No Fue Cerrado. Debe realizarse un Cierre Forzado.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   siaf:MISCopen_day_tes
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCreapertura
+    LOCAL paso_OK LIKE siaf:i //cgw: Flag que verifica si paso los controles de recepcion de fallos.
+
+	/* verifica en que condiciones se esta abriendo el dia */
+	/* los campos de la aplic 'tes' son cargados en el CDScons_tes_tesor */
+	call csr:date_compare(tes:tes_fecha,common:system_date)
+	let lib:err_retval = retval
+	select (lib:err_retval)
+	    case 0
+		if (tes:tes_marca_cierre == "X") then
+			move "El Tesoro Fue Cerrado. Desea Reabrir?" to \
+			     common:csr_string
+			msgbox FLD:common:csr_string,OFB_YESNO,"Aviso"
+			if (retval == 7) then
+				return (-2)
+			end if
+			
+			//Si tes:tes_marca_cierre = "X" (Repertura Tesoro).
+
+			/*cgw: PS9805 - Control de Recepcion de Fallos.
+                   Si hay recepciones pendientes de fallo para Cajero/Tesorero, no se puede abrir o reabrir
+                   el Tesoro, hasta que se reciban los fallos pendientes.
+                   paso_OK = 1: No hay recepciones pendientes (default), 0: Hay recepciones pendientes. */
+            paso_OK = 1
+
+            //cgw: PS9805 - Control Recepcion Fallos Franqueadoras Para Reapertura del Tesoro.
+            //     Verifico que el operador no tenga una marca de fallo de franqueo en la rend_caj.
+	        call tes:CDSchk_fallo_rend
+	        if (retval < 0) then
+		        paso_OK = 0
+	        end if
+
+            //cgw: PS9805 - Control Recepcion Fallos CREM Para Reapertura del Tesoro.
+            //     Verifico que el operador no tenga una marca de fallo CREM asignado en la rend_caj.
+	        call tes:CDSchk_falloCR_rend
+	        if (retval < 0) then
+		        paso_OK = 0
+	        end if
+
+            /* cgw: Se deja de utilizar controles de recepciones pendientes de Fallos PCT.
+
+            //cgw: Control Recepcion Fallos Pagos por Cuenta de Terceros Para Reapertura del Tesoro.
+            //     Verifico que el operador no tenga una marca de fallo PCT asignado en la rend_caj.
+            call tes:CDSchk_falloPCT_rend
+	        if (retval < 0) then
+	    	    paso_OK = 0
+	        end if
+            */
+
+            if (paso_OK == 0) then
+        	    //cgw: PS9805 - Hay Recepciones de fallos pendientes.
+        	    return (-2)
+            end if
+
+			call MISCopenday_ovr_req
+			if (retval < 0) then
+				return (-2)
+			end if
+			siaf:nombre_transac = "REAPERTURA DE DIA DE TESORO"
+			tlr:tran_mnemonic = "REOPENTE"
+			drv:descrip = "REOPENTE"
+		else
+			/* el dia esta abierto (caso pase de marca de tesoro) */
+			LASTKEY = RT_SEND //saltea ctrl. siaf:MISCcheck_bus_date
+			return (-2)
+		end if
+		break
+	    case 2
+		if (tes:tes_marca_cierre != "X") then
+			let common:csr_string = "El Dia Anterior No Fue Cerrado"
+			errmsg common:errmsg_list,FLD:common:csr_string
+			let common:csr_string = "Debe Realizarse Cierre Forzado"
+			msgbox FLD:common:csr_string,OFB_OK,"Aviso"
+			return (-2)
+		end if
+		break
+	end select
+END SUB
+
+/*******/

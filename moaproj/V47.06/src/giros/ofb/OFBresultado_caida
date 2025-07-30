@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:giros:OFBresultado_caida
+* NOMBRE
+*   OFB:giros:OFBresultado_caida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBresultado_caida
+
+	local lretval like lib:err_retval
+
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES dsc:post:CONPresuDeta \
+	WHERE post:PresNro == post:PresNro && \
+    	post:op_operator_id == op:op_operator_id && \
+	post:fecha == common:system_date && \
+	siaf:codigo_siaf == 70610
+
+	CDS FINDFIRST dsc:post:CONPresuDeta nolock
+	lretval = cdsretval
+
+	if ( lretval == 0 )
+		CDS EXTRACT dsc:post:CONPresuDeta post:cod_agrupacion
+		if (post:cod_agrupacion.numchars == 0 )
+        		;Obtengo el secuenciador de cabecera
+                	call post:CDSobtiene_secuen("CABEC")
+                	post:cod_agrupacion = post:adt_codseq_nro
+		end if
+	else
+		if ( lretval == -801 )
+			// No grabo ninguna transaccion en PresuDet.
+        		;Obtengo el secuenciador de cabecera
+                	call post:CDSobtiene_secuen("CABEC")
+                	post:cod_agrupacion = post:adt_codseq_nro
+		end if
+	end if
+
+	DO
+		if (lretval != 0) then
+			break
+		end if
+
+		CDS EXTRACT dsc:post:CONPresuDeta \
+		giros:es_emision_postal,giros:es_emision_tele,\
+		giros:ImporteNeto,\
+		giros:Comision_fld,post:costo_opc,post:adt_tarif_fijo, \
+		giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld \
+		giros:es_emision_correohoy \
+		giros:clave_hdr_giros
+
+		if (giros:es_emision_postal == "S" )
+			giros:gir_cant_giros_p =  giros:gir_cant_giros_p + 1
+		end if
+
+		if (giros:es_emision_tele == "S" )
+			giros:gir_cant_giros_t = giros:gir_cant_giros_t + 1
+		end if
+
+		if (giros:es_emision_correohoy == "S" )
+			giros:gir_cant_giros_h = giros:gir_cant_giros_h + 1
+		end if
+
+		giros:gir_totimp_emi  = giros:gir_totimp_emi + giros:ImporteNeto
+		giros:gir_totimp_fact = giros:gir_totimp_fact + Comision_fld \
+		+ post:costo_opc + post:adt_tarif_fijo
+		
+		/*Tengo los datos del ultimo registro, actualizo el estado 
+		del giro en Access 
+		(procesado = true), por si no llego a realizarlo antes
+		 de la caida */
+
+		call giros:MISCupdt_giro_mdb
+
+		CDS FINDNEXT dsc:post:CONPresuDeta nolock
+		lretval = cdsretval
+
+	LOOP
+
+
+	CDS ENDSELECT dsc:post:CONPresuDeta
+	
+END SUB
+
+/*******/

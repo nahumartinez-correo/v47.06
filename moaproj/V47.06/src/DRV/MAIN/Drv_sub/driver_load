@@ -1,0 +1,186 @@
+/****o* Pendientes de agrupación/OFB:drv:driver_load
+* NOMBRE
+*   OFB:drv:driver_load
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv_sub.h"
+
+SUB drv:driver_load
+	// ----------------------------------------------------------
+	// This routine is called if the current transaction is not a 
+	// previously suspended transaction
+	// ----------------------------------------------------------
+  LOCAL StackCntPrev LIKE stack_cnt
+    
+	MOVE "00000000000" TO collect_done
+	screen_active = 0
+	IF (stack_cnt > 0) THEN
+		// ---------------------------------------------------
+		// If the Transaction list says to remove the previous 
+		// transaction's screen Remove it.
+		// ---------------------------------------------------
+		IF (SUBSTR(header,0,1) == "Y") THEN
+			stack_cnt_tmp = stack_cnt - 1
+			INDscr = INDstack_screen[dt_app][stack_cnt_tmp]
+			IF (!TESTFLAG(mode_flags,no_cut)) THEN
+				IF (INDscr != 0) THEN
+					CUTSCREEN FLD:INDscr,CURRENTFIELD
+				END IF
+			ELSE
+				RESETFLAG mode_flags,no_cut
+			END IF
+			StackCntPrev = stack_cnt - 1
+			// -------------------------------------------------------
+			// Cut the Base Screen of notecards transaction if the new 
+			// transaction is not going to be a part of the 
+			// previous transaction
+			// -------------------------------------------------------
+			IF  ((stack_notecards_no[dt_app][StackCntPrev] != " ") && TESTFLAG(mode_flags,cut_notes)) THEN
+				tab_no = stack_tab_no[dt_app][stack_cnt_tmp]
+//      drv:starting_tab = drv:stack_start_tab[dt_app][drv:stack_cnt_tmp]
+				IF (tab_no >= 0) THEN
+					INDscr = tab_screen[tab_no]
+					IF (INDscr != 0) THEN
+						CUTSCREEN FLD:INDscr,CURRENTFIELD
+						CALL enable_tab
+					END IF
+				END IF
+				INDscr = INDstack_notes[dt_app][stack_cnt_tmp]
+				IF (INDscr != 0) THEN
+					CUTSCREEN FLD:INDscr,CURRENTFIELD
+				END IF
+				removed_base[dt_app][stack_cnt_tmp] = "Y"
+				RESETFLAG mode_flags,cut_notes
+			END IF
+		END IF
+		// ----------------------------------------
+		// Cut the side bar screen if the necessary
+		// ----------------------------------------		
+		IF (SUBSTR(header,1,1) == "Y") THEN
+			stack_cnt_tmp = stack_cnt - 1
+			INDscr = INDstack_side_scr[dt_app][stack_cnt_tmp]
+			IF (INDscr != 0) THEN
+				CUTSCREEN FLD:INDscr,CURRENTFIELD
+			END IF
+			CLEARFIELD INDcur_sb_scr
+		END IF
+	END IF
+	
+	// Do STARTTRAN equivalent if requested
+  MOVE SUBSTR(header,3,1) TO stack_start_tran[dt_app][stack_cnt]
+  
+  IF (SUBSTR(header,3,1) == "Y") THEN
+    CALL start_tran
+  END IF
+  
+  // Call the menu driver if it is a menu
+  IF (SUBSTR(data_collect,screen_active,1) == "M") THEN
+    CALL driver_menu_load
+  ELSE
+    CALL CSR:proc_list(170,LST:LISTmenu_action)
+  END IF
+  
+  CALL CSR:proc_list(130,screen_active)
+  
+  // FGB reingenieria: levanto los datos de la transaccion en la presudet
+  IF (post:estado_presu == 3) THEN
+    IF ((post:PreDNroTrn > 0) && (post:PresNro > 0)) THEN
+      post:op_operator_id = op:op_operator_id
+      post:fecha = common:system_date
+      CALL post:CDSpresudet_load
+    END IF
+  END IF
+
+	// -----------------------------------------------------
+	// Run the PreTran Routine if it is a teller transaction
+	// -----------------------------------------------------  
+  IF (SUBSTR(header,5,1) == "T") THEN
+    CALL FLD:INDspc_rtn[5]
+    IF (RETVAL == -2) THEN
+      IF (((SUBSTR(header,6,1) != "L") || (INDrun_funct == 0)) || (LASTKEY == RT_ESC))  THEN
+        CLEARFIELD INDrun_funct
+        last_button = -1
+        CALL end_tran
+        IF (post:estado_presu == 1) THEN
+          CALL prev_funct
+        ELSE
+          CALL plataf:calcula_impuestos
+        END IF
+      END IF
+      RETURN (-2)
+    END IF
+  END IF
+
+	// --------------------------
+	// Run the PreDisplay Routine
+	// --------------------------  
+  CALL FLD:INDpre_dis_rtn
+  IF (RETVAL == -1) THEN
+    IF (((((siaf:adt_tran_fliatran == "CSM") || (siaf:adt_tran_fliatran == "CSP")) || (siaf:adt_tran_fliatran == "CSE")) && (post:Modo == "R")) && (last_key != RT_ESC)) THEN
+			/**************************************************************
+			Para las transacciones de GIROS en Modo Rapido (R), por mensajes
+			de error (retval = -1 de las PRES's), generar ESC para que se
+			ejecute la rutina de ESC y se genere el "Fin de Sesion" 
+			(automatico). 
+			***************************************************************/
+      UNGETKEY RT_ESC
+    ELSE
+      IF (((SUBSTR(header,6,1) != "L") || (INDrun_funct == 0)) || (LASTKEY == RT_ESC)) THEN
+        CLEARFIELD INDrun_funct
+        last_button = -1
+        CALL end_tran
+        IF (post:estado_presu == 1) THEN
+          CALL prev_funct
+        ELSE
+          CALL plataf:calcula_impuestos
+        END IF
+      END IF
+      RETURN (-2)
+    END IF
+  END IF
+    
+  CALL CSR:proc_list(140,screen_active)
+  IF (RETVAL == 1) THEN
+    IF (SUBSTR(data_collect,screen_active,1) == "M") THEN
+      CALL driver_menu_load
+    END IF
+  END IF
+
+	// -----------------------------------------
+	// Attach the sidebar screen if there is any
+	// -----------------------------------------    
+  IF (INDside_bar_scr != 0) THEN
+    CALL CSR:proc_list(120,LST:LISTside_bar,LST:LISTside_bar_dis)
+    CALL CSR:proc_list(120,LST:LISTside_bar_but,LST:LISTside_bar_cbut)
+    INDside_bar_list = INDrun_funct
+    INDcur_sb_scr = INDside_bar_scr
+    JOINSCREEN FLD:INDside_bar_scr,CURRENTFIELD
+    IF (SUBSTR(header,2,1) == "Y") THEN
+      INDbutton_list = LST:LISTtag_sidebar
+      CALL but_disable_list
+    END IF
+    IF (SUBSTR(auto_side_bar,screen_active,1) == "1") THEN
+      CALL side_bar_push
+    END IF
+  ELSE
+    IF (SUBSTR(header,2,1) == "Y") THEN
+      INDbutton_list = LST:LISTtag_sidebar
+      CALL but_disable_list
+    END IF
+  END IF
+  
+END SUB
+
+/*******/

@@ -1,0 +1,75 @@
+/****o* Reportes/OFB:tes:MISCgeneraPDF
+* NOMBRE
+*   OFB:tes:MISCgeneraPDF
+* DESCRIPCION
+*   Invoca a la aplicacion que convierte un archivo TXT a PDF
+*   Toma la parmateria del DDproj.ini
+* ENTRADAS
+*   p_file_name:Ruta completa del archivo a convertir a PDF
+*   p_fecha_cierre:Fecha en la que se efectua el cierre
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:MISCumov
+* DOCUMENTACION
+*   NI50572 - Digitalizacion de Reportes
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCgeneraPDF (p_FileIn)
+	LOCAL exePDF LIKE common:csr_string
+	LOCAL mensaje LIKE common:csr_string
+	LOCAL l_FileIn LIKE common:csr_string
+	LOCAL l_FileOut LIKE common:csr_string
+	LOCAL cadenaMD5 LIKE common:csr_string
+	LOCAL dirTextPDF LIKE common:csr_string
+	LOCAL LineaComando LIKE common:ExecString
+	
+	//Concateno la ruta donde esta el archivo a procesar
+	FPRINT l_FileIn,"%s%s", common:dirTemporal, p_FileIn
+	
+	//Calculo la firma del reporte
+	//NIS + Cogido Reporte + Fecha Proceso + Hora Proceso
+	FPRINT cadenaMD5 "%s%s%s%s" common:sucursal_activa, siaf:reporte_codigo, common:system_date, siaf:hora_proceso
+	CALL csr:MD5checksum(cadenaMD5, 1, siaf:reporte_firma, 1)
+
+	//Primero me tengo que ubicar sobre el directorio donde esta la aplicacion que convierte a PDF
+	//Si no lo hago, no toma los fonts de la carpeta D:\MOA\BIN\TextPDF\resources\fonts
+	FPRINT exePDF "cd %s && %s" common:adt_pdf_dirTextPDF, common:adt_pdf_TextPDF
+
+	//Ejemplo
+  //cmd /c cd c:\MOA\BIN\TextPDF\ && java -jar Text-PDF.jar C:\TEMP\adel_rec.lis C:\TEMP\ ADELANTOS_RECIBIDOS 20190503143722 fcdf70bb4ec24383245d7a4cbf11721a C0000
+	FPRINT LineaComando,"cmd /c %s %s %s %s %s%s %s %s",exePDF,l_FileIn,common:dirTemporal,siaf:reporte_codigo,common:system_date,siaf:hora_proceso,siaf:reporte_firma,common:sucursal_activa
+	//EXEC LineaComando
+	CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+	IF (RETVAL == 3) THEN
+			RETURN (0)
+	ELSE
+		IF (RETVAL < 0) THEN
+			MOVE "Error al arrancar la aplicacion que convierte TXT a PDF.\n Verifique la ruta especificada en el archivo DDproj.ini." TO drv:error_msg
+			CALL drv:error_msg
+			FYIMSG CLEAR
+		ELSE
+			MOVE "Error al convertir TXT a PDF." TO drv:error_msg
+			CALL drv:error_msg
+			FYIMSG CLEAR
+		END IF
+	
+		//Si es Cierre/Forzado de Sucursal/Tesoro
+		IF (siaf:codigo_siaf_list == 8540 || siaf:codigo_siaf_list == 8550 || siaf:codigo_siaf_list == 9540 || siaf:codigo_siaf_list == 9550) THEN
+			//Genero el nombre del reporte de contingencia
+			FPRINT l_FileOut,"%s_%s_%s%s.lis",common:sucursal_activa, siaf:reporte_codigo,common:system_date,siaf:hora_proceso
+			//Rutina de contingencia, renombra el archivo .lis
+			//y lo mueve al directorio MoaPDF_Aux
+			CALL tes:MISCcontingenciaPDF(l_FileIn,l_FileOut)
+		END IF
+	
+		RETURN (-2)
+	END IF
+	
+END SUB
+
+/*******/

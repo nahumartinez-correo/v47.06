@@ -1,0 +1,164 @@
+/****o* Pendientes de agrupación/OFB:tlr:PRETopen_day
+* NOMBRE
+*   OFB:tlr:PRETopen_day
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "custpret.h"
+
+SUB tlr:PRETopen_day
+/* don't allow open day to be duped or corrected */
+	CALL  OFB:PRETno_dup
+	if (retval != 0)
+		return (-2)
+	END IF
+	CALL  OFB:PRETno_cor
+	if (retval != 0)
+		return (-2)
+	END IF
+/* don't allow open day if day already open */
+	call tes:MISCverif_cierre
+	call tes:CDSren_caj_load
+	;if (testflag(op:op_state_flags,open_day))
+	/* verifica si el registro de totales no aparece como abierto. La
+	excepcion es cuando se creo al operador o es la primera vez que se
+	ingresa como operador al sistema con tesoreria (rend_fecha vacio) */
+	if ((tlr:tots_status == "O" || tlr:tots_status == "A") \
+	     && tes:rend_fecha != "") then
+		move "Caja abierta de dia/s anterior/es" to drv:error_msg
+                CALL  drv:error_msg
+		move "Debe realizar cierre forzado" to drv:error_msg
+                CALL  drv:error_msg
+		return (-2)
+	END IF
+	/* MLD Ahora para abrir la caja la sucursal debe estar abierta
+	/* no permite abrir el dia de caja antes que el de tesoro 
+	call tes:CDScons_tes_tesor
+	if (tes:tes_marca_cierre == "X") then
+                 Busco el operador tesoro del la sucursal 
+	        let op:adt_branch_id = op:op_branch_id
+                call op:CDSadt_find_teso
+		;move "No se puede abrir caja: Tesoro no abierto" to \
+                ;drv:error_msg
+                ;call drv:error_msg
+                fprint drv:error_msg "No se puede abrir Caja: El operador %s debe Abrir el Tesoro", op:adt_login_id
+		call drv:error_msg
+		return (-2)
+	end if
+	*/
+	call tes:CDScons_suc_sucur
+	if (tes:suc_marca_cierre == "X") then
+	        move "No se puede abrir caja: Sucursal no abierta" to \
+                drv:error_msg
+                call drv:error_msg
+                call siaf:APPLterm
+		return (-2)
+	end if
+
+	/*
+	Comparo con fecha de la sucursal . Por lo tanto saco lo de tesoro.
+	
+	call csr:date_compare(tes:tes_fecha,common:system_date) 
+	if (tes:tes_fecha == "" && tes:tes_marca_cierre == "")
+		 Tesoro nuevo 
+			move "Tesoro No abierto" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+	end if
+	if (retval == 2) then // tesoro estaba abierto
+		if (tes:tes_marca_cierre == "") then
+			move "No se puede abrir caja: Tesoro abierto desde dia/s anterior/es" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+		end if
+	end if
+        */
+	// Comparo con fecha de la sucursal 
+	
+	call csr:date_compare(tes:suc_fecha,common:system_date) 
+	if (tes:suc_fecha == "" && tes:suc_marca_cierre == "")
+		// Sucursal nueva 
+			move "Sucursal No abierta" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+	end if
+	if (retval == 2) then // sucursal estaba abierto
+		if (tes:suc_marca_cierre == "") then
+			move "No se puede abrir caja: Sucursal abierto desde dia/s anterior/es" to drv:error_msg
+			call drv:error_msg
+			return (-2)
+		end if
+	end if
+
+/* verifica en que condiciones esta abriendo el dia */
+	call tes:CDSren_caj_load
+	call csr:date_compare(tes:rend_fecha,common:system_date)
+	let lib:err_retval = retval
+	move "OPENDAY"  to tran_mnemonic
+	let drv:descrip = "OPENDAY"
+        let siaf:codigo_siaf = 6040
+	let siaf:nombre_transac = "APERTURA DE DIA DE CAJA"
+	let tes:en_cierre = "N"
+	
+
+	select (lib:err_retval)
+	    case 0
+		/* pregunto por la marca en tabla totales porque es la ultima
+		   de todas las marcas colocadas al cierre */
+		if (tlr:tots_status == "C") then
+			move "La Caja Ya Fue Cerrada. Desea Reabrir?" to \
+			     common:csr_string
+			msgbox FLD:common:csr_string,OFB_YESNO,"Aviso"
+			if (retval == 7) then
+				return (-2)
+			end if
+			call tes:MISCopenday_ovr_req
+			if (retval < 0) then
+				return (-2)
+			end if
+			let siaf:nombre_transac = "REAPERTURA DE DIA DE CAJA"
+			let drv:descrip = "REOPENCA"
+			let tlr:tran_mnemonic = "REOPENCA"
+			let siaf:codigo_siaf = 6050
+		end if
+		break
+	    case 2
+		/* verfico qu todas las marcas esten puestas. Caso contrario no
+		   se realiza la apertura */
+		if (tlr:tots_status == "O" || tes:rend_marca_cierre != "X") then
+			let common:csr_string = "El Dia Anterior No Fue Cerrado"
+			errmsg common:errmsg_list,FLD:common:csr_string
+			let common:csr_string = "Debe Realizarse Cierre Forzado"
+			msgbox FLD:common:csr_string,OFB_OK,"Aviso"
+			return (-2)
+		end if
+		break
+	end select
+	let siaf:adt_tran_modpresu = "I"
+	let tlr:set_bus_date = tlr:bus_date
+	let op:op_login_aux = op:op_login_id
+	let siaf:posible_off = "S"
+	siaf:tiene_reverso = "N"
+	post:jnl_flia_tran = "TES"
+        
+	//gpb:NI50546 - Mercado Pago
+	//Traigo el device_name de la tabal Terminal_MP
+	CALL post:CDSmpGetDevicePoint
+	IF (RETVAL == 0) THEN
+		CALL post:MISCmpDelDevicePoint
+	END IF
+	
+END SUB
+
+/*******/

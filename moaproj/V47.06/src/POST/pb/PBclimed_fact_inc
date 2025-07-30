@@ -1,0 +1,126 @@
+/****o* Notas de Credito CM/OFB:post:PBclimed_fact_inc
+* NOMBRE
+*   OFB:post:PBclimed_fact_inc
+* DESCRIPCION
+*   Rutina que se ejecuta al desplegar el combo del campo Facturas de la TX 99510 (Emision NC por Inc)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:BUT99510
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBclimed_fact_inc
+	local error like tes:rend_marca_cierre
+	local l_date like post:fecha_vencimiento
+	local l_fecha like common:csr_string
+	
+	drv:button = drv:last_button
+    CALL drv:but_down_disable
+
+	/*drv:button = 0 //Boton de OC
+    CALL drv:but_down_disable*/
+		
+    /*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+
+	call csr:f_sadroppl(DSC:remitos_cliente)
+	call csr:f_sanewpl(DSC:remitos_cliente,PIC:climed_remitos)
+   
+    CDS SELECT FROM DSC:post:Fact_Incumplida_tbl BECOMES DSC:post:Fact_Incumplida_ctx WHERE \
+	post:op_operator_id == op:op_operator_id && \
+	post:adt_oc_nro == FLD:post:adt_oc_nro
+	CDS FINDFIRST DSC:post:Fact_Incumplida_ctx NOLOCK
+	DO
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+		clearfield	post:fact_tipo
+		clearfield	post:fact_nro 
+		clearfield	post:fact_fec_emis
+		clearfield	post:observacion_nc
+		clearfield	post:marca_remito 
+		clearfield	error 
+		clearfield	post:fact_id 
+    	CDS EXTRACT DSC:post:Fact_Incumplida_ctx ALL
+    	if (ErrorPresu)
+    		error = "E"
+    	end if
+    	clearfield common:csr_string
+    	l_date = substr(post:fact_fec_emis,6,2) +  substr(post:fact_fec_emis,4,2) * 100 + substr(post:fact_fec_emis,0,4) * 10000
+    	fprint common:csr_string,"%-1.1s %-15.15s %10.10e %-30.30s %1.1s %1.1s %15.15s",post:fact_tipo,post:fact_nro,l_date,post:observacion_nc,post:marca_remito,error,post:fact_id
+   		call csr:f_saaddpl(DSC:remitos_cliente,common:csr_string)
+		CDS FINDNEXT DSC:post:Fact_Incumplida_ctx NOLOCK
+	LOOP
+    CDS ENDSELECT DSC:post:Fact_Incumplida_ctx
+
+    /*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl DSC:remitos_cliente common:csr_string  
+    /*Si el usuario selecciona una opciòn del picklist entonces queda en la linea */
+    /*para que se pueda marcar/desmarcar*/
+	If (RETVAL < 0) then
+		clearfield stock_linea1
+	else	
+			
+			let stock_linea1 = common:csr_string
+			post:fact_tipo = substr(common:csr_string,0,1)
+			post:fact_nro = substr(common:csr_string,2,15)
+			l_fecha = substr(common:csr_string,18,10)
+			post:observacion_nc = substr(common:csr_string,29,30)
+			post:marca_remito =  substr(common:csr_string,60,1)
+			error = substr(common:csr_string,62,1)
+			post:fact_id = substr(common:csr_string,64,15)
+			if (error == "E") then
+				errmsg, lst:common:errmsg_list, "Error al presupuestar este remito, no se puede seleccionar"
+			    /*Reseteo de flags de modo picklist*/
+				RESETFLAG drv:mode_flags,picklist_mode
+				drv:button = 0 //Boton de OC
+			    CALL drv:but_up_enable
+				ENABLECONTROL drv:PBcb0
+				drv:button = drv:last_button
+			    CALL drv:but_up_enable
+			    return (-2)
+			end if
+				
+			/* si esta marcado, se lo desmarca y viceversa */
+		    IF (marca_remito == "*")
+				LET marca_remito = " "
+		    ELSE
+				LET marca_remito = "*"
+		    END IF
+			//muestro la factura seleccionada en el campo de pantalla.
+			fprint stock_linea1,"%-1.1s %-15.15s %10.10s %-30.30s %1.1s %1.1s",post:fact_tipo,post:fact_nro,l_fecha,post:observacion_nc,post:marca_remito,error
+			
+			//Lo marco como seleccionado en la tabla!
+			CDS SELECT FROM DSC:post:Fact_Incumplida_tbl BECOMES DSC:post:Fact_Incumplida_ctx WHERE \
+			(post:op_operator_id == op:op_operator_id && post:fact_id == post:fact_id)
+		    CDS FINDFIRST DSC:post:Fact_Incumplida_ctx LOCK
+		    //CDS EXTRACT DSC:post:Fact_Incumplida_ctx ALL
+		    cds clearbuffer DSC:post:Fact_Incumplida_ctx
+		    CDS APPEND DSC:post:Fact_Incumplida_ctx FLD:post:marca_remito
+		    CDS UPDATE DSC:post:Fact_Incumplida_ctx LOCK
+			CDS UNLOCK DSC:post:Fact_Incumplida_ctx
+		    CDS ENDSELECT DSC:post:Fact_Incumplida_ctx
+		
+	End If
+	refresh stock_linea1
+	
+    /*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+
+	/*drv:button = 0 //Boton de OC
+    CALL drv:but_up_enable*/
+
+	drv:button = drv:last_button
+    CALL drv:but_up_enable
+
+END SUB
+
+/*******/

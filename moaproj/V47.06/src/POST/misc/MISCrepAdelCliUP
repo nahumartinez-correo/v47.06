@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrepAdelCliUP
+* NOMBRE
+*   OFB:post:MISCrepAdelCliUP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCrepAdelCliUP
+    LOCAL l_cdsretval like lib:err_retval
+    Local l_climed_numero like post:climed_numero
+    LOCAL l_CliRaz like post:CliRaz
+    LOCAL l_CloCuit like post:CloCuit
+    LOCAL l_nro_recibo like post:nro_recibo
+    LOCAL l_importe like siaf:importe
+    LOCAL l_path like common:csr_string
+    LOCAL linea_1 like common:csr_string_aux
+    local x like siaf:i
+    
+    CDS SELECT FROM "journal" BECOMES "journal_Rep_ctx" where \
+    tlr:jnl_date == siaf:fecha_proceso && \
+    siaf:codigo_siaf == 99453 && \
+    tlr:jnl_sequence_corr == "" && \
+    tlr:jnl_status <  HOST_REJECTED && \
+    climed_tipo == "1"
+
+    CDS FINDFIRST "journal_Rep_ctx" NOLOCK
+    l_cdsretval = CDSRETVAL
+    
+    if (l_cdsretval == -801) then
+       	MOVE "No hay recibos de adelantos de clientes up para listar" TO linea_1
+       	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+	        MSGBOX linea_1,OFB_OK,"Aviso"
+	    END IF 
+        return -2
+    end if
+    
+    LET tes:INDsheet_header = OFB:MISCrepAdelCliUP_enc
+    siaf:indica_calcu = 0
+    LET siaf:i = 1
+    FPRINT l_path,"%s%s", common:dirTemporal, "RepAdelCliUP.lis"
+    call post:MISCopen_reporte(l_path)
+    
+    CALL MISCrepAdelCliUP_enc
+
+    
+    WHILE (l_cdsretval != -801)
+        ;Limpio campos
+        clearfield l_climed_numero
+        clearfield l_CliRaz
+        clearfield l_CloCuit
+        clearfield l_nro_recibo
+        clearfield l_importe
+    
+        CDS EXTRACT "journal_Rep_ctx" \
+        post:climed_numero into l_climed_numero \
+        post:CliRaz into l_CliRaz \
+        post:CloCuit into l_CloCuit \
+        post:nro_recibo into l_nro_recibo \
+        siaf:importe into l_importe
+        
+        FPRINT linea_1 "$%e" l_importe
+        FPRINT linea_1 "%-11.11s %-50.50s %-11.11s %13.13e %13.13s" l_climed_numero, l_CliRaz, l_CloCuit, l_nro_recibo, linea_1 
+        
+        call tes:MISCwrite_file1(1,fld:linea_1)
+        CDS FINDNEXT "journal_Rep_ctx" NOLOCK
+        l_cdsretval = CDSRETVAL
+    END WHILE
+
+
+    CDS ENDSELECT "journal_Rep_ctx"
+    x = 0
+    WHILE (x < siaf:nro_copias)
+    
+        call csr:file_close(1)
+        ;Imprimo listado    
+        FPRINT l_path,"%s%s", common:dirTemporal, "RepAdelCliUP.lis"
+        CALL CSR:file_open(7,l_path,"r")
+        
+        IF (RETVAL < 0) THEN
+            MSGBOX "No se puede abrir el archivo a imprimir",0x00000000,"Error"
+            RETURN 
+        END IF 
+            PRINTDOC OFB:siaf:PDOCfile_print_gral,laser, "Imprimiendo Documento, un momento por favor..." 
+        IF (PRTRETVAL != 0) THEN
+            FPRINT siaf:mensaje,"Error imprimiendo en impresora"
+            MSGBOX siaf:mensaje,0x00000000,"Error"
+        END IF 
+        CALL CSR:file_close(7)
+        x = x + 1
+    END WHILE
+END SUB
+
+/*******/

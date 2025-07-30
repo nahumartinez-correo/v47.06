@@ -1,0 +1,158 @@
+/****o* Pendientes de agrupación/OFB:giros:MISCtrat_recup_batch
+* NOMBRE
+*   OFB:giros:MISCtrat_recup_batch
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCtrat_recup_batch
+    LOCAL window_node LIKE common:window_node
+    LOCAL fecha LIKE cons_fecha_emi
+    LOCAL hora LIKE post:hor_a
+
+
+	// Guardo Numero de Operador.
+ 	op:operator_tmp = op:op_operator_id
+
+	//Respaldo los flags actuales
+    tlr:aux_tran_flags = tlr:tran_flags
+
+	// Recupero los flags de la transaccion original
+    tlr:tran_flags = tlr:jnl_tran_flags
+
+	// Setear Marca para que en el Send se envie
+	// Mensaje de Cancelacion.
+    SETFLAG tlr:controla_firma,cancelacion
+
+	// Para que no verifique firma en Cancelacion
+	// de Caidas en Vuelo.
+    SETFLAG tlr:controla_marca,cancel
+
+    RESETFLAG tlr:controla_marca,reverso_auto
+
+	SELECT (siaf:codigo_siaf)
+		//Cancelaciones
+		CASE 70500
+		CASE 70502
+		CASE 70505
+		CASE 70510
+		CASE 70515
+		CASE 70520
+		CASE 70530
+		CASE 70540
+			// Asigno fld original de codigo de procesamiento
+			// a cod_proc_tran para el send de cancelacion
+			// de una caida en vuelo.
+			giros:cod_proc_tran = giros:codigo_procesamiento
+			IF (giros:flia_giro_fld == "W")
+				// Codigo de Procesamiento de Cancelacion de Tran.
+				giros:codigo_procesamiento = 995001
+			ELSE
+				IF (giros:flia_giro_fld == "P" || giros:flia_giro_fld == "T" )
+				// Codigo de Procesamiento de Cancelacion de Tran.
+				giros:codigo_procesamiento = 995002
+				END IF
+			END IF
+			IF (siaf:codigo_siaf == 70000 || siaf:codigo_siaf == 70080 || \
+				siaf:codigo_siaf == 70130 || siaf:codigo_siaf == 70310)
+				// 70000 - Recepcion de Chequeras.
+				// 70080 - Rechazo de Chequeras.
+				// 70130 - Solicitud ONP de chequeras.
+				// 70310 - Anulacion Chequera Postal No Emitida.
+				giros:codigo_procesamiento  = 995003
+			END IF
+			BREAK
+	END SELECT
+
+
+    /* Envio Reverso Automatico */
+    CALL hcomm:COMM_stat_init
+    IF (RETVAL == -2) THEN
+        /*No hay comunicacion con el host (proceso batch)  */
+        RETURN (-2)
+    ELSE
+        IF (RETVAL == -3)
+            /*No se pudo recuperar caida porque devolvio un codigo de respuesta != 00 (proceso_batch)*/
+            RETURN (-3)
+        END IF
+    END IF
+    window_node = common:window_node
+    common:window_node = op:op_node_id
+    CALL hcomm:COMM_host_tran
+    IF (RETVAL == TRAN_CAIDA_VUELO) THEN
+        //Hubo una caída en vuelo
+        RETURN (TRAN_CAIDA_VUELO)
+    END IF
+    common:window_node = window_node
+    CALL siaf:MISClleno_modalidad
+    tlr:tran_flags = tlr:aux_tran_flags
+    RESETFLAG tlr:controla_firma,cancelacion
+    RESETFLAG tlr:controla_marca,cancel
+
+    /*
+    IF (giros:jnl_status_batch > 100)
+        //quiere decir que fallo la 400 por un problema de mensajeria donde
+        //el código de respuesta es != 00 ; != 09 ; != 95 y != 98
+        RETURN (-1)
+    END IF
+    */
+
+	if (!(post:recuperacionReversa))
+    	CALL MISCact_tx_caida
+	    IF (RETVAL == -1)
+	        //Problemas en la actualizacion de tablas
+	        RETURN (-1)
+	    END IF
+    else
+		IF (siaf:codigo_siaf == 6820 && post:recuperacionReversa && hcomm:tran_status == HOST_ACCEPTED)
+			cds select from dsc:tlr:TABjnl becomes dsc:tlr:aux_context  where  \
+				tlr:jnl_branch == tlr:jnl_branch && \
+				tlr:jnl_operator ==	tlr:jnl_operator && \
+				tlr:jnl_bus_date == tlr:jnl_bus_date &&  \
+				post:PresNro == post:PresNro && \
+				siaf:codigo_siaf == 6820
+			cds findfirst dsc:tlr:aux_context lock
+			if (cdsretval != 0) then
+				cds unlock dsc:tlr:aux_context
+				cds endselect dsc:tlr:aux_context
+				return
+			end if
+			while (cdsretval == 0)
+				tlr:jnl_status = "003"
+				CDS APPEND DSC:tlr:aux_context \
+				FLD:tlr:jnl_status
+				cds update dsc:tlr:aux_context  lock
+				cds unlock dsc:tlr:aux_context
+				cds findnext dsc:tlr:aux_context lock
+			end while
+			cds endselect dsc:tlr:aux_context
+		endif
+	endif
+
+    CLEARFIELD siaf:cancelacion
+    IF (siaf:tran_retval == TRAN_CAIDA_VUELO) THEN
+        //Cuando en la reversa se cae la linea - 400
+        CLEARFIELD siaf:tran_retval
+		// Seteo hcomm:tran_status = HOST_REJECTED, de forma
+		// tal que cuando se cae la linea en una cancelacion
+		// la transaccion en proceso quede como RECHAZADA.
+        FYIMSG CLEAR
+        hcomm:tran_status = HOST_REJECTED
+        RETURN (TRAN_CAIDA_VUELO)
+    END IF
+    op:op_operator_id = op:operator_tmp
+END SUB
+
+/*******/

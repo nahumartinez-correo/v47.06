@@ -1,0 +1,103 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSCredito_Cheques
+* NOMBRE
+*   OFB:tes:CDSCredito_Cheques
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSCredito_Cheques
+	LOCAL saldo_cuenta  LIKE mov_importe
+	LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+    LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+    LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+    LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+    LOCAL mone          LIKE siaf:cant
+    LOCAL loc_scr       LIKE drv:INDscr
+
+    loc_jnl_rtn   = drv:INDjnl_rtn
+    loc_tran_name = tlr:jnl_tran_name
+    loc_mnemonic  = tlr:tran_mnemonic
+    loc_nom_tran  = siaf:nombre_transac
+    loc_scr       = drv:INDscr    
+
+    drv:INDjnl_rtn       = "CREDCTA"
+    tlr:jnl_tran_name    = "CREDCTA"
+    tlr:tran_mnemonic    = "CREDCTA"
+    siaf:nombre_transac  = "CREDITO EN CUENTA"
+    let siaf:codigo_siaf = 7570
+
+	/* Grabo los Cheques acreditados */
+	CDS select from dsc:TesoCheq_tbl becomes dsc:TesoCheq2_ctx where \
+	tes:teso_cheq_suc    == common:sucursal_activa && \
+	tes:teso_cheq_estado == "P"                    && \
+	tes:teso_cheq_acred  == "N"                    && \
+   tes:teso_cheq_auto == "S"
+	
+	/*tes:teso_cheq_facred <= common:system_date && \*/
+	
+	cds findfirst dsc:TesoCheq2_ctx nolock
+	let lib:err_retval = cdsretval
+	DO
+		if (lib:err_retval < 0)
+			break
+		end if
+		cds extract dsc:TesoCheq2_ctx all
+		/* Recalculo la fecha de acreditación */
+		call siaf:MISCcontrol_feriado(tes:teso_cheq_fdep,tes:teso_cheq_clearing,"B",tes:mov_facred)
+		if (mov_facred <= common:system_date)
+			let siaf:codigo_siaf        = 7570
+			let tes:es_tesoro           = "S"
+			let tes:banco_codigo        = tes:teso_cheq_id 
+			let tes:tipo_cuenta         = tes:teso_cheq_tipocta
+			let tes:nro_cuenta          = tes:teso_cheq_nrocta
+			let fecha_valor             = tes:mov_facred
+			let siaf:adt_motvarios_ctrl = "S"
+			clearfield tes:motivo
+			let tes:clearing     = tes:teso_cheq_clearing 
+			let siaf:moneda      = tes:teso_cheq_moneda
+			let siaf:cod_banco   = tes:teso_cheq_banco
+			let siaf:cheqcuenta  = tes:teso_cheq_cuenta
+			let siaf:nro_cheque  = tes:teso_cheq_nro
+			let post:importe_origen = tes:teso_cheq_importe
+
+            let post:adt_mp_cod = tes:teso_cheq_moneda
+            call post:CDSadt_MedPago_load
+                
+            call post:MISCconvierto_coti(post:importe_origen)
+			
+			let tes:lugar_cuenta = 1
+		    let drv:INDscr = SCR:tes:SCRNdche_caj
+		    let siaf:tiene_reverso = "N"
+			call tes:CDSSaldo_cta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,saldo_cuenta)
+			if (retval == 0)
+				drv:INDjnl_rtn = ofb:JNLcredito_cta
+				UNGETKEY 0x190
+				call tlr:JNLtran
+			end if
+		end if		
+		
+		cds findnext dsc:TesoCheq2_ctx nolock
+		let lib:err_retval = cdsretval
+	LOOP
+	cds endselect dsc:TesoCheq2_ctx
+	drv:INDjnl_rtn      = loc_jnl_rtn
+    tlr:jnl_tran_name   = loc_tran_name
+    tlr:tran_mnemonic   = loc_mnemonic
+    siaf:nombre_transac = loc_nom_tran
+    drv:INDscr          = loc_scr
+
+END SUB
+
+/*******/

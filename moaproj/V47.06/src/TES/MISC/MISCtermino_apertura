@@ -1,0 +1,107 @@
+/****o* Apertura de Sucursal/OFB:tes:MISCtermino_apertura
+* NOMBRE
+*   OFB:tes:MISCtermino_apertura
+* DESCRIPCION
+*   Termina el proceso de Apertura de la Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCapertura_manual
+*   tes:RCVEapertura_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCtermino_apertura
+  if (drv:descrip != "REOPENSU")  //solo si es apertura, no reapertura        
+		/*Controlo que no exista un registro inhibidor de cierre de dia, si es asi, lo borro*/
+		//CALL post:MISCverInhibCierre
+		/*Ya no se realiza el bloqueo - Gabriel Falciola
+		Se bloquea Retiro de Piezas en la apertura de la Sucursal hasta que se
+		termine de ejecutar el script
+		CALL post:CDSret_no_disp*/  
+		    
+		//gpb:AUT-2033 Verifico que no haya un proceso de NovISP corriendo
+		CALL post:MISCverif_bloqNovIPS    
+		IF (RETVAL == 0) THEN
+			//gpb:AUT-2033 Actualizo la NovTT
+			CALL post:MISCupdateCondNovTT
+			//gpb:AUT-2033 Se ejecuta el script que envia los datos de la tabla NovTT
+			CALL post:MISCenv_NovIPS
+			//para que no se superponga con el Envio de Novedades T&T, sino no se transmiten 
+			//las piezas.
+			NAP 5000
+		END IF
+		
+		/*Verifico que no haya un proceso de NovTT corriendo - Gabriel Falciola*/
+		call post:MISCverif_bloqNovTT
+		if (retval == 0)
+			/*Se pone en condiciones los registros que se van a enviar de la NovTT*/
+			CALL post:MISCen_cond_NovTT
+			/*Se ejecuta el script que envia los datos de la tabla NovTT*/
+			CALL post:MISCenv_NovTT("AperSuc")
+		end if
+	    
+		/*Rutina que envia archivos de la tabla stockp Historica*/
+		CALL post:MISCtrat_stockpHist("A")
+		/*Ahora las Excepciones se cuando termine el envío de las Novedades, entonces
+		cuando este proceso termina, lanza el proceso de las Excepciones - Gabriel Falciola
+		MFM - Se ejecuta el Script que envía los datos de Marca de Excepcion
+		CALL post:MISCenv_Excep*/
+		/*MFM - Restauro la tabla temporal de Despachos con BH2 con la parametría centralizada*/
+		CALL post:CDSAct_DespBH2tmp
+		/*MFM - 18.02.2002 - Borro la tabla de venta up por excepción*/
+		CALL post:CDSDel_excepcion
+		
+		clearfield suc_compromiso
+       
+  end if
+    
+	let tes:suc_fecha = common:system_date
+	clearfield tes:suc_marca_cierre
+	CDS APPEND DSC:tes:DiaSuc_context \
+		op:op_branch_id AS tes:suc_br_id \
+		tes:suc_fecha \
+		tes:suc_hora_tesoro tes:suc_tesorero \
+		tes:suc_fecha_SAP \
+		suc_compromiso
+
+	if (tes:err_retval == -801) then
+		//La primera vez lo inserta
+		CDS INSERT DSC:tes:DiaSuc_context LOCK
+	ELSE
+		CDS REPLACE DSC:tes:DiaSuc_context LOCK
+	ENDIF
+
+  cds unlock dsc:tes:DiaSuc_context
+  Cds ENDSELECT DSC:tes:DiaSuc_context
+  siaf:adt_sucur_codigo   = common:sucursal_activa
+  post:adt_sucur_dia_dump = common:system_date
+
+  siaf:adt_sucur_cierre_dia = "N"
+
+	// SBA 20050104 - En la apertura limpio la marca de recepcion de piezas buzón
+	if (drv:descrip != "REOPENSU")  //solo si es apertura, no reapertura        
+		clearfield post:marca_PzasBuz
+		
+		//cgw:NI50276 - Al realizar la Apertura de Sucursal se limpia marca de generacioN de Compromisos de
+		//    Pagos en tabla DiaSuc. Por tal motivo se elimina la tabla AuxComp. De esta manera no se podra
+		//    imprimir el reporte de Compromiso de Pago.
+		if (tes:suc_compromiso.numchars || tes:suc_compromiso == "") then
+			call post:CDSdel_AuxComp    	
+		end if
+	end if
+
+	CALL siaf:CDSadt_sucur_update
+	CDS ENDSELECT DSC:siaf:adt_sucur_context
+	
+	CALL tes:MISCinic_cierre
+END SUB
+
+/*******/

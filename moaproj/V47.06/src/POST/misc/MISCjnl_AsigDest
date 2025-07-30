@@ -1,0 +1,75 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_AsigDest
+* NOMBRE
+*   OFB:post:MISCjnl_AsigDest
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCjnl_AsigDest
+
+    CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx \
+    WHERE (stockp_operador == op:op_operator_id && stockp_fecha == common:system_date)
+    CDS FINDFIRST DSC:stockp_temp_ctx LOCK
+    IF (CDSRETVAL == -801) THEN
+        CDS UNLOCK DSC:stockp_temp_ctx
+        CDS ENDSELECT DSC:stockp_temp_ctx
+        RETURN -2
+    END IF
+	/*MFM - Grabo Hora de Scaneos*/
+	CALL MISCHora_Scaneos
+    DO
+        CDS EXTRACT DSC:stockp_temp_ctx ALL
+		if (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") then
+       		siaf:adt_tran_codigo = 99010
+      		siaf:codigo_siaf = 99010
+       		tlr:tran_mnemonic = "SVTTRP"
+       		siaf:nombre_transac = "DETALLE DE PIEZAS ASIGNADAS A DESTINO"
+       		drv:INDcur_tran = LST:TRANpiezas_asignadas
+       		drv:INDscr = SCR:SCRNpiezas_asignadas
+       		drv:INDjnl_rtn = OFB:JNLclte_minorista
+       	else
+       		siaf:adt_tran_codigo = 99005
+        	siaf:codigo_siaf = 99005
+        	tlr:tran_mnemonic = "SVTTRP"
+        	siaf:nombre_transac = "DETALLE DE PIEZAS RECIBIDAS"
+        	drv:INDcur_tran = LST:TRANpiezas_recibidas
+        	drv:INDscr = SCR:SCRNpiezas_recep_det
+        	drv:INDjnl_rtn = OFB:JNLrecep_piezas_det
+        endif
+
+        MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+        siaf:secuencia_aux = tlr:sequence + 1
+        siaf:hora = common:time_of_day //Linea Nueva
+        CALL tlr:JNLtran
+       	/*MFM - Grabo los Scaneos correspondientes a Recepción de Piezas*/
+       	CALL MISCGrabo_Scaneos_RP
+     	
+        UNGETKEY RT_SEND
+        
+        CDS FINDNEXT DSC:stockp_temp_ctx LOCK
+        IF (CDSRETVAL == -801) THEN
+            BREAK
+        END IF
+    LOOP
+    CDS UNLOCK DSC:stockp_temp_ctx
+    CDS ENDSELECT DSC:stockp_temp_ctx
+    CLEARFIELD drv:INDscr
+    CLEARFIELD drv:INDjnl_rtn
+    CLEARFIELD drv:INDspc_rtn[0]
+    CLEARFIELD drv:INDspc_rtn[2]
+
+END SUB
+
+/*******/

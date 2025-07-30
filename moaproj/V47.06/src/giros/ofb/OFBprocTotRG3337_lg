@@ -1,0 +1,146 @@
+/****o* Lista de Giros/OFB:giros:OFBprocTotRG3337_lg
+* NOMBRE
+*   OFB:giros:OFBprocTotRG3337_lg
+* DESCRIPCION
+*  Tratamiento de Envio de Giros Postales y Telegraficos de Lista de Giros.
+*  Se valida que el saldo disponible de adelanto monetario sea suficiente para emitir los giros.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:PBEnvio_Post_LG,giros:PBEnvio_Teleg_LG
+* DOCUMENTACION
+*		PS10778
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBprocTotRG3337_lg(sesion_nro)
+	LOCAL varl_sesion_lg LIKE giros:nro_sesion_lg
+	LOCAL l_IvaBasCalc LIKE post:IvaBasCalc             
+	LOCAL l_importe LIKE post:importe
+	LOCAL l_Comision LIKE giros:Comision_fld 
+	LOCAL l_ComisionSinIva4 LIKE giros:ComisionSinIva4_fld
+	LOCAL l_Comision_Importe LIKE giros:ComisionSinIva4_fld
+	LOCAL l_TasaSinIva LIKE giros:TasaSinIva_fld         
+	LOCAL l_IvaTasa LIKE giros:IvaTasa_fld            
+	LOCAL l_TasaSinIva4 LIKE giros:TasaSinIva4_fld 
+	LOCAL l_Tasa_Impore LIKE giros:TasaSinIva4_fld  
+	LOCAL l_Opc_Importe LIKE giros:ComisionSinIva4_fld     
+	LOCAL l_Opc_SinIva4 LIKE giros:ComisionSinIva4_fld    
+	LOCAL indice LIKE siaf:i
+	
+	FPRINT varl_sesion_lg,"%s",sesion_nro
+	CLEARFIELD post:IvaCod
+	CLEARFIELD post:ImpTotRG3337
+
+	CDS SELECT FROM DSC:TABsesion_lg BECOMES DSC:CONses_lg WHERE \
+  	giros:nro_sesion_lg == varl_sesion_lg && \
+  	giros:estado_lg == "I" && \
+  	giros:a_emitir == "S" \
+    SORT "primary"
+
+	CDS FINDFIRST DSC:CONses_lg  LOCK
+	lib:err_retval = CDSRETVAL
+		
+	DO
+		IF (lib:err_retval == -801) THEN
+			BREAK 
+		END IF
+		
+		indice = 0
+		
+		CLEARFIELD l_Comision 
+		CLEARFIELD l_ComisionSinIva4 
+		CLEARFIELD l_Comision_Importe
+		CLEARFIELD l_TasaSinIva          
+		CLEARFIELD l_IvaTasa             
+		CLEARFIELD l_TasaSinIva4  
+		CLEARFIELD l_Tasa_Impore    
+		CLEARFIELD l_Opc_SinIva4
+		CLEARFIELD l_Opc_Importe
+		
+		CALL CSR:cleararray (post:opc_acum_iva)
+		CALL CSR:cleararray (post:opc_acum_iva4)
+		
+		//Categoria de iva del Emisor
+		IF (giros:CatIvaEmis_fld.NUMCHARS == 0) THEN
+				CDS EXTRACT DSC:CONses_lg \
+					giros:CatIvaEmis_fld
+		END IF
+		
+		//Datos de la comision
+		CDS EXTRACT DSC:CONses_lg \
+			giros:Comision_fld INTO l_Comision \
+			giros:ComisionSinIva4_fld INTO l_ComisionSinIva4
+			
+		//Datos de la tasa	
+		CDS EXTRACT DSC:CONses_lg \
+			giros:TasaSinIva_fld INTO l_TasaSinIva \
+			giros:IvaTasa_fld INTO l_IvaTasa \
+			giros:TasaSinIva4_fld INTO l_TasaSinIva4
+	 
+		//Datos de los opcionales	
+		CDS EXTRACT DSC:CONses_lg \
+			post:cos_opc[0] INTO post:opc_acum_iva[0] \
+			post:cos_opc[1] INTO post:opc_acum_iva[1] \
+			post:cos_opc[2] INTO post:opc_acum_iva[2] \
+			post:cos_opc[3] INTO post:opc_acum_iva[3] \
+			post:cos_opc[4] INTO post:opc_acum_iva[4] \
+			post:cos_opc[5] INTO post:opc_acum_iva[5] \
+			post:siniva_opc4[0] INTO post:opc_acum_iva4[0] \
+			post:siniva_opc4[1] INTO post:opc_acum_iva4[1] \
+			post:siniva_opc4[2] INTO post:opc_acum_iva4[2] \
+			post:siniva_opc4[3] INTO post:opc_acum_iva4[3] \
+			post:siniva_opc4[4] INTO post:opc_acum_iva4[4] \
+			post:siniva_opc4[5] INTO post:opc_acum_iva4[5]
+		
+		//Datos de la Comision - Iva discriminado
+		l_Comision_Importe = l_Comision - l_ComisionSinIva4
+		//Datos de la Tasa - Iva discriminado
+		l_Tasa_Impore = (l_TasaSinIva + l_IvaTasa) - l_TasaSinIva4
+		//Datos de los Opcionales
+		WHILE (indice < 6)
+			//Importe sin iva
+			l_Opc_SinIva4 = l_Opc_SinIva4 + post:opc_acum_iva4[indice]
+			//Iva discriminado
+			l_Opc_Importe = l_Opc_Importe + (post:opc_acum_iva[indice] - post:opc_acum_iva4[indice])
+
+			indice = indice + 1
+		END WHILE
+		
+;		DPRINT "***********************************************\n"
+;		DPRINT "l_ComisionSinIva4  = [%s]\n" l_ComisionSinIva4
+;		DPRINT "l_TasaSinIva4      = [%s]\n" l_TasaSinIva4
+;		DPRINT "l_Opc_SinIva4      = [%s]\n" l_Opc_SinIva4
+;		DPRINT "l_Comision_Importe = [%s]\n" l_Comision_Importe
+;		DPRINT "l_Tasa_Impore      = [%s]\n" l_Tasa_Impore
+;		DPRINT "l_Opc_Importe      = [%s]\n" l_Opc_Importe
+;		DPRINT "***********************************************\n"
+		
+		//Acumulo importes [Comision + Tasa + Opcionales]
+		l_IvaBasCalc = l_IvaBasCalc + l_ComisionSinIva4 + l_TasaSinIva4 + l_Opc_SinIva4
+		l_importe =  l_importe + l_Comision_Importe + l_Tasa_Impore + l_Opc_Importe
+		
+		CDS FINDNEXT DSC:CONses_lg LOCK
+		lib:err_retval = CDSRETVAL
+	LOOP
+
+	CDS UNLOCK DSC:CONses_lg
+	CDS ENDSELECT DSC:CONses_lg
+	
+	CALL CSR:cleararray (post:opc_acum_iva)
+	CALL CSR:cleararray (post:opc_acum_iva4)
+	
+	LET post:IvaBasCalc = l_IvaBasCalc
+	LET post:importe = l_importe
+	
+	CALL post:CDSprocTotRG3337_lg
+
+END SUB
+
+/*******/
+

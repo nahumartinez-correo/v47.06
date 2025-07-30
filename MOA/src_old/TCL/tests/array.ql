@@ -1,0 +1,31 @@
+drop table t;
+create table t keys (:Cds_count serial) buffer size 200 allow delete allow newfield ;
+
+insert into t (:Cds_count, :field1) values (3, 1,2,3,4,5);
+begin work;
+update t set :field1[3] = "who";
+update t set :field1 = 21, 22, 23, 44, 55 ;
+commit work;
+select from t;
+delete from t;
+insert into t (:Cds_count, :field1) values (3, 1,2,3,4,5);
+begin work;
+update t set :field1[3] = "who";
+select from t;
+update t set :field1 = 21, 22, 23, 44, 55 ;
+select from t;
+rollback work;
+select from t;
+
+update t set :field1 = 21, 22, 23, 44, 55, 66 ;
+update t set :field1 = 21, 22, 23, 44  ;
+update t set :field1 = 11, 22, 33, 44, 55,  :field2 = 111, 222, 333, 444, 555;
+select from t;
+delete from t;
+insert into t (:field1[2]) values (two);
+select from t;
+begin work;
+update t set :field1[2] = "foo";
+select from t;
+rollback work;
+select from t;

@@ -1,0 +1,154 @@
+/****o* Servicios Postales/OFB:post:PRT_Ticket_VentaEv
+* NOMBRE
+*   OFB:post:PRT_Ticket_VentaEv
+* DESCRIPCION
+*   Rutina tique venta vencida
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   TES:TRANprint_venta_ev,TES:MISCjnl_venta_ev
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2387
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Ticket_VentaEv
+    Local SUBTOTAL like siaf:importe
+    local PRECIO_UNITARIO like post:importe_impre
+    local INDICE like post:cantidad /* indice que cuentas las lineas del cuerpo */
+    local cx like siaf:idx
+    local l_impCompleto like tes:adt_evaux_importe
+    local l_importe like post:importe_sesion
+
+    init 33,0
+
+    call post:MISCobtiene_empresa(dsc:post:CorreoArgentino)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(SETEODEFAULT)
+
+    INDICE = 0
+
+    // Comienzo del Encabezado
+
+    Call  post:PRT_Hdr_Ticket
+/*MGI:AUT-2387 Esta información ahora se muestra en el encabezado
+	Fprint common:csr_string "%-5.5s-%s\n",\
+	op:op_branch_id,common:br_address
+	Call PRTtransparent(common:csr_string)
+*/
+    Fprint common:csr_string "Nro de Recibo : %e\n",post:nro_impre
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%s %s\n",\
+    FLD:common:emp_leyenIB,post:adt_emp_ingbru  /*Dsc:IngBrut_Correo,post:adt_emp_ingbru . Norma*/
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%21s %10e\n",\
+	Dsc:Inic_Actividad,post:adt_emp_inicact
+    Call PRTtransparent(common:csr_string)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+	call MISCprt2laser(LINEANUEVA)
+
+    Fprint common:csr_string "%-9.9e%-13.13e %s\n",\
+                DSC:Cuit_Clie,post:adt_emp_cuit,"IVA-RESP.INSC."
+    Call PRTtransparent(common:csr_string)
+    Fprint common:csr_string "%-20.20s %s\n",\
+                " ","A CONSUMIDOR FINAL"
+    Call PRTtransparent(common:csr_string)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+//  Fin del Encabezado
+
+    post:importe = 0
+
+    cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx \
+    where tes:adt_evaux_suc == op:op_branch_id && \
+          tes:adt_evaux_op == op:op_operator_id && \
+          tes:adt_evaux_tesoro == "N" && \
+          tes:adt_evaux_prestran == tes:adt_evaux_prestran
+          //V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+          /*tes:adt_evaux_codigo == tes:espv_cod && \*/
+    cds findfirst DSC:tes:AuxEspV_ctx LOCK
+    let lib:err_retval = CDSRETVAL
+    DO
+	    if (lib:err_retval != 0) then
+	        break
+	    end if
+	    cds extract DSC:tes:AuxEspV_ctx ALL
+	    if (tes:adt_evaux_cantidad > 0) then
+	      //fprint common:csr_string "%-10.10s      %7.7e  %13.13e \n", tes:adt_evaux_subcod,tes:adt_evaux_cantidad,tes:adt_evaux_importe
+	        /*MFM - el fprint del campo importe lo hago como string */
+//	        l_impCompleto = tes:adt_evaux_importe + fld_promo_imp
+	        l_impCompleto = tes:adt_evaux_importe
+	        fprint common:csr_string "%-16.16s %7.7e %13.13s \n", tes:adt_evaux_subcod,tes:adt_evaux_cantidad,l_impCompleto
+	        let post:importe = post:importe + tes:adt_evaux_importe - fld_promo_imp
+	        call post:PRTtransparent(common:csr_string)
+		    //V26-Correccion Bonificaciones Locales
+		    if (fld_promo_imp.numchars != 0) then
+		       Fprint common:csr_string "(%e)", fld_promo_imp
+	           fprint common:csr_string "%-23.23s %15.15s\n", promo_desc_esvs, common:csr_string
+	           call post:PRTtransparent(common:csr_string)
+            end if
+            clearfield common:csr_string
+        end if
+        cds unlock DSC:tes:AuxEspV_ctx
+	    cds findnext DSC:tes:AuxEspV_ctx LOCK
+        let lib:err_retval = CDSRETVAL
+    LOOP
+    cds unlock DSC:tes:AuxEspV_ctx
+    cds endselect DSC:tes:AuxEspV_ctx
+
+    //cgw:se pasa a una variable local de dos decimales para utilizar en la impresion (post:importe tiene 4 decimales).
+    INIT 22,1
+	l_importe = post:importe
+	INIT 22,0
+    Fprint common:csr_string  "TOTAL %32.32s\n",l_importe
+    //Fprint common:csr_string  "TOTAL %32.32s\n",post:importe
+    Call PRTtransparent(common:csr_string)
+
+
+    Call PRTtransparent(LINE_GUIONES)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = INDICE + 4
+
+    //cgw:se utiliza variable local de dos decimales para utilizar en la impresion (post:importe tiene 4 decimales).
+    //Fprint common:csr_string  "%-29.29s %8.8s\n",medio_pago_desc,post:importe        
+    Fprint common:csr_string  "%-29.29s %8.8s\n",\
+    medio_pago_desc,l_importe
+    
+    Call PRTtransparent(common:csr_string)
+    INDICE = INDICE + 1
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    Fprint common:csr_string "%40.40s%s" common:emp_desc,"\n"
+    //Call PRTtransparent(PIETICKET1)
+    Call PRTtransparent(common:csr_string)
+    Call PRTtransparent(PIETICKET2)
+    Call PRTtransparent(PIETICKET3)
+
+	/*Por si el modo prt es laser - Gabriel Falciola*/
+	call MISCprt2laser(LINEANUEVA)
+
+    INDICE = INDICE + Retval + 6
+    // la guillotina esta ubicada antes que el rodillo de impresion por lo tanto
+    //hay lineas impresas abajo de esta.
+    // para solucionar el problema hay que avanzar un par de lineas
+    Call post:MISCavaz_linea_imp(INDICE)
+    // se agradece la colaboracion del Super Equipo de Galicia
+    Call post:PRT_Ticket_Corte
+END SUB
+
+/*******/

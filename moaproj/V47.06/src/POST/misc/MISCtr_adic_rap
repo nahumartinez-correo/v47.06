@@ -1,0 +1,194 @@
+/****o* Pendientes de agrupación/OFB:post:MISCtr_adic_rap
+* NOMBRE
+*   OFB:post:MISCtr_adic_rap
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+Sub post:MISCtr_adic_rap(CodTran,CodProd,CodEspecie,SubCodigo,Cant)
+    LOCAL loc_imp       LIKE siaf:importe
+    LOCAL loc_cant      LIKE siaf:cantidad
+    LOCAL loc_codtx     LIKE siaf:codigo_siaf
+    LOCAL loc_INDtx     LIKE tlr:INDtran_name
+    LOCAL loc_INDlist   LIKE drv:INDcur_list
+    LOCAL loc_forfis    LIKE post:PreDForFis
+    LOCAL loc_impconiva LIKE post:TotalSinIva
+    LOCAL loc_impsiniva LIKE post:TotalSinIva
+    LOCAL loc_totsiniva LIKE post:TotalSinIva
+    LOCAL NroTrn 		LIKE post:PreDNroTrn
+    Local HayPresu 		like lib:err_retval
+    Local NroAux 		like tes:adt_evaux_prestran
+	local l_importe 	like tes:SubImporte
+
+
+    loc_forfis  = post:PreDForFis
+    loc_imp     = siaf:importe
+    loc_cant    = siaf:cantidad
+    loc_codtx   = siaf:codigo_siaf
+    loc_INDtx   = tlr:INDtran_name
+    loc_INDlist = drv:INDcur_list
+    ;loc_impconiva = siaf:ImporteConIva
+    ;loc_impsiniva = siaf:ImporteSinIva
+    ;loc_totsiniva = post:TotalSinIva
+
+	If ( estado_presu == 1 ) then
+		siaf:codigo_siaf = CodTran
+
+	    select (CodTran)
+    	case 8500
+    		call tes:CDSsesAuxEspV_clear
+		    tes:adt_evaux_suc = op:op_branch_id
+		    if (drv:dt_app == 4) then  //Por tesoro
+		        let tes:adt_evaux_op = op:op_tesoro_id
+		       	let tes:adt_evaux_tesoro = "S"
+		    else
+		        let tes:adt_evaux_op = op:op_operator_id
+		        let tes:adt_evaux_tesoro = "N"
+		    endif
+		    tes:adt_evaux_prestran = 0
+		    tes:adt_evaux_envio    = "N"
+		    tes:adt_evaux_es_venta = "S"
+
+	        tes:adt_evaux_codigo = CodEspecie
+	        tes:espv_cod = CodEspecie
+	        tes:espv_subcod = SubCodigo
+	        /*Para traer la subespecie*/
+	        tes:adt_espv_cod    = CodEspecie
+	        tes:adt_evaux_subcod   = SubCodigo
+	        tes:adt_espv_subcod   = SubCodigo
+
+
+	        CALL tes:CDSadt_esp_load
+	        ;tes:adt_evaux_cantidad = cantidad - cant
+	        tes:adt_evaux_cantidad = cantidad - Cant
+	        tes:adt_evaux_importe  = tes:adt_evaux_cantidad * tes:adt_espv_valor
+	        /*Cargo los campos para Ventas UP*/
+	        post:ImpServUP  = tes:adt_evaux_importe
+	        post:AliServUP  = tes:adt_espv_aliciva
+	        post:PreDForFis = tes:adt_espv_formfiscal
+	        siaf:adt_tran_fliatran = "TES"
+			call tes:CDSauxesp_save_vta
+
+    	break
+
+    	case 40002
+
+    		post:cantidad2 = cantidad - Cant
+    		adt_prodvs_cod = CodProd
+        	CALL post:CDSprodvs_load
+	        prim_stock_stock = adt_stock_stock
+	   		break
+	end select
+
+	call post:MISCCampos_Tran(CodTran)
+/*	siaf:adt_tran_codigo = siaf:codigo_siaf
+	Call siaf:CDSadt_tran_load
+ 	siaf:nombre_transac = siaf:adt_tran_desc
+*/
+
+	call siaf:CDSadt_tran_load
+	/* Cargo los valores comunes a todas las transacciones que se */
+	/* encuentran en la tabla transac. */
+	let siaf:posible_off = siaf:adt_tran_posoff
+	let siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+	let tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+	let drv:descrip = siaf:adt_tran_mnemonic
+	let siaf:nombre_transac = siaf:adt_tran_desc
+	move siaf:adt_tran_afec_efvo to siaf:afecta_efectivo
+
+
+	/* Me fijo si la tx captura medio de pago */
+	let post:captura_mp = siaf:adt_tran_med_pago
+	let post:SupMedPago = "N"
+	/*  */
+
+	/* Resguardo flia de transaccion (Unidad de Negocio) */
+	move siaf:adt_tran_fliatran to post:tipo_transac
+	move siaf:adt_tran_fliatran to post:jnl_flia_tran
+	/* Asigno valores a los campos que necesito llamar distinto */
+	/* durante las Transacciones Postales. Juan Pablo 8/4/98 */
+	post:tipo_produc = siaf:adt_tran_codprod
+	post:tipo_produc2 = siaf:adt_tran_codpro2
+	/* Asigno valores a los campos que necesito llamar distinto */
+	/* durante las Transacciones Galicia. Maria Laura 19/05/98 */
+	gali:codigo_galicia = siaf:adt_tran_codprod
+
+
+
+
+
+	tes:SubImporte = tes:SubImporte + siaf:importe
+	let post:TotalSinIva = post:TotalSinIva + post:ImporteSinIva
+	If (post:Modo == "R" && !testflag(tlr:tran_flags,correction))
+		/*Guardo valores en la tabla Presu - Gabriel Falciola*/
+		l_importe = tes:SubImporte
+		tes:SubImporte = tes:SubImporte - fld_promo_imp
+		call post:CDSGrabaPresuR(tes:SubImporte)
+		tes:SubImporte = l_importe
+	end if
+
+    call post:MISCTotalTransac(siaf:codigo_siaf)
+    ;call tes:CDSrecupero_PresuDet(0)
+
+    ;call post:MISCGrabaDetalleTrn
+
+	; Inhabilito la tecla ESC por problemas que estaban surgiendo.
+	call csr:f_orsklock
+
+    MOVE siaf:adt_tran_afec_efvo TO siaf:afecta_efectivo
+
+	tes:es_tesoro = "S"
+
+	if (!TESTFLAG(uso_int_flag,uso_interno))
+		call post:MISCgenerarIva
+	end if
+	if (siaf:codigo_siaf == 8500) then
+    	cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx \
+        where tes:adt_evaux_suc == op:op_branch_id && \
+        tes:adt_evaux_op == op:op_operator_id && \
+        tes:adt_evaux_prestran == 0 && \
+        tes:adt_evaux_tesoro == "N" && \
+        tes:adt_evaux_envio == "N" && \
+        tes:adt_evaux_codigo == tes:espv_cod
+		cds findfirst DSC:tes:AuxEspV_ctx LOCK
+		let lib:err_retval = CDSRETVAL
+		if (lib:err_retval < 0) then
+			errmsg lst:common:errmsg_list "Error en grabacion de transaccion"
+			return (-2)
+		end if
+	end if
+	Call tlr:JNLtran
+	if (CodTran == 8500) then
+		cds endselect dsc:tes:AuxEspV_ctx
+	end if
+	post:INDPresuD_Dat   = OFB:post:CDSgral_append
+    tlr:INDtran_name     = loc_INDtx
+    drv:INDcur_list      = loc_INDlist
+    siaf:importe         = loc_imp
+    siaf:cantidad        = loc_cant
+    siaf:codigo_siaf     = loc_codtx
+    post:PreDForFis      = loc_forfis
+    siaf:adt_tran_codigo = siaf:codigo_siaf
+    ;siaf:ImporteConIva   = loc_impconiva
+    ;siaf:ImporteSinIva   = loc_impsiniva
+    ;post:TotalSinIva     = loc_totsiniva
+
+End If
+clearfield drv:INDspc_rtn[0]
+clearfield drv:INDspc_rtn[2]
+ClearField drv:INDjnl_rtn
+End Sub
+
+/*******/

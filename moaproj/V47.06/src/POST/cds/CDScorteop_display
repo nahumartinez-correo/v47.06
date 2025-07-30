@@ -1,0 +1,123 @@
+/****o* Administración de Operadores/OFB:post:CDScorteop_display
+* NOMBRE
+*   OFB:post:CDScorteop_display
+* DESCRIPCION
+*   Arma un picklist con los operadores del select abierto y lo despliega.
+*   para que seleccionen al operador.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*    0 Si se selecciona un operador o no hay operadores disponibles.
+*   -2 Si no se selecciona ningún operador.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:CDScorteop_sel
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postcds.h"
+
+SUB post:CDScorteop_display
+    local LineaPick like common:csr_string
+    local LIndice like common:csr_string
+    local LRetVal like lib:err_retval
+    local LLogin like op:adt_login_id
+
+    let LLogin = op:adt_login_id
+	SETFLAG drv:mode_flags,picklist_mode
+    ;CDS MULTIDISPLAY DSC:op:adt_op_context op:LISTadt_op
+    LIndice = 0
+    LRetVal = 0
+
+    ;SMC Genero El PickList
+    CALL  CSR:f_sanewpl DSC:op:PickOperadores PIC:op:PickOperadores 620 200
+	CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+	WHILE (CDSRETVAL == 0)
+		;CDS EXTRACT DSC:op:adt_Tablas_ctx adt_tablas_grupo adt_tablas_nombre
+        call op:CDSadt_op_list_dis
+        fprint FLD:LineaPick "%-14.14s %-5.5s %-5.5s %s" \
+        op:adt_login_id,\
+        op:adt_branch_id,\
+        op:adt_operator_id,\
+        op:adt_display_tmp
+        ;SMC Agrego en el Pick List
+        CALL  CSR:f_saaddpl DSC:op:PickOperadores FLD:LineaPick
+        LIndice = LIndice + 1
+		CDS FINDNEXT DSC:op:adt_op_context NOLOCK
+	END WHILE
+	CDS ENDSELECT DSC:op:adt_op_context
+
+    ;SMC restauro datos originales
+    if (FLD:LLogin != "" && FLD:LLogin != op:op_login_id) then
+        call op:CDSadt_op_load
+    endif
+
+    clearfield LineaPick
+    ;SMC Muestro Pick List
+	SETFLAG drv:mode_flags,picklist_mode
+    CALL CSR:f_sadopl (DSC:op:PickOperadores,LineaPick)
+	RESETFLAG drv:mode_flags,picklist_mode
+
+    if (retval >= 0) then
+        let op:adt_login_id = substr(LineaPick,0,14)
+        let op:adt_branch_id = substr(LineaPick,15,5)
+        let op:adt_operator_id = substr(LineaPick,21,5)
+        refresh op:adt_login_id
+        refresh op:adt_branch_id
+        refresh op:adt_operator_id
+        call csr:trimfield(op:adt_login_id)
+        call csr:trimfield(op:adt_branch_id)
+        call csr:trimfield(op:adt_operator_id)
+        call op:CDSadt_op_load
+    else
+    
+        CALL  CSR:proc_list F_CLEAR LST:op:adt
+        CALL  CSR:proc_list F_CLEAR LST:op:adt_std
+  		//call  CSR:proc_list F_UNPROTECT LST:op:adt_new_op
+  		//call  CSR:proc_list F_CLEAR LST:op:adt_new_op
+    	//call  CSR:proc_list F_REFRESH LST:op:adt_new_op
+  		call  CSR:proc_list F_UNPROTECT LST:op:adt_main
+  		call  CSR:proc_list F_CLEAR LST:op:adt_main
+    	call  CSR:proc_list F_REFRESH LST:op:adt_main
+        //CALL OFB:op:MISCdisable_chks
+        clearfield op:adt_login_id
+        clearfield op:adt_operator_id
+        refresh op:adt_login_id
+        refresh op:adt_operator_id
+
+        clearfield op:admin_flags
+        clearfield op:Dest_Server
+        clearfield op:Src_Server
+        clearfield op:old_branch_id
+        clearfield op:old_br_server
+
+        ;SMC checkeo que sea centralizado
+        call op:MISCes_serv_central
+        if (retval < 0) then
+            RESETFLAG op:admin_flags,is_select
+        else
+            clearfield op:adt_branch_id
+            refresh op:adt_branch_id
+        endif
+        let LRetVal = -2
+    endif
+    ;SMC Destruyo PickList
+    CALL  csr:f_sadroppl DSC:op:PickOperadores
+
+	RESETFLAG drv:mode_flags,picklist_mode
+    if (LIndice == 0) then
+        ERRMSG LST:common:errmsg_list,"NO HAY OPERADORES"
+    endif
+    if (LRetVal < 0) then
+        CALL  drv:side_bar_disable
+		RETURN (-2)
+	END IF
+	//call op:MISCdisable_chks
+	
+	RETURN (0)
+END SUB
+
+/*******/

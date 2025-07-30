@@ -1,0 +1,184 @@
+/****o* Uso General/OFB:post:MISCajusteUP
+* NOMBRE
+*   OFB:post:MISCajusteUP
+* DESCRIPCION
+*   En el caso de un rechazo del host esta rutina se encarga de reversar las TX confirmadas, 
+*   con todo lo que esto implica (volver atras stock, borrar T&T y scaneos,etc). Las graba con
+*   tlr:jnl_status en 100 para que la interfaz no las tenga en cuenta.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:cancela_transac,OFB:post:LINK99430,OFB:post:LINK99440,OFB:post:LINK99450
+*   OFB:post:LINK99460,OFB:post:LINK99470,OFB:post:LINK99480,OFB:post:LINKPresuCM
+*   OFB:post:MISCcancelaPres,OFB:post:MISCcancGiroCombo,OFB:post:MISCjournaliz_mult
+*   OFB:post:RCVEclimed_anticipo,OFB:post:RCVEclimed_ingr_fact,OFB:post:RCVEclimed_ingr_int
+*   OFB:post:RCVEclimed_item_comp,OFB:post:RCVEclimed_mult_cheq, OFB:RCVEimposicion_ped
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCajusteUP
+	local l_codigoSiaf like siaf:codigo_siaf
+	local Lind like drv:INDlast_menu
+	
+	if (rechazoDiferido)
+		l_codigoSiaf = siaf:codigo_siaf
+
+		    ///////// comienzo el proceso ///////////
+		let FLD:siaf:INDscratch = OFB:post:MISCajusteUP
+		call csr:dt_tran DT_TRAN_START FLD:siaf:INDscratch
+		    /////////////////////////////////////////
+		
+		; en caso de que haya rechazado la operacion para la UP,
+		; se debe "ajustar" el sistema.
+
+		/*CDS SELECT FROM "journal" BECOMES dsc:Jounarl_anul_Ctx	\
+			where post:PresNro == post:PresNro && 				\
+				tlr:jnl_status != STATUS_UP_ANULADO && 			\
+				tlr:jnl_bus_date == common:system_date && 		\
+				tlr:jnl_operator == op:op_operator_id && 		\
+				tlr:jnl_branch == common:sucursal_activa*/
+		
+	/*Dependiendo de qué transacción fue seleccionada ejecuto la que corresponde - Gabriel Falciola*/
+	/*Si estoy en el menú de Cliente Medio de Jefe de Oficina pregunto por tlr:jnl_bus_date*/
+		Lind = LST:post:MENUclientemedio
+		if (drv:INDlast_menu == Lind) then
+			CDS SELECT FROM "journal" BECOMES dsc:Jounarl_anul_Ctx	\
+			where post:PresNro == post:PresNro && 				\
+				tlr:jnl_status <= STATUS_UP_INTERMEDIO && 			\
+				tlr:jnl_bus_date == tlr:jnl_bus_date && 		\
+				tlr:jnl_operator == op:op_operator_id && 		\
+				tlr:jnl_branch == common:sucursal_activa && \
+				siaf:cancelacion == ""
+		else
+			
+			CDS SELECT FROM "journal" BECOMES dsc:Jounarl_anul_Ctx	\
+			where post:PresNro == post:PresNro && 				\
+				tlr:jnl_status <= STATUS_UP_INTERMEDIO && 			\
+				tlr:jnl_bus_date == common:system_date && 		\
+				tlr:jnl_operator == op:op_operator_id && 		\
+				tlr:jnl_branch == common:sucursal_activa && \
+				siaf:cancelacion == ""
+
+		endif
+		CDS FINDFIRST dsc:Jounarl_anul_Ctx LOCK
+		while (cdsretval == 0)
+		
+			clearfield tlr:INDtran_name
+			cds extract dsc:Jounarl_anul_Ctx tlr:INDtran_name
+			if (cdsretval == 0 && tlr:INDtran_name != 0) then
+				// inicio trx a cancelar...
+				call csr:dt_tran DT_TRAN_START FLD:tlr:INDtran_name
+			endif
+			
+			
+			CDS EXTRACT dsc:Jounarl_anul_Ctx ALL
+
+			if (tlr:jnl_status != STATUS_UP_INTERMEDIO)
+				; primero resto a los totales
+				call MISCrestoTotalesUP
+
+				; marco status intermedio
+				tlr:jnl_status = STATUS_UP_INTERMEDIO
+				CDS CLEARBUFFER DSC:Jounarl_anul_Ctx
+				CDS APPEND dsc:Jounarl_anul_Ctx tlr:jnl_status
+				CDS UPDATE dsc:Jounarl_anul_Ctx LOCK
+			endif
+
+			; sumo al stock si corresponde
+			//BUG: se corrige que no actualice el stock en caso de reversa automatica
+			//de una facturacion automatica o cobranza de cliente medio
+			if (!post:OperacionAut && !post:OperacionCob) then
+				call MISCsumoStockUP
+			endif
+
+			//Giros robados
+			CALL giros:MISCcancTTgiros
+			
+			//Borro de la TTaux los T&T cargados para Modalidad de Fact. Diferida
+			CALL post:MISCcancTTaux
+
+			//Borro todos los T&T asociados al presupuesto
+			CALL post:CDSreverso_tt_presu
+			
+			//Si es una sesión ped seteo flag correspondiente para que la marca como no impuesta
+			IF (TESTFLAG(sesion_ped_flags,es_sesion_ped))
+				SETFLAG post:sesion_ped_flags,esc_servicio_ped
+				CALL post:CDSactPresuPed_flags
+			END IF
+			
+			; marco status completado
+			tlr:jnl_status = STATUS_UP_ANULADO
+			
+			; marco tx reversada automáticamente
+			SETFLAG tlr:jnl_tran_flags,rev_automatica			
+
+			if (siaf:codigo_siaf == 99021) then
+				SELECT (post:jnl_cli_tipo)
+					CASE CLIUP
+						FPRINT siaf:mensaje, "%sSESION UP REVERSADA AUTOMATICAMENTE", siaf:mensaje
+						BREAK
+					CASE CLIMED
+						FPRINT siaf:mensaje, "%sSESION CLIENTE MEDIO REVERSADA AUTOMATICAMENTE", siaf:mensaje
+						BREAK
+					CASE ELSE
+						if (post:cancelaOperador)
+							FPRINT siaf:mensaje, "%sSESION REVERSADA POR EL OPERADOR", siaf:mensaje
+						else
+							FPRINT siaf:mensaje, "%sSESION REVERSADA AUTOMATICAMENTE", siaf:mensaje
+						end if
+						BREAK
+				END SELECT
+			else
+				// Si el operador canceló el presupuesto cambio el mensaje del 
+				// siaf:mensaje para que quede mas claro
+				if (post:cancelaOperador)
+					FPRINT siaf:mensaje, "%sSESION REVERSADA POR EL OPERADOR", siaf:mensaje
+				else
+					FPRINT siaf:mensaje, "%sSESION REVERSADA AUTOMATICAMENTE", siaf:mensaje
+				end if
+			
+			end if
+			
+			CDS CLEARBUFFER DSC:Jounarl_anul_Ctx
+			CDS APPEND dsc:Jounarl_anul_Ctx tlr:jnl_status siaf:mensaje tlr:jnl_tran_flags
+			CDS UPDATE dsc:Jounarl_anul_Ctx LOCK
+			CDS UNLOCK dsc:Jounarl_anul_Ctx
+
+			if (tlr:INDtran_name != 0) then
+				// fin de la trx cancelada...
+				call csr:dt_tran DT_TRAN_END FLD:tlr:INDtran_name
+			endif
+			
+			CDS FINDNEXT dsc:Jounarl_anul_Ctx lock
+		end while
+		clearfield post:importe_sesion
+		clearfield post:Importe_sin_iva
+		clearfield post:pago_diferido //no se si vale la pena
+		//call post:CDSGraboImp_Presu
+		ungetkey RT_SEND
+
+		clearfield siaf:mensaje
+		
+		; demarco tx reversada automáticamente
+		RESETFLAG tlr:jnl_tran_flags,rev_automatica			
+
+
+		    /////////// fin del proceso ///////////
+		let FLD:siaf:INDscratch = OFB:post:MISCajusteUP
+		call csr:dt_tran DT_TRAN_END FLD:siaf:INDscratch
+		    ///////////////////////////////////////
+	
+		siaf:codigo_siaf = l_codigoSiaf
+		
+	endif
+	
+END SUB
+
+/*******/

@@ -1,0 +1,177 @@
+/****o* Facturación/OFB:post:MISCRestauro_DifNewP
+* NOMBRE
+*   OFB:post:MISCRestauro_DifNewP
+* DESCRIPCION
+*   Esta rutina restaura las diferencias en la Nueva PresuDet, para que la DifFact se genere
+*   bien. 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCbloqueDir
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCRestauro_DifNewP
+LOCAL cont LIKE cant_opc
+LOCAL l_codigo_siaf LIKE siaf:codigo_siaf
+
+    CDS SELECT FROM "PresuDet" BECOMES DSC:PRESU_DES_CON \
+    WHERE post:op_operator_id == op:op_operator_id && \
+	post:PresNro == post:PresNro && \
+    	post:fecha   == common:system_date && \
+    	siaf:adt_tran_fliatran != "PCL" && \
+    	siaf:adt_tran_fliatran != "SVC" && \
+    	siaf:adt_tran_fliatran != "TES"
+  
+    do
+        CDS FINDNEXT DSC:PRESU_DES_CON LOCK
+        If ( CdsRetval != 0 )
+            CDS UNLOCK DSC:PRESU_DES_CON
+            Cds endselect DSC:PRESU_DES_CON
+            Break
+        Endif
+        clearfield siaf:adt_tran_fliatran
+        cds extract DSC:PRESU_DES_CON siaf:adt_tran_fliatran
+        CDS CLEARBUFFER DSC:PRESU_DES_CON
+            
+            //borro todos los campos que extraje
+            clearfield post:cod_dif_aplicada
+            clearfield post:dif_calculada 
+            clearfield post:imp_bloques_siva
+            clearfield post:cant_opc
+            call csr:cleararray(post:siniva_opc)
+            call csr:cleararray(post:dif_opc)
+            clearfield post:GestSinIva 
+            clearfield post:EnPol_IvaGestEn
+            clearfield post:PresSinIva
+            clearfield post:EnPol_IvaPresAd
+            clearfield giros:ComisionSinIva_fld
+            clearfield giros:IvaComision_fld
+            clearfield giros:TasaSinIva_fld
+            clearfield giros:IvaTasa_fld
+            clearfield post:dif_calculada_tasa
+            clearfield post:ImporteIva
+            clearfield post:ImporteSinIva 
+            
+            cds extract DSC:PRESU_DES_CON post:cod_dif_aplicada  \
+            siaf:codigo_siaf into l_codigo_siaf
+            //MFM - 2021 - Se agrega tratamiento para VAP
+            if (siaf:adt_tran_fliatran == "CST" || siaf:adt_tran_fliatran == "CSE" || \
+            	siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "VAP") then
+              /* no es necesario restaurar porque los importes sin iva de los bloques y
+              opcionales se estan recalculando en base al imp con iva que no tiene diferencias 
+              para grabarlos en la nueva presudet. Ver CDSact_presu_tt_NC
+                cds extract DSC:PRESU_DES_CON post:imp_bloques_siva \
+                post:dif_calculada 
+                if (post:cod_dif_aplicada == "BLQ") then
+                    post:imp_bloques_siva = post:imp_bloques_siva + post:dif_calculada
+                endif*/
+                /*el del servicio no porque se vuelve a desglosar antes de armar la DifFact
+                tomando el imp con iva que no tiene diferencias
+                if (post:cod_dif_aplicada == "SERV") then
+                    tele:imp_siniva_serv = tele:imp_siniva_serv + post:dif_calculada
+                endif*/
+                
+                //los tengo que appendear vacios!!!!
+                clearfield post:dif_calculada
+                cds append DSC:PRESU_DES_CON \
+                post:dif_calculada
+                //post:imp_bloques_siva  
+                
+            endif
+            if (siaf:adt_tran_fliatran == "CST" || siaf:adt_tran_fliatran == "CSP" || \
+                siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CSM") then
+                /* VAP no tiene opcionales || siaf:adt_tran_fliatran == "VAP") then*/ 
+                cont = 0
+             
+                cds extract dsc:PRESU_DES_CON post:cant_opc
+                WHILE (cont < cant_opc)
+                
+                    cds extract DSC:PRESU_DES_CON  post:dif_opc[cont] 
+                    //post:siniva_opc[cont]
+                    
+//                    siniva_opc[cont] = siniva_opc[cont] + dif_opc[cont]
+                    
+                    //lo tengo que appendear vacio!!!!
+                    clearfield post:dif_opc[cont]
+                    cds append DSC:PRESU_DES_CON post:dif_opc[cont]
+                    //siniva_opc[cont] 
+                    
+                    cont = cont + 1
+                END WHILE
+            endif
+            if (siaf:adt_tran_fliatran == "TAV") then
+               if (l_codigo_siaf == 99124)
+                cds extract DSC:PRESU_DES_CON post:GestSinIva post:EnPol_IvaGestEn \
+                post:PresSinIva post:EnPol_IvaPresAd post:dif_calculada
+                if (post:dif_calculada.numchars > 0) then
+                    if (post:cod_dif_aplicada == "GEST") then
+                        post:GestSinIva = post:GestSinIva - post:dif_calculada
+                        post:EnPol_IvaGestEn = post:EnPol_IvaGestEn + post:dif_calculada
+                         clearfield post:dif_calculada
+                        cds append DSC:PRESU_DES_CON GestSinIva EnPol_IvaGestEn  post:dif_calculada
+                    endif
+                    if (post:cod_dif_aplicada == "PRES") then
+                        post:PresSinIva =  post:PresSinIva + post:dif_calculada
+                        post:EnPol_IvaPresAd = post:EnPol_IvaPresAd - post:dif_calculada
+                        clearfield post:dif_calculada
+                        cds append DSC:PRESU_DES_CON PresSinIva EnPol_IvaPresAd post:dif_calculada
+                    endif
+                endif
+               endif
+            endif
+            
+            if (siaf:adt_tran_fliatran == "CSM") then
+                cds extract DSC:PRESU_DES_CON giros:ComisionSinIva_fld giros:IvaComision_fld \
+                giros:TasaSinIva_fld giros:IvaTasa_fld post:dif_calculada_tasa \
+                post:dif_calculada 
+                
+                if (post:dif_calculada.numchars > 0) then
+                    giros:ComisionSinIva_fld = giros:ComisionSinIva_fld + post:dif_calculada
+                    
+                    giros:IvaComision_fld = giros:IvaComision_fld - post:dif_calculada
+                    clearfield post:dif_calculada
+                     cds append DSC:PRESU_DES_CON giros:ComisionSinIva_fld giros:IvaComision_fld \
+                    post:dif_calculada 
+                endif
+                
+                if (post:dif_calculada_tasa.numchars > 0) then
+                    giros:TasaSinIva_fld = giros:TasaSinIva_fld + post:dif_calculada_tasa
+                    giros:IvaTasa_fld = giros:IvaTasa_fld - post:dif_calculada_tasa
+                    
+                    clearfield post:dif_calculada_tasa
+                    cds append DSC:PRESU_DES_CON giros:TasaSinIva_fld giros:IvaTasa_fld \
+                    post:dif_calculada_tasa
+                endif
+            endif
+            
+            if (siaf:adt_tran_fliatran == "CME" || (siaf:adt_tran_fliatran == "CSV" && l_codigo_siaf != 6900) )
+            /*|| \
+            siaf:adt_tran_fliatran == "CSE" || siaf:adt_tran_fliatran == "CSP") then*/
+                    cds extract DSC:PRESU_DES_CON post:ImporteIva post:ImporteSinIva post:dif_calculada 
+                    if (dif_calculada.numchars > 0) then
+                        post:ImporteSinIva = post:ImporteSinIva + dif_calculada
+                        post:ImporteIva = post:ImporteIva - dif_calculada
+                        clearfield post:dif_calculada
+                        cds append DSC:PRESU_DES_CON post:ImporteSinIva post:ImporteIva post:dif_calculada 
+                    endif
+            endif
+            clearfield post:cod_dif_aplicada
+            cds append DSC:PRESU_DES_CON post:cod_dif_aplicada
+            CDS FINDAGAIN DSC:PRESU_DES_CON LOCK
+            cds UPDATE DSC:PRESU_DES_CON LOCK
+
+    loop        
+   
+
+
+END SUB 
+
+/*******/

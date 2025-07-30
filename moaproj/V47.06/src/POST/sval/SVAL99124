@@ -1,0 +1,188 @@
+/****o* Pendientes de agrupación/OFB:post:SVAL99124
+* NOMBRE
+*   OFB:post:SVAL99124
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99124
+
+	if (!testflag(tlr:controla_firma,cancelacion)) then
+		giros:hora_viaje = siaf:hora
+		giros:dia_viaje = siaf:fecha
+		call post:CDSobtiene_secuen("STAN")
+	end if
+	
+	if (post:EnPol_Boton == 2 || post:EnPol_Boton == 4) then
+		clearfield drv:INDhcomm_rtn
+		clearfield drv:INDspc_rtn[1]
+	end if
+
+	/* Manejo de Pantallas */
+	SELECT (drv:screen_active)	
+	case 0
+		/* Verifico que se haya ingresado el T&T o la poliza */
+		IF (EnPol_Track.NUMCHARS == 0 && EnPol_Poliza.NUMCHARS == 0) || \
+		   (EnPol_Track.NUMCHARS != 0 && EnPol_Poliza.NUMCHARS != 0) then
+			MSGBOX "DEBE INGRESAR EL T&T O EL NRO. DE POLIZA",0X00,"ERROR"
+			RETURN (-2)
+		END IF
+		/* Estoy en la pantalla de Consulta */
+		drv:next_screen = 1
+
+		/* Recupero Caidas en vuelo pendientes y */
+		/*Verifico si la Poliza está en Oasis y traigo los datos */
+		CALL MISCEnPol_enOasis
+		resetflag giros:tran_send_mode,consulta_simple
+		IF (RETVAL < 0) THEN
+		        RETURN (-1)
+  		END IF
+		PROTFIELD EnPol_Poliza
+		protfield EnPol_Track
+		BREAK
+	case 1
+		/* Estoy en la pantalla en que me trajo los datos y debo elegir una acción */
+		IF (EnPol_Boton == 0) THEN
+			MSGBOX "DEBE PULSAR ALGUNO DE LOS BOTONES PARA CONTINUAR O <ESC> PARA SALIR",0X00,"ERROR"
+			RETURN (-2)
+		ELSE
+			IF (EnPol_Boton != 4) THEN
+				/* Eligió Cobranza, Entrega o Ambas cosas */
+				drv:next_screen = 2
+			ELSE
+				/* Eligió Observación */
+				siaf:codigo_siaf = 99012
+				siaf:adt_tran_codigo = 99012
+				tlr:tran_mnemonic = "PZAOBS"
+				siaf:nombre_transac = "DETALLE DE PIEZAS OBSERVADAS"
+				/* Completo los campos de la pantalla de Observación */
+				Pieza = EnPol_Track
+				//mot_piezas_observ = "RECHAZADO"
+				//desc_piezas_observ = "ENDAS CON POLIZA"
+				drv:next_screen = 2
+			END IF
+			BREAK
+		END IF
+	case 2
+		/* Estoy en la pantalla de Cobro u Observacion */
+		/*Si eligiò Entrega u Observacion no viaja al switch, blanqueo campos SND y RCVE */
+		if (EnPol_Boton == 2 || EnPol_Boton == 4) then
+			hcomm:INDhost_sndrt = 0
+			hcomm:INDhost_rcvrt = 0
+		end if
+	
+		if (EnPol_Boton == 1 || EnPol_Boton == 3) then
+			
+			if (post:estado_presu == 2 || post:estado_presu == 3) then
+				/* Envio la consulta del cobro */
+				call post:MISCenvio_c_poliza
+				if (retval < 0) then
+					return -2
+				else
+					msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+					if (retval == 7) then
+						return (-2)
+					end if
+				end if
+			end if
+			
+			IF (estado_presu == 4)			
+			    post:consulta_poliza = 0
+			    giros:codigo_procesamiento = 998004
+				if (!testflag(tlr:controla_firma,cancelacion)) then
+					giros:hora_viaje = siaf:hora
+					giros:dia_viaje  = siaf:fecha
+					Call post:CDSobtiene_secuen("STAN")
+				end if
+	
+			end if
+	
+		else
+			clearfield giros:codigo_procesamiento
+		end if
+	
+
+		//Si es entrega pido datos Receptor
+		IF ((EnPol_Boton == 2 || EnPol_Boton == 3) && estado_presu == 4)
+			post:Pieza = EnPol_Track
+			CLEARFIELD ApelNom_Entrega
+    	    POPUP SCRNapell_EntrPie
+    	    WHILE (LASTKEY == 0x190)
+    	        CLEARFIELD ApelNom_Entrega
+    	        POPUP SCRNapell_EntrPie
+    	    END WHILE
+		END IF
+
+		/*Se cargan los vectores correspondientes para el Cálculo de 
+		Ingresos Brutos*/
+		call csr:cleararray(post:fliatran_vec)
+		call csr:cleararray(post:impciva_vec)
+		call csr:cleararray(post:impsiva_vec)
+		call giros:MISCsumo_a_vectores(siaf:adt_tran_fliatran,EnPol_ImpPresAd,PresSinIva)
+		call giros:MISCsumo_a_vectores(siaf:adt_tran_fliatran,EnPol_ImpGestEn,GestSinIva)
+
+		CALL MISCAcumTotalesSes
+		CALL MISCGrabaDetalleTrn
+		CALL MISCTotalTransac(siaf:adt_tran_codigo)
+		BREAK
+	END SELECT
+	/* Journalizo solo la pantalla de Cobro */
+	tlr:INDdcol_scrn[0] = SCR:SCRN99124cobr 
+
+	/* Desprotejo estos campos porque son de la pantalla de Observacion Original */
+	IF (estado_presu == 4) THEN
+		UNPROTFIELD Pieza
+		UNPROTFIELD mot_piezas_observ
+		UNPROTFIELD desc_piezas_observ
+		giros:consulta = consulta_poliza
+	END IF
+
+	/* Si Observo una pieza debo actualizar stockp */
+	IF (EnPol_Boton == 4 && estado_presu == 4) THEN
+		/* Modifico stockp */
+		adt_stockp_pieza = EnPol_Track
+		adt_stockp_est_ent = EnPol_est_ent
+		CALL CDSActualizo_Stockp
+		
+		
+		CLEARFIELD codseq_pie_obs
+		total_piezas_observ = 1
+		drv:INDjnl_rtn = OFB:JNLPiezas_Obs_Det
+		CLEARFIELD drv:INDspc_rtn[0] // No totaliza la Observacion
+
+		
+	END IF
+	
+
+
+	/* Si es Entrega */
+	IF (EnPol_Boton == 2 && estado_presu == 4) THEN
+		// No totaliza
+		CLEARFIELD drv:INDspc_rtn[0]
+		Pieza = EnPol_Track
+		post:stockp_solo_entrega = "S"
+		// Actualizao stockp
+		CALL CDSgrabo_EP_stockp
+	END IF
+	
+	/* Si Entrego una pieza debo actualizar stockp */
+	/*IF (EnPol_Boton == 3 && estado_presu == 4) THEN
+		Pieza = EnPol_Track
+		post:stockp_solo_entrega = "N"
+		CALL CDSgrabo_EP_stockp
+	END IF*/
+END SUB
+
+/*******/

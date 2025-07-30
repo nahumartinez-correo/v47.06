@@ -1,0 +1,347 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISClst_RepCREM
+* NOMBRE
+*   OFB:post:MISClst_RepCREM
+* DESCRIPCION
+*   Graba en un archivo el Reporte CREM Cliente Mayorista con Cobro por CT.
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCrepCREM
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_RepCREM(link_num,p_out,p_fechah_CCT)
+	LOCAL l_out LIKE common:csr_string
+	LOCAL l_err_cds LIKE lib:err_retval
+	LOCAL line_csr_aux LIKE common:csr_string_aux
+	LOCAL clave_TR LIKE common:csr_string_aux  //TR: tipo de rendicion
+	LOCAL clave_TR_ant LIKE common:csr_string_aux
+	LOCAL clave_CTAOM LIKE common:csr_string_aux
+	LOCAL clave_CTAOM_ant LIKE common:csr_string_aux
+	LOCAL clave_COMIT LIKE common:csr_string_aux
+	LOCAL clave_COMIT_ant LIKE common:csr_string_aux
+	LOCAL l_rep_cupon_rend_fis LIKE post:rep_cupon_rend_fis
+	LOCAL l_rep_cupon_cta_om LIKE post:rep_cupon_cta_om
+	LOCAL l_rep_cupon_comit LIKE post:rep_cupon_comitente
+	LOCAL l_rep_comit_impre LIKE post:rep_cupon_comitente
+	LOCAL l_rep_cupon_comitent LIKE post:rep_cupon_comitente
+	LOCAL l_rep_cupon_comit_de LIKE post:rep_cupon_comit_desc
+	LOCAL l_rep_cupon_id_cupon LIKE post:rep_cupon_id_cupon
+	LOCAL l_Pieza LIKE post:Pieza
+	LOCAL l_es_CDD LIKE post:es_CDD
+	LOCAL l_rep_cupon_imp_cob LIKE post:rep_cupon_imp_cob
+	LOCAL l_cuponTot LIKE siaf:i
+	LOCAL l_cuponTot_TR LIKE siaf:i
+	LOCAL l_cuponTot_GRAL LIKE siaf:i    
+	LOCAL l_Importe LIKE post:importeSuma
+	LOCAL l_ImporteTot LIKE post:importeSuma
+	LOCAL l_ImporteTot_str LIKE common:csr_string
+	LOCAL l_ImporteTot_TR LIKE post:importeSuma
+	LOCAL l_ImporteTot_TR_str LIKE common:csr_string
+	LOCAL l_ImporteTot_GRAL LIKE post:importeSuma
+	LOCAL l_jnl_operator LIKE post:cupon_tmp_operator
+	LOCAL l_jnl_date LIKE tlr:jnl_date
+	LOCAL l_jnl_branch LIKE tlr:jnl_branch
+	LOCAL l_fecha LIKE common:csr_string
+	LOCAL l_post_horiz LIKE post:etiq_ref_horiz
+	LOCAL l_tope LIKE siaf:i
+	LOCAL l_dife LIKE siaf:i
+	LOCAL l_comit LIKE post:rep_cupon_comitente
+	LOCAL l_fechah_CCT LIKE common:csr_string    
+    
+	l_cuponTot = 0
+	l_cuponTot_TR = 0
+	l_cuponTot_GRAL = 0
+	l_Importe = 0
+	l_ImporteTot = 0
+	l_ImporteTot_TR = 0
+	l_ImporteTot_GRAL = 0
+	l_tope = 7
+    
+	LET l_out = p_out
+	LET l_fechah_CCT = p_fechah_CCT 
+	
+	CDS FINDFIRST DSC:cupon_rep_ctx NOLOCK
+	LET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == -801) THEN
+		CDS ENDSELECT DSC:cupon_rep_ctx
+		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+		IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "NO HAY MOVIMIENTOS DE CREM CLIENTE MAYORISTA CON COBRO POR CT A REPORTAR",0x00,"Aviso"
+			END IF
+			RETURN (-2)
+		END IF 
+
+    CDS EXTRACT DSC:cupon_rep_ctx \
+			post:rep_cupon_rend_fis INTO l_rep_cupon_rend_fis \
+			post:rep_cupon_cta_om INTO l_rep_cupon_cta_om \
+			post:rep_cupon_comitente INTO l_rep_cupon_comitent \
+			post:rep_cupon_comit_desc INTO l_rep_cupon_comit_de \
+			post:rep_cupon_id_cupon INTO l_rep_cupon_id_cupon \
+			post:Pieza INTO l_Pieza \
+			post:es_CDD INTO l_es_CDD \
+			post:rep_cupon_imp_cob INTO l_rep_cupon_imp_cob \
+			tlr:jnl_branch INTO l_jnl_branch \
+			tlr:jnl_date INTO l_jnl_date \
+			tlr:jnl_operator INTO l_jnl_operator
+
+    CLEARFIELD clave_TR
+    FPRINT clave_TR "%-9.9s", l_rep_cupon_rend_fis  
+    clave_TR_ant = clave_TR 
+
+    CLEARFIELD clave_CTAOM
+    FPRINT clave_CTAOM "%-10.10s", l_rep_cupon_cta_om               
+    clave_CTAOM_ant = clave_CTAOM
+    
+    CLEARFIELD clave_COMIT
+    FPRINT clave_COMIT "%-10.10s", l_rep_cupon_comitent
+    clave_COMIT_ant = clave_COMIT
+    
+    WHILE (lib:err_retval == 0)
+    
+			IF (clave_TR == 0) THEN
+				IF (l_out != "P") THEN	        
+					FPRINT line_csr_aux, "<txS>90</txS><st>3</st>TIPO DE RENDICION: Sin control fisico"
+				ELSE
+					FPRINT line_csr_aux, "TIPO DE RENDICION: Sin control fisico"  	        
+				END IF
+			ELSE
+				IF (l_out != "P") THEN	  
+					IF (siaf:lineas_cl > 61) THEN
+						siaf:lineas_cl = siaf:lineas_cl + 1
+					END IF   	            
+					FPRINT line_csr_aux, "<txS>90</txS><st>3</st>TIPO DE RENDICION: Con control fisico"
+				ELSE      
+					FPRINT line_csr_aux, "TIPO DE RENDICION: Con control fisico"
+				END IF        
+			END IF
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+        
+        WHILE (lib:err_retval == 0 && clave_TR == clave_TR_ant)
+
+					WHILE (lib:err_retval == 0 && clave_CTAOM == clave_CTAOM_ant && clave_COMIT == clave_COMIT_ant) 
+						CLEARFIELD line_csr_aux
+						IF (l_out != "P") THEN
+						IF (siaf:lineas_cl > 60) THEN
+							siaf:lineas_cl = siaf:lineas_cl + 2
+						END IF                                       		
+							FPRINT line_csr_aux "<txS>90</txS><st>3</st>COMITENTE: %10.10s - %10.10s - %-35.35s" , l_rep_cupon_cta_om, l_rep_cupon_comitent, l_rep_cupon_comit_de
+						ELSE
+							FPRINT line_csr_aux "COMITENTE: %10.10s - %10.10s - %-35.35s" , l_rep_cupon_cta_om, l_rep_cupon_comitent, l_rep_cupon_comit_de
+						END IF
+						CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+						
+						WHILE (lib:err_retval == 0 && clave_COMIT == clave_COMIT_ant && clave_CTAOM == clave_CTAOM_ant) 
+							//Linea detalle
+							CLEARFIELD line_csr_aux
+
+							/* FORMATO DETALLE
+							ID DE CUPON                                            PIEZA             IMPORTE   CDD  OPERADOR"
+							12345678901234567890123456789012345678901234567890 1234567890123 12.456.890.234,67  S      12345
+							*/
+							FPRINT line_csr_aux "%-50.50s %-13.13s %17.17e  %-1.1s      %5.5e" \
+								l_rep_cupon_id_cupon, l_Pieza, l_rep_cupon_imp_cob, l_es_CDD, l_jnl_operator
+							CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)		                 		
+                
+             //Actualizo totales
+             l_cuponTot = l_cuponTot +1
+             l_ImporteTot = l_ImporteTot + l_rep_cupon_imp_cob
+		                 
+						CDS FINDNEXT DSC:cupon_rep_ctx NOLOCK
+						lib:err_retval = CDSRETVAL
+						IF (lib:err_retval == 0) THEN
+							CDS EXTRACT DSC:cupon_rep_ctx \
+								post:rep_cupon_rend_fis INTO l_rep_cupon_rend_fis \
+								post:rep_cupon_cta_om INTO l_rep_cupon_cta_om \
+								post:rep_cupon_comitente INTO l_rep_cupon_comitent \
+								post:rep_cupon_comit_desc INTO l_rep_cupon_comit_de \
+								post:rep_cupon_id_cupon INTO l_rep_cupon_id_cupon \
+								post:Pieza INTO l_Pieza \
+								post:es_CDD INTO l_es_CDD \
+								post:rep_cupon_imp_cob INTO l_rep_cupon_imp_cob \
+								tlr:jnl_branch INTO l_jnl_branch \
+								tlr:jnl_date INTO l_jnl_date \
+								tlr:jnl_operator INTO l_jnl_operator
+								
+							CLEARFIELD clave_TR
+							FPRINT clave_TR "%-9.9s", l_rep_cupon_rend_fis
+							CLEARFIELD clave_CTAOM
+							FPRINT clave_CTAOM "%-10.10s",l_rep_cupon_cta_om
+							CLEARFIELD clave_COMIT
+							FPRINT clave_COMIT "%-10.10s", l_rep_cupon_comitent
+						END IF
+						IF (clave_TR != clave_TR_ant) THEN
+							BREAK
+						END IF
+					END WHILE
+         	CLEARFIELD line_csr_aux	      
+					FPRINT line_csr_aux,\
+						"                    Total de cupones: %5.5s     Importe total:   %17.17e", l_cuponTot, l_ImporteTot
+					CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+					l_fecha = SUBSTR(l_fechah_CCT,2,6)
+					LET l_ImporteTot_str = (l_ImporteTot * 100)
+					LET l_rep_cupon_comit = clave_COMIT_ant
+					CALL CSR:trimfield(l_rep_cupon_comit)
+					//Observación-10336
+					LET l_rep_comit_impre = l_rep_cupon_comit	               
+					//Controlo que la variable COMITENTE para no supere los 7 caracteres
+					IF (l_rep_cupon_comit.NUMCHARS > l_tope) THEN
+					l_dife = l_rep_cupon_comit.NUMCHARS - l_tope
+					l_comit = SUBSTR(l_rep_cupon_comit,l_dife,l_tope)
+					LET l_rep_comit_impre = l_comit
+				END IF
+				CALL post:MISCpadNmb(l_rep_comit_impre,7,"0")
+				CALL post:MISCpadNmb(l_cuponTot,4,"0")
+				CALL post:MISCpadNmb(l_ImporteTot_str,13,"0")	
+
+				IF (l_out != "P") THEN
+					IF (siaf:lineas_cl > 61) THEN
+						siaf:lineas_cl = siaf:lineas_cl + 1
+					END IF                   
+					CLEARFIELD line_csr_aux
+					
+					CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+					
+					//Observación-10336
+					FPRINT line_csr_aux,\
+						"<txS>115</txS><txF>3 of 9 Barcode</txF>%s%1.1s%5s%6s%7s%4s%13s%s","*",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot,l_ImporteTot_str,"*"
+					CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+					
+					CLEARFIELD line_csr_aux
+					//Observación-10336
+					FPRINT line_csr_aux,\
+						"<st>0</st><txS>100</txS><txF>Courier New</txF>%1.1s%5s%6s%7s%4s%13s",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot,l_ImporteTot_str
+					CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)  
+				ELSE
+					//Observación-10336
+					FPRINT line_csr_aux,\
+						"%1.1s%5s%6s%7s%4s%13s",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot,l_ImporteTot_str
+					CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)                       
+				END IF	               
+             
+				clave_COMIT_ant = clave_COMIT
+				l_cuponTot_TR = l_cuponTot_TR + l_cuponTot    
+				l_ImporteTot_TR = l_ImporteTot_TR + l_ImporteTot                        
+				l_ImporteTot = 0
+				l_cuponTot = 0
+				IF (clave_TR != clave_TR_ant) THEN
+					BREAK
+				END IF 
+			END WHILE
+			clave_CTAOM_ant = clave_CTAOM
+              
+		END WHILE
+		IF (lib:err_retval == 0) THEN
+			clave_TR_ant = clave_TR 
+			CLEARFIELD line_csr_aux
+			FPRINT line_csr_aux,\
+				"                                                                                                                      "
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+	        
+			CLEARFIELD line_csr_aux
+			IF (l_out != "P") THEN
+				IF (siaf:lineas_cl > 61) THEN
+					siaf:lineas_cl = siaf:lineas_cl + 1
+				END IF
+				FPRINT line_csr_aux,\
+						"<txS>100</txS><st>3</st>    Total de cupones según rendicion: %5.5s     Importe total:   %17.17e", l_cuponTot_TR, l_ImporteTot_TR
+			ELSE
+				FPRINT line_csr_aux,\
+					"    Total de cupones según rendicion: %5.5s     Importe total:   %17.17e", l_cuponTot_TR, l_ImporteTot_TR
+			END IF                   		
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)	         
+
+			CLEARFIELD line_csr_aux
+			FPRINT line_csr_aux,\
+				"------------------------------------------------------------------------------------------------"
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)  
+			
+			l_cuponTot_GRAL = l_cuponTot_GRAL + l_cuponTot_TR		
+			l_ImporteTot_GRAL = l_ImporteTot_GRAL + l_ImporteTot_TR	
+			l_cuponTot_TR = 0
+			l_ImporteTot_TR = 0	   
+		END IF
+		l_cuponTot_GRAL = l_cuponTot_GRAL + l_cuponTot_TR		
+		l_ImporteTot_GRAL = l_ImporteTot_GRAL + l_ImporteTot_TR			
+
+	END WHILE
+
+	IF (l_out != "P") THEN
+		IF (siaf:lineas_cl > 55) THEN
+			siaf:lineas_cl = siaf:lineas_cl + 7
+		END IF        
+		FPRINT line_csr_aux,\
+			"<txS>100</txS><st>3</st>    Total de cupones según rendicion: %5.5s     Importe total:   %17.17e", l_cuponTot_TR, l_ImporteTot_TR	
+	ELSE
+		FPRINT line_csr_aux,\
+			"    Total de cupones según rendicion: %5.5s     Importe total:   %17.17e", l_cuponTot_TR, l_ImporteTot_TR
+	END IF
+	CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)	         
+
+	//Arreglo AUT-1902
+	CALL csr:trimfield(clave_TR_ant)
+	IF (clave_TR_ant == 1) THEN //RENDICION CON CONTROL FISICO
+		//Imprime codigo de barra de los totales de rendicion con control fisico.
+		l_fecha = SUBSTR(l_fechah_CCT,2,6)
+		LET l_ImporteTot_TR_str = (l_ImporteTot_TR * 100)
+		clave_TR_ant = "2"
+		l_rep_comit_impre = ""
+		//Observación-10336
+		CALL post:MISCpadNmb(l_rep_comit_impre,7,"0")
+		CALL post:MISCpadNmb(l_cuponTot_TR,4,"0")
+		CALL post:MISCpadNmb(l_ImporteTot_TR_str,13,"0")	
+
+		IF (l_out != "P") THEN
+			IF (siaf:lineas_cl > 61) THEN
+				siaf:lineas_cl = siaf:lineas_cl + 1
+			END IF 
+			CLEARFIELD line_csr_aux
+			
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+			
+			//Observación-10336            
+			FPRINT line_csr_aux,\
+				"<txS>115</txS><txF>3 of 9 Barcode</txF>%s%1.1s%5s%6s%7s%4s%13s%s","*",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot_TR,l_ImporteTot_TR_str,"*"
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+			CLEARFIELD line_csr_aux
+			//Observación-10336
+			FPRINT line_csr_aux,\
+				"<st>0</st><txS>100</txS><txF>Courier New</txF>%1.1s%5s%6s%7s%4s%13s",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot_TR,l_ImporteTot_TR_str            
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)         
+			CLEARFIELD line_csr_aux
+		ELSE
+			//Observación-10336
+			FPRINT line_csr_aux,\
+				"%1.1s%5s%6s%7s%4s%13s",clave_TR_ant,l_jnl_branch,l_fecha,l_rep_comit_impre,l_cuponTot_TR,l_ImporteTot_TR_str
+			CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)    
+		END IF
+	END IF   
+
+  CLEARFIELD line_csr_aux
+  FPRINT line_csr_aux,\
+  "------------------------------------------------------------------------------------------------"
+  CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)    
+
+  CLEARFIELD line_csr_aux
+  IF (l_out != "P") THEN
+		FPRINT line_csr_aux,\
+			"<txS>100</txS><st>3</st>            Total general de cupones: %5.5s     Total General:   %17.17e", l_cuponTot_GRAL, l_ImporteTot_GRAL	
+  ELSE
+	  FPRINT line_csr_aux,\
+	  	"    Total general de cupones:         %5.5s     Total General:   %17.17e", l_cuponTot_GRAL, l_ImporteTot_GRAL
+  END IF
+  CALL post:MISCwrite_file_CCT(link_num,line_csr_aux)
+      
+  CDS UNLOCK DSC:cupon_rep_ctx
+  CDS ENDSELECT DSC:cupon_rep_ctx
+
+END SUB
+
+/*******/

@@ -1,0 +1,93 @@
+/****o* Sesion Correo/OFB:post:CDStot_ses_presudet
+* NOMBRE
+*   OFB:post:CDStot_ses_presudet
+* DESCRIPCION
+*   Recalcula el Importe Total de la Sesion en base a las tx de la Tabla PresuDet
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:captura_medpagos,OFB:post:PRESestado_presu,OFB:post:calculo_subtot_presu 
+*	OFB:post:MISCtratam_redondeo,OFB:post:MISCgrilla_sesion
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDStot_ses_presudet
+local loc_importe_suma	like siaf:importe
+local loc_importe_resta like siaf:importe
+local loc_importe_giros like siaf:importe
+local loc_codigo_siaf   like siaf:codigo_siaf
+
+//cgw: No considero en total de la sesion,el importe de Emision Giro Masivo (70610),
+//      si las trx's. tienen cheques acreditados
+IF (post:chq_acre_GM.numchars > 0) THEN
+	loc_codigo_siaf = 70610
+ELSE
+	clearfield loc_codigo_siaf
+END IF
+//50295
+IF (testflag(giros:giros_importacion,proc_em_lg)) THEN
+	loc_codigo_siaf = 70650
+ENDIF
+
+// Sumo las trx's que suman...
+CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:PresuDet_ctx \
+	WHERE post:fecha == common:system_date && \
+		  post:op_operator_id == op:op_operator_id && \
+		  post:PresNro == post:PresNro && \
+		  siaf:adt_tran_afec_efvo == "+" && \
+		  siaf:codigo_siaf != loc_codigo_siaf && \
+		  (PreDEst == 1 || PreDEst == 2)
+
+if (cdsretval == 0) then
+	CDS AGGREGATE DSC:PresuDet_ctx SUM siaf:importe
+	if (cdsretval == 0) then
+		CDS EXTRACT DSC:PresuDet_ctx siaf:importe INTO loc_importe_suma
+	endif
+endif
+
+// Sumo las trx's que restan...
+CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:PresuDet_ctx \
+	WHERE post:fecha == common:system_date && \
+		  post:op_operator_id == op:op_operator_id && \
+		  post:PresNro == post:PresNro && \
+		  siaf:adt_tran_afec_efvo == "-" && \
+		  siaf:codigo_siaf != loc_codigo_siaf && \
+		  (PreDEst == 1 || PreDEst == 2)
+
+if (cdsretval == 0) then
+	CDS AGGREGATE DSC:PresuDet_ctx SUM siaf:importe
+	if (cdsretval == 0) then
+		CDS EXTRACT DSC:PresuDet_ctx siaf:importe INTO loc_importe_resta
+	endif
+endif
+
+/*COMBOS DE PRODUCTOS: Sumo los importes de los giros en caso de que pertenezcan a combos*/
+CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:PresuDet_ctx \
+	WHERE	post:fecha == common:system_date && \
+			post:op_operator_id == op:op_operator_id && \
+			post:PresNro == post:PresNro && siaf:adt_tran_afec_efvo == "+" && \
+			siaf:adt_tran_fliatran == "CSM" && post:combo_nro > 0 && \
+			(giros:es_emision_postal == "S" || giros:es_emision_tele == "S" || \
+			 giros:es_envio_WU == "S") && \
+		   (PreDEst == 1 || PreDEst == 2)
+if (cdsretval == 0) then
+	CDS AGGREGATE DSC:PresuDet_ctx SUM giros:ImporteNeto
+	if (cdsretval == 0) then
+		CDS EXTRACT DSC:PresuDet_ctx giros:ImporteNeto INTO loc_importe_giros
+	endif
+endif
+
+CDS ENDSELECT DSC:PresuDet_ctx
+
+let post:importe = loc_importe_suma - loc_importe_resta + loc_importe_giros
+
+END SUB
+
+/*******/

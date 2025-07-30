@@ -1,0 +1,126 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCafip_parse_cb
+* NOMBRE
+*   OFB:siaf:MISCafip_parse_cb
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCafip_parse_cb(prm_gotvar)
+
+    ///////////////////////////////////////////////////////////
+    // Este OFB separa el campo que contiene todos los datos //
+    // que pudieron ser leidos del codigo de barras y guarda //
+    // cada dato en el campo mosaic donde sera journalizado. //
+    ///////////////////////////////////////////////////////////
+
+local varl_gotvar	like post:sf1_comprobante
+local varl_offset1	like siaf:idx
+local varl_offset2	like siaf:idx
+local varl_length	like siaf:idx
+local varl_data		like siaf:adt_afip_scralias
+local varl_value	like common:csr_string
+local FieldAppl 	like common:csr_string
+local FieldName 	like common:csr_string           
+local FieldSeparator 	like common:csr_string
+local FieldEnd 		like common:csr_string
+local lsPeriodo		like common:local_ascii
+       
+
+let varl_gotvar = prm_gotvar
+
+if (varl_gotvar.NUMCHARS <= 0) then
+   return (-1)
+end if
+
+do
+    clearfield varl_offset1
+    clearfield varl_offset2
+    clearfield varl_length
+
+    // busco la descripcion del dato
+    call csr:str_search(varl_gotvar,"|",varl_offset1)
+    if (retval == -1 && varl_gotvar.NUMCHARS > 0) then
+        let varl_offset1 = varl_gotvar.NUMCHARS
+        let retval = 0
+    end if
+    let varl_data = substr(varl_gotvar,0,varl_offset1)
+
+    // veo si estoy en el dato final y no tiene valor
+    let varl_offset1 = varl_offset1 + 1
+    if (varl_gotvar.NUMCHARS <= varl_offset1) then
+        break
+    end if
+
+    // busco el valor del dato
+    call csr:str_search(varl_gotvar,"|",varl_offset2,varl_offset1)
+    if (retval == -1) then
+        let varl_length = varl_gotvar.NUMCHARS - varl_offset1 + 1
+        let varl_value = substr(varl_gotvar,varl_offset1,varl_length)
+        let varl_offset2 = -1
+    else
+        let varl_length = varl_offset2 - varl_offset1
+        if (varl_length <= 0) then
+    	    clearfield varl_value
+        else
+            let varl_value = substr(varl_gotvar,varl_offset1,varl_length)
+        end if
+    end if
+
+    // busco el campo Mosaic donde debe ser guardado el valor del dato
+    CDS SELECT FROM "ParamAfip" BECOMES "CONparam" \
+        WHERE siaf:form_grupo == siaf:adt_form_grupo && \
+              siaf:adt_afip_scralias == varl_data
+    if (cdsretval == 0) then
+        CDS FINDFIRST "CONparam" NOLOCK 
+        if (cdsretval == 0) then
+            clearfield siaf:adt_afip_scralias
+            CDS EXTRACT "CONparam" siaf:adt_afip_scrcampo
+            if (cdsretval == 0) then
+               ;SMC obtengo tamanio del campo
+               let FieldEnd = siaf:adt_afip_scrcampo.numchars
+               ;SMC obtengo posicion del separador ":"
+               call csr:str_search (siaf:adt_afip_scrcampo,":",FieldSeparator,0)
+               ;SMC Asigno valores del nombre del FLD
+               move substr(siaf:adt_afip_scrcampo,0,FieldSeparator) to FieldAppl
+               let FieldSeparator = FieldSeparator + 1
+               move substr(siaf:adt_afip_scrcampo,FieldSeparator,FieldEnd) \
+                    to FieldName
+               ;SMC cargo la direccion del FLD en el campo IND
+               call csr:getofbindx(FieldAppl,FieldName, \
+                    FLD:post:INDCamposTablas, "FLD")
+               ;FGB cargo en el valor del campo FLD apuntado por el campo IND
+               ;    lo que saque del codigo de barras
+               ;(Asignacion Indirecta)
+               call csr:ind_assign (FLD:post:INDCamposTablas,varl_value)
+            end if
+        end if
+    end if
+    // elimino el dato ya cargado
+    let varl_offset2 = varl_offset2 + 1
+    if (varl_offset2 <= 0) then
+        // no hay mas pipes
+        break
+    end if
+    let varl_length = varl_gotvar.NUMCHARS - varl_offset2
+    if (varl_length < 0) then 
+        // ya no hay nada
+        break
+    end if
+    fprint varl_gotvar "%s" substr(varl_gotvar,varl_offset2,varl_length)
+loop
+
+END SUB
+
+/*******/

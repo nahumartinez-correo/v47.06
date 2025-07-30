@@ -1,0 +1,139 @@
+/****o* Reportes/OFB:post:MISCirregu_ser_suc
+* NOMBRE
+*   OFB:post:MISCirregu_ser_suc
+* DESCRIPCION
+*   Reporte Irregularidades - Salida a Empresa Recaudadora por Sucursal.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No existe ninguna irregularidad en el periodo seleccionado.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TOTSirregula
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirregu_ser_suc
+	/*Salida a Empresa Recaudadora (por Sucursal)*/
+    LOCAL oper_irre LIKE tlr:jnl_operator
+    LOCAL cant_monedas LIKE siaf:importe
+    LOCAL cant_billetes LIKE siaf:importe
+    LOCAL i LIKE tes:tes_moneda
+    LOCAL loc_modif LIKE post:cant_barras
+
+	loc_modif = 0
+	oper_irre = -1           
+
+    //cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+    CDS FINDAGAIN DSC:tlr:CONjscn NOLOCK
+
+    While (CDSRETVAL == 0)
+	    cds extract DSC:tlr:CONjscn \
+	    siaf:jnl_codigo_siaf \
+	    tlr:jnl_operator
+
+        IF (oper_irre != tlr:jnl_operator) THEN
+            oper_irre = tlr:jnl_operator
+            //cgw:NI50276 - Imprime Operador.
+            post:operator_irre = oper_irre
+            CALL post:MISCencab_oper_irre
+        END IF
+
+        IF ( siaf:jnl_codigo_siaf == " 8640"  ) THEN
+
+        	//cgw:CDS FINDAGAIN para prevenir no perder contexto, por uso de otros CDS SELECT de otras tablas.
+            CDS FINDAGAIN DSC:tlr:CONjscn NOLOCK
+
+            /* format scan display for journal record */
+	        CALL OFB:MISCjscn_cvt_flag
+	        CALL OFB:tlr:jscn_cvt_status
+	        CALL OFB:JSCNcustom_format
+            /* print scan display for journal record */
+
+            cds extract DSC:tlr:CONjscn  tes:importes[0] \
+            tes:importes[1] tes:importes[2] tes:importes[3] tes:importes[4] \
+            tes:importes[5] tes:importes[6] tes:importes[7] tes:importes[8] \
+            tes:importes[9] tes:importes[10] tes:importes[11] tes:importes[12]
+
+
+            /*se agrega la linea 3 para diferenciar la cantidad de importe
+            transferido el Billetes y transferido en monedas 06/08/1999 Daniel*/
+
+            cant_monedas = 0
+            cant_billetes = 0
+            i = -1
+
+            /*Seleccion para conocer de que tipo es el medio de pago moneda o billete*/
+
+            CDS SELECT FROM DSC:tes:den_mon_table BECOMES DSC:tes:den_mon_context \
+            WHERE tes:den_moneda == tes:den_moneda
+            CDS FINDFIRST DSC:tes:den_mon_context LOCK
+            LET lib:err_retval = CDSRETVAL
+            IF (lib:err_retval == -801) THEN
+                RETURN (-2)
+            END IF
+            CDS EXTRACT tes:den_mon_context \
+            tes:den_billete_moneda[0] tes:den_billete_moneda[1] tes:den_billete_moneda[2] \
+            tes:den_billete_moneda[3] tes:den_billete_moneda[4] tes:den_billete_moneda[5] \
+            tes:den_billete_moneda[6] tes:den_billete_moneda[7] tes:den_billete_moneda[8] \
+            tes:den_billete_moneda[9] tes:den_billete_moneda[10] tes:den_billete_moneda[11] \
+            tes:den_billete_moneda[12]
+            CDS UNLOCK DSC:tes:den_mon_context
+
+            /*calculo del importe en Billetes y monedas c/u por separado*/
+            DO
+                i = i + 1
+                if ( tes:den_billete_moneda[i] == "B" )
+                    cant_billetes = cant_billetes + tes:importes[i]
+                else
+                    cant_monedas = cant_monedas + tes:importes[i]
+                end if
+
+                if (i >12)
+                    BREAK
+                end if
+            LOOP
+
+            FPRINT tlr:jscn_ds_line7,"Importe Transferido en Monedas: %10.10s",cant_monedas
+            FPRINT tlr:jscn_ds_line8,"Importe Transferido en Billetes: %10.10s",cant_billetes
+
+            FPRINT common:csr_string," %s ",tlr:jscn_ds_line1
+            CALL MISCwrite_irre
+            FPRINT common:csr_string," %s ",tlr:jscn_ds_line2
+            CALL MISCwrite_irre
+            FPRINT common:csr_string," %s ",tlr:jscn_ds_line7
+            CALL MISCwrite_irre
+            FPRINT common:csr_string," %s ",tlr:jscn_ds_line8
+            CALL MISCwrite_irre
+            
+            loc_modif = 1
+
+        END IF
+	    CDS FINDNEXT DSC:tlr:CONjscn NOLOCK
+    EndWhile
+
+    IF (loc_modif == 0)
+        if (siaf:pantalla_impreso == "I") THEN
+        	//cgw: NI50276 - Por si son varios los operadores logueados sin irregularidades, y se imprime 
+        	//que no existe de ninguna irregularidad, como primera linea de detalle de la siguiente pagina.
+        	clearfield post:operator_irre 
+
+            //cgw:NI50276 - Imprime que no existen irregularidades en el periodo seleccionado.       	
+        	CALL post:MISCwrite_sin_irregu
+
+	        CALL post:MISCimprime_irregu
+	    else
+	        MSGBOX "NO EXISTE NINGUNA IRREGULARIDAD EN EL PERIODO SELECCIONADO",0x00000000,"Error"
+	    end if	    
+	    RETURN (-2)
+    End if
+
+    CALL post:MISCimprime_irregu
+
+END SUB
+
+/*******/

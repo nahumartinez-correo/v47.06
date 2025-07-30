@@ -1,0 +1,85 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBcaidas_cupon
+* NOMBRE
+*   OFB:post:OFBcaidas_cupon
+* DESCRIPCION
+*   Chequea si existe una tx con caida en la tabla jnl_caidas_cup y la recupera
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBproc_batch_Cupon
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684 
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBcaidas_cupon
+
+	local l_status like tlr:jnl_status
+	
+    CDS SELECT FROM "jnl_caidas_cup" BECOMES "jnl_caidas_cup_ctx" WHERE  \
+        tlr:jnl_branch == FLD:common:sucursal_activa && \
+        tlr:jnl_status > HOST_REJECTED && \
+        tlr:jnl_status < RECH_REV_AUTO DESCENDING SORT "primary"
+
+    CDS FINDFIRST "jnl_caidas_cup_ctx" LOCK
+    lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval == 0)
+        CDS EXTRACT "jnl_caidas_cup_ctx" ALL
+
+        //Hago un select de la tabla cupon para recuperar el mismo registro que el de la jnl_caidas_cup
+        CDS SELECT FROM "cupon" BECOMES "cupon_ctx" WHERE  \
+            tlr:jnl_branch == FLD:tlr:jnl_branch && \
+            tlr:jnl_operator == FLD:tlr:jnl_operator && \
+            tlr:jnl_date == FLD:tlr:jnl_date && \
+            tlr:jnl_time == FLD:tlr:jnl_time && \
+            tlr:jnl_bus_date == FLD:tlr:jnl_bus_date && \
+            tlr:jnl_sequence == FLD:tlr:jnl_sequence 
+        CDS FINDFIRST "cupon_ctx" LOCK
+        IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT "cupon_ctx" ALL
+	
+            //Imprimo los datos principales de la tx que se esta recuperando
+            fprint common:csr_string "Recuperacion de caida en vuelo del siguiente Cupon:"
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+            fprint common:csr_string "\n\nSUC: %e      OP: %e      COD TX: %e      NRO.SEC: %e " \
+                tlr:jnl_branch,tlr:jnl_operator,siaf:codigo_siaf,tlr:jnl_sequence
+            CALL batch:MISCgeneraLog(common:csr_string,"INFO","N")
+
+
+			call post:OFBenvio_caidas_cup
+			IF (retval < 0)
+				//caida en vuelo
+				CDS UNLOCK "cupon_ctx" 
+				CDS ENDSELECT "cupon_ctx"
+				return -2
+			END IF
+			l_status = UNPOSTED
+			//actualizo la tabla de cupon
+			CDS CLEARBUFFER "cupon_ctx"
+			CDS APPEND "cupon_ctx" \
+				l_status AS tlr:jnl_status
+			CDS UPDATE "cupon_ctx" LOCK
+		END IF
+		CDS UNLOCK "cupon_ctx" 
+		CDS ENDSELECT "cupon_ctx"
+
+
+		CDS FINDNEXT "jnl_caidas_cup_ctx" LOCK
+		lib:err_retval = CDSRETVAL
+		
+	END WHILE
+
+	CDS UNLOCK "jnl_caidas_cup_ctx" 
+	CDS ENDSELECT "jnl_caidas_cup_ctx"
+
+
+
+END SUB
+
+/*******/
+

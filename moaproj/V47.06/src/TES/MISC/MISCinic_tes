@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCinic_tes
+* NOMBRE
+*   OFB:tes:MISCinic_tes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCinic_tes
+    local i like siaf:i
+
+    clearfield tes:tes_marca_cierre
+    CDS SELECT FROM DSC:tes:tesoro_table \
+    BECOMES DSC:tes:tesoro_context WHERE tes:tes_suc_id == op:op_branch_id
+    CDS CLEARBUFFER DSC:tes:tesoro_context
+    CDS FINDFIRST DSC:tes:tesoro_context LOCK
+    if (cdsretval < 0) then
+       let common:csr_string = "No Hay registros en tabla Tesoro"
+       errmsg common:errmsg_list,FLD:common:csr_string
+       call tlr:APPLterm
+       return (-2)
+    end if
+    DO
+        CDS EXTRACT DSC:tes:tesoro_context ALL
+        let tes:tes_fecha = common:system_date
+        call csr:cleararray tes:tes_entrada
+        call csr:cleararray tes:tes_salida
+        call csr:cleararray tes:tes_sdoinic
+
+        clearfield tes:tes_tot_inic
+        clearfield tes:tes_tot_entrada
+        clearfield tes:tes_tot_salida
+        clearfield siaf:importe
+        clearfield post:importe_origen
+        /* MLD Limpio el vector de arqueo y la marca*/
+        call CSR:cleararray tes:tes_marca_arqueo
+        clearfield tes:tes_marca_arqueo
+        
+        /* MLD Para reingenieria se eliminan las denominaciones limpio el vector 
+        de total tambien para evitar que quede información que no se usará mas*/
+        call csr:cleararray tes:tes_importes
+        /******/
+                
+        post:adt_mp_cod = tes:tes_moneda
+        call post:CDSadt_MedPago_load
+
+
+        let i = 0
+        DO
+	        /* pongo el pico del tesoro como saldo inicial */
+    	    if (i > 13) then /* los vectores son de 14 posiciones */
+	            break
+	        end if
+	        let tes:tes_sdoinic[i] = tes:tes_importes[i]
+	        //siaf:importe = siaf:importe + tes:tes_importes[i]
+	        post:importe_origen = post:importe_origen + tes:tes_importes[i]
+	        let i = i + 1
+        LOOP
+        /* Monedas del tipo efectivo 
+        if (post:adt_mp_adm == "G" && post:adt_mp_monet == "S")
+            //tes:tes_tot_inic = siaf:importe
+            //tes:tes_total = siaf:importe
+            tes:tes_tot_inic = post:importe_origen
+            tes:tes_total = post:importe_origen
+           
+        else
+            tes:tes_tot_inic = tes:tes_total
+            //siaf:importe = tes:tes_total
+            post:importe_origen = tes:tes_total
+        end if
+        */
+        tes:tes_tot_inic = tes:tes_total
+
+        CDS APPEND DSC:tes:tesoro_context     \
+    	op:op_branch_id AS tes:tes_suc_id \
+    	tes:tes_tes_id                    \
+    	tes:tes_fecha tes:tes_moneda      \
+    	ARRAY tes:tes_importes            \
+    	ARRAY tes:tes_salida              \
+    	ARRAY tes:tes_entrada             \
+    	ARRAY tes:tes_sdoinic             \
+    	tes:tes_tot_inic \
+    	tes:tes_tot_entrada \
+    	tes:tes_tot_salida \
+    	tes:tes_total \
+    	array tes:tes_arqueo \
+    	tes:tes_marca_arqueo
+        CDS REPLACE DSC:tes:tesoro_context LOCK
+
+        CDS FINDNEXT DSC:tes:tesoro_context LOCK
+        if (cdsretval < 0) then
+	        break
+        end if
+        CDS CLEARBUFFER DSC:tes:tesoro_context
+    LOOP
+    CDS ENDSELECT DSC:tes:tesoro_context
+END SUB
+
+/*******/

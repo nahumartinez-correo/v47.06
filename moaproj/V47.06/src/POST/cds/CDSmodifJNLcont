@@ -1,0 +1,133 @@
+/****o* Expedición/OFB:post:CDSmodifJNLcont
+* NOMBRE
+*   OFB:post:CDSmodifJNLcont
+* DESCRIPCION
+*   
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:LINKpiezaXcont,OFB:post:LINKpiezaXtransf,OFB:post:MISCjnl_DetTCont 
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSmodifJNLcont
+    /* Cte. Op.: Llenado Cont.                      */
+    /* May. 1998 - B. Petrella -                    */
+
+    LOCAL modif_jnl LIKE post:idx
+	LOCAL l_adt_est_pieza LIKE post:adt_est_pieza
+	
+	//Si es transferencia forzada - Agrego German
+	l_adt_est_pieza = "T" //para que no aparezcan en las transferencias de piezas del op origen ni en la del op destino - German
+	
+    /* Transferencia a Otro Contenedor => forzar adt_codseq_nro */
+    if (siaf:codigo_siaf == "99080" || siaf:codigo_siaf == "99086" || \
+	siaf:codigo_siaf == "99110" || siaf:codigo_siaf == "99116")
+		Let post:adt_codseq_nro = "99999999"
+    end if
+    if (siaf:codigo_siaf == "99080" || siaf:codigo_siaf == "99086")
+		Let post:adt_op_operator_id0 = op:op_operator_id
+		Let post:adt_op_login_id0 = op:op_login_id
+    endif
+   /* CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+	(op:op_operator_id == op:op_operator_id && \
+	 post:MarcaBorrado == " ")
+    CDS FINDFIRST DSC:DetTmp_ctx LOCK
+    DO
+		IF (CDSRETVAL < 0) THEN
+	    	break
+		ENDIF
+		CDS EXTRACT DSC:DetTmp_ctx ALL*/
+
+		Let modif_jnl = 1	/* Se pone en 0 si no hay que modificar el jnl */
+				/* No se modif. el jnl. cuando es una transf. */
+				/* de una transf. */
+
+		/* Select según clave completa del Journal - Jun.'98 */
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+		(tlr:jnl_branch == post:jnl_branch_ori && \
+		tlr:jnl_operator == post:jnl_operator_ori && \
+		tlr:jnl_date == post:jnl_date_ori && \
+		tlr:jnl_time == post:jnl_time_ori && \
+		tlr:jnl_bus_date == post:jnl_bus_date_ori && \
+		tlr:jnl_sequence == post:jnl_sequence_ori)
+
+		CDS FINDFIRST DSC:tlr:jnl_context LOCK
+		/* Resguardo 
+		swapdup siaf:codigo_siaf
+		dupfield siaf:codigo_siaf*/
+
+		//CDS EXTRACT tlr:jnl_context ALL
+		CDS EXTRACT tlr:jnl_context post:jnl_guia_cont \
+		post:jnl_branch_ori \
+		post:jnl_operator_ori \
+		post:jnl_date_ori  \
+		post:jnl_time_ori  \
+		post:jnl_bus_date_ori  \
+		post:jnl_sequence_ori  \
+		post:adt_op_operator_id \
+		tlr:jnl_branch tlr:jnl_operator tlr:jnl_date \
+		tlr:jnl_time tlr:jnl_bus_date tlr:jnl_sequence \
+		post:adt_est_pieza //agrego German
+		
+		/* Recupero 
+		dupfield siaf:codigo_siaf*/
+
+     	/* Transferencia a Otro Contenedor 
+      	
+      	if (siaf:codigo_siaf == "99080" || siaf:codigo_siaf == "99086" || \
+			siaf:codigo_siaf == "99110" || siaf:codigo_siaf == "99116")
+	   		If (post:jnl_guia_cont.numchars != 0)
+				Call CDSconfTranCont
+				//MFM - Actualizo el jnl_op_transf (operador al que le transfiere la pieza)
+				//en el journal
+				post:jnl_op_transf = CodOperador
+				Cds APPEND DSC:tlr:jnl_context      \
+				post:jnl_op_transf
+				Cds UPDATE DSC:tlr:jnl_context LOCK
+				let modif_jnl = 0
+		   End If
+    	  end if*/
+
+		if (modif_jnl == 1) then
+			/*MFM - Agrego el campo jnl_op_transf que indica que operador tiene la pieza
+			ahora*/
+			//post:jnl_op_transf = CodOperador
+			Cds APPEND DSC:tlr:jnl_context      \
+		    tlr:jnl_branch tlr:jnl_operator tlr:jnl_date \
+		    tlr:jnl_time tlr:jnl_bus_date tlr:jnl_sequence \
+		    post:adt_codseq_nro as post:jnl_guia_cont \
+		    common:system_date as post:jnl_fecha_llencont\
+		    common:time_of_day as post:jnl_hora_llencont
+		    //post:jnl_op_transf
+		    
+		    //Inicio agrego German
+			//Si es transferencia forzada
+	     	IF (siaf:codigo_siaf == "99116") THEN
+	     		CDS APPEND DSC:tlr:jnl_context l_adt_est_pieza AS post:adt_est_pieza 
+	     	END IF
+		    //Fin agrego German
+		    
+			Cds UPDATE DSC:tlr:jnl_context LOCK
+		End If
+		CDS UNLOCK DSC:tlr:jnl_context
+    	CDS ENDSELECT DSC:tlr:jnl_context
+		/*CDS FINDNEXT DSC:DetTmp_ctx LOCK
+    LOOP
+
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx*/
+	IF (siaf:codigo_siaf == "99110" || siaf:codigo_siaf == "99116")
+		let op:op_login_id = post:adt_op_login_id0
+		let op:op_operator_id = post:adt_op_operator_id0
+	END IF
+END SUB
+
+/*******/

@@ -1,0 +1,143 @@
+/****o* Pendientes de agrupación/OFB:post:MISCProd_Y_Adic
+* NOMBRE
+*   OFB:post:MISCProd_Y_Adic
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCProd_Y_Adic(tipo)
+	LOCAL cant_aux LIKE post:cantidad
+	LOCAL iva_imp LIKE post:ImporteIva
+	LOCAL tran_cod_aux like siaf:codigo_siaf
+	LOCAL dcto_aux like Dcto_CliMed
+	LOCAL imp_aux  like post:Imp_DctoCliMed
+	LOCAL signo like siaf:adt_tran_afec_efvo
+	LOCAL codigo like siaf:codigo_siaf
+
+	cant_aux = 0
+	costo_opc = 0
+	imp_aux = 0
+	//resguardo el signo y el codigo de la transaccion a la que pertencen los opcionales
+	signo = siaf:adt_tran_afec_efvo
+	codigo = siaf:codigo_siaf
+	
+	WHILE (cant_opc > cant_aux)
+		IF (post:bonifCM_opc[cant_aux] == "S") THEN
+			//estos campos estaban quedando sucios
+			siaf:adt_tran_afec_efvo = signo
+			siaf:codigo_siaf = codigo
+			
+			INIT 22,1
+			Imp_DctoCliMed = (post:cos_opc[cant_aux] * Dcto_CliMed) / 100
+			INIT 22,0
+			
+			//Acumulo los importes de los descuentos
+			imp_aux = imp_aux + Imp_DctoCliMed 
+			
+			siaf:importe = Imp_DctoCliMed
+			//Descripcion del opcional
+			IF (!ConvenioSesionV) THEN
+				prod_DescuentoCM = post:cod_opc[cant_aux]
+			ELSE
+				CLEARFIELD prod_DescuentoCM
+			END IF
+			
+			//esto es necesario??
+			post:costo_opc = post:costo_opc + post:cos_opc[cant_aux]
+			SELECT (tipo)
+				CASE "A"	
+					//Calculo el PreDNroTrn
+					IF (estado_presu != 3 && !ConvenioSesionV) THEN
+						CALL CDSIncSecSesion(PresNro,"TRN",1, enAnulacion)
+						PreDNroTrn = RETVAL
+					END IF
+					//Para interfaz de Nina: Calculo importe de vectores
+					CALL post:CDSCalcTotVentasCM(post:ali_opc[cant_aux],Imp_DctoCliMed)
+					//PS OPCIONALES
+					CALL post:MISCagregDctoOpc(post:flia_opc[cant_aux],post:ali_opc[cant_aux],Imp_DctoCliMed,cant_aux)
+				BREAK
+				CASE "B"
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					post:AliTrnCM = post:ali_opc[cant_aux]
+					//si no tiene formulario fiscal asociado no desglosar
+					IF (PreDForFis.NUMCHARS != 0) THEN
+						/*Se calcula el importe con iva y sin que debo sumar para la transacción, ya que
+						se vuelve atrás el descuento por sesión*/
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed,post:ali_opc[cant_aux], 1,0)
+					END IF		
+					/*Actualizo la PresuPag*/
+					CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,Imp_DctoCliMed,0)
+					/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+					IF (PreDForFis.NUMCHARS == 0) THEN
+						EstadoFormu = SIN_FORM
+					ELSE
+						EstadoFormu = CON_FORM
+					END IF
+					CALL CDSAcumImpSes(0,0,Imp_DctoCliMed,post:ImporteSinIva,post:flia_opc[cant_aux],siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+					
+					/*Configuro los datos de la transacción de Descuento para que la actualización 
+					de la AuxIva la haga en relación a esta transacción*/
+					
+					//gpb:Original
+					//siaf:codigo_siaf = 99300					
+					
+					//gbp:NI50479
+					IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && Dcto_CliMed > 0) THEN
+						siaf:codigo_siaf = 30300
+					ELSE
+						siaf:codigo_siaf = 99300
+					END IF
+					
+					siaf:adt_tran_fliatran = "PCL"
+					siaf:adt_tran_afec_efvo = "-"
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					siaf:ImporteConIva = Imp_DctoCliMed
+					siaf:ImporteSinIva = post:ImporteSinIva
+					CALL MISCborrarIva
+				BREAK
+				CASE "R" //se usa en la reversa cuando se regenera el iva
+					/*Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+					//SC 50170
+					CALL MISCdesglosaIva(Imp_DctoCliMed,post:ali_opc[cant_aux], 1,0)
+					post:AliTrnCM = post:ali_opc[cant_aux]
+					post:ImporteConIva = post:ImporteSinIva + ImporteIva
+					
+					//gpb:Original
+					//siaf:codigo_siaf = 99300	
+					
+					//gbp:NI50479
+					IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped) && post:cli_tipoPED == CLIMED && Dcto_CliMed > 0) THEN
+						siaf:codigo_siaf = 30300
+					ELSE
+						siaf:codigo_siaf = 99300
+					END IF
+					
+					siaf:adt_tran_fliatran = "PCL"
+					siaf:adt_tran_afec_efvo = "-"
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					CALL MISCgenerarIva()
+				BREAK
+			END SELECT
+		END IF
+		cant_aux = cant_aux + 1
+	END WHILE
+	
+	//cargo el importe total de los descuentos de los opcionales
+	post:Imp_DctoCliMed = imp_aux
+    
+END SUB
+
+/*******/

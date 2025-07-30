@@ -1,0 +1,67 @@
+/****o*Pago en Destino/OFB:post:OFBcontrol_estadoPED
+* NOMBRE
+*   OFB:post:OFBcontrol_estadoPED
+* DESCRIPCION
+*		Actualiza el status = 001 para aquellos registros 
+*   de la tabla estadoPED cuyo estado = EEO  y el status = 100
+*   y que posean registro en la tabla CompPED cuyo estado = FSO y el status = 003
+*   Para que en la proxima iteracion del RTBatch impacte la entrega
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFBbatch:OFBrecupCaidasVuelo
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBcontrol_estadoPED
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_pieza_id LIKE post:estadoPED_id_pieza
+	LOCAL l_status LIKE tlr:jnl_status
+
+	l_status = "001"
+	
+	CDS SELECT FROM "estadoPED" BECOMES "estadoPED_ctx" WHERE  \
+    post:estadoPED_estado == "EEO" && \
+    tlr:jnl_status == 100 SORT "primary"
+
+	CDS FINDFIRST "estadoPED_ctx" LOCK
+	l_retval = CDSRETVAL
+	WHILE (l_retval == 0)
+		CDS EXTRACT "estadoPED_ctx" post:estadoPED_id_pieza INTO l_pieza_id
+		
+		//verifico si ya impacto la Factura
+		CDS SELECT FROM "CompPED" BECOMES "CompPED_ctx" WHERE  \
+    post:id_pieza_ped == l_pieza_id && \
+    tlr:jnl_status == "003" && \
+    (post:estado_pieza_ped == "FCO" || \
+		post:estado_pieza_ped == "ADE" || \
+		post:estado_pieza_ped == "REM" || \
+		post:estado_pieza_ped == "COB")
+
+    CDS FINDFIRST "CompPED_ctx" LOCK
+    l_retval = CDSRETVAL
+    //actualizo el status = 0 en estadoPED
+   	IF (l_retval == 0) THEN
+			CDS CLEARBUFFER "estadoPED_ctx"
+			CDS APPEND "estadoPED_ctx" l_status AS tlr:jnl_status
+			CDS UPDATE "estadoPED_ctx" LOCK
+   	END IF
+		CDS UNLOCK "CompPED_ctx"
+		CDS ENDSELECT "CompPED_ctx"
+	
+		CDS FINDNEXT "estadoPED_ctx" LOCK
+		l_retval = CDSRETVAL
+	END WHILE
+	CDS UNLOCK "estadoPED_ctx"
+	CDS ENDSELECT "estadoPED_ctx"
+    
+END SUB
+
+/*******/

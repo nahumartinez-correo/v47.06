@@ -1,0 +1,105 @@
+/****o* Clientes Medios/OFB:post:PRESidentifica_copia
+* NOMBRE
+*   OFB:post:PRESidentifica_copia
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESidentifica_copia
+local Lind like drv:INDlast_menu
+
+	//Veo si la sucursal esta abierta 
+	//Si esta abierta controlo que no sea de la fecha de hoy.
+	Call tes:CDScons_suc_sucur
+	//Se corrige un error en una validacion.
+	if (retval == 0 && tes:suc_fecha == common:system_date && tes:suc_marca_cierre == "X")
+		errmsg lst:common:errmsg_list,"Sucursal cerrada.\nNo podrá realizar la facturación/emisión."
+		return (-2)
+	end if
+	if (retval == 0 && tes:suc_fecha == common:system_date)
+		errmsg lst:common:errmsg_list,"Sucursal abierta en el dia de la fecha.\nDebe ingresar por el menu del cajero."
+		return (-2)
+	end if
+	Lind = LST:post:MENUclientemedio
+	if (drv:INDlast_menu == Lind) then
+		select (drv:last_menu_opc)
+			case 0
+				//Controlo que no este en el menu de caja.
+				if (drv:dt_app != 2)
+					//Controlo si tengo que facturar
+					Call giros:MISCctrl_facturacion(tes:suc_fecha)
+					if (retval == -1)
+						errmsg lst:common:errmsg_list,"No corresponde fecha facturacion."
+						return (-2)
+					end if		
+				end if
+				break
+		end select
+	endif
+
+	CDS SELECT FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context WHERE \
+		tes:rend_suc_id == op:op_branch_id && \
+		tes:rend_op_id == op:op_operator_id
+		
+	cds findfirst dsc:tes:rend_caj_context nolock
+	if (cdsretval == 0) then
+		cds extract dsc:tes:rend_caj_context tes:rend_fecha
+		if (tes:rend_fecha != tes:suc_fecha) then
+			errmsg lst:common:errmsg_list,"No puede realizar la facturación/emisión, no tiene la caja abierta en el día a facturar."		
+			return (-2)
+		end if		
+	else
+		errmsg lst:common:errmsg_list,"No posee registro de rendicion"		
+		return (-2)
+	end if
+	//Esta todo bien. Inicializo contexto y empiezo...
+    call ofb:tlr:JNLinitialize
+    if (tlr:bus_date == "") then
+		// si sale con la fecha vacia le pongo la de hoy para que no de
+		// error al journalizar
+		tlr:bus_date = common:system_date
+    end if
+
+    IF (post:estado_presu > 1)
+    	Call post:MISChay_Trans_Acept
+    	If ( Retval < 0 )
+        	MsgBox "TRANSACCIONES CONFIRMADAS, LA SESION NO PUEDE SER CANCELADA !!!",OFB_OK,"ERROR"
+    	Else
+        	call post:MISCverif_multiples          
+        	if (retval < 0)
+            	MsgBox "TRANSACCIONES CONFIRMADAS, LA SESION NO PUEDE SER CANCELADA !!!",OFB_OK,"ERROR"
+        	else
+        		MsgBox "Se Finalizara la sesion. Debe ingresar nuevamente a la transaccion !",OFB_OK,"AVISO"
+        		
+				call MISCCancel_Presu
+                pdm getstate pdm:drv:gerente 18 fld:drv:menu_state
+                IF (drv:menu_state == MOA_CHECKED )
+                   PDM CHECKITEM drv:gerente,18,MOA_UNCHECKED        
+                END IF
+            	return (-2)
+        	End if
+    	Endif
+    END IF
+	
+	call post:PRESidentifica_cli
+	if (retval < 0) then
+		return (-1)
+	end if
+	post:FechaAnt = TRUE
+	post:fecha_factCM = tes:suc_fecha
+	
+END SUB
+
+/*******/

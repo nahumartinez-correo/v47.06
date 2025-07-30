@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:gali:RCVEident_cliente
+* NOMBRE
+*   OFB:gali:RCVEident_cliente
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "galircve.h"
+
+SUB gali:RCVEident_cliente
+   	call gali:RCVEheader
+	if (hcomm:tran_status != 3) THEN
+	      /* Protejo los campos para que cuando aparece el aviso de 
+		transaccion rechazada no se pare el cajero sobre los campos
+		con el mouse y empiece la tran nuevamente */
+		if (testflag(gali:gali_flags,por_tarjeta)) then
+			protfield gali:numero_tarjeta
+			protfield gali:clave
+		else
+			protfield gali:nro_doc
+			protfield gali:tipo_doc
+			protfield gali:cuenta
+			protfield gali:sucursal
+			protfield gali:digito_verif
+		end if 
+		
+		setflag plataf:ident_flag,paso_rcve
+	    return
+    end if
+	
+	/* Genero picklist */
+	call gali:MISCarmar_sesion
+
+	/* Si es por tarjeta la identificacion trae hasta cinco cuentas asociadas
+	   sino, solo trae OK - Laura - 2/06/98								*/
+
+	comm get gali:RCVEcant_cuentas		from msg type BINARY length 2
+	
+	/* Proceso el vector con cada uno de los mensajes */
+	let gali:indice = 0
+	
+	let siaf:ind_calcu = 0 /* cant. de lineas en el pic de productos */
+	
+	do
+		/* Cantidad maxima de cuentas = 5 */
+		if (gali:indice > 4) || ((gali:indice + 1) > gali:RCVEcant_cuentas) then
+			break
+		end if
+
+		comm get gali:RCVEsubsistema[ indice ]		from msg type BINARY length 2
+		comm get gali:RCVEsucursal[ indice ]		from msg type BINARY length 2
+		comm get gali:RCVEcuenta[ indice ]		from msg type BINARY length 4
+		comm get gali:RCVEdigito_verif[ indice ]		from msg type EBCDIC length 1
+		
+		/* Tratamiento para el importe de la transaccionque se consulta */
+		/* Lau - 03/06/1998												*/				
+	
+		let tempptra = msg + 6
+		if ((@tempptra & 0x0F) == 0x0C) then   	/* Esta apuntando al signo */
+			let @tempptra = @tempptra | 0x0F	/* Devuelve signo positivo */
+		else
+			if ((@tempptra & 0x0F) == 0x0D) then	
+				let @tempptra = @tempptra | 0x0D   /* Devuelve importe negativo */
+			else
+				let @tempptra = @tempptra | 0x0F	/* Devuelve signo positivo */
+			endif 
+		endif
+		comm get string_info			from msg type ZPD length 7
+		move string_info to RCVEsaldo[ indice ]
+		let RCVEsaldo[ indice ] = RCVEsaldo[ indice ] / 100 	/* Divido el saldo por 100 para recuperar los decimales */
+		
+  		let mon_prod = 00
+		let plataf:codigo_producto = gali:RCVEsubsistema[ indice ]
+		setflag	gali_flags,hay_productos
+		call gali:MISCproceso_producto
+
+		let gali:indice = gali:indice + 1
+
+	loop
+
+	clearfield tlr:INDtran_name /* no se puede duplicar la tran. */
+	setflag plataf:ident_flag,paso_rcve
+END SUB
+
+/*******/

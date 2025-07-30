@@ -1,0 +1,197 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCmarca_ciefor_caj
+* NOMBRE
+*   OFB:tes:MISCmarca_ciefor_caj
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tes:MISCciefor_total, tes:SVALciefor_caja
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCmarca_ciefor_caj(modo)
+    LOCAL provincia LIKE admin:adt_br_siaf
+    LOCAL status_op_orig LIKE tlr:tots_status
+    LOCAL idx_mon like siaf:idx
+
+    provincia = SUBSTR(common:sucursal_activa,0,1)
+
+    /* Si estoy en modo TOTAL (cierre de toda la sucursal y
+el operador es el mismo no se chequea el estado de identificado */
+    if (modo == "UNO" ) || (modo == "TOTAL" && adt_op_id_orig != op:op_operator_id)
+    CDS SELECT op:op_node_id FROM DSC:op:adt_op_table BECOMES  \
+    DSC:op:adt_op_context WHERE op:op_operator_id == FLD:adt_op_id_orig &&  \
+    op:op_branch_id == FLD:op:op_branch_id
+    CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+    IF (CDSRETVAL != 0) THEN
+       common:csr_string = "Error verificando estado operador"
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+    CDS EXTRACT DSC:op:adt_op_context FLD:op:op_node_id INTO  \
+    FLD:op:adt_node_id
+    CDS ENDSELECT DSC:op:adt_op_context
+    IF (op:adt_node_id != "") THEN
+        fprint common:csr_string "Error en Cierre Forzado %5s  operador dentro del sistema",\
+        tes:adt_op_id_orig
+       ;MOVE "Error en Cierre Forzado: operador dentro del sistema" TO  \
+       'common:csr_string
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+    end if
+    CDS SELECT FROM DSC:rend_caj_table BECOMES DSC:rend_caj_context WHERE  \
+    rend_op_id == FLD:adt_op_id_orig && rend_suc_id == FLD:op:op_branch_id
+    CDS FINDFIRST DSC:rend_caj_context LOCK
+    IF (CDSRETVAL == -801) THEN
+       common:csr_string = "Error leyendo registro de rendicion"
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+    CDS CLEARBUFFER DSC:rend_caj_context
+    CDS EXTRACT DSC:rend_caj_context ALL
+    if (rend_marca_cierre == "X") then
+    	return (-2)
+    end if
+    CALL CSR:date_compare(rend_fecha,common:system_date)
+    SELECT (RETVAL)
+	   CASE 1
+		MOVE "Error: fecha del sistema anterior a rendicion" TO  \
+		common:csr_string
+		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		RETURN (-2)
+		BREAK
+	   CASE 2
+	   CASE 0
+	    ;/* Req. 127 muestra piezas, contenedores y sacas pendientes */
+	    ;/* enero 1999 */
+  	    ;CALL CDSren_caj_fecha
+
+		status_op_orig = "C"
+		IF (adt_op_id_orig != op:op_operator_id) THEN
+		   CDS SELECT FROM "totals" BECOMES "totales_ctx2" WHERE  \
+		   tlr:tots_branch == FLD:op:op_branch_id && tlr:tots_operator ==  \
+		   FLD:adt_op_id_orig
+		   CDS CLEARBUFFER "totales_ctx2"
+		   CDS FINDFIRST "totales_ctx2" LOCK
+		   CALL lib:MISCcds_find_err
+		   IF (RETVAL == -2) THEN
+		      RETURN (-2)
+		   END IF
+		   /* Saco los campos tefectivo y tinicial que corresponden al op */
+		   CALL CSR:cleararray(siaf:aux1imp_vec)
+		   CALL CSR:cleararray(siaf:aux2imp_vec)
+
+		   cds extract "totales_ctx2" array siaf:tefectivo_vec into array siaf:aux1imp_vec \
+		   array siaf:tefec_inic_vec into array siaf:aux2imp_vec
+		   CDS APPEND "totales_ctx2" FLD:status_op_orig AS  \
+		   FLD:tlr:tots_status
+		   CDS UPDATE "totales_ctx2" LOCK
+		   CDS ENDSELECT "totales_ctx2"
+		ELSE
+		   CDS FINDAGAIN DSC:tlr:CONtots_write LOCK
+		   CALL lib:MISCcds_find_err
+		   IF (RETVAL == -2) THEN
+		      RETURN (-2)
+		   END IF
+		   CDS APPEND DSC:tlr:CONtots_write FLD:status_op_orig AS  \
+		   FLD:tlr:tots_status
+		   CDS UPDATE DSC:tlr:CONtots_write LOCK
+		END IF
+		CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX 
+		//WHERE post:MedPProv ==  \
+		//FLD:provincia && post:MedPTran == 8510
+
+		IF (CDSRETVAL < 0) THEN
+		   common:csr_string =  \
+		   "Error en cierre:No se puede Leer la Tabla de Medios de Pago"
+		   ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		   CDS ENDSELECT DSC:post:MEDIOS_CTX
+		   RETURN (-2)
+		END IF
+		CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+		lib:err_retval = CDSRETVAL
+		DO
+		   IF (lib:err_retval == -801) THEN
+		      BREAK
+		   END IF
+		   CDS EXTRACT DSC:post:MEDIOS_CTX FLD:post:adt_mp_cod
+		   rend_marca_vec[post:adt_mp_cod] = "X"
+		   /* Si es otro operador, los totales están en un campo auxiliar */
+		   IF (adt_op_id_orig != op:op_operator_id) THEN
+		      let rend_importe_vec[post:adt_mp_cod] = siaf:aux1imp_vec[post:adt_mp_cod] + siaf:aux2imp_vec[post:adt_mp_cod]
+		   else
+		      let rend_importe_vec[post:adt_mp_cod] = siaf:tefectivo_vec[post:adt_mp_cod] + siaf:tefec_inic_vec[post:adt_mp_cod]
+		   endif
+		   CDS FINDNEXT DSC:post:MEDIOS_CTX NOLOCK
+		   lib:err_retval = CDSRETVAL
+		LOOP
+		CDS ENDSELECT DSC:post:MEDIOS_CTX
+		rend_marca_cierre = "X"
+		rend_tipo_cierre  = "F"
+		CDS APPEND DSC:rend_caj_context array rend_importe_vec array rend_marca_vec  \
+		FLD:rend_marca_cierre FLD:rend_tipo_cierre
+
+		CDS UPDATE DSC:rend_caj_context NOLOCK
+		IF (CDSRETVAL < 0) THEN
+		   common:csr_string =  \
+		   "Error en cierre:No se puede actualizar registro rendicion"
+		   ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		   RETURN (-2)
+		endif
+
+		/* MLD guardo el total que tiene el operador en su caja para
+		cada moneda */
+		let idx_mon = 0
+		call csr:cleararray(tes:Total_Op)
+		do
+		     if (idx_mon > IDX_MONEDA)
+		         break
+		     end if
+        	 IF (adt_op_id_orig != op:op_operator_id) THEN
+		         let Total_Op[idx_mon] = siaf:aux1imp_vec[idx_mon] + siaf:aux2imp_vec[idx_mon]
+		     else
+		         let Total_Op[idx_mon] = siaf:tefectivo_vec[idx_mon] + siaf:tefec_inic_vec[idx_mon]
+		     endif
+		     idx_mon = idx_mon + 1
+		loop
+        break
+
+	   CASE ELSE
+		MOVE "Error: fecha invalida (de rendicion o sistema)" TO  \
+		common:csr_string
+		ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+		RETURN (-2)
+		BREAK
+	   END SELECT
+    CDS ENDSELECT DSC:rend_caj_context
+    // Especies valorizadas
+    call CDSstatus_TesEspV("X", op:op_branch_id, "N", adt_op_id_orig)
+    /* Le asigno la fecha que estoy cerrando*/
+    tlr:set_bus_date = tes:rend_fecha
+
+    //Inicio agrego German
+    //Reversa las piezas que estan pendientes de transferencia de la tabla TranPend
+    IF (modo == "TOTAL") THEN
+        CALL post:MISCRetPzasPend("T","")
+    ELSE
+        CALL post:MISCRetPzasPend("A",adt_op_id_orig)
+	END IF
+	//Fin agrego German
+
+    //Inicio NAM - AUT-2316
+    //Se devolverán al operador de origen las chequeras pendientes
+    CALL tes:MISCpase_chk_pend(adt_op_id_orig)
+    //Fin NAM
+	
+END SUB
+
+/*******/

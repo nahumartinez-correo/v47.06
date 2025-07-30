@@ -1,0 +1,81 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSadd_teso
+* NOMBRE
+*   OFB:tes:CDSadd_teso
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+/*al vector texto_aux con los codigos de operadores con caja abierta le agrego
+  el codigo del operador que maneja el tesoro, pero antes ver si el tesoro
+  esta cerrado*/
+
+SUB tes:CDSadd_teso
+
+    CDS SELECT from DSC:tes:tesoro_table BECOMES DSC:tes:tesoro_context \
+    WHERE tes:tes_suc_id == op:op_branch_id && \
+	  tes:tes_fecha == common:system_date
+    CDS FINDFIRST DSC:tes:tesoro_context NOLOCK
+    if (cdsretval != 0)
+      /* El tesoro no esta abierto este dia */
+       return (-1)
+    end if
+    clearfield tes:tes_marca_cierre
+    CDS EXTRACT DSC:tes:tesoro_context FLD:tes:tes_marca_cierre
+    CDS ENDSELECT DSC:tes:tesoro_context
+
+    if (tes:tes_marca_cierre != "X") /*no esta cerrado el tesoro*/
+    	/*Se agrega marca de borrado logico - Gabriel Falciola*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context  \
+       WHERE op:op_node_id > " " && op:op_branch_id == op:op_branch_id && \
+       op:op_tesoro == "S" && op:op_borrado_logico != "S"
+       CDS FINDFIRST DSC:op:adt_op_context NOLOCK
+       if (cdsretval == 0)
+          CALL tes:CDSextract_op
+          if (op:adt_tlr_auth == "X")    /*es cajero*/
+             CALL tes:MISCver_cierre_caja
+
+             if ((retval < 0) || (cant_open_caj == 0)) && (op:op_tesoro == "N") then
+              /* tesoro no esta dentro de la lista de cajeros */
+              /* Si la cantidad de cajeros es 0 devuelve como si estaría
+                 en el picklist (0). Por eso pregunto por la cantidad */
+                 /* Si el cajero es tesorero y esta en el tesoro, y tiene la caja
+                 cerrada no se puede pasar dinero a si mismo */
+                tes:cant_open_caj = tes:cant_open_caj + 1
+                tes:texto_aux[tes:cant_open_caj] = op:adt_operator_id
+             else
+             if ((retval < 0 || cant_open_caj == 0) && (op:op_tesoro == "S" && drv:dt_app != 4)) then
+              /* tesoro no esta dentro de la lista de cajeros */
+              /* Si la cantidad de cajeros es 0 devuelve como si estaría
+                 en el picklist (0). Por eso pregunto por la cantidad */
+                 /* Si el cajero es tesorero y esta en la caja, le tiene que poder pasar
+                 al tesorero aunque haya rendido */
+                tes:cant_open_caj = tes:cant_open_caj + 1
+                tes:texto_aux[tes:cant_open_caj] = op:adt_operator_id
+             end if
+             end if
+          else
+	     /* tesoro no es cajero => lo agrego al vector texto_aux */
+             tes:cant_open_caj = tes:cant_open_caj + 1
+             tes:texto_aux[tes:cant_open_caj] = op:adt_operator_id
+             return
+          end if
+       end if
+       CDS ENDSELECT DSC:op:adt_op_context
+    else
+       return (-2)
+    end if
+END SUB
+
+/*******/

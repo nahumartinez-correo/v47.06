@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCsave_Debito
+* NOMBRE
+*   OFB:tes:MISCsave_Debito
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCsave_Debito
+
+    local desc like tes:mov_desc_mov
+    
+    if (hcomm:tran_status >= HOST_REJECTED) then
+    	//cgw:si el host devuelve un rechazo o caida en vuelo, no debe afectar tablas de la cuenta y del cheque.
+    	return (-2)
+    end if 	
+    //if (!TESTFLAG(tlr:tran_flags,correction) && hcomm:tran_status < HOST_REJECTED)
+    if (!TESTFLAG(tlr:tran_flags,correction))
+        let fld:tes:INDMovim_Append = lst:LISTsave_debito
+
+        if (siaf:adt_motvarios_ctrl == "S") 
+            if (tes:estado_cheque == "S") /* Si el cheque fue acreditado, grabo el mov */
+	        //cgw:la descripcion del movimiento que graba en MovimCta lo saca de el campo siaf:adt_tran_tot_desc de la tabla transac.
+	        call tes:CDSsave_MovimCta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,DEBITO,post:importe_origen,siaf:adt_tran_tot_desc,siaf:codigo_siaf)
+	    end if    
+            call CDSstat_cheques(teso_cheq_moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,"R")
+            /* Cambio el estado del Cheque a la caja */
+            tes:teso_cheq_recep = "S"
+            if (drv:dt_app != 4) then
+		call tes:CDSupd_estado_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,"O",op:op_operator_id,0)            
+	    else
+		call tes:CDSupd_estado_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,"T",op:op_tesoro_id,0)            
+		call tes:CDSsuma_tesoro
+	    end if
+	    /* Grabo en la tabla CheqRech */
+	    ;post:CliUP = tes:teso_cheq_rsoc
+	    post:cod_banco = tes:teso_cheq_banco
+	    post:cuenta = tes:teso_cheq_cuenta
+	    post:nro_cheque = tes:teso_cheq_nro
+	    post:Recep_CliTipo = tes:teso_cheq_tipo
+	    post:adt_TipoDoc_tipo = tes:teso_cheq_tipo_doc
+	    post:CloCuit = tes:teso_cheq_Cuit
+	    post:cliente = tes:teso_cheq_clinro
+	    if (post:cliente.NUMCHARS == 0) then
+		call post:MISCcliente_nro(tes:teso_cheq_tipo,"H") // completa el campo post:cliente
+	    endif				
+	    if (post:climed_numero.NUMCHARS == 0) then
+		call post:MISCcliente_nro(tes:teso_cheq_tipo,"L") // completa el campo post:climed_numero
+		if (tes:teso_cheq_tipo == "5" && post:climed_numero.NUMCHARS == 0) then
+		    post:climed_numero = tes:teso_cheq_clinro
+		endif
+	    endif
+	    post:fec_e = tes:teso_cheq_fcap			
+	    post:fec_d = tes:teso_cheq_fvto
+	    post:monto_chk_dif = post:importe_origen
+	    post:comision_rechazo = siaf:comision
+	    post:NisUP = tes:teso_cheq_NisUP
+	    call post:CDSSaveCheqRech
+        else
+            //cgw:la descripcion del movimiento que graba en MovimCta lo saca de el campo siaf:adt_tran_tot_desc de la tabla transac.
+            call tes:CDSsave_MovimCta(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta,fecha_valor,DEBITO,post:importe_origen,siaf:adt_tran_tot_desc,siaf:codigo_siaf)
+        end if        
+    else
+        if (siaf:adt_motvarios_ctrl == "S")
+	    if (tes:estado_cheque == "S")
+		call tes:CDSrev_MovimCta(banco_codigo,tipo_cuenta,nro_cuenta,fecha_valor,mov_date,mov_time,mov_operator,mov_sequence)
+	    end if
+	    /* Vuelve a la cta */
+	    tes:teso_cheq_recep = "N"
+	    call tes:CDSupd_estado_cheque(siaf:moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,"P",tes:banco_codigo,0)                       
+	    /* Vuelve al estado anterior acreditado o no*/
+	    call CDSstat_cheques(teso_cheq_moneda,siaf:cod_banco,siaf:cheqcuenta,siaf:nro_cheque,estado_cheque)
+	    if (drv:jnl_dt_app == 4) then
+		call CDSresta_tesoro
+	    end if
+	    /* Borro el cheque de la CheqRech*/
+	    post:Recep_CliTipo = post:climed_tipo //cgw:instancio el tipo para borrar en CheqRech.
+	    post:cod_banco = siaf:cod_banco
+	    post:cuenta = siaf:cheqcuenta
+	    post:nro_cheque = siaf:nro_cheque						
+	    call post:CDSDelCheqRech
+        else
+            call tes:CDSrev_MovimCta(banco_codigo,tipo_cuenta,nro_cuenta,fecha_valor,mov_date,mov_time,mov_operator,mov_sequence)
+        end if        
+    end if
+    call CDSupdate_saldo(tes:banco_codigo,tes:tipo_cuenta,tes:nro_cuenta," ")
+END SUB
+
+/*******/

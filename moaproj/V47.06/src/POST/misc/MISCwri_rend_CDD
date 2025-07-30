@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:post:MISCwri_rend_CDD
+* NOMBRE
+*   OFB:post:MISCwri_rend_CDD
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCwri_rend_CDD
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+	tlr:jnl_branch == op:op_branch_id && \
+	tlr:jnl_date == siaf:fecha_proceso && \
+	tlr:jnl_sequence_corr == "" && \
+	tlr:jnl_status < 100 && \
+	siaf:codigo_siaf == 99092 && \
+	post:adt_CDD_es_grancl == "N"
+    
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+
+	lib:err_retval = CDSRETVAL
+	if (cdsretval == -801)
+		//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "NO HAY REND. DE PIEZAS CDD",OFB_OK,"Atencion"
+		END IF
+		cds endselect DSC:tlr:jnl_context
+		call siaf:MISCclose_lis
+		return -8
+	else
+		if ( CDSRETVAL != 0 )
+			call lib:MISCcds_find_err
+       			CDS ENDSELECT DSC:tlr:jnl_context 
+			call siaf:MISCclose_lis
+			return	-2
+		end if
+	end if
+
+    FYIMSG LST:common:fyimsg_list,giros:MSGbucar_trx_giros
+
+    WHILE (lib:err_retval == 0)
+    	CLEARFIELD post:CDD_plan_nro
+		CLEARFIELD post:Pieza
+		CLEARFIELD post:CDD_crem_imp
+		CLEARFIELD post:CDD_rtte_TipoDoc
+		CLEARFIELD post:CDD_rtte_NumDoc
+		CLEARFIELD post:CloPersonaJuridica
+		CLEARFIELD post:adt_stockp_rem_nom
+		CLEARFIELD post:CloRazon
+		CLEARFIELD post:CloNombre
+		CLEARFIELD post:CloApellido
+		
+		CDS EXTRACT DSC:tlr:jnl_context \
+		post:CDD_plan_nro post:Pieza post:CDD_crem_imp post:CDD_rtte_NumDoc \
+		post:CDD_rtte_TipoDoc tlr:jnl_op_login_id
+		
+		//Busco el nombre del remitente en la CliOca
+		post:CloTipDoc = post:CDD_rtte_TipoDoc
+		post:CloCuit = post:CDD_rtte_NumDoc
+		call post:CDSCliOca_sel
+		
+		IF (post:CloPersonaJuridica == "S") THEN
+			FPRINT post:adt_stockp_rem_nom "%s",post:CloRazon
+		ELSE
+			FPRINT post:adt_stockp_rem_nom "%s %s", post:CloNombre, post:CloApellido
+		END IF
+		
+        FPRINT common:csr_string "%8.8s %-32.32s %12.12e %-30.30s %-14.14s",\
+        post:CDD_plan_nro,post:Pieza, post:CDD_crem_imp, post:adt_stockp_rem_nom, tlr:jnl_op_login_id
+        CALL tes:MISCwrite_file1(1,fld:common:csr_string)
+        
+	CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+        lib:err_retval = CDSRETVAL
+        
+    END WHILE
+
+    CDS ENDSELECT DSC:tlr:jnl_context
+
+    
+	call siaf:MISCclose_lis
+	if ( retval < 0 )
+		return -2
+	end if
+
+FYIMSG CLEAR
+
+END SUB
+
+/*******/

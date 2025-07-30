@@ -1,0 +1,126 @@
+/****o* Facturacion/OFB:post:PRT_IVA_B
+* NOMBRE
+*   OFB:post:PRT_IVA_B
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:PRT_Factura
+*   post:PRT_Ticket_Jou
+* DOCUMENTACION
+*   SUC-964:Resolución General N° 5614/2024:
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_IVA_B(INDICE,SUBTOTAL,Tipo_Impresion,Columna)
+	LOCAL PORCENTAJE LIKE post:IvaPor
+	LOCAL COLUMNA_AUX LIKE post:cantidad
+	LOCAL importe_iva LIKE siaf:importe
+	LOCAL l_IvaBasCalc LIKE siaf:importe
+	LOCAL l_importe LIKE siaf:importe
+ LOCAL l_iva_contenido LIKE siaf:importe
+
+	IF (modoPrt == LASER) THEN		
+		FPRINT common:csr_string "%*.*s\n",Columna,Columna, "Régimen de Transparencia Fiscal al Consumidor (Ley 27.743)"	
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 1			
+	else
+		FPRINT  common:csr_string "%-s\n", "Regimen de Transparencia Fiscal al Consumidor"
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 1	
+		FPRINT  common:csr_string "%-s\n", "(Ley 27.743)"
+		CALL post:MISCprt2laser(common:csr_string)
+		INDICE = INDICE + 1	
+	ENDIF
+	//CALL post:MISCprt2laser(common:csr_string)
+	//INDICE = INDICE + 1	
+			
+	CALL post:MISCinic_AuxIva
+	l_iva_contenido = 0
+    
+	DO
+		CALL post:MISCbusca_AuxIva
+		IF (lib:err_retval != 0) THEN
+			BREAK
+		END IF
+	
+		
+		//MFM - PS 10918Se agrega redondeo para el campo del Importe del Iva de la Tabla AuxIva
+		INIT 22,1
+		importe_iva = post:importe
+		CALL PRTcortePagina(INDICE, SUBTOTAL, PAGE_FACTURA, Tipo_Impresion)
+		INDICE = RETVAL
+		post:importe = importe_iva
+		INIT 22,0
+		
+		IF (IvaPor == 0) THEN //alicuota 0.00%
+			//NO SE DEBE HACER NADA
+	
+		ELSE
+			IF (post:IvaBasCalc != 0 ) THEN 	         
+				/*Para cancelaciones de giros*/
+				IF (factor_conversion == 0) THEN
+					factor_conversion = 1
+				END IF
+				post:importe = post:importe / factor_conversion
+				
+				//SC 50170
+				INIT 22,1
+				IF (post:IvaBasCalc > 0) THEN
+					l_IvaBasCalc = post:IvaBasCalc * 1
+					l_importe = importe * 1
+				
+					//SE DEBEN ACUMULAR LOS IMPORTES DE IVA Y MOSTRARLOS EN UNA SOLA LINEA (JUSTIFICAR  a izquierda)
+					l_iva_contenido = l_iva_contenido + l_importe 
+				ELSE
+					l_IvaBasCalc = post:IvaBasCalc * -1
+					FPRINT common:csr_string "(%e)" l_IvaBasCalc
+					l_importe = importe * -1
+					l_iva_contenido = l_iva_contenido + l_importe 
+				END IF
+				INIT 22,0
+			END IF
+		END IF
+	LOOP
+	
+	//mostrar IVA Acumulado en una sola LINEA
+	FPRINT common:csr_string "%e" l_iva_contenido
+	if (modoPrt == LASER) THEN
+			FPRINT common:csr_string "%*.*s  %-s%-14.14e\n",\
+			COLUMNA_AUX,COLUMNA_AUX,"IVA Contenido","$",common:csr_string			
+  else
+			FPRINT common:csr_string "%-s  %-s%-14.14e\n","IVA Contenido","$",common:csr_string
+	ENDIF
+	CALL post:MISCprt2laser(common:csr_string)
+	INDICE = INDICE + 2	
+					
+	//“Otros impuestos Nacionales Indirectos” correspondería a Impuestos Internos, Combustibles, etc.
+	//En caso de Correo, no debe haber nada más que IVA en las operaciones, ya que sellos es un impuesto provincial, no alcanzado por esa norma.
+	//Es decir que el “Otros impuestos Nacionales Indirectos” queda como un título sin uso en nuestro caso.
+	// Que vaya con importe cero es obligatorio, la resolución no da opciones.
+	if (modoPrt == LASER) THEN		
+			FPRINT common:csr_string "%*.*s\n",Columna,Columna, "Otros Impuestos Nacionales Indirectos $0,00"
+	else
+			FPRINT  common:csr_string "%-s \n", "Otros Impuestos Nacionales Indirectos $0,00"
+	ENDIF
+	CALL post:MISCprt2laser(common:csr_string)
+				
+	
+	//gpb:PS10705
+	IF (modoPrt != LASER) THEN
+		//justifico a la izquierda
+		CALL post:MISCprt2laser("\x1Ba\x30")
+	END IF
+	
+	CALL post:MISCclose_AuxIva
+	siaf:importe = SUBTOTAL
+	RETURN (INDICE)
+END SUB
+
+/*******/

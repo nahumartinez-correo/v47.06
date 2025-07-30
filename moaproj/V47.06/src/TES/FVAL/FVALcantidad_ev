@@ -1,0 +1,86 @@
+/****o* Especies Valorizadas/OFB:tes:FVALcantidad_ev
+* NOMBRE
+*   OFB:tes:FVALcantidad_ev
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:FVALcant_venta_ev,OFB:tes:FVALimporte_ev,SCR:tes:SCRNajuste_neg,SCR:tes:SCRNajuste_neg2
+*   SCR:tes:SCRNdep_ev_buzon,SCR:tes:SCRNdep_ev_buzon_hdr,SCR:tes:SCRNmov_ev,SCR:tes:SCRNmov_ev_ent
+*   SCR:tes:SCRNmov_ev_ersal,SCR:tes:SCRNmov_ev_suc,SCR:tes:SCRNmov_venta_ev,SCR:tes:SCRNsal_espv_otrasuc
+*   SCR:tes:SCRNsal_espv_tespcia,SCR:tes:SCRNsalida_ev
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesFVAL.h"
+
+SUB tes:FVALcantidad_ev
+    local importe     like adt_espv_importe
+    local loc_importe like tes:adt_evaux_importe
+    local LMensaje	  like common:csr_string
+
+    ;drv:button = 5
+    ;CALL drv:but_disable
+    IF (!(testflag(tlr:tran_flags,correction))) then
+	if (currentfield.numchars != 0 && currentfield != 0) then
+		/*MDG calcula importe tomando el descuento por promocion post:fld_promo_imp*/
+		call csr:f_sadroppl dsc:post:pic_promo_Detalle
+		call csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle
+		CALL post:MISCaplicaBonif(TIPO_ESPECIES_VS)
+		IF (post:aplica_bonif_esvs ==	"S") THEN
+        	CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_ESPECIE, "")
+        	ELSE
+        	//BUG 14425
+        	CLEARFIELD post:fld_promo_imp
+		CLEARFIELD post:promo_tot_EspVdas
+		CLEARFIELD post:promo_desc_esvs
+		CLEARFIELD post:promo_cod_esvs
+		CLEARFIELD post:promo_bon_esvs
+		CLEARFIELD post:promo_inhibeUpEsvs
+		CLEARFIELD post:promo_tot_ProdVs
+		END IF
+
+        tes:adt_evaux_importe = adt_evaux_cantidad * adt_espv_valor
+
+        if (drv:dt_app == 4) then
+           	call CDSget_imp_TesEspV(op:op_branch_id, "S", op:op_tesoro_id,\
+			     espv_cod, adt_evaux_subcod,importe)
+	    else
+	        call CDSget_imp_TesEspV(op:op_branch_id, "N", op:op_operator_id,\
+				     espv_cod, adt_evaux_subcod,importe)
+	    end if
+	    /* supera al tesoro del cajero */
+	    if (retval < 0 || adt_evaux_importe > importe)
+	        errmsg clear
+	        if (post:enCombo == "S") then
+	        	//cgw:muestra la especie/denominacion del combo con falta de stock.
+	        	FPRINT LMensaje "PARA %s %s FALTA STOCK" \
+	            post:adt_concb_producto, post:adt_concb_interno
+	            MSGBOX LMensaje,0x00,"AVISO"
+	        else
+		        errmsg lst:common:errmsg_list,ERRsupera_stock
+		    end if    
+		    adt_evaux_importe = 0
+		    adt_evaux_cantidad = 0
+		    post:fld_promo_imp = 0
+		    refresh post:fld_promo_imp
+		    refresh adt_evaux_importe
+		    refresh adt_evaux_cantidad
+		    return -2
+	    end if
+	else   /*borraron el campo*/
+	    adt_evaux_importe = 0
+	    adt_evaux_cantidad = 0
+	    refresh adt_evaux_importe
+	    refresh adt_evaux_cantidad
+	end if
+    end if
+END SUB
+
+/*******/

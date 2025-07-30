@@ -1,0 +1,177 @@
+/****o* Mercado Pago/OFB:post:MISCsaveOpeMP
+* NOMBRE
+*   OFB:post:MISCsaveOpeMP
+* DESCRIPCION
+*   Guarda un registro en la tabla MISCsaveOpeMP
+* ENTRADAS
+*		VEN - Venta 
+*		DEV -	Devolución 
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   
+* DOCUMENTACION
+*   NI50546 - Mercado Pago
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsaveOpeMP(p_operacion,p_comando)
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_operacion LIKE post:mp_operacion
+	LOCAL l_comando LIKE post:mp_comandos
+	LOCAL l_opmp_jnlOK LIKE post:adt_opmp_jnlOK
+	LOCAL l_pres_nro LIKE post:PresNro 
+	
+	LET l_operacion = p_operacion
+	LET l_comando = p_comando
+	LET l_opmp_jnlOK = "N"
+	LET post:mp_codint_mp = post:adt_tmp_codint_mp
+
+	IF (siaf:codigo_siaf == 99600) THEN
+		LET l_pres_nro = giros:PresNro_canc
+	ELSE
+		LET l_pres_nro = post:PresNro
+	END IF
+	
+	//Si fue cancelado, entonces no journaliza
+	IF (post:mp_status == "CANCELLED") THEN	
+		LET l_opmp_jnlOK = "F"
+	END IF
+
+	CDS SELECT FROM DSC:post:OperacionesMP_tbl BECOMES DSC:post:OperacionesMP_ctx \
+		WHERE post:adt_opmp_fecha == common:system_date \
+		&& post:adt_opmp_login_id == op:op_login_id \
+		&& post:adt_opmp_PresNro == l_pres_nro \
+		&& post:adt_opmp_termi_win == common:window_node \
+		&& post:adt_opmp_codseq_nro == post:adt_mp_codseq_nro \
+		&& post:adt_opmp_operacion == l_operacion
+
+	CDS FINDFIRST DSC:post:OperacionesMP_ctx LOCK
+	LET l_retval = CDSRETVAL
+    
+  CDS CLEARBUFFER DSC:post:OperacionesMP_ctx
+
+	CDS APPEND DSC:post:OperacionesMP_ctx \
+		common:system_date AS post:adt_opmp_fecha \
+		op:op_login_id AS post:adt_opmp_login_id \
+		l_pres_nro AS post:adt_opmp_PresNro \
+		common:window_node AS post:adt_opmp_termi_win \
+		post:adt_mp_codseq_nro AS post:adt_opmp_codseq_nro \
+		siaf:codigo_siaf AS post:adt_opmp_cod_siaf \
+		l_operacion AS post:adt_opmp_operacion
+
+  SELECT (l_comando)
+		CASE "MP_ORDEN_POST"
+		CASE "MP_ORDEN_GET"
+		CASE "MP_ORDEN_DEL"
+			//Cargo la info de la Orden
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_order,LST:post:LISTget_opmp_order) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_order,2)  	
+  	BREAK
+  	CASE "QR_ORDEN_POST"
+  	CASE "QR_ORDEN_DEL"
+			//Cargo la info de la Orden
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderQR,LST:post:LISTget_opmp_orderQR) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderQR,2)  	
+  	BREAK
+  	CASE "QR_PAYMENT_SEARCH"
+			//Cargo la info de la Orden	
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderQR,LST:post:LISTget_opmp_orderQR) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderQR,2)  
+
+			//Cargo order_id,payment_id y payment_status
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderID,LST:post:LISTget_opmp_orderID) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderID,2) 
+
+			//Cargo la info del Pago
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_payment,LST:post:LISTget_opmp_payment) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_payment,2) 
+
+			IF (post:mp_status_pago == "refunded") THEN
+				//Cargo la info de la Devolucion del Pago
+				CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_refund,LST:post:LISTget_opmp_refund) 
+				CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_refund,2)  
+			END IF	
+  	BREAK
+		CASE "MP_PAYMENT_GET"
+			//Cargo la info de la Orden
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_order,LST:post:LISTget_opmp_order) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_order,2)  	
+		
+			//Cargo la info del Pago
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_payment,LST:post:LISTget_opmp_payment) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_payment,2)  	
+
+			IF (post:mp_status_pago == "refunded") THEN
+				//Cargo la info de la Devolucion del Pago
+				CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_refund,LST:post:LISTget_opmp_refund) 
+				CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_refund,2)  
+			END IF	
+		BREAK
+		CASE "POINT_REFUND_GET"
+			//Cargo la info de la Orden
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_order,LST:post:LISTget_opmp_order) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_order,2)  	
+			
+			//Cargo la info del Pago
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_payment,LST:post:LISTget_opmp_payment)
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_payment,2)
+
+			IF (post:mp_status_pago == "refunded") THEN
+				//Cargo la info de la Devolucion del Pago
+				CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_refund,LST:post:LISTget_opmp_refund) 
+				CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_refund,2)  
+			END IF
+		BREAK
+		CASE "QR_REFUND_GET"
+			//Cargo la info de la Orden	
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderQR,LST:post:LISTget_opmp_orderQR) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderQR,2)  
+			
+			//Cargo order_id,payment_id y payment_status
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderID,LST:post:LISTget_opmp_orderID) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderID,2) 
+			
+			//Cargo la info del Pago
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_payment,LST:post:LISTget_opmp_payment)
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_payment,2)
+
+			IF (post:mp_status_pago == "refunded") THEN
+				//Cargo la info de la Devolucion del Pago
+				CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_refund,LST:post:LISTget_opmp_refund) 
+				CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_refund,2)  
+			END IF 
+		BREAK
+		CASE "POINT_REFUND_POST"
+			//Cargo la info de la Orden
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_order,LST:post:LISTget_opmp_order) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_order,2)  
+		BREAK
+		CASE "QR_REFUND_POST"
+			//Cargo la info de la Orden	
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderQR,LST:post:LISTget_opmp_orderQR) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderQR,2)  
+			
+			//Cargo order_id,payment_id y payment_status
+			CALL csr:proc_list(F_COPY,LST:post:LISTset_opmp_orderID,LST:post:LISTget_opmp_orderID) 
+			CALL csr:proc_list(F_APPEND,DSC:post:OperacionesMP_ctx ,LST:post:LISTget_opmp_orderID,2) 
+		BREAK
+  END SELECT
+  
+  CDS APPEND DSC:post:OperacionesMP_ctx \
+  	l_comando AS post:adt_opmp_comandos \
+  	l_opmp_jnlOK AS post:adt_opmp_jnlOK
+
+	IF (l_retval == -801) THEN
+		CDS INSERT DSC:post:OperacionesMP_ctx LOCK
+	ELSE
+		CDS REPLACE DSC:post:OperacionesMP_ctx LOCK
+	END IF
+	CDS UNLOCK DSC:post:OperacionesMP_ctx	
+	
+END SUB
+
+/*******/

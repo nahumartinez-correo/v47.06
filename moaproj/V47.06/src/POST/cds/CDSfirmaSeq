@@ -1,0 +1,74 @@
+/****o* Pendientes de agrupación/OFB:post:CDSfirmaSeq
+* NOMBRE
+*   OFB:post:CDSfirmaSeq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSfirmaSeq(modo)
+
+	/******************************************************************************/
+	/*                                                                            */
+	/* [PAW - 12/01/00]: Esta rutina se encarga de verificar la firma de los      */
+	/*                   auto-secuenciadores comparándola con la almacenada.      */
+	/*                                                                            */
+	/* Aclaración      : En caso de encontrar la verificación errónea, la rutina  */
+	/*                   bloquea las ventas de la sucursal.                       */
+	/*                                                                            */
+	/* Salidas (retval): [ 0] - Verificación exitosa. (coincidentes)              */
+	/*                   [-2] - Verificación no exitosa. (no coincidentes)        */
+	/*	Se agrega una salida más (1) cuando se pasa como parámetro				  */
+	/*	"control" y sirve para chequear si realmente se corrigió la				  */
+	/*	firma antes de realizar el Desbloqueo de las ventas - Gabriel Falciola	  */
+	/*                                                                            */
+	/******************************************************************************/
+
+	LOCAL cadenaMD5 LIKE common:csr_string
+	LOCAL firmaOri LIKE post:adt_secuen_firma
+    CDS SELECT FROM DSC:adt_secuen_table BECOMES DSC:adt_secuen_context \
+    	WHERE adt_secuen_sucnro == common:sucursal_activa
+    CDS FINDFIRST DSC:adt_secuen_context NOLOCK
+    while (cdsretval == 0)
+    	CDS EXTRACT DSC:adt_secuen_context ALL
+    	firmaOri = post:adt_secuen_firma
+    	// [PAW] --> desencripto los campos:
+    	CALL MISCenc_dec_ryptar (adt_secuen_nro, adt_secuen_nro.numchars)
+    	// [PAW] --> Firma electrónica. (Sucursal + Nùmero)
+    	fprint cadenaMD5 "%s%s", adt_secuen_sucnro, common:csr_string
+	    call csr:MD5checksum(cadenaMD5, 1, adt_secuen_firma, 1)
+    	if (adt_secuen_firma != firmaOri)
+    		if (modo == "detalle")
+    			fprint common:csr_string "SECUENCIADORES: %5.5s %5.5s %40.40s", \
+    				adt_secuen_sucnro, adt_secuen_cod, adt_secuen_desc
+			    CALL csr:f_saaddpl "falloFirma" common:csr_string
+    		else
+				if (modo == "control")
+	    			msgbox "No puede realizarse el Desbloqueo. Debe corregir la Firma Electrónica de las Tablas bloqueadas", OFB_OK, "ERROR"
+	    			CDS ENDSELECT DSC:adt_secuen_context
+    				return (1)
+				else
+	    			call post:CDSactBloqueoVentas("S")
+    				CDS ENDSELECT DSC:adt_secuen_context
+    				return (-2)
+    			end if
+    		endif
+    	endif
+    	CDS FINDNEXT DSC:adt_secuen_context NOLOCK
+    end while
+    CDS ENDSELECT DSC:adt_secuen_context
+    return 0
+END SUB
+
+/*******/

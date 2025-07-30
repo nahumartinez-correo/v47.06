@@ -1,0 +1,169 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_motagrup
+* NOMBRE
+*   OFB:post:MISCjnl_motagrup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_motagrup(loc_cod_agrup)
+Local FORMULARIOFISCAL like common:csr_string_171
+Local AFECTAEFECTIVO like siaf:afecta_efectivo
+Local CAPTURA_MEDIOS        like post:adt_captura
+CAPTURA_MEDIOS = siaf:adt_tran_med_pago
+    /*Selecciono los motivos por template de mi tabla auxiliar*/
+    CDS SELECT FROM MotAgrup_tbl BECOMES MotAgrup_ctx \
+        WHERE fecha_tmpl == common:system_date && \
+            operador_tmpl == op:op_operator_id && \
+            PresNro_tmpl == PresNro && \
+            cod_agrupacion == loc_cod_agrup && \
+            motagr_tmpl == template_tmp
+    CDS FINDFIRST MotAgrup_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval != -801)
+        //limpio el campo por si viene cargado de un registro anterior en la MotAgrup
+        clearfield post:ImporteIva
+        CDS EXTRACT MotAgrup_ctx ALL
+       /* HERNAN - Llamo a la rutina que acumula el importe en la TotalTransac*/
+          PresNro_ttran = PresNro_tmpl 
+          adt_importe2 = post:motagr_imp
+		  FORMULARIOFISCAL = post:PreDForFis
+		  post:PreDForFis = siaf:adt_mot_formfiscal 
+		  AFECTAEFECTIVO = siaf:adt_tran_afec_efvo
+		  siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+          Fprint common:csr_string_171 "%s%s%s" motagr_cod,motagr_modulo,motagr_submodulo
+		  siaf:adt_tran_med_pago = CAPTURA_MEDIOS
+          call post:MISCTotalTransac(common:csr_string_171)
+		  PreDForFis = FORMULARIOFISCAL
+		  siaf:adt_tran_afec_efvo = AFECTAEFECTIVO
+          
+
+       /*Selecciono el motivo correspondiente en la tabla de motivos para rescatar los
+       datos de dicho motivo que hay que journalizar*/
+        CDS SELECT FROM siaf:adt_motiv_table BECOMES siaf:adt_motiv_context \
+            WHERE siaf:adt_mot_codigo == motagr_cod && \
+                siaf:adt_mot_modulo == motagr_modulo && \
+                siaf:adt_mot_submodulo == motagr_submodulo
+        CDS FINDFIRST siaf:adt_motiv_context NOLOCK
+        IF (CDSRETVAL == -801)
+            RETURN (-2)
+        END IF
+        CDS EXTRACT siaf:adt_motiv_context ALL
+          
+       
+        LET PreDNroTrn = NroTrn_tmpl
+        LET siaf:moneda = moneda_tmp
+         /* En el caso de que el Codigo de documento no sea
+        TIK_O no imprimo el ticko*/
+        IF (siaf:adt_mot_cod_doc != "TICKO") THEN
+            CLEARFIELD drv:INDspc_rtn[2] ;NO imprime ticko
+            LET siaf:imprime_comprobante = "N"
+        ELSE
+            LET siaf:imprime_comprobante = "D"
+            drv:INDspc_rtn[2] = OFB:siaf:TRANprint_ingr_egr
+        END IF
+        /****************************************************************************
+        Si se imprime comprobante y el codigo de secuenciador es distinto de
+        blanco busco el nro. de secuenciador para imprimir en el comprobante.
+        Si no tiene codigo de secuenciador el nro de impre lo debe ingresar el
+        cajero. Ademas controlo que este en la etapa de inicio o en la de fin de
+        sesion y que no sea reversa para que no lo vuelva a calcular.
+        ***************************************************************************/
+        if (siaf:adt_mot_codseq != " ") && (!testflag(tlr:tran_flags,correction)) then
+            call post:CDSobtiene_secuen(siaf:adt_mot_codseq)
+            let siaf:nro_impre = post:adt_codseq_nro
+            motagr_comp = adt_codseq_nro /*lo tengo que grabar en MotArup para la ImpreTmp*/
+        else
+            siaf:nro_impre = motagr_comp
+        endif
+
+        /*paso los datos de los motivos del template para journalizar*/
+        siaf:Nis_Destino = motagr_sucdest
+        siaf:ImporteSello = motagr_impsell
+        siaf:ImporteSinSello = motagr_imp
+        siaf:motivo = motagr_cod
+        ver_anulacion = "N"
+        siaf:importe2 = motagr_imp
+        post:PreDForFis = siaf:adt_mot_formfiscal
+        IF (cli_tipo == 1)
+            siaf:importe = 0
+        ELSE
+            siaf:importe = siaf:importe2
+        END IF
+
+        /*Desglosa el Iva para journalizar los motivos*/
+        //CALL MISCdesglosaIva(motagr_imp, siaf:adt_mot_aliciva,1)
+		post:ImporteSinIva = siaf:ImporteSinIva
+		post:TasaIva = siaf:adt_mot_aliciva
+		
+		
+		
+        /*Guardo en este campo el Importe con Iva para Ing. Brutos - Gabriel Falciola*/
+        post:ImporteConIva = motagr_imp
+
+        /*paso los datos correspondientes a los motivos dependiendo de que sea un ingreso
+        o un egreso*/
+        IF (siaf:adt_mot_submodulo == 06800) THEN
+            let siaf:adt_tran_codigo = 06800
+            tlr:tran_mnemonic = "SVIGVS"
+            siaf:nombre_transac = "INGRESOS VS. EN EFECTIVO"
+            drv:INDcur_tran = LST:siaf:TRAN6800
+            drv:INDspc_rtn[0] = LST:siaf:TOTS6800
+            siaf:codigo_siaf = 06800
+            call post:MISCBusco_seq_tot(6800,post:indice_total)
+
+        ELSE
+            let siaf:adt_tran_codigo = 06600
+            tlr:jnl_tran_name = "SVEGVS"
+            siaf:nombre_transac = "EGRESOS VS. EN EFECTIVO"
+            drv:INDcur_tran = LST:siaf:TRAN6600
+            drv:INDspc_rtn[0] = LST:siaf:TOTS6600
+            siaf:codigo_siaf = 06600
+			call post:MISCBusco_seq_tot(6600,post:indice_total)
+            
+        END IF
+
+        MOVE siaf:adt_mot_desc TO siaf:adt_mot_desc_tmp
+        MOVE siaf:nombre_transac TO siaf:DAUtitulo1
+        operador_tmpl = op:op_operator_id
+        fecha_tmpl = common:system_date
+
+        LET AliServUP = siaf:adt_mot_aliciva
+        LET ImpServUP = siaf:ImporteConIva
+    
+        /*grabo en la tabla auxiliar datos que rescato de la tabala de motivos para la impresion*/
+        CDS CLEARBUFFER MotAgrup_ctx
+        CDS APPEND MotAgrup_ctx \
+            FLD:motagr_comp
+        CDS UPDATE MotAgrup_ctx LOCK
+
+        drv:INDscr = SCR:siaf:SCRNmon_comp_mot_imp
+        drv:INDjnl_rtn = OFB:siaf:JNLmon_comp_mot_imp
+        siaf:secuencia_aux = tlr:sequence + 1
+        CALL tlr:JNLtran
+        CDS ENDSELECT siaf:adt_motiv_context
+        CDS FINDNEXT MotAgrup_ctx LOCK
+        lib:err_retval = CDSRETVAL
+    END WHILE
+    adt_importe2 = 0
+    PresNro_ttran = 0
+    CDS ENDSELECT DSC:MotAgrup_ctx
+    CLEARFIELD drv:INDscr
+    CLEARFIELD drv:INDjnl_rtn
+    CLEARFIELD drv:INDspc_rtn[0]
+    CLEARFIELD drv:INDspc_rtn[2]
+    existe_MotAgrup = "S"
+END SUB
+
+/*******/

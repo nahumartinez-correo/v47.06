@@ -1,0 +1,148 @@
+/****o* Pendientes de agrupación/OFB:post:JNL_DP1_det
+* NOMBRE
+*   OFB:post:JNL_DP1_det
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNL_DP1_det
+    /* Nov. 1999 - B. Petrella */
+    CALL MISCclear_DP1_JNL /* Limpia campos a jnl. */
+
+
+    CALL CDSconsCorteOp_DP1 /* Cons. CorteOp para obtener si */
+
+    /* la Pza. requiere cont, saca o cte. de linea */
+    LET adt_corteop_cod = post:adt_serv_corteop
+    CALL CDSconsRelMod_DP2
+
+    IF (adt_relMod_sacatipo.numchars > 0)
+		LET jnl_corteop_saca = "S"
+    ELSE
+		LET jnl_corteop_saca = "N"
+    END IF
+
+    CDS APPEND DSC:tlr:CONjnl_write \
+        post:adt_apertura_cod \
+        post:adt_grucorte_desc \
+		post:adt_grucorte_cod \
+        post:adt_apertura_desc  \
+		post:Pieza /*\
+		post:Pieza AS track_trace*/
+		
+	IF (post:Pieza.numchars <= 13) THEN
+		CDS APPEND DSC:tlr:CONjnl_write \
+		post:Pieza AS track_trace
+	ENDIF
+	
+    CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_apertura_cod AS post:jnl_apertura_cod \
+		post:adt_grucorte_cod AS post:jnl_grucorte_cod \
+		post:adt_serv_corteop AS post:jnl_corteop_cod \
+		post:jnl_corteop_guiacont \
+		post:jnl_corteop_saca \
+		post:jnl_corteop_despacho
+
+    CDS APPEND DSC:tlr:CONjnl_write \
+		post:jnl_hora_llencont \
+		post:jnl_fecha_llencont \
+		post:jnl_guia_cont \
+		post:jnl_hora_llensaca \
+		post:jnl_fecha_llensaca \
+		post:jnl_guia_saca \
+		post:jnl_hora_despacho \
+		post:jnl_fecha_despacho \
+		post:jnl_guia_despacho \
+		post:es_prioritaria \
+		post:codseq_dev 
+
+    /*FNR Este campo se agregó para poder marcar las piezas recibidas en la TX de recepción de
+          piezas de otro op., para que en la TX de transf. de pzas no se puedan volver a transferir. */
+    //El campo post:adt_est_pieza se agrega porque se utiliza cuando se fuerce una transferencia de piezas 
+    CDS APPEND DSC:tlr:CONjnl_write \
+               FLD:post:jnl_pieza_recibida \
+               FLD:post:adt_est_pieza
+
+	/*CSZ*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:jnl_guia_especial \
+		post:jnl_simp_esp
+	
+	/*MFM - Se agrega el campo del operador al que se le transfiere la pieza*/
+    jnl_op_transf = ""
+    CDS APPEND DSC:tlr:CONjnl_write \
+        FLD:jnl_op_transf
+        		
+	/*MFM*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_stockp_pie_obs AS post:jnl_stockp_pie_obs \
+		post:adt_stockp_reenc  AS post:jnl_stockp_reenc \
+		post:adt_stockp_reenc_cul AS post:jnl_stockp_reenc_cul
+    
+    /*MFM - Grabo el campo que indica si la pieza tiene marca de excepcion en "N"*/
+    jnl_marca_excep = "N"
+    jnl_excep_existe = ""
+    CDS APPEND DSC:tlr:CONjnl_write \
+		post:jnl_marca_excep \
+		post:jnl_excep_existe
+			  
+    if (testflag(tlr:tran_flags,correction)) then
+        /* Si se esta reversando hay que limpiar */
+        /* los campos de stockp: adt_stockp_Baja = N, adt_stockp_devol_op = "", */
+	  /* adt_stockp_devol_fe == "", adt_stockp_devol_hor = "" */
+	  /* Y se actualizan: adt_stockp_ult_modfe, adt_stockp_ult_modho, adt_stockp_ult_modop */
+		call CDSrevStockp_DP1
+		/*MFM -Borro los Scaneos generados en dicha devolucoón*/
+		CALL CDSBorro_Scaneos("D")
+    else
+      	/*Grabo los Scaneos correspondientes a dicha devolución*/
+      	CALL MISCes_TT(Pieza)
+      	IF (RETVAL == 0) THEN
+	        CALL MISCGrabo_Scaneos_DP
+    	ELSE
+    	    post:adt_novtt_pieza = Pieza
+    	    IF (jnl_simp_esp_aux != "")  THEN
+    			adt_novtt_simp_esp = jnl_simp_esp_aux
+    		ELSE
+    			adt_novtt_simp_esp = jnl_simp_esp
+    		END IF
+    		CALL CDSGrabo_Scaneo_Aux
+    	END IF 
+    end if
+
+	//para mandar el cambio de estado al host
+	CDS APPEND DSC:tlr:CONjnl_write \
+		tlr:jnl_sequence as post:jnl_sequence_ori1 \
+		post:stockp_idPieza_ped as post:estadoPED_id_pieza \
+		post:stockp_NISorig_ped as post:estadoPED_NISorig \
+		post:stockp_NISdest_ped as post:estadoPED_NISdest		
+
+	IF (post:adt_stockp_destino == DSC:post:PED_desc) THEN
+		//rutina que graba 1 registro en la tabla estadoPED con el nuevo estado
+		//de la pieza para mandar al host por el rtbatch
+    	if (!testflag(tlr:tran_flags,correction)) then	
+			post:estadoPED_pieza = substr(post:Pieza,0,13)		
+			post:estadoPED_id_pieza = post:stockp_idPieza_ped
+			post:estadoPED_NISorig = post:stockp_NISorig_ped
+			post:estadoPED_NISdest = post:stockp_NISdest_ped
+			CALL post:CDSsave_estadoPED("DAR","D") //Directa
+		ELSE
+			post:estadoPED_pieza = substr(post:Pieza,0,13)
+			CALL post:CDSsave_estadoPED("DAR","C") //Cancelacion
+		END IF            
+	END IF
+END SUB	
+
+/*******/

@@ -1,0 +1,124 @@
+/****s* Pendientes de agrupación/SCR:post:SVALretiro_dinero
+* NOMBRE
+*   OFB:post:SVALretiro_dinero
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la TX de Retiro de Dinero TS.
+*   Se comunica con el POS y autoriza o no el retiro de dinero
+*   Journaliza la tx de Retrio de Dinero mas la Captura 99098 si hubiera sido aprobada
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANretiro_dinero
+* DOCUMENTACION
+* SOURCE
+*/
+#include "postsval.h"
+#define VPI_EMPTY_BATCH	          105		//El lote se encuentra vacío.
+
+SUB post:SVALretiro_dinero
+
+	IF (siaf:continua_transaccion == "N"
+	)local imp_tran like siaf:importe
+	siaf:importe = post:importe_origen
+	Total_importe = post:importe_origen
+
+
+	CALL drv:MISCpopup(SCR:post:SCRNconf_retiro,-,OFB:PRECconf_retiro,OFB:post:SVALconf_retiro,-)
+	IF (LASTKEY == RT_ESC) THEN
+		RETURN -1
+	END IF
+	
+	  
+	
+	
+	CALL siaf:SVALmonto_operador
+	IF (retval < 0)
+		RETURN -2	
+	END IF	
+	
+
+	if (testflag(tlr:tran_flags,correction)) then
+
+		//Valido si se efectuo el Cierre de Lote para esta tarjeta
+		post:Nro_Lote_Pos = jnl_lcie_batchNumber
+		post:jnl_opvpi_issuerCode = jnl_lcie_issuerCode
+		CALL post:CDScierre_lote
+		IF (RETVAL == 0) THEN 
+			IF (common:adt_vpi_Devolucion == "N") THEN
+				MSGBOX "La Sesión no puede ser anulada.\Ya se ha realizado Cierre de Lote" OFB_OK "Error"
+				RETURN (-2)
+//			ELSE
+//				l_cierre_lote = "S"
+//			END IF
+//		ELSE
+//			l_cierre_lote = "N"
+		END IF
+		
+//		LET l_opvpi_jnlOK = "N"
+		
+		//Verifica la marca post:opvpi_jnlOK = "S"
+		IF (l_cierre_lote == "N") THEN
+			CALL post:CDSopvpi_verif_jnlOK("ANV")
+			IF (RETVAL == 0) THEN
+				l_opvpi_jnlOK = "S"
+			END IF
+		ELSE
+			CALL post:CDSopvpi_verif_jnlOK("DEV")
+			IF (RETVAL == 0) THEN
+				l_opvpi_jnlOK = "S"
+			END IF
+		END IF
+	ELSE
+		l_pago_tarjeta = "N"	
+	END IF		
+	
+	
+	else 
+	
+	//Llamo a la rutina que se comunica con el POS y ejecuta el retiro de dinero (en este caso es una vta con otro codigo de comercio)
+	CLEARFIELD post:adt_vpi_status
+  	LET post:Tipo_Operacion_Pos = "ONLINE"
+  	//REFRESH post:Tipo_Operacion_Pos
+	CALL post:MISCvpiPurchase
+	IF (RETVAL < 0) THEN
+		//Si esta habilitada la parametria para venta offline
+		IF (common:adt_vpi_Offline == "S") THEN
+			//Evaluo si debo realizar una venta offline
+			IF (post:adt_vpi_status == "OFF") THEN
+				POPUP SCR:post:SCRNvpiOffline,post:PRESvpiOffLine,-,post:SVALvpiOffLine
+				IF (LASTKEY == RT_ESC) THEN
+			  		RETURN (-2)
+			  	ELSE
+			  		IF (post:adt_vpi_aut_offline == "N") THEN
+			  		END IF
+			  	END IF 
+			ELSE
+				RETURN (-2)
+			END IF
+		ELSE
+			RETURN (-2)
+	  	END IF
+	END IF
+	
+	//Actualizo la marca en la tabla OperacionesVPI
+	CALL post:CDSopvpi_jnlOK("VEN")		
+	
+	CALL post:MISCvpiPrintTicket
+	
+	
+	CALL csr:proc_list(F_COPY, LST:post:LISTopvpiPurchaseIn, LST:post:LISTjnlOpPurchaseIn)
+	CALL csr:proc_list(F_COPY, LST:post:LISTopvpiTrxOut, LST:post:LISTjnlOpTrxOut)
+	
+  	call tlr:JNLtran
+   	tlr:link_y_n = "Y" //UNGETKEY RT_SEND
+   	imp_tran = siaf:importe * -1
+   	Call post:MISCcap_teclas_rap(imp_tran)
+
+    
+END SUB
+
+/*******/

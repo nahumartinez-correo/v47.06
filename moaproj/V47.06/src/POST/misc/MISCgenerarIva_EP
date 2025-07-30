@@ -1,0 +1,74 @@
+/****o* Pendientes de agrupación/OFB:post:MISCgenerarIva_EP
+* NOMBRE
+*   OFB:post:MISCgenerarIva_EP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenerarIva_EP
+    LOCAL loc_importe LIKE siaf:importe
+    LOCAL loc_tasa LIKE siaf:adt_mot_aliciva
+    LOCAL loc_cantidad LIKE cantidad
+    CDS SELECT FROM EntrPieza_tbl BECOMES EntrPieza_ctx WHERE \
+        fecha_EP == common:system_date && \
+        operador_EP == op:op_operator_id && \
+        PresNro_EP == PresNro_EP && \
+        cod_agrupacion == cod_agrupacion
+    CDS FINDFIRST EntrPieza_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval != -801)
+        CDS EXTRACT DSC:EntrPieza_ctx ALL
+        //loc_importe = siaf:importe + imp_bloques
+        loc_importe = siaf:importe
+
+        IF (adt_serv_formfiscal.NUMCHARS > 0)
+            loc_tasa = adt_serv_aliciva
+            loc_cantidad = 1
+            //SC 50170
+            CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+            //SC 50170-FACTURACION
+            Call CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+            IF (promo_imp_presAdu > 0 || promo_imp_almc > 0 || promo_imp_lista > 0) THEN
+            	select (post:cod_EP)
+        			case 18601
+        			case 18602
+        				loc_importe = promo_imp_presAdu
+        			break
+        			case 18401 /*Almacenaje - Nacional*/
+        			case 28402 /*Almacenaje - Internacional*/
+        				loc_importe = promo_imp_almc
+        			break
+        			case 18301
+        				loc_importe = promo_imp_lista
+        			break
+        			case else
+        			break
+        		end select
+            	//SC 50170
+            	CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+            	//SC 50170-FACTURACION
+            	ImporteSinIva_bis = ImporteSinIva_bis * -1
+            	ImporteIva_bis = ImporteIva_bis * -1
+            	Call CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+           END IF
+        END IF
+        CDS FINDNEXT DSC:EntrPieza_ctx LOCK
+        LET lib:err_retval = CDSRETVAL
+    END WHILE
+    CDS ENDSELECT EntrPieza_ctx
+
+END SUB
+
+/*******/

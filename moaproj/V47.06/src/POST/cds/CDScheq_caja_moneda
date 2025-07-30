@@ -1,0 +1,62 @@
+/****o* Pendientes de agrupación/OFB:post:CDScheq_caja_moneda
+* NOMBRE
+*   OFB:post:CDScheq_caja_moneda
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScheq_caja_moneda
+local efec_en_caja like siaf:importe
+local resto_a_caja like siaf:importe
+/*Chequea cuando se quiere finalizar una Sesion, que si alguna de las monedas son
+negativas, o sea que es un egreso, este disponible las cantidad requerida en la caja.
+Gabriel Falciola*/
+	cds select from dsc:Monedas_tbl becomes dsc:Monedas_ctx
+	cds findfirst dsc:Monedas_ctx nolock
+	do
+		if (cdsretval != 0)
+			break
+		end if
+		cds extract dsc:Monedas_ctx post:adt_mon_cod into siaf:moneda
+		clearfield PrePImp
+		cds select from dsc:TABPresuPago becomes dsc:CONPresuPago where \
+		fecha == fld:common:system_date && op_operator_id == fld:op:op_operator_id && \
+		siaf:moneda == fld:siaf:moneda && PresNro == fld:PresNro
+		cds findfirst dsc:CONPresuPago nolock
+		if (cdsretval == 0)
+			cds extract dsc:CONPresuPago siaf:desc_moneda
+			cds aggregate dsc:CONPresuPago sum post:PrePImp
+			cds extract dsc:CONPresuPago post:PrePImp
+			if (PrePImp < 0)
+				efec_en_caja = siaf:tefec_inic_vec[siaf:moneda] + siaf:tefectivo_vec[siaf:moneda]
+				resto_a_caja = PrePImp * -1
+				if (efec_en_caja < resto_a_caja)
+					/*Sólo valido cuando no se hayan confirmado transacciones - Gabriel Falciola*/
+					call post:CDStrn_conf_presu
+					if (retval != 0)
+						fprint common:csr_string "El total en %s es mayor al disponible en caja",siaf:desc_moneda
+						msgbox common:csr_string,OFB_OK,"ERROR"
+						return (-2)
+					end if
+				end if
+			end if
+		end if
+		cds endselect dsc:CONPresuPago
+		cds findnext dsc:Monedas_ctx nolock
+	loop
+	cds endselect dsc:Monedas_ctx
+END SUB
+
+/*******/

@@ -1,0 +1,155 @@
+/****o* Registro VAP/OFB:post:FVALaforoVAP
+* NOMBRE
+*   OFB:post:FVALaforoVAP
+* DESCRIPCION
+*   Valida los campos aforo1; aforo2 y aforo3
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALaforoVAP
+	LOCAL x LIKE post:cantidad
+	//LOCAL l_cant_opc like post:cant_opc
+	local medida like aforo1
+	
+	
+	//adaptar la rutina como FVALpi_aforo!!!!!
+	
+	IF (CURRENTFIELD > 0) THEN
+		
+		IF (caja_propia)
+			medida = currentfield
+
+			IF (adt_serv_calc_rv == "N")
+				//Tarifa por aforo
+				post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+				REFRESH post:aforo
+				CALL csr:trimfield(destino)
+				/*IF (destino.NUMCHARS != "")
+					CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						post:adt_tarif_serv == adt_serv_serv && \
+						post:adt_tarif_dest == destino && \
+						adt_tarif_desde <= post:aforo && \
+						adt_tarif_hasta >= post:aforo
+					CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+					IF (CDSRETVAL == -801)
+						CDS ENDSELECT dsc:Tarifas_ctx
+						MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA POR NO HALLARSE EN EL TARIFARIO UN RANGO PARA LOS VALORES DESTINO/CANTIDAD INGRESADOS",0x00,"Error"
+						RETURN (-2)
+					END IF
+				END IF*/			
+			
+			ELSE
+				//Tarifa por relacion volumetrica
+				CALL MISCrest_med_cprop
+				IF (retval < 0)
+					if (aforo1 == 0)
+						nextfield aforo1
+						return
+					else
+						return -2
+					end if
+				END IF
+				//Calculo relacion volumetrica
+				rel_vol_l1 = aforo1
+				rel_vol_l2 = aforo2
+				rel_vol_l3 = aforo3
+				CALL post:MISCobt_rel_vol //(aforo1,aforo2,aforo3)
+				IF (retval < 0)
+					return -2
+				END IF
+
+			END IF	
+
+			IF (cli_tipo == CLIMED && (post:ConsumoAnticipo || post:modalidad_CM != "S"))    
+		    	call post:MISCcalc_tarif_VAP
+				IF (RETVAL < 0)
+					RETURN (-2)
+				END IF	    			
+	        	//Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+		        if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+		            post:bonificaCM = "S"
+	    	    endif
+		
+	        	If (bonificaCM == "S") Then
+	            	CALL MISCtratCM_vap //MISCTratamientoCM
+		            if (retval < 0) then
+		                return -2
+	    	        end if
+	        	else
+	            	clearfield post:Dcto_CliMed
+	            	refresh  post:Dcto_CliMed
+		        endif
+			ELSE
+				//Verfico en el CDSbasico que los datos cargados puedan ser tarifados.
+				CALL post:CDSbasico(post:adt_serv_serv,post:adt_tarif_desde,post:adt_serv_umstd,post:destino)
+		        IF (RETVAL < 0)
+		            CALL MISCParamDefect(post:adt_serv_serv,post:destino,post:adt_serv_umstd)
+	    	        RETURN (-2)
+	        	END IF		
+			END IF
+		
+		ELSE //NO es caja propia
+	
+			post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+			REFRESH post:aforo
+			CALL csr:trimfield(destino)
+			IF (destino.NUMCHARS != "")
+				CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+					post:adt_tarif_serv == adt_serv_serv && \
+					post:adt_tarif_dest == destino && \
+					adt_tarif_desde <= post:aforo && \
+					adt_tarif_hasta >= post:aforo
+				CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+				IF (CDSRETVAL == -801)
+					MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA POR NO HALLARSE EN EL TARIFARIO UN RANGO PARA LOS VALORES DESTINO/CANTIDAD INGRESADOS",0x00,"Error"
+					RETURN (-2)
+				END IF
+			END IF
+	
+		   	// Calculo la tarifa solo si es cliente medio con adelanto o modalidad
+			IF (cli_tipo == CLIMED && (post:ConsumoAnticipo || post:modalidad_CM != "S"))    
+		    	call post:MISCcalc_tarif_VAP
+				IF (RETVAL < 0)
+					RETURN (-2)
+				END IF	    			
+	        	//Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+		        if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+		            post:bonificaCM = "S"
+	    	    endif
+		
+	        	If (bonificaCM == "S") Then
+	            	CALL MISCtratCM_vap //MISCTratamientoCM
+		            if (retval < 0) then
+		                return -2
+	    	        end if
+	        	else
+	            	clearfield post:Dcto_CliMed
+	            	refresh  post:Dcto_CliMed
+		        endif
+			ELSE
+				//Verfico en el CDSbasico que los datos cargados puedan ser tarifados.
+				CALL post:CDSbasico(post:adt_serv_serv,post:adt_tarif_desde,post:adt_serv_umstd,post:destino)
+		        IF (RETVAL < 0)
+		            CALL MISCParamDefect(post:adt_serv_serv,post:destino,post:adt_serv_umstd)
+	    	        RETURN (-2)
+	        	END IF		
+			END IF
+		END IF 
+	ELSE
+		MSGBOX "SE REQUIEREN LAS MEDIDAS DEL ENVIO",0x00,"ERROR"
+		RETURN (-2)
+	END IF
+END SUB
+
+/*******/

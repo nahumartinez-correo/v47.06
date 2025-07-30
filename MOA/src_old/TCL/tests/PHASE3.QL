@@ -1,0 +1,16 @@
+select from a into /tmp/a;
+select from b into /tmp/b;
+begin work;
+update 2 a set :Cds_table_no = 77;
+update 1 b set :Cds_table_name = "xxxxi";
+rollback work;
+begin work;
+update 1 a set :Cds_table_no = 55;
+update 2 b set :Cds_table_name = "xxiii";
+rollback work;
+begin work;
+update 1 a set :Cds_table_no = 55;
+update 2 b set :Cds_table_name = "bruski" where :Cds_table_name > "";
+rollback work;
+select from a into /tmp/a2;
+select from b into /tmp/b2;

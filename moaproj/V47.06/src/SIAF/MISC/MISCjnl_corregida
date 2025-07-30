@@ -1,0 +1,143 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCjnl_corregida
+* NOMBRE
+*   OFB:siaf:MISCjnl_corregida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCjnl_corregida
+
+	clearfield siaf:tran_retval
+
+	cds select from dsc:tlr:TABjnl becomes dsc:tlr:aux_context  where  \
+		tlr:jnl_branch == fld:op:op_branch_id && \
+		tlr:jnl_operator ==	fld:giros:jnl_operator_orig && \
+		tlr:jnl_bus_date == fld:giros:jnl_date_orig &&  \
+		tlr:jnl_sequence == fld:tlr:jnl_sequence_corr
+	cds findfirst dsc:tlr:aux_context lock
+	if (cdsretval != 0) then
+		cds unlock dsc:tlr:aux_context
+		cds endselect dsc:tlr:aux_context
+		return
+	end if
+
+	// Para tener como referencia que la transaccion ha sido
+	// cancelada a traves de una REVERSA AUTOMATICA y NO MANUAL.
+
+	siaf:cancelacion = "TRANCANCELADA"
+
+	if ( hcomm:tran_status > HOST_REJECTED )
+
+		siaf:tran_retval = TRAN_CAIDA_VUELO
+		cds unlock dsc:tlr:aux_context
+		cds endselect dsc:tlr:aux_context
+		return
+
+		/* Nuevo estado de TRAN : 111
+		hcomm:tran_status = RECH_REV_AUTO
+		siaf:mensaje = "REVERSO AUTO. CANCELADO"
+		*/
+	end if
+
+	cds clearbuffer dsc:tlr:aux_context
+
+	// FLD de Extract de Transaccion HostDown del journal
+	// indicando si es reversa manual o transaccion normal.
+
+
+	/*  CANCELACION DE UNA TRANSACCION DIRECTA */
+
+
+	if ( hcomm:tran_status == HOST_ACCEPTED )
+	    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,hcomm:tran_status
+		siaf:mensaje = "CANCELACION AUTO."
+
+		IF (siaf:codigo_siaf == 6820 && post:recuperacionReversa)
+			CDS APPEND DSC:tlr:aux_context \
+			FLD:tlr:jnl_status
+		else
+			CDS APPEND DSC:tlr:aux_context \
+			FLD:tlr:jnl_sequence  AS FLD:tlr:jnl_sequence_corr \
+			FLD:tlr:jnl_status \
+			FLD:siaf:mensaje \
+			FLD:siaf:cancelacion
+		endif
+	else
+		select ( giros:CodRespuesta_comm )
+
+		 case "98"
+			    // Transaccion Ya Efectuada.
+			    siaf:mensaje = "CANCELACION YA EFECTUADA"
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_ACCEPTED
+			    break
+		case "09"
+			    // No Existe Transaccion Directa.
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    siaf:mensaje = "CANCELACION NO SE PUEDE REALIZAR"
+			    break
+		case "95"
+			    // No Se puede realizar recuperacion de la operacion.
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    siaf:mensaje = "NO SE PUEDE RECUPERAR LA OPERACION"
+			    break
+		case else
+			    FPRINT tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,HOST_REJECTED
+			    break
+		end select
+
+		IF (siaf:codigo_siaf == 6820 && post:recuperacionReversa)
+			CDS APPEND DSC:tlr:aux_context \
+			FLD:tlr:jnl_status
+		else
+			CDS APPEND DSC:tlr:aux_context \
+			FLD:tlr:jnl_sequence  AS FLD:tlr:jnl_sequence_corr \
+			FLD:tlr:jnl_status \
+			FLD:siaf:mensaje \
+			FLD:siaf:cancelacion
+		endif
+
+	end if
+
+	cds update dsc:tlr:aux_context  lock
+	cds unlock dsc:tlr:aux_context
+	clearfield siaf:mensaje
+	cds endselect dsc:tlr:aux_context
+
+	IF (siaf:codigo_siaf == 6820 && post:recuperacionReversa && hcomm:tran_status == HOST_ACCEPTED)
+		cds select from dsc:tlr:TABjnl becomes dsc:tlr:aux_context  where  \
+			tlr:jnl_branch == fld:op:op_branch_id && \
+			tlr:jnl_operator ==	fld:giros:jnl_operator_orig && \
+			tlr:jnl_bus_date == fld:giros:jnl_date_orig &&  \
+			post:PresNro == fld:post:PresNro && \
+			siaf:codigo_siaf == 6820
+		cds findfirst dsc:tlr:aux_context lock
+		if (cdsretval != 0) then
+			cds unlock dsc:tlr:aux_context
+			cds endselect dsc:tlr:aux_context
+			return
+		end if
+		while (cdsretval == 0)
+			tlr:jnl_status = "003"
+			CDS APPEND DSC:tlr:aux_context \
+			FLD:tlr:jnl_status
+			cds update dsc:tlr:aux_context  lock
+			cds unlock dsc:tlr:aux_context
+			cds findnext dsc:tlr:aux_context lock
+		end while
+		cds endselect dsc:tlr:aux_context
+	endif
+END SUB
+
+/*******/

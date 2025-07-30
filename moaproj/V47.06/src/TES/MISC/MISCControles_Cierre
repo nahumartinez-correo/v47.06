@@ -1,0 +1,188 @@
+/****o* Cierre de Caja/OFB:tes:MISCControles_Cierre
+* NOMBRE
+*   OFB:tes:MISCControles_Cierre
+* DESCRIPCION
+*   Realiza controles para el Cierre de Caja.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   tlr:PRETProcesoCierre
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCControles_Cierre
+    local paso_OK like siaf:i // flag que verifica si paso los controles
+    let paso_OK = 1 // 1: paso bien (default) // 0: error en algun ctrl.
+
+    CALL tes:MISCchk_pfortes  //pases forzado de marca de tesoro
+    If (retval != 0)
+        RETURN (-2)
+    End If
+
+
+	/* Si soy el operador que maneja el fondo
+	controlo que lo depositado no sea inferior al mínimo */
+	if (op:op_subtesoro == "S") then
+		call tes:MISCdinero_fondo
+		if (retval < 0) then
+			return (-2)
+		end if
+	end if
+
+    /* Agrego para que no admita modo presupuesto */
+    if (post:estado_presu != 1) then
+	    let common:csr_string = "(L) No Admite Modo Presupuesto"
+	    errmsg common:errmsg_list,FLD:common:csr_string
+	    return (-2)
+    end if                 
+    CALL tlr:PRETno_dup
+    IF (RETVAL != 0) THEN
+;       RETURN (-2)
+	    let paso_OK = 0
+    END IF
+    CALL tlr:PRETno_cor
+    IF (RETVAL != 0) THEN
+        ;RETURN (-2)
+	    let paso_OK = 0
+    END IF
+    CALL tlr:PRETopen_req
+    IF (RETVAL != 0) THEN
+        ;RETURN (-2)
+	    let paso_OK = 0
+    END IF
+    IF (TESTFLAG(tlr:state_flags,list)) THEN
+         MOVE "Must End List Before Closing Day" TO drv:error_msg
+        CALL drv:error_msg
+        ;RETURN (-2)
+	    let paso_OK = 0
+    END IF
+/* no puedo hacer el cierre si no se realizo la rendicion */
+/* se agrega para el perfil de merchandizing (retaguardia) */
+
+/* MLD con Reingeniería no necesito Verificar la rendición. porque si llego a esta
+	instancia ya rinidó */
+	/*
+	if (testflag(common:menu_flags,AMtlr_auth) || \
+	    testflag(common:menu_flags,AMret_auth)) then
+		call tes:MISCchk_rend_cajero
+		if (retval < 0) then
+		;       return (-2)
+			let paso_OK = 0
+		end if
+	end if
+	*/
+/* no puedo realizar el cierre de caja si hay movimientos pendientes en */
+	call tes:MISCchk_tmov_cajero("TODOS")
+	if (retval < 0 ) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+	call tes:MISCchk_espvmov_caje("TODOS")
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+	call tes:MISCchk_cheqmov_caje("TODOS")
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+/* Giros:VERIFICO QUE NO HAYA CHEQUERAS EN TESORO PENDIENTES PARA ESE CAJERO */
+	call tes:MISCchk_pase_cajero 
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+
+    //NAM:AUT-2316-Verifica si existen chequeras pendientes
+      CALL tes:MISCchk_pase_Pend
+      if (retval < 0) then
+          let paso_OK = 0
+      end if
+    //FIN NAM
+
+	//Reingeniería:
+	// Verifico que no exista algun ajuste pendiente de asignación en la control_franq
+	CALL tes:CDSchk_ajupend_franq
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+	// Verifico que el operador no tenga una marca de fallo de franqueo
+	//en la rend_caj
+	CALL tes:CDSchk_fallo_rend
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if	
+
+    //cgw: Verifico que no exista algun fallo CREM pendiente de asignación en FallosCrem.
+    CALL tes:CDSchk_asig_pendCREM
+    if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+
+	//cgw: Verifico que el operador no tenga una marca de fallo CREM asignado en la rend_caj.
+	CALL tes:CDSchk_falloCR_rend
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+
+    /* cgw:Se deja de utilizar controles en Cierre de Caja de Asignacion y Recepcion de Fallos PCT.
+
+    //cgw: Verifico que no exista algun fallo de Pago por Cuenta de Terceros pendiente
+    //     de asignación en FallosBenef.
+    CALL tes:CDSchk_asig_pendPCT
+    if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+
+	//cgw: Verifico que el operador no tenga una marca de fallo Pago por Cuenta de Terceros
+	//     asignado en la rend_caj.
+	CALL tes:CDSchk_falloPCT_rend
+	if (retval < 0) then
+	;   return (-2)
+		let paso_OK = 0
+	end if
+    */
+
+	//Inicio agrego German
+	//50242-Verifico que operador logueado no tenga piezas pendientes de recepción
+	CALL post:MISCpzapend_TranPend ("A")
+	
+	IF (RETVAL < 0) THEN
+	;   return (-2)
+	common:csr_string_350 = "Existen transferencias de piezas pendientes.\nVerifique existencias desde la TX RECEPCION DE PIEZAS DE OTRO OPERADOR y/o Notifique al operador al que le haya transferido o rechazado piezas para que las reciba."
+	MSGBOX common:csr_string_350,0x00,"AVISO"
+	common:csr_string_350 = "Ninguno de los operadores podrá cerrar su caja hasta que la transferencia sea aceptada."
+	MSGBOX common:csr_string_350,0x00,"AVISO"
+		LET paso_OK = 0
+	END IF
+	//Fin agrego German
+	
+    //50592-Se verifica si el Cajero posee en saldo Tarjetas(moneda 06) pendientes de  SALIDA DE VALORES A ADM. REGIONAL y frena el cierre. 
+	CALL tes:MISCchk_pend_AdmReg("O")
+	if (RETVAL < 0) THEN
+		MSGBOX "Tiene valores pendientes de salida a Adm. Regional.",0x00,"AVISO"
+		LET paso_OK = 0
+	END IF
+	
+	
+	if (paso_OK) then
+		return (0)
+	else
+		return (-1)
+	end if
+END SUB
+
+/*******/

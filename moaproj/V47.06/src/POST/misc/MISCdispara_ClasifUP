@@ -1,0 +1,86 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdispara_ClasifUP
+* NOMBRE
+*   OFB:post:MISCdispara_ClasifUP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdispara_ClasifUP
+	
+	local retval_aux like lib:err_retval
+	local superv like ovr:ovr_sup_id
+	
+	//veo si hay al menos 1 pieza pendiente de clasificar
+	//selecciono de la stockpUP los registros que no estan clasificados
+	cds select from dsc:stockpUP_tbl becomes dsc:stockpUP_ctx where \
+		post:adt_stockpUP_clasif == "N"
+	cds findfirst dsc:stockpUP_ctx nolock
+	lib:err_retval = cdsretval 
+	cds endselect dsc:stockpUP_ctx
+	If (lib:err_retval == 0)	
+			
+		//Hay al menos 1 entonces aviso al RSC si desea clasificarlas ahora
+		MSGBOX "Existen Piezas UP pendientes de clasificar. Desea clasificarlas ahora?",OFB_YESNO,"Aviso"
+		retval_aux = retval
+
+
+		INIT 33,0
+		//Llamo supervision
+        SETFLAG  tlr:tran_flags, supovr_request
+        SETFLAG  siaf:siaf_flags, req_tes
+        SETFLAG  siaf:siaf_flags, req_sup1
+        call siaf:MISCovr_process
+	    If (RETVAL < 0)  Then
+	 	    return -2
+		ELSE
+			superv = ovr:ovr_sup_id
+		END IF
+		
+		
+		op:op_clasifUP = "S"
+		CALL op:CDSact_op_clasifUP(op:op_clasifUP,"CierreCont")		
+		
+		if (retval_aux == OFB_IDYES)
+			//actualzo la profiles con op:op_clasifUP == "S"
+			//llamo a la transaccion de clasificacion
+			drv:INDcur_tran_aux  = drv:INDcur_tran
+			drv:stack_cnt = drv:stack_cnt + 1
+			Call csr:listexec lst:post:TRANcalsifTT_UP
+			drv:funct_rest = 0
+			If (Lastkey == RT_ESC )
+				MSGBOX "Las piezas UP sin clasificar quedaran en ese estado",0x00,"Advertencia"
+				ovr:ovr_sup_id = superv
+				CALL MISCjnl_rechazoUP
+				IF (retval < 0)
+					return -1
+				END IF
+			Else
+				INIT 33,0
+				drv:stack_cnt = drv:stack_cnt + 1
+				Call csr:listexec drv:INDcur_tran_aux
+			Endif
+			return -2
+	
+		ELSE
+			//journalizo la negativa de clasificacion
+			CALL MISCjnl_rechazoUP
+			IF (retval < 0)
+				return -1
+			END IF	
+		END IF
+	END IF
+END SUB
+
+/*******/

@@ -1,0 +1,72 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalidaRestCombo
+* NOMBRE
+*   OFB:post:MISCvalidaRestCombo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalidaRestCombo(Tipo)
+	Local l_mensaje_error like lib:err_retval
+	Local l_mensaje_error2 like lib:err_retval
+	Local l_provincia like adt_pcia_cod
+	;Esta rutina busca las restricciones de combos para Especies Val. y Prod. Vs.
+	;En caso de no encontrar restricciones para un combo en particular retorna un cero
+	;para que se permita la carga de stock, caso contrario retorna -1.
+	l_provincia = (SUBSTR(common:sucursal_activa,0,1))
+	select (Tipo)
+		case "EV"
+			cds select from DSC:post:ContCombo_tbl BECOMES DSC:post:ContCombo_ctx \
+				where post:adt_concb_producto == tes:adt_espv_cod && \
+					  post:adt_concb_interno == tes:adt_espv_subcod && \
+					  post:adt_concb_tipo == "EV"
+			break
+		case "PV"
+			cds select from DSC:post:ContCombo_tbl BECOMES DSC:post:ContCombo_ctx \
+				where post:adt_concb_producto == post:adt_prodvs_cod && \
+					  post:adt_concb_tipo == "PV"
+			break
+	end select
+	CDS FINDFIRST DSC:post:ContCombo_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+
+    WHILE (lib:err_retval == 0)
+	    CDS EXTRACT DSC:post:ContCombo_ctx post:adt_concb_cod
+
+	    cds select from DSC:post:RelSucCombos_tbl BECOMES DSC:post:RelSucCombos_ctx \
+	    	where post:adt_rscb_cod == post:adt_concb_cod && \
+				  (post:adt_rscb_suc == common:sucursal_activa || \
+				  post:adt_rscb_suc == "99999")
+		CDS FINDFIRST DSC:post:RelSucCombos_ctx NOLOCK
+		let l_mensaje_error = CDSRETVAL
+
+	    cds select from DSC:post:RelPciaCombos_tbl BECOMES DSC:post:RelPciaCombos_ctx \
+	    	where post:adt_rpcb_cod == post:adt_concb_cod && \
+				  (post:adt_rpcb_pcia == l_provincia || \
+				  post:adt_rpcb_pcia == "9")
+		CDS FINDFIRST DSC:post:RelPciaCombos_ctx NOLOCK
+		let l_mensaje_error2 = CDSRETVAL
+
+		if (l_mensaje_error == 0 && l_mensaje_error2 == 0) then
+			CDS ENDSELECT DSC:post:RelSucCombos_ctx
+			CDS ENDSELECT DSC:post:RelPciaCombos_ctx
+			return 0
+		end if
+	    CDS FINDNEXT DSC:post:ContCombo_ctx NOLOCK
+	    LET lib:err_retval = CDSRETVAL
+	END WHILE
+	return (-1)
+END SUB
+
+/*******/

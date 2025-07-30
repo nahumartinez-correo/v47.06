@@ -1,0 +1,187 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcalcGral_tt_CREM
+* NOMBRE
+*   OFB:post:MISCcalcGral_tt_CREM
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcalcGral_tt_CREM
+local x like siaf:i
+local mensaje like common:csr_string 
+local cadena like common:csr_string 
+local limite_giro like giros:ImporteNeto
+local giro_mas_sello like giros:ImporteNeto
+local importe_giro like giros:ImporteNeto 
+local l_track like track_trace
+local imp_crem_result_acum like giros:ImporteNeto
+local importe_comision like giros:Comision_fld
+local imp_crem_acum like giros:ImporteNeto
+local l_cant_giros like lib:err_retval
+local l_giros_emitidos like lib:err_retval
+local l_salImpCrem like adt_stockp_original    
+    
+PRINCIPIO:
+    
+    limite_giro = giros:imp_max_crem
+    x = 0
+    while (x < 10)
+        if (track[x].numchars > 0 && importe_crem[x] > 0) then
+            call post:CDSselALiqStockpCDD("V",track[x],l_salImpCrem,"")
+            l_giros_emitidos = retval
+            IF (l_salImpCrem != importe_crem[x] && l_giros_emitidos == 0) then
+                if (currentfield.id == importe_crem[x].id && !importe_crem[x].valdone ) then
+                    fprint mensaje "El importe cargado al T&T %s difiere con el de la pieza.\nSe generará un fallo al confirmar la transacción.\n¿Desea corregir el importe?", track[x]
+                    MSGBOX mensaje,0x24,"Aviso"
+                    if (retval == 7) then
+                        importe_crem_orig[x] = l_salImpCrem
+                    else
+                        clearfield importe_crem_orig[x]
+                        clearfield importe_crem[x]
+                        nextfield importe_crem[x]
+                        return -2
+                    end if
+                end if
+            else
+                importe_crem_orig[x] = 0
+            end if
+            call post:MISCformula1_CREM(importe_crem[x],limite_giro,importe_giro,importe_comision,imp_crem_result_acum)
+            l_cant_giros = retval
+            if (retval > 1)
+                l_track = track[x]
+            elseif (retval < 0) then
+                return -2
+            end if
+        end if
+        imp_crem_acum = imp_crem_acum + importe_crem[x]
+        if (x < 9) then
+            if (track[x + 1].numchars == 0) then 
+                break
+            end if    
+        else
+            break
+        end if
+        x = x + 1
+    end while
+    if (l_track.numchars > 0)
+        if (x > 0) then
+            fprint mensaje "El T&T %s no puede compartir el giro con otras piezas", l_track
+            MSGBOX mensaje,0x00,"ERROR"
+            return -2
+        end if
+        ;Veo en la stockp o en la stockCDD si es el último giro
+        if (l_giros_emitidos < (l_cant_giros - 1)) then //Si no es el último giro
+            if (l_giros_emitidos > 0 && l_salImpCrem != importe_crem[0]) then
+                importe_crem[0] = l_salImpCrem
+                ;Vuelvo al principio y recalculo importes
+                goto PRINCIPIO
+            end if
+            giros:ImporteCremAcumulado = imp_crem_acum
+            giros:ImporteNeto = importe_giro
+            clearfield giros:Comision_fld
+            giros:ImporteTotal_fld = importe_giro
+            
+            clearfield giros:ImporteSelloEmis
+	        clearfield giros:ImporteSelloPag
+            clearfield giros:Impuesto
+	        clearfield giros:Impuesto_abonado
+	
+            refresh giros:ImporteSelloEmis
+	        refresh giros:ImporteSelloPag
+            refresh giros:ImporteCremAcumulado
+            refresh giros:ImporteNeto
+            refresh giros:Comision_fld
+            refresh giros:ImporteTotal_fld
+            
+            if (currentfield.id == importe_crem[0].id) then
+                setvaldone currentfield
+            end if
+            
+            return 0
+        else
+            if (post:adt_tarif_modo == "D") then
+                fixed2int = importe_comision
+                Call csr:pat_it(fixed2int,cadena)
+                Call post:MISCsaco_ceros_der(cadena,cadena.numchars,mensaje)
+                fprint giros:formuCalc[x] "%s %s --> %s$" importe_crem[x],post:adt_tarif_um, mensaje
+            else
+                CALL post:MISCformulaDeCalculo(importe_crem[x],post:adt_tarif_modo,\
+                                           post:tarif_aux, post:adt_tarif_fijo, \
+                                           importe_comision,post:adt_tarif_um)
+                giros:formuCalc[x] = formuCalc
+            end if
+            clearfield formuCalc
+        end if
+    else    
+        call post:MISCformula2_CREM(imp_crem_result_acum,importe_comision)
+        if (retval < 0) then
+            return -2
+        end if
+        call post:MISCformula3_CREM(imp_crem_result_acum,importe_giro)
+        
+        if (importe_giro <= 0 && imp_crem_result_acum > 0) then
+            MSGBOX "El importe crem acumulado, no permite el cobro de sellos.",0x00,"Error"
+            return -2
+        end if
+        
+        
+        if (importe_giro > limite_giro) then
+            fprint mensaje "El importe del giro supera el limite establecido"
+            MSGBOX mensaje,0x00,"ERROR"
+            return -2
+        end if
+    end if
+    clearfield adt_tarif_modo
+    giros:ImporteCremAcumulado = imp_crem_acum
+    giros:ImporteNeto = importe_giro        
+    giros:Comision_fld = importe_comision 
+    if (giros:SucSel2_fld.NUMCHARS > 0) then
+        CALL giros:MISCcalculo_sellados(giros:SucSel2_fld)
+        giro_mas_sello = giros:ImporteSelloEmis + giros:ImporteSelloPag + importe_giro
+        if (giro_mas_sello != imp_crem_result_acum) then
+            fprint mensaje "Los límites de los sellados están mal parametrizados, comuníquese\ncon el administrador de tablas"
+            MSGBOX mensaje,0x00,"ERROR"
+            return -2
+        end if
+    end if
+    
+    
+    
+    giros:ImporteSelloEmis = giros:ImporteSelloEmis * l_cant_giros
+	giros:ImporteSelloPag  = giros:ImporteSelloPag * l_cant_giros
+    giros:Impuesto = giros:Impuesto * l_cant_giros
+	giros:Impuesto_abonado = giros:Impuesto_abonado * l_cant_giros
+	
+	
+    giros:ImporteTotal_fld = post:costo_opc + giros:Impuesto + giros:Impuesto_abonado + giros:Comision_fld + giros:ImporteNeto
+    refresh giros:ImporteCremAcumulado
+    refresh giros:ImporteNeto
+    refresh giros:Comision_fld
+    refresh giros:ImporteTotal_fld
+    refresh giros:ImporteSelloEmis 
+    refresh giros:ImporteSelloPag
+    x = 0
+    while (x < 10)
+        if (track[x].numchars == 0) THEN
+            BREAK
+        end if
+        if (currentfield.id == importe_crem[x].id && !importe_crem[x].valdone ) then
+            setvaldone importe_crem[x]
+        end if
+
+        x = x + 1
+    end while
+END SUB
+
+/*******/

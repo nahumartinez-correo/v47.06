@@ -1,0 +1,92 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCjnl_ult_entbolsa
+* NOMBRE
+*   OFB:tes:MISCjnl_ult_entbolsa
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCjnl_ult_entbolsa
+    LOCAL l_bolsa  LIKE tes:bolsa
+    LOCAL l_buzon  LIKE tes:buzon
+    LOCAL l_moneda LIKE tes:adt_depbuzon_moneda
+    LOCAL l_tipo   LIKE tes:adt_depbuzon_tipo
+    LOCAL l_op     LIKE tes:adt_depbuzon_op
+    LOCAL l_fecha  LIKE tes:adt_depbuzon_fecha
+    LOCAL l_hora   LIKE tes:adt_depbuzon_entrega
+
+    // cgw: Controla si se produjo una caida de RT luego de journalizar la entrega de bolsa y antes que se borre
+    //      la misma en DepBuzon, para ello, se accede a la ultima tx de entrega de bolsa journalizada.
+    //      Se verifica si no fue borrada en DepBuzon, de ser asi se elimina la misma en DepBuzon.
+    //      Por el momento no se considera este arreglo de recuperacion para bolsas con especies.
+    CLEARFIELD tes:adt_depbuzon_entrega
+    CDS SELECT FROM DSC:DepBuzon_tbl BECOMES DSC:DepBuzon_ctx WHERE \
+               tes:adt_depbuzon_suc == common:sucursal_activa && \
+               tes:adt_depbuzon_tipo != "E" && \
+               tes:adt_depbuzon_entrega > 0 && \
+               tes:adt_depbuzon_status == "S"
+    CDS FINDFIRST DSC:DepBuzon_ctx LOCK
+    IF (CDSRETVAL != 0) THEN
+    	CDS UNLOCK DSC:DepBuzon_ctx
+        CDS ENDSELECT DSC:DepBuzon_ctx
+        RETURN (-2)
+    END IF    
+    CDS EXTRACT DSC:DepBuzon_ctx \
+        tes:adt_depbuzon_caja into l_buzon \
+        tes:adt_depbuzon_bolsa into l_bolsa \
+        tes:adt_depbuzon_tipo into l_tipo \
+        tes:adt_depbuzon_moneda into l_moneda \
+        tes:adt_depbuzon_op into l_op \
+        tes:adt_depbuzon_fecha into l_fecha \
+        tes:adt_depbuzon_entrega into l_hora
+    //Busca en el journal la entrega de bolsa correspondiente que tiene marca de entregada den DepBuzon.
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES "ctx_journal" WHERE \
+	tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == l_op && \
+	tlr:jnl_bus_date == l_fecha && \
+	tlr:jnl_time == l_hora && \
+	(tlr:jnl_status == HOST_ACCEPTED || tlr:jnl_status == MEMO) && \
+	tlr:jnl_sequence_corr == "" && \
+	siaf:codigo_siaf == 8950 && \
+	tes:bolsa == l_bolsa && \
+	tes:buzon == l_buzon
+    CDS FINDFIRST "ctx_journal" NOLOCK
+    IF (CDSRETVAL == 0) THEN                
+        IF (l_tipo == "T") THEN
+            //Obtiene tipo de medio de pago.
+	    post:adt_mp_cod = l_moneda
+	    CALL post:CDSadt_MedPago_load
+	    post:medio_pago_desc = post:adt_mp_desc
+        ELSE
+	    CLEARFIELD l_moneda
+	    CLEARFIELD post:medio_pago_desc
+	END IF
+        //borra en DepBuzon
+        CDS DELETE DSC:DepBuzon_ctx
+        IF (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") THEN
+            //borra en TesoCheq
+            CALL CDSborro_cheq_id(l_moneda,"B",l_buzon,l_bolsa)
+        END IF
+    ELSE
+        //cgw: Si no esta journalizada, actualiza en DepBuzon la bolsa a entregar sin hora de entrega.
+        CLEARFIELD tes:adt_depbuzon_entrega
+        CDS APPEND dsc:DepBuzon_ctx tes:adt_depbuzon_entrega
+        CDS UPDATE dsc:DepBuzon_ctx LOCK
+    END IF
+    CDS UNLOCK DSC:DepBuzon_ctx
+    CDS ENDSELECT DSC:DepBuzon_ctx
+    CDS ENDSELECT "ctx_journal"
+END SUB
+
+/*******/

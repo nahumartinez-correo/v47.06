@@ -1,0 +1,86 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSTesoCheq_read
+* NOMBRE
+*   OFB:tes:CDSTesoCheq_read
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSTesoCheq_read(Buscar_por)
+local l_cdsretval_mon	like lib:err_retval
+local l_cdsretval_Tchq	like lib:err_retval
+        if (Buscar_por == "Tesoro")
+	        CDS SELECT FROM DSC:TesoCheq_tbl BECOMES DSC:TesoCheq_ctx where \
+	        tes:teso_cheq_suc == op:op_branch_id && \
+	        tes:teso_cheq_estado == "T" && \
+		    tes:teso_cheq_recep != "S"
+	else
+	        CDS SELECT FROM DSC:TesoCheq_tbl BECOMES DSC:TesoCheq_ctx where \
+	        tes:teso_cheq_suc == op:op_branch_id && tes:teso_cheq_recep != "S" && \
+	        (tes:teso_cheq_estado == "T" || tes:teso_cheq_estado == "O" || \
+	        tes:teso_cheq_estado ==  " " || tes:teso_cheq_estado == "F" )
+	end if
+	CDS FINDFIRST DSC:TesoCheq_ctx NOLOCK
+	LET l_cdsretval_Tchq = CDSRETVAL
+	/*IF (lib:err_retval == -801) THEN
+	  RETURN (-2)
+	END IF
+	*/
+    do 
+	   	if (l_cdsretval_Tchq < 0 ) then
+    		break
+    	end if
+		CDS EXTRACT DSC:TesoCheq_ctx tes:teso_cheq_moneda  // ALL
+
+		// Busco en la tabla MedPago para ver si se trata de un cheque
+		clearfield post:adt_mp_adm
+		clearfield post:adt_mp_admban
+		CDS SELECT FROM DSC:post:MEDIOS_TAB BECOMES DSC:post:MEDIOS_CTX  \
+			where 	post:adt_mp_cod == tes:teso_cheq_moneda
+		if (cdsretval == 0) then
+			CDS FINDFIRST DSC:post:MEDIOS_CTX NOLOCK
+			l_cdsretval_mon = cdsretval 
+		    if (CDSRETVAL >= 0)
+		        CDS EXTRACT DSC:post:MEDIOS_CTX ALL
+		    end if
+		    CDS ENDSELECT DSC:post:MEDIOS_CTX
+		end if
+		if (l_cdsretval_mon == 0 && post:adt_mp_adm == "I" && post:adt_mp_admban == "S")  // si es cheque
+			if (Buscar_por == "Tesoro") then
+		        if ((common:br_modER == "S") || (common:br_modER == "s"))
+		            errmsg common:errmsg_list "No se Puede Cerrar el Tesoro: Todos Los Cheques Deben estar en Caja Buzon"
+		            cds endselect dsc:TesoCheq_ctx
+		            return (-1)
+		        else        
+		            errmsg common:errmsg_list "Quedan cheques en el tesoro pendientes de traspaso"
+		            cds endselect dsc:TesoCheq_ctx
+		            return (0)
+		        end if
+		    else
+		    	//if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")  /*es cheque*/
+        			errmsg common:errmsg_list "Quedan cheques en la sucursal pendientes de traspaso"
+		            cds endselect dsc:TesoCheq_ctx
+        			return (0)
+			    //end if
+	    	end if
+	    end if
+
+		CDS FINDNEXT dsc:TesoCheq_ctx nolock
+		l_cdsretval_Tchq = cdsretval
+	loop		
+	CDS ENDSELECT dsc:TesoCheq_ctx
+	return (0)
+END SUB
+
+/*******/

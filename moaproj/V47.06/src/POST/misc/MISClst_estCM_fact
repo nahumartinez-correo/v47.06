@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:MISClst_estCM_fact
+* NOMBRE
+*   OFB:post:MISClst_estCM_fact
+* DESCRIPCION
+*   Graba en un archivo el reporte FACTURAS PENDIENTE DE PAGO
+* ENTRADAS
+*   link_num = canal de comunicacion del archivo
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISClst_estCM_Cli
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_estCM_fact(link_num)
+
+	LOCAL idx_item  	LIKE siaf:i
+	LOCAL subcuenta		LIKE post:climed_numero
+	LOCAL tot_cli		LIKE importe_factura
+	LOCAL tot_subcta	LIKE importe_factura
+	LOCAL nro_cli   	LIKE post:CloCuit
+	LOCAL cont 		    LIKE post:cantidad
+	LOCAL sub_header    LIKE common:csr_string
+	LOCAL columns       LIKE common:csr_string 
+	LOCAL split         LIKE common:csr_string_aux
+	LOCAL miString      LIKE common:csr_string
+	LOCAL line_csr      LIKE common:csr_string
+	LOCAL line_csr_130  LIKE common:csr_string
+	
+	//seteo las variables del subencabezado
+	sub_header = "<st>1</st>FACTURAS PENDIENTE DE PAGO"
+	columns = "  NRO CLI     SUBCUENTA RAZON SOCIAL               DESC. SUBCUENTA      FACTURAS    FECHA VTO          IMPORTE        ADELANTO" 
+	split = "--------------------------------------------------------------------------------------------------------------------------------------------------------------"
+	
+	idx_item = PL_GETITEM
+	cont = 0
+	tot_cli = 0
+     
+    miString = ""
+    common:csr_string = ""
+    common:csr_string_130 = "" 
+    
+    line_csr = ""
+    line_csr_130 = ""
+    
+   	//Ordeno el picklist de facturas por nro cliente y subcuenta  
+    CALL csr:PickOp 4  DSC:facturas "0,11" "11,11"
+    
+	//Leer picklist de facturas
+	CALL csr:myPickcontrol(DSC:facturas,line_csr,idx_item)
+	IF (RETVAL < 0)
+    	//si es cierre suc o cierre forzado suc NO debe emitir mesaje
+    	IF (siaf:codigo_siaf_list != 9540 && siaf:codigo_siaf_list != 9550)
+			MSGBOX "No existen Facturas Pendientes de Pago.",0x00,"Aviso"
+		END IF
+		RETURN -2
+	END IF
+
+    subcuenta = substr(line_csr,12,11)
+    nro_cli = substr(line_csr,0,11)
+    
+    DO
+        IF (subcuenta != SUBSTR(line_csr,12,11) || nro_cli != SUBSTR(line_csr,0,11))
+        	FPRINT line_csr_130,"%s%11.11s%16.16s", "                                                              TOTAL DEUDA SUBCUENTA NRO.:",subcuenta,tot_subcta
+        	FPRINT miString,"%s%11.11s<st>1</st>%16.16s", "                                                              TOTAL DEUDA SUBCUENTA NRO.:",subcuenta,tot_subcta
+        	
+        	CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+
+        	CALL tes:MISCwrite_file_Land2(link_num,miString)  
+        	
+        	subcuenta = SUBSTR(line_csr,12,11)
+        	tot_subcta = 0
+        END IF
+        
+        IF (nro_cli != SUBSTR(line_csr,0,11))
+        	FPRINT line_csr_130,"%s%11.11s   %16.16s", "                                                         TOTAL DEUDA CLIENTE NRO.:",nro_cli,tot_cli
+        	FPRINT miString,"%s%11.11s<st>1</st>   %16.16s", "                                                         <st>1</st>TOTAL DEUDA CLIENTE NRO.:",nro_cli,tot_cli
+        	
+        	CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        	
+        	CALL tes:MISCwrite_file_Land2(link_num,miString)
+        	
+        	line_csr_130 = ""
+        	CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        	
+ 			IF (RETVAL != 2) THEN
+        		CALL tes:MISCwrite_file_Land2(link_num,line_csr_130) 
+        	END IF
+        	
+        	FPRINT line_csr_130,"%s%11.11s   %16.16s", "                                                         TOTAL DEUDA CLIENTE NRO.:",nro_cli,tot_cli
+        	nro_cli = SUBSTR(line_csr,0,11)
+        	tot_cli = 0
+        END IF
+        
+        tot_subcta = tot_subcta + SUBSTR(line_csr,95,16) - SUBSTR(line_csr,112,16)
+        tot_cli = tot_cli + SUBSTR(line_csr,95,16) - SUBSTR(line_csr,112,16)
+        
+        CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        CALL tes:MISCwrite_file_Land2(link_num,line_csr)    
+        
+        idx_item = idx_item + 1
+        cont = cont + 1
+        
+        //Leer picklist de facturas
+     	CALL csr:myPickcontrol(DSC:facturas,line_csr,idx_item)
+     	IF (RETVAL < 0)
+        	FPRINT line_csr_130,"%s%11.11s%16.16s", "                                                              TOTAL DEUDA SUBCUENTA NRO.:",subcuenta,tot_cli
+        	FPRINT miString,"%s%11.11s<st>1</st>%16.16s", "                                                              TOTAL DEUDA SUBCUENTA NRO.:",subcuenta,tot_cli
+        	
+        	CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        	
+        	CALL tes:MISCwrite_file_Land2(link_num,miString)    
+        	
+        	FPRINT line_csr_130,"%s%11.11s   %16.16s", "                                                         TOTAL DEUDA CLIENTE NRO.:",nro_cli,tot_cli
+        	FPRINT miString,"%s%11.11s<st>1</st>   %16.16s", "                                                         <st>1</st>TOTAL DEUDA CLIENTE NRO.:",nro_cli,tot_cli
+        	
+        	CALL post:MISClst_estCM_pie(link_num,sub_header,columns,split,cont)
+        	
+        	CALL tes:MISCwrite_file_Land2(link_num,miString)    
+        	BREAK
+     	END IF
+     	
+    LOOP  
+    
+    //Valido que tenga lugar para marcar el fin del reporte en la hoja
+    IF (siaf:lineas_cl < 42)
+    	CALL post:MISClst_fin_repo(link_num,split)
+    END IF
+      
+END SUB
+
+/*******/

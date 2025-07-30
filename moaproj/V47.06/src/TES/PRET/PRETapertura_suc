@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:tes:PRETapertura_suc
+* NOMBRE
+*   OFB:tes:PRETapertura_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRET.h"
+
+SUB tes:PRETapertura_suc
+     clearfield tes:adt_secuen_firma //cgw:limpia firma manual
+     
+     
+	/*Vuelco de Especies Valorizadas*/
+	call MISCTrat_TesEspV("A")
+	if (retval != 0)
+		msgbox "No podrá realizarse la Apertura de Sucursal hasta completar el Vuelco de Especies Valorizadas.\nVuelva a intentarlo.",OFB_OK,"ERROR"
+		call siaf:APPLterm
+		return (-2)
+	end if
+
+	call post:MISCTrat_Mercha("A")
+	if (retval != 0)
+		msgbox "No podrá realizarse la Apertura de Sucursal hasta completar el Vuelco de Productos de Merchandising.\nVuelva a intentarlo.",OFB_OK,"ERROR"
+		call siaf:APPLterm
+		return (-2)
+	end if
+
+	/*Proceso de Reclasificación de Especies Valorizadas - Gabriel Falciola*/
+	call tes:MISCLanzaProceso
+	select (retval)
+	case -1
+		msgbox "No podrá realizarse la Apertura de Sucursal hasta completar el Proceso de Reclasificación de Especies Valorizadas.\nComuníquese con Mesa de Ayuda.",OFB_OK,"ERROR"
+		call siaf:APPLterm
+		return (-2)
+		break
+	case -2
+		msgbox "No podrá realizarse la Apertura de Sucursal hasta completar el Proceso de Recodificación de Bienes de Cambio.\nComuníquese con Mesa de Ayuda.",OFB_OK,"ERROR"
+		call siaf:APPLterm
+		return (-2)
+		break
+	case -3
+		call siaf:APPLterm
+		return (-2)
+		break
+	end select
+	
+	/* Datos de una pres */
+	siaf:nombre_transac.HIGHLITE = 0
+	siaf:nombre_transac = "APERTURA DE DIA DE SUCURSAL"
+	tlr:tran_mnemonic = "OPENSUCU"
+	drv:descrip = "OPENSUCU"
+	siaf:codigo_siaf = 6000
+	siaf:tiene_reverso = "N"
+	siaf:posible_off = "S"
+	siaf:restr_otra_casa = "N"
+	siaf:linea_validacion = "N"
+	siaf:exhibe_pantalla = "N"
+	siaf:imprime_comprobante = "N"
+	tes:viaja_nro_tesoro = "S"
+	tes:es_tesoro = "N"
+    post:jnl_flia_tran = "TES"
+    siaf:adt_tran_modpresu = "I"
+
+	/* no se puede ni duplicar ni reversar la apertura del dia */
+	call OFB:tlr:PRETno_dup
+	if (retval != 0) then
+		return (-2)
+	end if
+	call OFB:tlr:PRETno_cor
+	if (retval != 0) then
+		return (-2)
+	end if
+
+	/* verifica en que condiciones se esta abriendo el dia */
+	/* los campos de la aplic 'tes' son cargados en el CDScons_tes_tesor */
+	call csr:date_compare(tes:suc_fecha,common:system_date)
+	let lib:err_retval = retval
+	select (lib:err_retval)
+	    case 0
+		if (tes:suc_marca_cierre == "X") then
+			siaf:nombre_transac = "REAPERTURA DE DIA DE SUCURSAL"
+			tlr:tran_mnemonic = "REOPENSU"
+			drv:descrip = "REOPENSU"
+			siaf:codigo_siaf = 6010
+		else 
+			/* el dia esta abierto (caso pase de marca de tesoro) */
+			LASTKEY = RT_SEND //saltea ctrl. siaf:MISCcheck_bus_date
+			return (-2) 
+		end if
+		break
+	end select
+
+
+	//Verifico que no este corriendo NovTTol. Si no esta corriendo lockeo el registro 6000 en la TranStat
+	//para que no puede correrse el mismo desde el servicio hasta que no termine la apertura de Sucursal
+	IF (drv:descrip != "REOPENSU") THEN //solo si es apertura, no reapertura
+		CALL post:MISCtrat_NovTTol("6000") //siaf:codigo_siaf = 6000
+		IF (RETVAL == -1)
+			//se mostro mensaje de que no encontro registro en la TranStat o 
+			//que ya se esta realizando esa tx por otro operador//
+   			RETURN (-2)
+		ELSE
+			IF (RETVAL == -2)
+     			MSGBOX "Se están enviando Novedades de T&T. Espere unos segundos y vuelva a intentar la Apertura",OFB_OK,"ATENCION"
+     			RETURN (-2)
+	     	END IF
+		END IF
+	END IF
+	
+END SUB
+
+/*******/

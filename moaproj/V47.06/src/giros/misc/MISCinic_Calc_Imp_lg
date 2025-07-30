@@ -1,0 +1,124 @@
+/****o* Lista de Giros/OFB:giros:MISCinic_Calc_Imp_lg
+* NOMBRE
+*   OFB:giros:MISCinic_Calc_Imp_lg
+* DESCRIPCION
+*   Validad si la Lista de Giros a Importar ya fue importada en el dia de la fecha
+* ENTRADAS
+*   tipo_giro = P Postal ,tipo_giro = T Telegrafico
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCvalRegLG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCinic_Calc_Imp_lg (tipo_giro)
+    LOCAL l_tipo_giro LIKE giros:tipo_giro_fld
+
+    LET l_tipo_giro = tipo_giro
+    
+    
+    //IF (post:mdata_nroRegistros < 1) THEN
+        IF (l_tipo_giro == "P" ) THEN
+            CALL giros:MISCgmleotransac(70030)
+        	es_emision_postal = "S"
+        	siaf:codigo_proc = 992001
+        ELSE
+            CALL giros:MISCgmleotransac(70050)
+        	es_emision_tele = "S"
+        	siaf:codigo_proc = 992002
+        END IF
+  
+        /*********************************************************/
+        /* Por default asigno como Medio de Pago, Efectivo Pesos */
+        /* Despues se puede modificar, pero conviene asignarle   */
+        /* ese valor para agilizar ya que en el 95% de los casos */
+        /* se paga mediante ese Medio de Pago.		     */
+        /*********************************************************/
+        siaf:moneda = "00"
+        post:medio_pago_desc = "PESOS"
+        post:cantidad = 1
+    
+        /*********************************************************/
+        /* Por default asigno a Producto-CLiente el valor en 0.   */
+        /*********************************************************/
+        post:prod_cli = "0000000000"
+
+        /* Inicio de Agregado para manejo de IVAS en Productos Telegraficos */
+        IF (post:PresGrupoIva == "G2" && post:tipo_produc2.NUMCHARS != 0) THEN
+    		post:tipo_produc = post:tipo_produc2
+        ELSE
+    		post:tipo_produc2 = post:tipo_produc
+        END IF
+  
+    	//PS 9488
+        IF (siaf:codigo_siaf == 70050 && post:IvaCod == "SNC") THEN
+    		post:tipo_produc  = 14123
+    		post:tipo_produc2 = 14123
+        ENDIF
+  
+        /*********************************************************/
+        /* Accedo a la Tabla de Servicios Postales para obtener  */
+        /* la parametria del producto.      		             */
+        /*********************************************************/
+        CALL giros:PRESserv_gral_giro
+        IF (RETVAL < 0) THEN
+    		//MSGBOX "SERVICIO NO EXISTE EN TABLAS",OFB_OK,"Error"
+    		RETURN (-2)
+        END IF
+        
+        post:adt_tarif_dest = "BASICO NACIONAL"
+        post:adt_tarif_desde = 1
+    	
+    	fecha_imp_lg = common:system_date
+        
+        IF (l_tipo_giro == "P" ) THEN
+            IF (TrackTrace_giros.numchars > 0) THEN
+                SETFLAG env_post_flag,envia_postal
+            ELSE
+                RESETFLAG env_post_flag,envia_postal
+            END IF
+            
+            RESETFLAG flags_back,consultado
+            
+            es_emision_tele = "N"
+            es_envio_WU = "N"
+            es_emision_correohoy = "N"
+        ELSE
+            RESETFLAG flags_back,no_habilitado
+        	RESETFLAG flags_back,enviado
+        
+            es_emision_postal = "N"
+        	es_envio_WU = "N"
+        	es_emision_correohoy = "N"
+        END IF	
+        	
+    	RESETFLAG flags_back,ya_pasado
+    	RESETFLAG flags_back,manual
+    	RESETFLAG flags_back,rechazado
+    	RESETFLAG flags_back,vencido
+    	
+    	RESETFLAG camara_flags,clear1
+    	RESETFLAG camara_flags,clear2
+    	RESETFLAG camara_flags,emis1
+    	RESETFLAG camara_flags,emis2
+    
+    	RESETFLAG env_post_flag,envia_postal
+    	RESETFLAG pers_jur_flag,nocuit_emis
+    	//RESETFLAG pjurid_benef_flag,persona_juridica
+    	RESETFLAG pjurid_benef_flag,nocuit_benef
+    
+        giros:orden_nispagadora = "orden_des"
+        
+        SETFLAG camara_flags,clear2
+        SETFLAG camara_flags,emis2        
+    //END IF
+        
+END SUB
+
+/*******/

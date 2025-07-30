@@ -1,0 +1,671 @@
+/****o* Pendientes de agrupación/OFB:post:PRTguiaDespacho
+* NOMBRE
+*   OFB:post:PRTguiaDespacho
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRTguiaDespacho
+	LOCAL cant LIKE j_idx
+	LOCAL pagina LIKE j_idx
+	LOCAL busqueda LIKE j_idx
+	LOCAL codsiaf LIKE siaf:jnl_codigo_siaf
+	LOCAL TT LIKE idx
+	LOCAL CantContFin LIKE j_idx
+	LOCAL CantPzasFin LIKE j_idx
+	LOCAL CantSacasFin LIKE j_idx
+	LOCAL indice LIKE j_idx
+
+	CLEARFIELD LineaImpresion
+	CLEARFIELD itemcheck
+	CLEARFIELD itemcheckV23
+
+	LET CantContFin = 0
+	LET CantPzasFin = 0
+	LET CantSacasFin = 0
+	LET indice = 0 /* Cant. de Piezas en una linea */
+	LET j_idx = 0 /* contado de detalle */
+	LET cant = 1 /* contador de lineas */
+	LET pagina = 1 /* contador de pags. */
+	LET busqueda = 1
+
+	/*CSZ*/
+	IF (hay_guia_esp == "S") THEN //Al menos 1 simple especial ha sido seleccionada
+		/*Si Todas las piezas seleccionadas son Simple Especial Imprime una guia
+		de contenedor vacia pero con la cantidad de piezas simple especial y 
+		se va de la PRT*/
+		CALL PRTsoloSimpEsp("Desp")
+		IF (RETVAL == 0) THEN
+			IF (cant_impresion == 3)
+				PRT FLUSH
+				PRT FORMFEED
+				/*Imprime la guia de Simple Especial y se va*/
+				CALL PRTguiaSimpEspDesp
+			END IF
+			RETURN (0)
+		END IF
+	END IF
+   
+	/*MFM - PIEZAS REENCAMINADAS*/
+	IF (hay_piezas_reenc == "S") THEN //Al menos 1 pieza reencaminada ha sido seleccionada
+		/*Si Todas las piezas seleccionadas son Reencaminadas imprime una guia
+		vacia pero con la cantidad de piezas reencaminadas y 
+		se va de la PRT*/
+		CALL PRTsoloReenc("Desp")
+		IF (RETVAL == 0) THEN
+			/*MFM - (25.10.2001)CORREO pidió que se imprimiera tres veces la guia de reencaminamiento*/
+			//IF (cant_impresion == 3) THEN
+				PRT FLUSH
+				PRT FORMFEED
+				/*Imprime la guia de Reencaminamiento y se va*/
+				CALL PRTGuiaReencDesp
+			//END IF
+			RETURN (0)
+		END IF
+	END IF
+
+	//Ojo, si llega a cambiar la parametria de la RelMod esta pregunta no sirve mas
+	//por ahora las piezas que van directo a la linea son las EE con apertura "O" y estan
+	//definidas en la RelMod como que van a una Transferencia, por eso pongo el filtro de
+	//que unicamente haga el select este cuando el despacho es TR, y así podemos mejorar
+	//la performance del listado
+	IF (adt_desptipos_cod == "TR") THEN
+		/* Con este select se buscan aquellas piezas que van directamente */
+		/* al corte de linea, sin pasar por contenedor ni saca */
+		CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+			(op:op_operator_id == op:op_operator_id && \
+			siaf:jnl_codigo_siaf != "99030" && \
+			siaf:jnl_codigo_siaf != "99040" && \
+			siaf:jnl_codigo_siaf != "99140" && \
+			siaf:jnl_codigo_siaf != "99065" && \
+			post:jnl_simp_esp != "S" && \
+			(jnl_stockp_reenc == "N" || \
+			(jnl_stockp_reenc == "S" && jnl_stockp_reenc_cul != "S"))) SORT DSC:post:SortDesp
+
+		CDS FINDFIRST DSC:DetTmp_ctx LOCK
+		lET lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0) THEN
+			CDS UNLOCK DSC:DetTmp_ctx
+			CDS ENDSELECT DSC:DetTmp_ctx
+			busqueda = 0
+		END IF
+		
+		IF (busqueda == 1) THEN
+			CDS EXTRACT DSC:DetTmp_ctx ALL
+			DO
+				IF (MarcaBorrado == "*") THEN
+					CDS FINDNEXT DSC:DetTmp_ctx LOCK
+					LET lib:err_retval = CDSRETVAL
+					IF (lib:err_retval < 0) THEN
+						busqueda = 0
+						BREAK
+					END IF
+					CDS EXTRACT DSC:DetTmp_ctx ALL
+				ELSE
+					BREAK
+				END IF
+			LOOP
+		END IF
+		
+		IF (busqueda == 1) THEN
+			CALL PRThdrDespacho("Desp")
+			PRT TEXTSIZE *100
+			PRT PRINT EDIT post:LineaImpresion
+			PRT NEWLINE
+			PRT CARRIAGERETURN
+			cant = cant + 1
+			DO
+				CLEARFIELD LineaImpresion
+				DO
+					IF ((LineaImpresion.NUMCHARS + Pieza_id.NUMCHARS) <= 96) THEN
+						IF (indice == 0)
+							FPRINT LineaImpresion "   % s" Pieza_id
+						ELSE
+							FPRINT LineaImpresion "%s      % s" \
+								LineaImpresion, Pieza_id
+						END IF
+						//calculo checksum					
+						CALL post:CDScheckSum_Linea("NoReenc")
+					ELSE
+						BREAK
+					END IF
+					indice = indice + 1
+					LET j_idx = j_idx + 1
+					CDS FINDNEXT DSC:DetTmp_ctx LOCK
+					LET lib:err_retval = CDSRETVAL
+					IF (lib:err_retval >= 0) THEN
+						CDS EXTRACT DSC:DetTmp_ctx ALL
+						DO
+							IF (MarcaBorrado == "*") THEN
+								CDS FINDNEXT DSC:DetTmp_ctx LOCK
+								LET lib:err_retval = CDSRETVAL
+								IF (lib:err_retval < 0) THEN
+									BREAK
+								END IF
+								CDS EXTRACT DSC:DetTmp_ctx ALL
+							ELSE
+								BREAK
+							END IF
+						LOOP
+					END IF
+					IF (lib:err_retval < 0) THEN
+						BREAK
+					END IF
+				LOOP
+	
+				/* Resguardo la linea a imprimir */
+				SWAPDUP LineaImpresion
+		
+				IF ((cant + 5) >= 35) THEN
+					DO
+						IF (cant == 35) THEN
+						    BREAK
+						END IF
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+						LET cant = cant + 1
+					LOOP
+					FPRINT LineaImpresion \
+						"                                        Página: %03.3d" \
+						pagina
+	
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+	
+					LET pagina = pagina + 1
+	
+					PRT FLUSH
+					PRT FORMFEED
+	
+					CALL PRThdrDespacho("Desp")
+					PRT TEXTSIZE *100
+					LET cant = 1
+					CLEARFIELD LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+				END IF
+				
+				DUPFIELD LineaImpresion
+				PRT PRINT EDIT post:LineaImpresion
+				PRT NEWLINE
+				PRT CARRIAGERETURN
+				cant = cant + 1
+				LET indice = 0 /* Cant. Pzas. por Linea */
+				CLEARFIELD LineaImpresion
+				IF (lib:err_retval < 0) THEN
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					CLEARFIELD LineaImpresion
+					cant = cant + 1
+	
+					FPRINT LineaImpresion "                                        %31.31s %5.5d" \
+						"Total de Piezas:" \
+						post:j_idx
+	
+					LET CantPzasFin = j_idx
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+					BREAK
+				END IF
+			LOOP
+		END IF
+	END IF
+
+
+	/* Ahora el select busca los contenedores (cuando codsiaf = 99030) */
+	/* que no pasan por saca y van directamente al corte de linea, ej. Exp. Rapida */
+	/* Luego codsiaf = 99040, son las sacas que van al corte de linea */
+	/* Despues codsiaf = 99140, son las sacas en transito */
+	/* Despues codsiaf = 99065, son las sacas de Piezas en Devolucion */
+	LET codsiaf = "99030"
+	LET indice = 0
+	DO
+		LET j_idx = 0
+		busqueda = 1
+		CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+			(op:op_operator_id == op:op_operator_id && \
+			siaf:jnl_codigo_siaf == codsiaf) SORT SortDesp
+
+		CDS FINDFIRST DSC:DetTmp_ctx LOCK
+		lET lib:err_retval = CDSRETVAL
+		IF (lib:err_retval < 0) THEN
+			CDS UNLOCK DSC:DetTmp_ctx
+			CDS ENDSELECT DSC:DetTmp_ctx
+			busqueda = 0
+		END IF
+		IF (busqueda == 1) THEN
+			CDS EXTRACT DSC:DetTmp_ctx ALL
+			DO
+				IF (MarcaBorrado == "*") THEN
+					CDS FINDNEXT DSC:DetTmp_ctx LOCK
+					LET lib:err_retval = CDSRETVAL
+					IF (lib:err_retval < 0) THEN
+						busqueda = 0
+						BREAK
+					END IF
+					CDS EXTRACT DSC:DetTmp_ctx ALL
+				ELSE
+					BREAK
+				END IF
+			LOOP
+		END IF
+		IF (busqueda == 1) THEN
+			IF (cant == 1) THEN
+				CALL PRThdrDespacho("Desp")
+				PRT TEXTSIZE *100
+			END IF
+			IF (indice == 0) THEN
+				CLEARFIELD LineaImpresion
+				
+				IF (codsiaf == "99030") THEN
+					MOVE "Contenedor" TO SUBSTR(LineaImpresion,1,10)
+				ELSE
+					MOVE "Nro.Saca" TO SUBSTR(LineaImpresion,1,8)
+				END IF
+				MOVE "Caratula" TO SUBSTR(LineaImpresion,18,8)
+				MOVE "Precinto" TO SUBSTR(LineaImpresion,33,8)
+				MOVE "Peso" TO SUBSTR(LineaImpresion,42,4)
+				
+				IF (codsiaf == "99030") THEN
+					MOVE "Contenedor" TO SUBSTR(LineaImpresion,53,10)
+				ELSE
+					MOVE "Nro.Saca" TO SUBSTR(LineaImpresion,53,8)
+				END IF
+				MOVE "Caratula" TO SUBSTR(LineaImpresion,69,8)
+				MOVE "Precinto" TO SUBSTR(LineaImpresion,85,8)
+				MOVE "Peso" TO SUBSTR(LineaImpresion,94,4)
+				
+				//gpb:W10
+				FPRINT post:LineaImpresion ,"  %s",post:LineaImpresion
+
+				PRT PRINT EDIT post:LineaImpresion
+				PRT NEWLINE
+				PRT CARRIAGERETURN
+				cant = cant + 1
+				indice = 1
+			END IF
+			
+			DO
+				CLEARFIELD LineaImpresion
+				LET TT = Pieza_id
+				MOVE TT to SUBSTR(LineaImpresion,3,5)
+				
+				IF (siaf:jnl_codigo_siaf == "99040" || \
+					siaf:jnl_codigo_siaf == "99140" || \
+					siaf:jnl_codigo_siaf == "99065") THEN
+			    /*No es Necesari en los contenedores*/
+					MOVE post:CaratulaSaca TO SUBSTR(LineaImpresion,11,20)
+					MOVE post:PresNroSaca TO SUBSTR(LineaImpresion,33,7)
+					LET PesoKilos = peso_en_kgs
+					MOVE PesoKilos TO SUBSTR(LineaImpresion,42,8)
+					//Calculo el Checksum
+					CALL CDScheckSum_Linea("Sacas")
+				END IF
+				LET j_idx = j_idx + 1
+
+				CDS FINDNEXT DSC:DetTmp_ctx LOCK
+				lET lib:err_retval = CDSRETVAL
+				IF (lib:err_retval >= 0) THEN
+					CDS EXTRACT DSC:DetTmp_ctx ALL
+					DO
+						IF (MarcaBorrado == "*") THEN
+							CDS FINDNEXT DSC:DetTmp_ctx LOCK
+							LET lib:err_retval = CDSRETVAL
+							IF (lib:err_retval < 0) THEN
+								BREAK
+							END IF
+							CDS EXTRACT DSC:DetTmp_ctx ALL
+						ELSE
+							BREAK
+						END IF
+					LOOP
+				END IF
+				IF (lib:err_retval >= 0) THEN
+					LET TT = Pieza_id
+					/* No es necesario en Contenedores */
+					IF (siaf:jnl_codigo_siaf == "99040" || \
+				    siaf:jnl_codigo_siaf == "99140" || \
+				    siaf:jnl_codigo_siaf == "99065") THEN
+						MOVE TT TO SUBSTR(LineaImpresion,56,5)
+						MOVE post:CaratulaSaca TO SUBSTR(LineaImpresion,63,20)
+						MOVE post:PresNroSaca TO SUBSTR(LineaImpresion,85,7)
+						LET PesoKilos = peso_en_kgs
+						MOVE PesoKilos TO SUBSTR(LineaImpresion,94,8)
+						//Calculo el Checksum
+						CALL CDScheckSum_Linea("Sacas")
+					ELSE
+						MOVE TT to SUBSTR(LineaImpresion,56,5)
+					END IF
+					LET j_idx = j_idx + 1
+				END IF
+
+				/* Resguardo la linea a imprimir */
+				SWAPDUP LineaImpresion
+
+				IF (((cant + 5) >= 34) || cant == 1) THEN
+					DO
+						IF (cant == 34 || cant == 1) THEN
+							BREAK
+						END IF
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+						LET cant = cant + 1
+					LOOP
+					IF (cant > 1) THEN
+						FPRINT LineaImpresion \
+							"                                       Página: %03.3d" \
+							pagina
+
+						PRT PRINT EDIT post:LineaImpresion
+						PRT NEWLINE
+						PRT CARRIAGERETURN
+
+						LET pagina = pagina + 1
+
+						PRT FLUSH
+						PRT FORMFEED
+					END IF
+					
+					CALL PRThdrDespacho("Desp")
+					PRT  TEXTSIZE *100
+					LET cant = 1
+					CLEARFIELD LineaImpresion
+					
+					IF (codsiaf == "99030") THEN
+						MOVE "Contenedor" TO SUBSTR(LineaImpresion,1,10)
+					ELSE
+						MOVE "Nro.Saca" TO SUBSTR(LineaImpresion,1,8)
+					END IF
+					MOVE "Caratula" TO SUBSTR(LineaImpresion,18,8)
+					MOVE "Precinto" TO SUBSTR(LineaImpresion,33,8)
+					MOVE "Peso" TO SUBSTR(LineaImpresion,42,4)
+				
+					IF (codsiaf == "99030") THEN
+						MOVE "Contenedor" TO SUBSTR(LineaImpresion,68,10)
+					ELSE
+						MOVE "Nro.Saca" TO SUBSTR(LineaImpresion,53,8)
+					END IF
+					MOVE "Caratula" TO SUBSTR(LineaImpresion,69,8)
+					MOVE "Precinto" TO SUBSTR(LineaImpresion,85,8)
+					MOVE "Peso" TO SUBSTR(LineaImpresion,94,4)
+
+					//gpb:W10
+					FPRINT post:LineaImpresion ,"    %s",post:LineaImpresion
+
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+				END IF
+				
+				DUPFIELD LineaImpresion
+
+				//gpb:W10
+				FPRINT post:LineaImpresion ,"  %s",post:LineaImpresion
+				
+				PRT PRINT EDIT post:LineaImpresion
+				PRT NEWLINE
+				PRT CARRIAGERETURN
+				cant = cant + 1
+				CLEARFIELD LineaImpresion
+
+				CDS FINDNEXT DSC:DetTmp_ctx LOCK
+				lET lib:err_retval = CDSRETVAL
+				IF (lib:err_retval >= 0) THEN
+					CDS EXTRACT DSC:DetTmp_ctx ALL
+					DO
+						IF (MarcaBorrado == "*") THEN
+							CDS FINDNEXT DSC:DetTmp_ctx LOCK
+							LET lib:err_retval = CDSRETVAL
+							IF (lib:err_retval < 0) THEN
+								BREAK
+							END IF
+							CDS EXTRACT DSC:DetTmp_ctx ALL
+						ELSE
+							BREAK
+						END IF
+					LOOP
+				END IF
+				IF (lib:err_retval < 0) THEN
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					CLEARFIELD LineaImpresion
+					cant = cant + 1
+					IF (siaf:jnl_codigo_siaf == "99040")
+						FPRINT LineaImpresion "                                   %31.31s %5.5d" \
+							"Total de Sacas:" \
+							post:j_idx
+						LET CantSacasFin = CantSacasFin + j_idx
+					ELSE
+						SELECT (siaf:jnl_codigo_siaf)
+							CASE "99140"
+								FPRINT LineaImpresion "                                   %31.31s %5.5d" \
+									"Total de Sacas en Tránsito:" \
+							    post:j_idx
+								LET CantSacasFin = CantSacasFin + j_idx
+								BREAK
+							CASE "99065"
+								FPRINT LineaImpresion "                                   %39.39s %5.5d" \
+									"Total de Sacas de Pzas. en Devolución:" \
+							    post:j_idx
+								LET CantSacasFin = CantSacasFin + j_idx
+								BREAK
+							CASE ELSE
+								FPRINT LineaImpresion "                                   %31.31s %5.5d" \
+									"Total de Cont.:" \
+								  post:j_idx
+								LET CantContFin = j_idx
+								BREAK
+						END SELECT
+					END IF
+					PRT PRINT EDIT post:LineaImpresion
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+					PRT NEWLINE
+					PRT CARRIAGERETURN
+					cant = cant + 1
+					BREAK
+				END IF
+			LOOP
+		END IF
+
+		SELECT (codsiaf)
+			CASE "99030"
+				LET codsiaf = "99040"
+				LET indice = 0 /* Cambia el encabezado Contenedor x Saca */
+				BREAK
+			CASE "99040"
+				LET codsiaf = "99140"
+				LET indice = 0 /* Cambia el encabezado Contenedor x Saca */
+				BREAK
+			CASE "99140"
+				LET codsiaf = "99065"
+				LET indice = 0 /* Cambia el encabezado Contenedor x Saca */
+				BREAK
+			CASE ELSE
+				LET codsiaf = ""
+				LET indice = 0 /* Cambia el encabezado Contenedor x Saca */
+				BREAK
+		END SELECT
+		IF (codsiaf == "") THEN
+			BREAK
+		END IF
+	LOOP
+
+	DO
+		IF (cant >= 25) THEN
+			BREAK
+		END IF
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		LET cant = cant + 1
+	LOOP
+
+	PRT PRINT EDIT post:leyenda
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+
+	FPRINT LineaImpresion "       "
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+
+	/*CSZ - sumo la cantidad de piezas enviadas No simp`le especial y simple especial*/
+	/*JUNIO 2004 - PIDIERON QUE NO SE MUESTREN ESTOS DATOS CUANDO NO ES UNA TRANSFERENCIA*/
+	IF (adt_desptipos_cod == "TR") THEN
+		//CantPzasFin = CantPzasFin + cant_simp_esp
+		CantPzasFin = CantTotPza_label + cant_simp_esp
+		FPRINT LineaImpresion "                                   %031.31s %5.5d - %-8.8s" \
+			"Total de Piezas que se remiten:" \
+			CantPzasFin \
+			op:op_login_id
+		PRT  PRINT EDIT post:LineaImpresion
+		PRT  NEWLINE
+		PRT  CARRIAGERETURN
+		cant = cant + 1
+		FPRINT LineaImpresion "                                   %31.31s %5.5d - %-8.8s" \
+			"Total de Cont. que se remiten:" \
+			CantContFin \
+			op:op_login_id
+	ELSE
+		FPRINT LineaImpresion "                        %31.31s %5.5d - %-8.8s" \
+			"Total de Sacas que se remiten:" \
+			CantSacasFin \
+			op:op_login_id
+	END IF
+
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	cant = cant + 1
+		
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	cant = cant + 1
+
+	CLEARFIELD LineaImpresion
+	LET LineaImpresion = "    Despachado por:                       Fecha:                            Hora:"
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+	CLEARFIELD LineaImpresion
+	LET LineaImpresion = "    Recibido por:                         Fecha:                            Hora:"
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+
+	/* Agregado por el Correo Arg. */
+	/* Rutina que calcula el CheckSum de todos los T&T que contiene el contenedor */
+	/* Jul. ´98 - B. Petrella - */
+	/*JUNIO 2004 - PIDIERON QUE NO SE MUESTREN ESTOS DATOS CUANDO NO ES UNA TRANSFERENCIA
+	Y QUE SE ELIMINE EL CHECKSUM DE LA VERSION 3.22*/
+	IF (adt_desptipos_cod == "TR") THEN
+		//CALL CDScheckSum ("NoReenc")
+		CLEARFIELD LineaImpresion
+		;LineaImpresion = itemcheck
+		/*FPRINT LineaImpresion " -%20.20s %s %06.6x" \
+			"Checksum Piezas :","V3.22", itemcheck
+		PRT PRINT EDIT post:LineaImpresion
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		LET cant = cant + 1*/
+
+		/*PS 7686 - Muestro el checksum de la nueva version V3.23
+		FPRINT LineaImpresion " %-20.20s %04.4x" \
+			"   Checksum Piezas :",itemcheckV23 //para que lo muestre en hexadecimal*/
+		
+		//SUC-798 Se debe mostrar el Checksum global de piezas (el mismo contiene la totalidad de las piezas que tienen los contenedores mas piezas sueltas.-
+		FPRINT LineaImpresion "    CheckSum Global de Piezas: %04.4s" checksum_piezas
+
+	ELSE
+		/*Por ahora no se imprime el CheckSum para las Sacas
+		MFM (14.01.2002) Se calcula el nuevo Checksum para sacas*/
+		//CALL CDScheckSum ("Sacas")
+		CLEARFIELD LineaImpresion
+		/*FPRINT LineaImpresion " -%20.20s %s %06.6x" \
+			"Checksum Sacas :","V3.22",itemcheck
+		PRT PRINT EDIT post:LineaImpresion
+		PRT NEWLINE
+		PRT CARRIAGERETURN
+		LET cant = cant + 1*/
+		//PS 7686 - Muestro el checksum de la nueva version V3.23
+		FPRINT LineaImpresion " %-20.20s %04.4x" \
+			"   Checksum Sacas :",itemcheckV23 //para que lo muestre en hexadecimal
+	END IF
+
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	
+	LET cant = cant + 1
+
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	LET cant = cant + 1
+
+	FPRINT LineaImpresion "                         %052.52s" \
+		"Espacio reservado para intercalación Legajo archivo."
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+
+	FPRINT LineaImpresion \
+		"                                        Página: %03.3d" \
+		pagina
+	PRT PRINT EDIT post:LineaImpresion
+	PRT NEWLINE
+	PRT CARRIAGERETURN
+
+	/*CSZ - Si hay piezas simple especial seleccionadas y se imprimio la ultima copia
+	de la guia de saca*/
+	IF (hay_guia_esp == "S" && post:cant_impresion == 3) THEN
+		PRT FLUSH
+		PRT FORMFEED
+		/*Imprimo la guia Simple Especial*/ 
+		CALL PRTguiaSimpEspDesp
+	END IF
+   
+	/*MFM - Si hay piezas reencaminadas seleccionadas y se imprimio la ultima copia
+	de la guia de saca*/
+	/*MFM - (25.10.2001)CORREO pidió que se imprimiera tres veces la guia de reencaminamiento*/
+	//IF (hay_piezas_reenc == "S" && cant_impresion == 3) THEN
+	IF (hay_piezas_reenc == "S") THEN
+		PRT FLUSH
+		PRT FORMFEED
+		/*Imprimo la guia de Piezas Reencaminadas*/ 
+		CALL PRTGuiaReencDesp
+	END IF
+
+END SUB
+
+/*******/

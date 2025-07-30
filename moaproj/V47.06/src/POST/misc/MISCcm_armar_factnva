@@ -1,0 +1,141 @@
+/****o* Clientes Medios/OFB:post:MISCcm_armar_factnva
+* NOMBRE
+*   OFB:post:MISCcm_armar_factnva
+* DESCRIPCION
+*   En el BIT 108 se envian los datos de la nueva factura o nota de credito
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCclimed_ingr_fact
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcm_armar_factnva(estado)
+
+	/****************************************************************************/
+	/* GENERAR DATOS DE LA NUEVA FACTURA 	 				    */
+	/* BITS : 108	 							    */
+	/****************************************************************************/
+
+	local varl_estado       like giros:EstadoGiro_fld
+	local varl_importe      like common:csr_string
+	local varl_imp_recibo   like common:csr_string
+	local varl_imp_consumo  like common:csr_string
+	local varl_tot_imp_rem  like common:csr_string
+	local varl_fecha_emis   like common:csr_string
+	local varl_tipo         like giros:EstadoGiro_fld
+	local varl_clase_recibo like post:TipoIdentFact
+	local varl_recibo       like siaf:importe
+
+	fprint varl_estado,"%s",estado
+	clearfield post:datos_msg108
+	
+	// recupera el importe total a pagar de la PresuPag
+	call post:CDSTotSesion_presu
+
+	if (post:nro_recibo.numchars != 0 )
+		varl_recibo =  post:total_importe +  post:CobAnticipo_CM
+	end if
+	varl_imp_recibo = varl_recibo * 100
+
+	if (post:OperacionCob && post:ConsumoAnticipo && \
+	   (post:ImprimeRecCob == TRUE || post:COBrecibo_manual.numchars != 0 ) )
+		varl_clase_recibo = "RCA"
+	end if
+	
+	if (post:SeqIdentFact.numchars != 0 )
+
+		//call csr:date_add\
+		//(common:system_date,post:diasPago_CM,"d",post:fecha_vencimiento)
+		
+		CALL post:MISCCalc_fecvtoCM
+		
+		if (post:OperacionCob)
+			
+			//recuperar el importe de las facturas cobradas para restarlo
+			call post:CDSrecupero_facturas
+			post:importe_factura = post:total_importe + \
+			post:anticipo_CM - post:facturas_cobradas + post:imp_nc_consumida
+		else
+			if (post:ConsumoAnticipo || post:AnticipoRemito)
+				post:importe_factura = post:anticipo_CM + Imp_CobroDif
+				post:Imp_CobroDif = post:importe_factura
+
+				call post:CDSpresu_imp_cobdif
+			else
+				if (OperacionNC)
+					post:importe_factura = post:importe_nc_inc
+				else
+					post:importe_factura = post:Imp_CobroDif
+				endif
+			end if
+		end if
+
+		varl_importe     = post:importe_factura * 100
+		varl_imp_consumo = post:anticipo_CM  * 100
+		varl_tot_imp_rem = post:tot_imp_remito * 100
+	
+		if (post:OperacionInt)
+			varl_tipo = "I"
+		end if
+		if (post:OperacionAut || post:OperacionCob)
+			 if (post:adt_oc_nro > 0 )
+				varl_tipo = "O"
+			 else
+			 //PS 10136
+			 	varl_tipo = "N"
+			 endif
+		end if
+		//50249
+		if (post:OperacionNC) then
+			varl_tipo = "C"
+		endif
+		//Estoy en una venta de cliente cobro diferido 
+		//PS 10136
+		if (varl_tipo == "" && post:ModalidadCD) 
+		 	varl_tipo = "N"
+	    endif
+		fprint common:csr_string,\
+		"%015.15s%012.12s%1.1s%4.4s%2.2s%2.2s%012.12s",\
+		post:SeqIdentFact,varl_importe,varl_estado,\
+		substr(fecha_vencimiento,0,4),\
+		substr(fecha_vencimiento,4,2),substr(fecha_vencimiento,6,2),\
+		varl_imp_consumo
+
+		fprint post:datos_msg108,"%s",common:csr_string
+
+		if (giros:codigo_procesamiento == 997040 )
+			if (!post:FechaAnt) then
+				fprint varl_fecha_emis,"%4.4s%2.2s%2.2s",\
+				substr(common:system_date,0,4),\
+				substr(common:system_date,4,2),\
+				substr(common:system_date,6,2)
+			else
+				fprint varl_fecha_emis,"%4.4s%2.2s%2.2s",\
+				substr(post:fecha_factCM,0,4),\
+				substr(post:fecha_factCM,4,2),\
+				substr(post:fecha_factCM,6,2)
+			endif
+
+			fprint post:datos_msg108,\
+			"%s%012.12s%s%1.1s%015.15s%012.12s%-3.3s",\
+			post:datos_msg108,varl_tot_imp_rem,varl_fecha_emis,\
+			varl_tipo,post:nro_recibo,varl_imp_recibo,varl_clase_recibo
+
+		end if
+
+	else
+		fprint post:datos_msg108,\
+		"%015.15s%-54.54s%015.15s%012.12s%-3.3s",\
+		"0"," ",post:nro_recibo,varl_imp_recibo,varl_clase_recibo
+	end if
+END SUB
+
+/*******/

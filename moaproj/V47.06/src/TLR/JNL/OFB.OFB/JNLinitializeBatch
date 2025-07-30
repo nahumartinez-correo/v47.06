@@ -1,0 +1,227 @@
+/****o* Pendientes de agrupación/OFB:tlr:JNLinitializeBatch
+* NOMBRE
+*   OFB:tlr:JNLinitializeBatch
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "jnlOFB.OFB.h"
+
+SUB tlr:JNLinitializeBatch
+; [PAW] --> Esta rutina es identica a la JNLinitialize con la diferencia que no llama
+; 			al final a la dt_tran(DT_TRAN_END) porque cuando entraba por modo batch,
+;			se colgaba el sistema.
+
+    #ifdef MENSAJES_CIERRE
+        local SiafCodigo like siaf:codigo_siaf
+    #endif
+
+    #ifdef MENSAJES_CIERRE
+    SiafCodigo = siaf:codigo_siaf
+	/* Agrego la impresion de mensajes para develar
+	el "Misterio del Cierre del Dia" */
+	if (SiafCodigo == 9560)
+	    dprint "Cierre del dia, ingreso a JNLinitialize\r\n"
+	end if
+	#endif
+
+/* start "init" tran to keep list of fields used */
+	let fld:drv:INDwork = ofb:tlr:JNLinitialize
+	CALL  csr:dt_tran DT_TRAN_START fld:drv:INDwork
+
+/* get totals record for this operator */
+	let tots_branch = op:op_branch_id
+	let tots_operator = op:op_operator_id
+	CALL  OFB:TOTSinitialize
+	if (retval != 0)
+	    /*Comento el mensaje */
+		;move "Error initializing totals" to drv:error_msg
+		;CALL  drv:error_msg
+		select (retval)
+        	case -801
+                CALL batch:MISCgeneraLog("\nERROR: Operador SIN resgistro de totales\n","ERROR","N")
+                break
+            case -803
+                CALL batch:MISCgeneraLog("\nERROR: La Tabla totals esta Lockeada: Para eliminar el Lockeo, se deben Bajar y Subir los Servicios!\n","ERROR","N")
+                break
+        end select
+
+
+		/* Como quedaron lockeados los totales lo saco de la sesion*/
+
+		END
+		return (-2)
+	END IF
+/* initialize normal journaling context */
+	cds select from DSC:TABjnl becomes DSC:CONjnl_write where\
+		jnl_branch   == tots_branch &&\
+		jnl_operator == tots_operator &&\
+		jnl_bus_date == tots_bus_date &&\
+		jnl_sequence >= tots_sequence &&\
+		siaf:codigo_siaf != 98051
+
+	if (cdsretval != 0)
+		#ifdef MENSAJES_CIERRE
+	    /* Agrego la impresion de mensajes para develar
+	    el "Misterio del Cierre del Dia" */
+	    if (SiafCodigo == 9560)
+	        dprint "Cierre del dia, fallo al abrir el contexto journal cdsretval %s\r\n",cdsretval
+	    end if
+	    #endif
+
+		move DSC:ERRjnl_select to drv:error_msg
+		CALL  drv:error_msg
+		return (-2)
+	END IF
+/* get last jnl tran and leave locked in case update is needed */
+/* get the first record found with sequence iqual or greater than totals' */
+	cds findfirst DSC:CONjnl_write lock
+	while (cdsretval == 0)
+		// solo para transacciones de giros...
+		CLEARFIELD giros:flia_tran_aux
+		CLEARFIELD giros:afec_efvo_aux
+		CLEARFIELD giros:importe2_aux
+		CLEARFIELD giros:imp_rev_aux
+
+
+		cds extract DSC:CONjnl_write post:jnl_flia_tran \
+					siaf:afecta_efectivo INTO giros:afec_efvo_aux
+
+		if (cdsretval == 0) then
+			/*CSZ - los campos flia_tran_aux, afec_efvo_aux, codigo_siaf_aux,
+			imp_serv_aux y ImporteNeto_aux son necesarios para determinar si
+			la tx es de giros y tiene saldo negativo para la captura*/
+			giros:flia_tran_aux = post:jnl_flia_tran
+			if (post:jnl_flia_tran == "CSM") then
+				cds extract DSC:CONjnl_write siaf:importe2 INTO giros:importe2_aux
+				IF (CDSRETVAL < 0)
+					giros:importe2_aux = 0
+				END IF
+				//Por si el giro pagado o reembolsado estaba vencido y genero una revalida
+				cds extract DSC:CONjnl_write giros:imp_revalida_fld INTO giros:imp_rev_aux
+				IF (CDSRETVAL < 0)
+					giros:imp_rev_aux = 0
+				END IF
+				/* verifica caidas en vuelo */
+				CALL  OFB:jnl_cust_chk_snddwn
+			end if
+		end if
+
+	cds findnext DSC:CONjnl_write lock
+	end while
+
+	// FGB 7.2.2001: Solo quiero que vuelva a totalizar la ultima trx
+	cds findlast DSC:CONjnl_write lock
+	if (cdsretval == 0)
+    	cds extract DSC:CONjnl_write jnl_bus_date jnl_sequence
+    	CALL  OFB:jnl_check_sync /* check tots and jnl in sync */
+    	// Esto se hace dado que Especies son mas de un registro
+    	// si se corto en el medio en Sub_Importe tengo el subtotal
+    	// PJM 23-02-1999
+    	If ( siaf:codigo_siaf == 8500 )
+    		post:importe_rapido = tes:SubImporte
+			post:impRapidoSinIva = post:TotalSinIva
+			siaf:codigo_siaf_ant = siaf:codigo_siaf
+			tes:especie_ant = tes:espv_cod
+			tes:subespv_ant = tes:espv_subcod
+			tes:importe_vta = siaf:importe
+			tes:jnl_sequence_ant = tlr:jnl_sequence
+    	Else
+    		/* MLD Agrego también para Merchandising */
+    		/*  En teclas rápidas puede haber mas de un registro por bienes de cambio*/
+    		// Si se corto en el medio en Sub_Importe tengo el subtotal
+
+    		if (siaf:codigo_siaf == 40002) then
+		    	post:importe_rapido = tes:SubImporte
+				post:impRapidoSinIva = post:TotalSinIva
+				siaf:codigo_siaf_ant = siaf:codigo_siaf
+				tes:importe_vta = siaf:importe
+				tes:jnl_sequence_ant = tlr:jnl_sequence
+    		else
+				post:importe_rapido = siaf:importe
+				post:impRapidoSinIva = post:ImporteSinIva
+       		Endif
+       	end if
+       	let common:csr_string_171  = siaf:moneda
+       	let post:codigo_impre = siaf:codigo_siaf
+    	let post:nro_impre_aux = post:nro_impre
+	    let post:PreDForFis_aux = post:PreDForFis
+
+		; [PAW] --> Se agrega esta actualizacion por si se cae entre la journalizacion.
+		; de alguna parte del proceso y la marca de journalizacionOk.
+		cds findagain DSC:CONjnl_write lock
+    	cds extract DSC:CONjnl_write post:PresNro
+
+		; SIEMPRE grabo en la sucur_act el codigo siaf de lo ultimo que tengo
+		; en el journal salvo la 98041. Esto se hace para que esta ultima no
+		; me pueda "tapar" a la verdadera ultima transaccion que se hizo.
+		; Si, ya se que es un lio.
+		call post:CDSgrabaSucurActCod(siaf:codigo_siaf)
+
+		; Leo siempre de la sucur_act cual fue la ultima transaccion que se hizo.
+		; Eso es para que las 98041 no tapen a la ultima transaccion efectivamente realizada.
+		clearfield post:ultTranEfectiva
+		call post:CDSleeSucurActCod
+		IF (post:ultTranEfectiva != 99023 && post:PresNro != 0) THEN
+			CALL post:CDSborroPresuBatch(post:PresNro)
+			CALL post:CDSborroFactuBatch(post:PresNro)
+		END IF
+
+		call post:MISCmarcaOkBatch
+    end if
+
+	// FGB 7.2.2001 fin
+
+/* display cash control information */
+	CALL  OFB:MISCcctl_display
+/* init global information from totals record */
+/* Modif: si se encuentra en el mismo dia, entonces no reiniciar el sequence 	          para que  en cada reapertura no blanquee el sequence - F.B. 23/6/97 */
+	if (testflag(op:op_state_flags,open_day) || \
+	   (tots_bus_date == common:system_date)) then
+		move tots_bus_date to bus_date
+		let sequence = tots_sequence
+	else
+		clearfield bus_date
+		clearfield sequence
+	END IF
+	CALL  OFB:MISCchk_next_day
+/* if 10k already processed, clear 10k indicators */
+	if (jnl_tenk_status.numchars > 0)
+		resetflag state_flags,ten_k /* clear 10K flag */
+		clearfield lib:stat_tlr_10k /* and 10K status */
+		refresh lib:stat_tlr_10k
+	END IF
+/* disallow dups of "init" transaction */
+	clearfield common:tran_appl_no
+	clearfield common:tran_item_no
+	clearfield INDdocs_list
+
+       CALL  MISCendtran_nowait
+    	 let fld:drv:INDwork = ofb:tlr:JNLinitialize
+;       	CALL  csr:dt_tran DT_TRAN_END fld:drv:INDwork
+        CLEARFIELD tlr:INDtran_name
+        SWAPDUP tlr:INDtran_name
+        CLEARFIELD tlr:INDtran_name
+        Call post:MISCfin_TeclaRapida
+
+    #ifdef MENSAJES_CIERRE
+	/* Agrego la impresion de mensajes para develar
+	el "Misterio del Cierre del Dia" */
+	if (SiafCodigo == 9560)
+	    dprint "Cierre del dia, OK JNLinitialize\r\n"
+	end if
+	#endif
+
+END SUB
+
+/*******/

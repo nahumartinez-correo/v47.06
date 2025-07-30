@@ -1,0 +1,293 @@
+/****o* Pendientes de agrupación/OFB:post:MISCAcumPresuDetOC
+* NOMBRE
+*   OFB:post:MISCAcumPresuDetOC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCAcumPresuDetOC(tipo_sel)
+	
+LOCAL l_cdsretval LIKE lib:err_retval
+LOCAL l_desc_ant LIKE post:item_desc_factura
+LOCAL l_flia LIKE siaf:adt_tran_fliatran
+LOCAL l_desc LIKE post:item_desc_factura
+LOCAL l_codigo LIKE siaf:codigo_siaf
+LOCAL l_importe LIKE siaf:importe
+LOCAL l_tarifa LIKE post:tarifa
+LOCAL l_costo_opc LIKE post:costo_opc
+LOCAL l_cantidad LIKE post:cantidad
+LOCAL l_valor_dec LIKE post:valor_dec
+LOCAL l_valor_cre LIKE post:valor_cre
+LOCAL l_valor_ar LIKE post:valor_ar
+LOCAL l_valor_csar LIKE post:valor_csar
+LOCAL l_siva LIKE siaf:ImporteSinIva
+LOCAL l_civa LIKE siaf:ImporteConIva
+LOCAL l_ImpServUP LIKE post:ImpServUP
+LOCAL l_ImpSinIva_serv LIKE post:ImpSinIva_serv
+LOCAL l_cod_opc LIKE post:cod_opc1_web
+LOCAL l_cos_opc LIKE post:costo_opc
+LOCAL l_siniva_opc LIKE post:importe_pesos
+LOCAL l_cont LIKE post:cantidad
+LOCAL l_cont_aux LIKE post:cantidad
+LOCAL l_tot_serv LIKE tele:importe_tot_serv_tel
+LOCAL l_imp_iva LIKE post:ImporteIva
+LOCAL l_siva_post LIKE post:ImporteSinIva
+LOCAL l_civa_post LIKE post:ImporteConIva
+LOCAL l_impciva_vec LIKE post:importe_pesos
+LOCAL l_impsiva_vec LIKE post:importe_pesos
+LOCAL l_sivaoc LIKE post:ImporteSinIvaOC
+LOCAL l_civaoc LIKE post:ImporteConIvaOC
+LOCAL l_imp_tot_serv like siaf:importe_tot_serv
+LOCAL l_imp_bloq LIKE post:imp_bloques
+LOCAL l_bloq_siva LIKE post:imp_bloques_siva
+LOCAL l_cant_bloq LIKE post:cant_bloq
+LOCAL l_leyenlar_bloq LIKE post:leyenlar_bloq
+LOCAL l_leyencor_bloq LIKE post:leyencor_bloq
+LOCAL l_item_imp_bloq LIKE post:item_imp_bloq
+LOCAL l_imp_aux LIKE siaf:importe
+LOCAL l_siva_bis LIKE post:ImporteSinIva_bis
+LOCAL l_siniva_opc4 LIKE post:ImporteSinIva_bis
+LOCAL l_bloq_siva4 LIKE post:imp_bloques_siva4
+		
+	//SE BORRAN TODOS LOS CAMPOS EN DONDE SE DEBEN ACUMULAR VALORES
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_post)
+	CALL csr:cleararray(post:cod_opc)
+	CALL csr:cleararray(post:cos_opc)
+	CALL csr:cleararray(post:siniva_opc)
+	CALL csr:cleararray(post:impciva_vec)
+	CALL csr:cleararray(post:impsiva_vec)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_prdvs)
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_tele)
+	
+	
+	if (tipo_sel == "ITEMS") then
+		CDS SELECT FROM DSC:PRESUDET_TAB BECOMES DSC:PRESUDET_CTX \
+		WHERE post:fecha == common:system_date && \
+		post:op_operator_id == op:op_operator_id && \
+		post:PresNro == post:PresNro SORT "FactOC"
+	else
+		CDS SELECT FROM DSC:PRESUDET_TAB BECOMES DSC:PRESUDET_CTX \
+		WHERE (post:fecha == common:system_date && \
+		post:op_operator_id == op:op_operator_id && \
+		post:PresNro == post:PresNro && \
+		siaf:codigo_siaf != 99350 && \
+		(siaf:adt_tran_fliatran == "PCL" || \
+		siaf:adt_tran_fliatran == "TAV"))
+	endif
+	
+	CDS FINDFIRST DSC:PRESUDET_CTX NOLOCK
+	
+	l_desc_ant = ""
+	
+	DO
+		LET l_cdsretval = CDSRETVAL
+		IF (l_cdsretval == 0) THEN
+			CDS EXTRACT DSC:PRESUDET_CTX siaf:adt_tran_fliatran into l_flia \
+			item_desc_factura INTO l_desc siaf:codigo_siaf into l_codigo
+			call csr:trimfield(l_desc)
+			SELECT (l_flia)
+				CASE "PCL"
+				CASE "TAV"
+					clearfield l_desc
+					l_desc_ant = l_desc
+					//GRABAR EL ITEM EN LA PresuDetOC
+					CALL CDSGrabar_PresuDetOC(l_desc,l_flia,l_codigo)
+					BREAK
+				CASE "CSP"
+				CASE "CSE"
+				CASE "CST"
+					CDS EXTRACT DSC:PRESUDET_CTX siaf:importe into l_importe \
+					post:costo_opc into l_costo_opc \
+					post:cantidad into l_cantidad \
+					post:valor_ar into l_valor_ar \
+					siaf:ImporteSinIva into l_siva \
+					siaf:ImporteConIva into l_civa \
+					post:ImpServUP into l_ImpServUP \
+					post:ImpSinIva_serv into l_ImpSinIva_serv
+					
+					CDS EXTRACT DSC:PRESUDET_CTX \
+					post:item_importe_oc into l_tarifa \
+					post:ImporteSinIvaOC into l_sivaoc \
+					post:ImporteConIvaOC into l_civaoc \
+					post:tarifa into l_tarifa \
+					post:imp_bloques into l_imp_bloq \
+					post:imp_bloques_siva into l_bloq_siva \
+					post:cant_bloq into l_cant_bloq \
+					post:leyenlar_bloq into l_leyenlar_bloq \
+					post:leyencor_bloq into l_leyencor_bloq \
+					post:item_imp_bloq into l_item_imp_bloq 
+					
+										
+					IF (l_desc_ant == l_desc || l_desc_ant.numchars == 0) THEN
+				
+					ELSE
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_post)
+						CALL csr:cleararray(post:cod_opc)
+						CALL csr:cleararray(post:cos_opc)
+						CALL csr:cleararray(post:siniva_opc)
+						CALL csr:cleararray(post:impciva_vec)
+						CALL csr:cleararray(post:impsiva_vec)
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_prdvs)
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_tele)
+						//SC 50170
+						CALL csr:cleararray(post:siniva_opc4)
+					ENDIF
+				
+					siaf:importe   = siaf:importe + l_importe
+					post:tarifa    = post:tarifa + l_tarifa
+					post:costo_opc = post:costo_opc + l_costo_opc
+					post:cantidad  = post:cantidad + l_cantidad
+					post:ImporteSinIvaOC = post:ImporteSinIvaOC + l_sivaoc
+					post:ImporteConIvaOC = post:ImporteConIvaOC + l_civaoc
+					post:imp_bloques = post:imp_bloques + l_imp_bloq
+					post:imp_bloques_siva = post:imp_bloques_siva + l_bloq_siva
+					//PS 9683 Hay que multiplicar la cantidad de bloques por la cantidad de telegramas!!!
+					post:cant_bloq = post:cant_bloq + (l_cant_bloq * l_cantidad)
+					
+					l_imp_aux = (post:cant_bloq * l_item_imp_bloq)
+					if (l_leyenlar_bloq.numchars != 0) then
+						FPRINT post:leyenlar_bloq "%s \(%suni\*\%5.5e\$= \%5.5e\$\) ", substr(l_leyenlar_bloq,0,14),post:cant_bloq,l_item_imp_bloq,l_imp_aux
+						FPRINT post:leyencor_bloq "%s\(%suni\*\%5.5e\$= \%5.5e\$\) ", substr(l_leyencor_bloq,0,4),post:cant_bloq,l_item_imp_bloq,l_imp_aux
+					endif
+					
+					//array post:cos_opc y post:siniva_opc segun post:cod_opc					
+					l_cont = 0
+					while (l_cont < 6)
+						
+						CDS EXTRACT DSC:PRESUDET_CTX post:cod_opc[l_cont] into l_cod_opc \
+						post:cos_opc[l_cont] into l_cos_opc \
+						post:siniva_opc[l_cont] into l_siniva_opc \
+						post:siniva_opc4[l_cont] into l_siniva_opc4
+						
+						if (post:cod_opc[l_cont].numchars == 0) then
+							post:cos_opc[l_cont] = post:cos_opc[l_cont] + l_cos_opc
+							post:siniva_opc[l_cont] = post:siniva_opc[l_cont] + l_siniva_opc
+							//SC 50170
+							post:siniva_opc4[l_cont] = post:siniva_opc4[l_cont] + l_siniva_opc4
+							post:cod_opc[l_cont] = l_cod_opc
+						else
+							l_cont_aux = 0
+							while (post:cod_opc[l_cont_aux] != l_cod_opc)
+								l_cont_aux = l_cont_aux + 1
+							end while
+							post:cos_opc[l_cont_aux] = post:cos_opc[l_cont_aux] + l_cos_opc
+							post:siniva_opc[l_cont_aux] = post:siniva_opc[l_cont_aux] + l_siniva_opc
+							//SC 50170
+							post:siniva_opc4[l_cont] = post:siniva_opc4[l_cont] + l_siniva_opc4
+						endif
+							
+						l_cont = l_cont + 1
+					
+					end while
+						
+					IF (l_flia == "CST") THEN
+						CDS EXTRACT DSC:PRESUDET_CTX \
+						tele:importe_tot_serv_tel into l_tot_serv \
+						post:imp_bloques_siva4 into l_bloq_siva4 
+						tele:importe_tot_serv_tel = tele:importe_tot_serv_tel + l_tot_serv
+						//SC 50170
+						post:imp_bloques_siva4 = post:imp_bloques_siva4 + l_bloq_siva4
+					ELSE
+						post:valor_dec = post:valor_dec + l_valor_dec
+						post:valor_cre = post:valor_cre + l_valor_cre
+						post:valor_ar = post:valor_ar + l_valor_ar							
+						post:valor_csar = post:valor_csar + l_valor_csar
+					END IF
+					siaf:ImporteSinIva = siaf:ImporteSinIva + l_siva
+					siaf:ImporteConIva = siaf:ImporteConIva + l_civa
+						
+					//array impciva_vec, impsiva_vec
+					l_cont = 0
+					while (l_cont < 20)
+						
+						CDS EXTRACT DSC:PRESUDET_CTX post:impciva_vec[l_cont] into l_impciva_vec \
+						post:impsiva_vec[l_cont] into l_impsiva_vec
+						
+						post:impciva_vec[l_cont] = post:impciva_vec[l_cont] + l_impciva_vec
+						post:impsiva_vec[l_cont] = post:impsiva_vec[l_cont] + l_impsiva_vec
+						
+						l_cont = l_cont + 1
+						
+					end while
+										
+					post:ImpServUP = post:ImpServUP + l_ImpServUP
+					
+					IF (l_flia != "CST") THEN
+						post:ImpSinIva_serv = post:ImpSinIva_serv + l_ImpSinIva_serv
+					ENDIF
+					
+					//GRABAR EL ITEM EN LA PresuDetOC
+					CALL CDSGrabar_PresuDetOC(l_desc,l_flia,l_codigo)
+					
+					l_desc_ant = l_desc
+					
+					BREAK
+				
+				CASE "CME"
+					CDS EXTRACT DSC:PRESUDET_CTX post:cantidad2 into l_cantidad \
+					post:ImporteIva into l_imp_iva \
+					post:ImporteSinIva into l_siva_post \
+					post:ImporteConIva into l_civa_post \
+					siaf:importe into l_importe \
+					post:ImpServUP into l_ImpServUP \
+					siaf:importe_tot_serv into l_imp_tot_serv \
+					post:ImporteSinIva_bis into l_siva_bis
+					
+					
+					IF (l_desc_ant == l_desc || l_desc_ant.numchars == 0) THEN
+						
+						
+					ELSE
+						
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_post)
+						CALL csr:cleararray(post:cod_opc)
+						CALL csr:cleararray(post:cos_opc)
+						CALL csr:cleararray(post:siniva_opc)
+						CALL csr:cleararray(post:impciva_vec)
+						CALL csr:cleararray(post:impsiva_vec)
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_prdvs)
+						CALL csr:proc_list(F_CLEAR,LST:post:LISTacum_tele)
+						
+					ENDIF
+					
+					post:cantidad2 = post:cantidad2 + l_cantidad
+					post:ImporteIva = post:ImporteIva + l_imp_iva
+					post:ImporteSinIva = post:ImporteSinIva + l_siva_post
+					post:ImporteConIva = post:ImporteConIva + l_civa_post
+					siaf:importe = siaf:importe + l_importe
+					post:ImpServUP = post:ImpServUP + l_ImpServUP
+					siaf:importe_tot_serv = siaf:importe_tot_serv +  l_imp_tot_serv
+					//SC 50170
+					post:ImporteSinIva_bis = post:ImporteSinIva_bis + l_siva_bis
+					
+					//GRABAR EL ITEM EN LA PresuDetOC
+					CALL CDSGrabar_PresuDetOC(l_desc,l_flia,l_codigo)
+					
+					l_desc_ant = l_desc
+					
+					BREAK
+			END SELECT
+						
+			CDS FINDNEXT DSC:PRESUDET_CTX NOLOCK
+			
+		ELSE
+			CDS ENDSELECT DSC:PRESUDET_CTX
+			BREAK
+		ENDIF		
+	LOOP
+
+END SUB
+
+/*******/

@@ -1,0 +1,190 @@
+/****o* Pendientes de agrupación/OFB:post:FVALpi_aforo
+* NOMBRE
+*   OFB:post:FVALpi_aforo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpi_aforo
+	LOCAL x LIKE post:cantidad
+	LOCAL l_cant_opc like post:cant_opc
+	local medida like aforo1
+	
+	IF (CURRENTFIELD > 0) THEN
+	
+		IF (caja_propia)
+			medida = currentfield
+
+			IF (adt_serv_calc_rv == "N")
+				//Tarifa por aforo
+				post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+				REFRESH post:aforo
+				CALL csr:trimfield(destino)
+				IF (destino.NUMCHARS != "")
+					CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+						post:adt_tarif_serv == adt_serv_serv && \
+						post:adt_tarif_dest == destino && \
+						adt_tarif_desde <= post:aforo && \
+						adt_tarif_hasta >= post:aforo
+					CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+					IF (CDSRETVAL == -801)
+						CDS ENDSELECT dsc:Tarifas_ctx
+						MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA POR NO HALLARSE EN EL TARIFARIO UN RANGO PARA LOS VALORES DESTINO/CANTIDAD INGRESADOS",0x00,"Error"
+						RETURN (-2)
+					END IF
+				END IF			
+			
+			ELSE
+				//Tarifa por relacion volumetrica
+				CALL MISCrest_med_cprop
+				IF (retval < 0)
+					if (aforo1 == 0)
+						nextfield aforo1
+						return
+					else
+						return -2
+					end if
+				END IF
+				//Calculo relacion volumetrica
+				rel_vol_l1 = aforo1
+				rel_vol_l2 = aforo2
+				rel_vol_l3 = aforo3
+				CALL post:MISCobt_rel_vol //(aforo1,aforo2,aforo3)
+				IF (retval < 0)
+					return -2
+				END IF
+
+			END IF	
+
+		    IF (!TESTFLAG(uso_int_flag,uso_interno))
+	        CALL MISCactualizo_tarifa
+		        IF (RETVAL < 0)
+		            RETURN (-2)
+		        END IF
+		        CALL MISCactualizo_opc
+		        CALL MISCactualizo_1opc
+		    END IF
+			
+		ELSE
+
+			post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+			REFRESH post:aforo
+			CALL csr:trimfield(destino)
+			IF (destino.NUMCHARS != "")
+				CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx WHERE \
+					post:adt_tarif_serv == adt_serv_serv && \
+					post:adt_tarif_dest == destino && \
+					adt_tarif_desde <= post:aforo && \
+					adt_tarif_hasta >= post:aforo
+				CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+				IF (CDSRETVAL == -801)
+					CDS ENDSELECT dsc:Tarifas_ctx
+					MSGBOX "NO SE PUEDE DETERMINAR LA TARIFA POR NO HALLARSE EN EL TARIFARIO UN RANGO PARA LOS VALORES DESTINO/CANTIDAD INGRESADOS",0x00,"Error"
+					RETURN (-2)
+				END IF
+			END IF
+			/*Cuando es Cliente Interno la tarifa debe ser $0,00*/
+			IF (!TESTFLAG(uso_int_flag,uso_interno))
+				CALL MISCactualizo_tarifa
+				IF (RETVAL < 0)
+					RETURN (-2)
+				END IF
+				CALL MISCactualizo_opc
+				CALL MISCactualizo_1opc
+			END IF
+	
+			//CLIENTE MEDIO
+			if (cli_tipo == CLIMED) then
+				//Solicitud 50071 - Convenios/Excepciones por Producto con Perfil Direccion
+				if (PerfilDireccion && (ConvenioProducto || ExcepProducto)) then
+					post:bonificaCM = "S"
+				endif
+				if (post:bonificaCM == "S") then
+					CALL MISCTratamientoCM
+					if (retval < 0) then
+						return -2
+					end if
+				else
+					if (ExcepProducto) then
+						//chequeo que la cantidad sea la pactada
+						call CDSSelExcep_Producto (post:cantidad)
+						if (retval < 0) then
+							return -2
+						endif
+						/*o directamente no dejo vender(return -2)?
+						MSGBOX "El servicio-rango no admite bonificacion. No se permite la venta.",0X00,"AVISO"
+						RETURN -2*/
+					end if
+					clearfield post:Dcto_CliMed
+					refresh  post:Dcto_CliMed
+				endif
+				;Si post:Dcto_CliMed > 0 porque se acaba de actualizar, hay que limpiar
+				;las bonificaciones locales y actualizar los totales.
+				call post:MISCaplicaBonif(TIPO_SERVICIO)
+				IF (post:aplica_bonif_serv == "N") THEN
+					promo_imp_srv_tot = 0
+					CALL post:MISCLimpioPromo(TIPO_SERVICIO)
+					clearfield promoSrvTipoBon
+					clearfield promo_srv_bon
+					clearfield promo_cod
+					clearfield promo_inhibeUpServ
+					clearfield promo_imp_srv_ind
+					clearfield promo_imp_srv
+					clearfield promo_imp_srv_tot
+					clearfield promo_imp_tot_ind
+				END IF
+				if (post:cant_opc > 0)
+					l_cant_opc = post:cant_opc
+					post:cant_opc = 1
+					WHILE (post:cant_opc < (l_cant_opc + 1))
+						x = post:cant_opc - 1
+						call post:CDSopcBonifCM_load(siaf:codigo_siaf,post:cod_opc[x])
+						call post:MISCaplicaBonif(TIPO_OPCIONAL)
+						IF (post:aplica_bonif_opc == "N") THEN
+							if (promo_imp_opc_tot[x] > 0) then
+								call post:MISCRestaBonifOpc(x)
+								clearfield promo_imp_opc[x]
+								clearfield promo_imp_opc_tot[x]
+								clearfield promo_imp_opc_ind[x]
+								clearfield promo_opc_bon[x]
+							end if
+						ELSE
+							if (!(promo_imp_opc_tot[x] > 0)) then
+								post:calculaBonifOpc = "S"
+								CALL post:MISCSumaBonifOpc()
+							end if
+						END IF
+						post:cant_opc = post:cant_opc + 1
+					END WHILE
+					post:cant_opc = l_cant_opc
+				END IF
+				promo_tot_Serv = promo_imp_blq_tot + promo_imp_tot_opc + promo_imp_srv_tot
+				if (promo_tot_Serv == 0)
+					clearfield promo_desc
+				end if
+				/*Calcula la tarifa total del servicio*/
+				CALL MISCact_tarif_serv
+			endif
+	
+			/*Fin Carina*/
+			RETURN (0)
+		END IF
+	ELSE
+		MSGBOX "SE REQUIEREN LAS MEDIDAS DEL ENVIO",0x00,"ERROR"
+		RETURN (-2)
+	END IF
+END SUB
+
+/*******/

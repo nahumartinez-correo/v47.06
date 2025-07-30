@@ -1,0 +1,180 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70610_lote
+* NOMBRE
+*   OFB:giros:SVAL70610_lote
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+
+SUB giros:SVAL70610_lote
+
+	// local importe_aux    like siaf:importe
+	// local status_aux     like hcomm:tran_status
+	// local formulario_aux like post:PreDForFis
+
+	local ImpLoteFact    like giros:ImporteNeto
+	local ImpLoteTot     like giros:ImporteNeto
+	local ImpLoteNeto    like giros:ImporteNeto
+	local ImpFact        like giros:ImporteNeto
+	local ImpNeto        like giros:ImporteNeto
+
+	ImpLoteFact = giros:gir_totimp_fact
+	ImpLoteNeto = giros:gir_totimp_emi
+	ImpLoteTot  = ImpLoteNeto + ImpLoteFact
+
+	giros:gir_totimp_lote = ImpLoteFact + ImpLoteNeto
+	giros:caratula_lote_gm = GM_LOTE
+
+
+	if ( post:estado_presu == 2 ) 
+
+		if (!testflag(opt_lote,opt_lote_cheq) && \
+	   	    !testflag(opt_lote,opt_lote_efvo) )
+			msgbox "DEBE SELECCIONAR EFECTIVO O CHEQUE ACREDITADO",\
+			OFB_OK,"Atencion"
+			return -2
+		end if
+
+		if (testflag(opt_lote,opt_lote_cheq))
+
+			/*Me fijo que haya seleccionado algun cheque
+			y le pongo en MarcaSelec = "S"*/
+			call giros:MISCchq_acreditado
+			if (retval == -2) then
+				msgbox \
+				"DEBE SELECCIONAR UN CHEQUE ACREDITADO",\
+				OFB_OK,"Atencion"
+				return -2
+			end if
+
+			if (giros:ImpChqAcreditado <= ImpLoteNeto )
+				ImpNeto = ImpLoteNeto - ImpChqAcreditado
+				ImpFact = ImpLoteFact
+			else
+				ImpNeto = 0
+				ImpFact = ImpLoteTot - ImpChqAcreditado
+			end if
+			giros:ImpNetoChq = ImpNeto
+			giros:ImpFactChq = ImpFact
+
+			if (giros:ImpChqAcreditado >= ImpLoteTot)
+				ImpDifCheque = ImpChqAcreditado - ImpLoteTot
+				call giros:CDSAddTrnGM(GM_SOBRANTE)
+			else
+				if (ImpChqAcreditado < ImpLoteTot)
+					ImpDifCheque = \
+					ImpLoteTot - ImpChqAcreditado
+
+					call giros:CDSAddTrnGM(GM_FALTANTE)
+				end if
+			end if
+			// Marcar Trx. de PresuDet con cheque acreditado.
+			call giros:OFBupdate_marca_chq
+			
+			//cgw:se graba en PresuAct,el campo que indica que hay cheque acreditado Giros Masivos.
+            post:chq_acre_GM = "S"
+            CALL post:CDSadt_presuact_save
+
+		end if
+
+		clearfield giros:clave_hdr_giros
+		clearfield giros:flia_giro_fld
+		clearfield siaf:importe 
+		clearfield post:adt_serv_formfiscal
+		clearfield post:PreDForFis 
+		clearfield giros:es_emision_postal
+		clearfield giros:es_emision_tele
+		clearfield giros:es_emision_correohoy
+
+		resetflag giros:giros_masivos_trx,proc_trx_masivos
+        /*
+		if (testflag(giros:giros_masivos,caida_gir_masivos))
+			clearfield giros:estado_caida_gm
+			resetflag giros:giros_masivos,caida_gir_masivos
+		end if
+        */
+		//call giros:MISCclear_cod_err
+
+   		call post:MISCGrabaDetalleTrn
+
+		;call csr:file_unlink("c:\\te mp\\log_gm.lis")
+		;cds commitwork
+		;singlestep on
+		dupfield giros:nro_sesion_gm
+		CDS BEGINWORK
+	    
+	    CDS SELECT FROM DSC:TABsesion_gm BECOMES DSC:CONsesion_gm WHERE \
+	    post:op_operator_id == FLD:op:op_operator_id && \
+	    giros:nro_sesion_gm == giros:nro_sesion_gm && \
+	    giros:estado_gm == "E"
+        
+	    ;CDS FINDFIRST DSC:CONsesion_gm LOCK
+	    
+	    CDS CLEARBUFFER DSC:CONsesion_gm
+	    giros:estado_gm = "PF"
+	    CDS APPEND DSC:CONsesion_gm \
+	    	giros:estado_gm
+	    	
+	    CDS UPDATE DSC:CONsesion_gm ALL COMMITWORK
+
+		
+	end if
+
+   	if (post:estado_presu == 4 ) 
+
+	      if ( giros:checkpoint_emision == JNL_TRX && post:PreDEst == 1 )
+			// Transaccion Journaliza pero no actualizada 
+			// en PresuDet como procesado por caida.
+			call post:MISCGrabaDetalleTrn
+
+			// Transaccion no debe journalizar.
+			clearfield drv:INDjnl_rtn
+	      else
+			call giros:CDSsval_chkpoint(ANTES_JNL)
+	      end if
+	      
+	      // fgb 15.06.2004: agrego tira auditora
+	     // printdoc OFB:giros:PRTaudita_gm,docprt,"Imprimiendo auditora..."
+	      
+
+              if (testflag(opt_lote,opt_lote_efvo))
+
+		/**********************************************
+		status_aux     = hcomm:tran_status
+		hcomm:tran_status = HOST_ACCEPTED
+		importe_aux    = siaf:importe
+		formulario_aux = post:PreDForFis
+
+		clearfield post:PreDForFis
+		siaf:importe = ImpLoteNeto
+		call post:MISCTotalTransac(siaf:codigo_siaf)
+
+		siaf:importe = ImpLoteFact
+		post:PreDForFis = "FACTU"
+		call post:MISCTotalTransac(siaf:codigo_siaf)
+	 
+		// Restauro el importe de la tx
+		siaf:importe = importe_aux
+		post:PreDForFis = formulario_aux
+		hcomm:tran_status = status_aux
+
+		************************************************/
+
+	      end if
+	      unprotfield siaf:importe
+   	endif
+END SUB
+
+/*******/

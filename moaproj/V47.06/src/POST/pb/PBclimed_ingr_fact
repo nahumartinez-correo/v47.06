@@ -1,0 +1,132 @@
+/****o* Clientes Medios/OFB:post:PBclimed_ingr_fact
+* NOMBRE
+*   OFB:post:PBclimed_ingr_fact
+* DESCRIPCION
+*   Marca/Desmarca las facturas seleccionadas por el operador del picklist Facturas - Nc a imputar de la TX de Cobranza (99460) y Cobranza con TB ( 99461)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:BUT99460
+*		LST:post:BUT99461
+* DOCUMENTACION
+*  http://jira.sibs.net/jira/browse/AUT-354 
+*  NI 50552 -  MEJORAS EN LA APLICACION DE LAS TRANFERENCIAS BANCARIAS
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBclimed_ingr_fact
+local varl_neto         like importe_consumo
+local varl_tipo_fact    like common:csr_string
+local varl_real_fact    like common:csr_string
+local varl_factura      like post:factura_nro
+local varl_imp_rem      like post:importe_factura
+local varl_imp_consumo  like post:importe_factura
+local varl_tipo    like post:consulta_ordenCM
+local l_tipo_comp       like giros:EstadoGiro_fld
+local l_fecha_emision like post:fecha_vencimiento
+local varl_fact_id      like common:csr_string
+
+    drv:button = drv:last_button
+    CALL drv:but_down_disable
+
+    drv:button = 2 //Boton de Proforma
+    CALL drv:but_down_disable
+
+    /*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+    SETFLAG drv:mode_flags,picklist_mode
+    //Ordeno el picklis para que quede igual que antes...
+	CALL csr:PickOp 4 dsc:facturas_cliente "0,16"
+    /*Mediante esta rutina csr se muestra el picklist*/
+    CALL csr:f_sadopl DSC:facturas_cliente post:csr_string_250
+    /*Si el usuario selecciona una opciòn del picklist entonces queda en la linea */
+    /*para que se pueda marcar/desmarcar*/
+    If (RETVAL < 0) then
+		clearfield PicDescrip3
+    else
+        
+        let PicDescrip3 = post:csr_string_250
+        l_tipo_comp = substr(post:csr_string_250,0,1)
+        factura_nro = substr(post:csr_string_250,1,15)
+        post:importe_factura = substr(post:csr_string_250,17,16)
+        post:fecha_vencimiento = substr(post:csr_string_250,34,2) +  substr(post:csr_string_250,37,2) * 100 + substr(post:csr_string_250,40,4) * 10000
+        varl_neto = substr(post:csr_string_250,45,16)
+        marca_factura = substr(post:csr_string_250,62,1)
+        post:importe_interes = substr(post:csr_string_250,86,16)
+        varl_tipo_fact = substr(post:csr_string_250,103,1)
+        varl_real_fact = substr(post:csr_string_250,105,15)
+        varl_factura = substr(post:csr_string_250,121,15)   
+        //se detectó que este dato no se estaba recuperando por lo tanto se agrega!
+        varl_fact_id =       substr(post:csr_string_250,137,15)   
+        varl_imp_rem = substr(post:csr_string_250,152,16) 
+        varl_imp_consumo = substr(post:csr_string_250,169,16) 
+        varl_tipo = substr(post:csr_string_250,186,1)   
+        l_fecha_emision =  substr(post:csr_string_250,187,2) +  substr(post:csr_string_250,190,2) * 100 + substr(post:csr_string_250,193,4) * 10000
+                
+        /* si esta marcado, se lo desmarca y biceversa */
+        IF (marca_factura == "*")
+	        aux_cantidad = aux_cantidad - 1
+	        LET marca_factura = " "
+	       //50249
+	        if (l_tipo_comp == "F") then
+	        	importe_fpendsel = importe_fpendsel - varl_neto
+	        else
+	        	importe_fpendsel = importe_fpendsel + varl_neto
+	        endif
+        ELSE
+	        aux_cantidad = aux_cantidad + 1
+	        LET marca_factura = "*"
+	        //50249
+	        if (l_tipo_comp == "F") then
+	        	importe_fpendsel = importe_fpendsel + varl_neto
+	        else
+	        	importe_fpendsel = importe_fpendsel - varl_neto
+	        endif
+        END IF
+		refresh importe_fpendsel
+                
+		idx = PL_GETITEM
+        do
+			call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,idx)
+			if (retval < 0)
+				break
+			end if
+	        //50249, pregunto por el tipo de comprobante porque ahora estan mezcladas notas de credito con facturas y pueden tener el mismo numero.!!
+	        if (substr(post:csr_string_250,0,1) == l_tipo_comp  && substr(post:csr_string_250,1,15) == factura_nro)
+				//Lo elimino del picklist y lo vuelvo a cargar con la marca actualizada
+				siaf:i = idx - PL_GETITEM
+				CALL CSR:myPickdelete(dsc:facturas_cliente,post:csr_string_250,siaf:i)
+				idx = idx - 1
+				//50249
+				fprint post:csr_string_250,"%1.1s%015.15s %16.16e %10.10e %16.16e %-1.1s                       %16.16e %1.1s %015.15s ", \
+				l_tipo_comp,post:factura_nro,post:importe_factura,post:fecha_vencimiento, \
+				varl_neto,marca_factura,post:importe_interes,varl_tipo_fact,varl_real_fact
+				fprint post:csr_string_250,"%s%15.15s %15.15s%16.16e %16.16e %1.1s%e",post:csr_string_250,varl_factura,varl_fact_id,varl_imp_rem,varl_imp_consumo,varl_tipo,l_fecha_emision
+
+				Call csr:f_saaddpl dsc:facturas_cliente post:csr_string_250
+				break
+			else
+				idx = idx + 1
+			end if
+        loop    
+		PicDescrip3 = post:csr_string_250
+		//Ordeno el picklis para que quede igual que antes...
+		CALL csr:PickOp 4 dsc:facturas_cliente "0,16"
+
+	End If
+	refresh PicDescrip3
+	/*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+	
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+
+	drv:button = 2 //Boton de Proforma
+	CALL drv:but_up_enable
+END SUB
+
+/*******/

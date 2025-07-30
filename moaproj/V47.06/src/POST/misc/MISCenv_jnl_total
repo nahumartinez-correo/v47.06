@@ -1,0 +1,170 @@
+/****o* Pendientes de agrupación/OFB:post:MISCenv_jnl_total
+* NOMBRE
+*   OFB:post:MISCenv_jnl_total
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCenv_jnl_total
+	LOCAL Proyecto Like common:csr_string
+	LOCAL Parametros Like common:csr_string
+    LOCAL l_wait like common:csr_string
+	FYIMSG LST:common:fyimsg_list,"GENERANDO DUMP DEL JOURNAL. POR FAVOR AGUARDE UN MOMENTO..."
+
+	/* PS 10044 - Se adelanta la marca de cierre antes de realizar el envío del journal, ya que
+	si la aplicación se cae (o la tiran), puede pasar que llegue a transmitir pero no a actualizar
+	la marca, por ende, al ingresar nuevamente, el sistema envía nuevamente el journal*/
+    siaf:adt_sucur_cierre_dia = "S"
+    CALL siaf:CDSadt_sucur_update
+
+	; Los scripts se ejecután ahora en forma remota a traves de un segundo host (host2)
+    ; y será encargado este servidor de ejecutar los mismos. *** MDG
+	hcomm:INDhost_sndrt = OFB:post:MISCputMsgBufferhst2
+    hcomm:INDhost_rcvrt = OFB:post:MISCgetresponseHost2
+	if (siaf:codigo_siaf == 9560)
+       	move "true" to l_wait
+    else
+    	move "false" to l_wait
+    end if
+    CLEARFIELD common:csr_string_4096
+    ;CALL csr:get_profile_string("project","description",Proyecto)
+    ;CALL csr:moacurproj(Proyecto)
+    fprint Parametros "%s",tlr:set_bus_date
+	CALL post:MISCmsgProcessHost2 ("JOURNALAT", Parametros, common:csr_string_4096)
+	CALL post:MISCmsgScriptHost2 (l_wait, common:csr_string_4096)
+    call hcomm:COMM_send_HOST2
+    IF (RETVAL != 0) THEN
+    	call post:MISCresponseMsgHost2(l_wait)
+	END IF
+	FYIMSG CLEAR
+    ;LOCAL MosaicServer LIKE common:ExecString
+    ;LOCAL DumpFileName LIKE common:ExecString
+    ;LOCAL DumpName LIKE common:ExecString
+    ;LOCAL NTServer LIKE common:ExecString
+    ;LOCAL AuxFileName LIKE common:ExecString
+    ;
+    ;LOCAL Indice like post:tipo_produc
+
+    ;LOCAL ServerIP LIKE common:ExecString
+    ;LOCAL Account LIKE common:csr_string
+    ;LOCAL Password LIKE common:csr_string
+    ;LOCAL Dominio LIKE common:ExecString
+    ;LOCAL DominioID LIKE common:ExecString
+    ;LOCAL ComandoJournal LIKE common:ExecString
+    ;LOCAL LineaComando LIKE common:ExecString
+    ;LOCAL Testing Like common:csr_string
+
+	/*
+    ;Obtengo informacion del archivo DDPROJ.INI
+    CALL csr:get_profile_string("project","description",Proyecto)
+    CALL csr:get_profile_string("cdsmain","CDS_PRIMARY_NP",MosaicServer)
+    CALL CSR:get_profile_string("cdsmain","SERVER_IP",ServerIP)
+    CALL csr:get_profile_string("project","Dominio",Dominio)
+    CALL csr:get_profile_string("project","Account",Account)
+    CALL csr:get_profile_string("project","Password",Password)
+    CALL csr:get_profile_string("project","ScriptJournal",ComandoJournal)
+    CALL csr:variable_environment("DESARROLLO",Testing)
+
+    if (Testing == "JNL") then
+
+       call  csr:str_search (Proyecto, " ", Indice)
+       Proyecto = substr(Proyecto,0,Indice)
+
+       fprint NTServer "\\\\%s" MosaicServer
+       fprint DumpName "T%5.5s%-8.8d%4.4d.jnl",\
+           common:sucursal_activa,\
+           tlr:set_bus_date,\
+           substr(common:time_of_day,0,4)
+
+       fprint DumpFileName "%s\\temp\\%s",\
+           NTServer,\
+           DumpName
+       ;Abro Archivo de Ejecucion
+       fprint AuxFileName "%s\\temp\\exejnl.bat",NTServer
+       CALL csr:file_open(1,AuxFileName,"w")
+
+       Clearfield common:ExecString
+
+       ;Borro Archivo Flag de dump journal
+       fprint common:ExecString "del %s\\temp\\finjnlt.flg\n\n",NTServer
+       fprint common:ExecString "%s%s\\moa\\bin\\ql -n %4.4s -S main <%s\\temp\\jnlselec >>%s\\temp\\dumpjnl.log 2>&1\n\n",\
+             common:ExecString,\
+             NTServer,\
+             Proyecto,\
+             NTServer,\
+             NTServer
+       ;Genero Archivo Flag de terminacion journal
+       fprint common:ExecString "%secho FIN Journal >%s\\temp\\finjnlt.flg\n\n",common:ExecString,NTServer
+
+       CALL csr:file_write(1,common:ExecString)
+       CALL csr:file_close(1)
+
+       ;Abro archivo de Comandos QL
+       fprint AuxFileName "%s\\temp\\jnlselec",NTServer
+       CALL csr:file_open(1,AuxFileName,"w")
+
+       fprint common:ExecString "select from journal where tlr:jnl_branch == \"%s\" and tlr:jnl_bus_date == %8.8d dump into %s;\n",\
+       common:sucursal_activa,tlr:set_bus_date,DumpFileName
+       CALL csr:file_write(1,common:ExecString)
+       CALL csr:file_close(1)
+
+       fprint LineaComando "%s\\temp\\exejnl.bat",NTServer
+
+    else
+
+       if (Dominio == "") then
+           fprint DominioID "%s %s" Account, Password
+       else
+           fprint DominioID "%s\\%s %s" Dominio, Account, Password
+       end if
+
+       FPRINT LineaComando,"rclient %s /logon:%s /r \"%s %s\"", \
+           ServerIP,\
+           DominioID,\
+           ComandoJournal,\
+           tlr:set_bus_date
+
+    end if
+
+	
+    //Begin  Flor (13/7/00)
+    if (siaf:codigo_siaf == 9560)
+       CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+    else
+       CALL csr:create_process LineaComando,SW_HIDE ,CSR_NOWAIT
+    end if
+    //End    Flor (13/7/00)
+
+    fprint AuxFileName "%s\\temp\\JournalDump.log",NTServer
+    CALL csr:file_open(1,AuxFileName,"w")
+    CALL csr:file_write(1,LineaComando)
+    CALL csr:file_close(1)
+	
+    FYIMSG CLEAR
+	*/
+    // Grabo la fecha, el dia y hora de transmision del journal 
+    siaf:adt_sucur_codigo = common:sucursal_activa
+#ifdef SUCU_VIRTUAL
+    if (post:sucu_virtual == "S")
+        post:adt_sucur_dia_dump = post:fecha_virtual
+    else
+        post:adt_sucur_dia_dump = common:system_date
+    end if
+#else
+    post:adt_sucur_dia_dump = common:system_date
+#endif
+END SUB
+
+/*******/

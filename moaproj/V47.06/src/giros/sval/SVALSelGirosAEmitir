@@ -1,0 +1,137 @@
+/****o* Lista de Giros/OFB:giros:SVALSelGirosAEmitir
+* NOMBRE
+*   OFB:giros:SVALSelGirosAEmitir
+* DESCRIPCION
+*   Validaciones globales de la transacción de giro postal
+*   Se encarga de generar la presudet y generar los totales para la captura
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:TRANSelGirosAEmitir
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1252
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVALSelGirosAEmitir
+   
+	IF (post:estado_presu != 4) THEN
+		//AUT-1306
+		CALL giros:MISCprocesoCaidasChq
+		//Si no encontró registros en la CaidasChq para la sesion actual puede CONFIRMAR SINO NO.
+		IF (RETVAL == 0) THEN
+			//gpb:AUT-1598
+			//limpio el buffer del teclado
+			INIT 33 0
+			MSGBOX "NO SE PUEDE CONFIRMAR UNA SESION DE EMISION DE LISTA DE GIROS CON PROCESO DE IMPRESION NO FINALIZADO.\nPRESIONE EL BOTON DE ENVIO DE GIROS POSTALES PARA FINALIZAR TRATAMIENTO DE IMPRESION.",OFB_OK,"AVISO"
+			RETURN (-2)
+		END IF	 
+			
+		//Verifico si hay giros postales sin enviar pero que fueron bien impresos.
+		CALL CDSPost_sinEnvio_LG
+		IF (RETVAL == 0) THEN
+			//gpb:AUT-1598
+			//limpio el buffer del teclado
+			INIT 33 0		    
+			MSGBOX "NO SE PUEDE CONFIRMAR UNA SESION DE EMISION DE LISTA DE GIROS CON GIROS POSTALES IMPRESOS Y NO ENVIADOS.\nPRESIONE EL BOTON DE ENVIO DE GIROS POSTALES PARA FINALIZAR TRATAMIENTO DE ENVIO.",OFB_OK,"AVISO"
+			RETURN (-2)
+		END IF 
+			
+		//AUT-1197 - OBS CORREO (MEJORA)
+		CALL giros:CDSverif_giro_env_lg
+		IF (RETVAL == -801) THEN
+			//gpb:AUT-1598
+			//limpio el buffer del teclado
+			INIT 33 0   		
+			MSGBOX "NO EXISTEN GIROS EMITIDOS. SI DESEA SALIR DE LA TX PRESIONE ESCAPE (ESC).",0x00,"Atencion"
+			RETURN (-2)
+		END IF
+		//IDEM GIROS MASIVOS
+		CALL giros:CDSver_seslg_activa(nro_sesion_lg)
+		IF (RETVAL == 0) THEN
+			//gpb:AUT-1598
+			//limpio el buffer del teclado
+			INIT 33 0 		
+			MSGBOX "HAY GIROS SIN ENVIAR. ¿DESEA CONFIRMAR EL PRESUPUESTO?",0x00000104,"ATENCION"
+			IF (RETVAL == 7) THEN //NO
+				RETURN -2
+			ELSE	
+				//si desea confirmar el presupuesto y hay giros sin emitir. Genero la cabecera de la tx
+				//CALL giros:CDSsave_SesGm_cabec
+			END IF 		
+		ELSE
+			//No hay giros sin emitir. Chequeo si para este nro de sesion hay alguna pendiente
+			//y la borro de la cabecera
+			//CALL CDSdel_SesGm_cabec
+		END IF
+	      		
+		//se verifica si existen giros emitidos  
+		CALL giros:CDSverif_giro_env_lg
+		IF (RETVAL == 0) THEN
+			//Graba PresuDet 70650
+			siaf:codigo_siaf = 70650
+			LET siaf:adt_tran_codigo = siaf:codigo_siaf
+			CALL siaf:CDSadt_tran_load
+			IF ((RETVAL < 0) || (siaf:adt_tran_disp == "N")) THEN
+				ERRMSG LST:common:errmsg_list,siaf:ERRtran_no_disp
+				RETURN -1
+			END IF
+				
+			LET siaf:posible_off = siaf:adt_tran_posoff
+			LET siaf:tiene_reverso = siaf:adt_tran_tiene_rev
+			LET tlr:tran_mnemonic = siaf:adt_tran_mnemonic
+			LET drv:descrip = siaf:adt_tran_mnemonic
+			LET siaf:nombre_transac = siaf:adt_tran_desc
+			MOVE siaf:adt_tran_afec_efvo to siaf:afecta_efectivo
+			LET post:captura_mp = siaf:adt_tran_med_pago
+			LET post:SupMedPago = "N"
+			MOVE siaf:adt_tran_fliatran to post:tipo_transac
+			MOVE siaf:adt_tran_fliatran to post:jnl_flia_tran
+	    	    		
+			post:INDPresuD_Dat = OFB:giros:CDSappend_70650
+			tlr:INDtran_name = LST:giros:TRANSelGirosAEmitir
+			CALL post:MISCGrabaDetalleTrn
+			
+			//ESTEBAN-IMPRIMIR REPORTE DE GIROS EMITIDOS
+			//AUT-1252   
+			LET siaf:pantalla_impreso = "I"
+			LET giros:rep_gir_emi_filtros = "N"
+			
+			//gpb:PS10924
+			LET siaf:nro_copias = 1
+			
+			//HAGO LA COSULTA PARA EL REPORTE
+			CALL giros:MISCcaseRepEmiLG("","",giros:nro_sesion_lg,"","GiroTipo","TODOS")
+			
+			//LLAMA AL REPORTE DE GIROS EMITIDOS
+			CALL giros:MISClst_GirEmi_cli
+			
+			CALL giros:CDSsval_chkpoint(ANTES_PRESUDET)
+		END IF    	
+	ELSE
+		IF (giros:checkpoint_emision == JNL_TRX && post:PreDEst == 1) THEN
+			// Transaccion Journaliza pero no actualizada 
+			// en PresuDet como procesado por caida.
+			CALL post:MISCGrabaDetalleTrn
+			// Transaccion no debe journalizar.
+			CLEARFIELD drv:INDjnl_rtn
+		ELSE
+			CALL giros:CDSsval_chkpoint(ANTES_JNL)
+		END IF
+	
+		// fgb 15.06.2004: agrego tira auditora
+		//PRINTDOC OFB:giros:PRTaudita_lg,docprt,"Imprimiendo auditora..."
+	END IF
+
+	//gpb:AUT-1598
+	//limpio el buffer del teclado
+	INIT 33 0
+END SUB
+
+/*******/

@@ -1,0 +1,119 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvpiRefund
+* NOMBRE
+*   OFB:post:MISCvpiRefund
+* DESCRIPCION
+*   Realiza la anulacion de una venta
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  
+* DOCUMENTACION
+*   NI50525 POS Integrado
+* SOURCE
+*/
+#include "postmisc.h"
+#include "moa2vpipc.h"
+
+SUB post:MISCvpiRefund
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_vpi_response LIKE post:adt_rvpi_codigo
+	
+	//Fuerzo el cierre del puerto!!!
+	CALL post:MISCvpiClosePort
+
+	//Abro el puerto de comunicacion
+	CALL post:MISCvpiOpenPort
+	IF (RETVAL != 0) THEN
+		RETURN -2
+	END IF
+
+	DPRINT "<<<*************[Refund]*********************\n"
+
+	/*
+	post:vpi_amount = "010000"           					  			// Monto *100
+	post:vpi_instalmentCount = "1"     						  			// Cant. de cuotas
+	post:vpi_issuerCode = "VI"             				  			// Código de tarjeta  
+	post:vpi_planCode = " "               				  			// Código de plan
+	post:vpi_originalTicket = "0000017" 									// Número de cupón de la transacción original. 
+	post:vpi_originalDate = "06/10/2017"            			// Fecha de la Venta
+	post:vpi_receiptNumber = "000000000000"				  			// Número de factura
+	post:vpi_tip = "000"                    			  			// Propina *100 
+	post:vpi_merchantCode = post:adt_tvpi_comer_cod 			// Código de comercio
+	*/
+	post:vpi_merchantName = common:adt_vpi_merchantName		// Razon social del comercio
+	post:vpi_cuit = common:adt_vpi_cuit                   // CUIT del comercio
+	post:vpi_linemode = common:adt_vpi_linemode					  // trx. Online(1) Offline(distinto de 1)
+	post:vpi_timeout = common:adt_vpi_timeout             // Tiempo de espera de respuesta en segundos
+	
+	DPRINT "[post:vpi_amount][%s]\n" post:vpi_amount	
+	DPRINT "[post:vpi_instalmentCount][%s]\n" post:vpi_instalmentCount	
+	DPRINT "[post:vpi_issuerCode][%s]\n" post:vpi_issuerCode	
+	DPRINT "[post:vpi_planCode][%s]\n" post:vpi_planCode		
+	DPRINT "[post:vpi_originalTicket][%s]\n" post:vpi_originalTicket	
+	DPRINT "[post:vpi_originalDate][%s]\n" post:vpi_originalDate	
+	DPRINT "[post:vpi_receiptNumber][%s]\n" post:vpi_receiptNumber	
+	DPRINT "[post:vpi_tip][%s]\n" post:vpi_tip	
+	DPRINT "[post:vpi_merchantCode][%s]\n" post:vpi_merchantCode		
+	DPRINT "[post:vpi_merchantName][%s]\n" post:vpi_merchantName	
+	DPRINT "[post:vpi_cuit][%s]\n" post:vpi_cuit	
+	DPRINT "[post:vpi_linemode][%s]\n" post:vpi_linemode	
+	DPRINT "[post:vpi_timeout][%s]\n" post:vpi_timeout
+	
+	FYIMSG drv:fyimsg_list,"Pase la tarjeta en el dispositivo POS y aguarde..."
+	
+	CALL CSR:Moa2VpiRefund(LST:post:LISTvpiRefundIn,LST:post:LISTvpiTrxOut,post:vpi_timeout)
+	l_retval = RETVAL
+	
+	DPRINT "[RETVAL][%s]\n" l_retval
+	DPRINT "[post:vpi_hostRespCode][%s]\n" post:vpi_hostRespCode
+	DPRINT "[post:vpi_hostMessage][%s]\n" post:vpi_hostMessage
+	DPRINT "[post:vpi_authCode][%s]\n" post:vpi_authCode
+	DPRINT "[post:vpi_ticketNumber][%s]\n" post:vpi_ticketNumber
+	DPRINT "[post:vpi_batchNumber][%s]\n" post:vpi_batchNumber
+	DPRINT "[post:vpi_customerName][%s]\n" post:vpi_customerName
+	DPRINT "[post:vpi_panFirst6][%s]\n" post:vpi_panFirst6
+	DPRINT "[post:vpi_panLast4][%s]\n" post:vpi_panLast4	
+	DPRINT "[post:vpi_date][%s]\n" post:vpi_date
+	DPRINT "[post:vpi_time][%s]\n" post:vpi_time
+	DPRINT "[post:vpi_terminalID][%s]\n" post:vpi_terminalID
+	
+	//gpb:PS10932 - Log OperacionesVPI
+	LET post:log_opvpi_VPI_OK = l_retval
+	CALL post:MISCsaveOpeVPI_LOG("DEV")
+	
+	FYIMSG drv:fyimsg_list,"Cerrando comunicacion con el dispositivo POS, aguarde..."
+	CALL post:MISCvpiClosePort
+	IF (RETVAL != VPI_OK) THEN
+		FYIMSG drv:fyimsg_list,"Falla al cerrar comunicacion con el dispositivo POS, aguarde..."
+	END IF
+				
+	DPRINT "****************[Refund]******************>>>\n"
+	
+	NAP 2000
+	FYIMSG CLEAR
+	
+	//Si hubo un error al ejecutar el comando al POS
+	FPRINT l_vpi_response "%s" l_retval
+	CALL post:MISCvpiGralResponse("VPI",l_vpi_response)
+	IF (post:adt_vpi_status == "ERR") THEN
+		RETURN -2
+	END IF
+	
+	//Si hubo un error en la respuesta del HOST
+	CALL post:MISCvpiGralResponse("HOST",post:vpi_hostRespCode)
+	IF (post:adt_vpi_status == "ERR") THEN
+		RETURN -2
+	END IF
+
+	//Grabo en la tabla OperacionesVPI
+	CALL post:MISCsaveOpeVPI("DEV")
+
+	RETURN 0	
+	
+END SUB
+
+/*******/

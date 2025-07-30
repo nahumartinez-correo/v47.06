@@ -1,0 +1,124 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70540
+* NOMBRE
+*   OFB:giros:SVAL70540
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70540
+
+	;Esta rutina es llamada de la SVAL de las transacciones de 
+	;cancelaciones de giros que no emiten comprobantes, desde Trx.anulacion
+	;de comprobantes
+
+	call hcomm:COMM_stat_init
+	if (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+		return -2
+	end if
+
+	;Asigna el codigo de procesamiento correspondiente a la tx elegida
+ 	;Solo para giros y transf. nacionales y asigna el tipo de servicio
+	;(pago-emision-servicio post-vta)
+
+    	call giros:MISCcod_proc_cancel(giros:cod_tran_canc)
+
+	if ( giros:flia_giro_fld == "W" )
+		;Si es transferencia nacional los campos para sucursal
+		;pagadora y sucursal emisora difieren de las transacciones
+		;restantes de giros
+		move giros:CodSucEmis_fld to giros:Sucursal_fld
+		move giros:SucSel_fld     to giros:prov_pagad_fld
+		move giros:CodSuc_fld     to giros:CodSucEmis_fld 
+		move giros:cons_nro_ctrol to giros:mtcn_canc
+		
+		if ( giros:trx_giros_sincomi == "S" )
+			giros:CodPaisEmis_fld  = giros:CodPaisEmis_aux
+			giros:CodPaisBenef_fld = giros:CodPaisBenef_aux
+		end if
+	else
+		if ( giros:trx_sincomi_pago == "S" && \
+		   ( giros:flia_giro_fld == "P" || flia_giro_fld == "T" ))
+			;Si es una transaccion de pago y de la familia P y T
+			;como sucursal pagadora se visualiza el contenido del
+			;campo siaf:jnl_sucursal que en el momento de jnl
+			;tiene el valor de la sucursal activa el mismo campo
+			;que se envia en el token 63 del MSG como sucursal
+			;pagadora. (debido a que no se jnl un campo especifico
+			;de sucursal de pago)
+			move giros:CodSucSoli_fld to giros:Sucursal_fld
+		end if
+
+		if ( giros:codigo_procesamiento == 992005 )
+			;Si es un cambio de sucursal de pago, en sucursal
+			;pagadora se visualiza la ultima.
+			move giros:CodSuc_fld  to giros:Sucursal_fld
+			move giros:SucSel3_fld to giros:prov_pagad_fld
+		end if
+	end if
+
+	;Busca la descripcion del pais emisor
+	if (CodPaisEmis_fld.NUMCHARS > 0)
+		call giros:CDSpais_con_canc(CodPaisEmis_fld)
+		if (retval < 0)
+			clearfield giros:PaisEmis_fld
+		else
+			giros:PaisEmis_fld = giros:adt_pais_desc
+		end if
+	end if
+			
+	;Busca la descripcion del pais destino
+	if (CodPaisBenef_fld.Numchars > 0)
+		call giros:CDSpais_con_canc(CodPaisBenef_fld)
+		if (retval < 0)
+			clearfield giros:PaisBenef_fld
+		else
+			giros:PaisBenef_fld = adt_pais_desc
+		end if
+	end if
+	
+	;Buscar descripcion de Prov./Sucursal de Pago
+   	if (prov_pagad_fld.NUMCHARS > 0) then
+    	  	call giros:buscaProvincia(prov_pagad_fld)
+    	  	PciaPag_fld = Provincia
+	end if
+	if (Sucursal_fld.NUMCHARS > 0) then
+    		call giros:CDSbuscaSuc(Sucursal_fld)
+		if (retval  < 0)
+			clearfield  giros:SucPago_desc
+		else
+			SucPago_desc = admin:adt_br_bank_name
+		end if
+	end if
+
+	call post:CDSobtiene_secuen("STAN")
+	setflag giros:tran_send_mode,cancelacion
+
+	if ( giros:flia_giro_fld == "I" )
+		;0400
+		setflag tlr:controla_firma,cancelacion
+		setflag tlr:controla_marca,cancel
+		post:adt_codseq_nro = giros:codseq_nro_canc
+		giros:hora_viaje    = giros:hora_viaje_canc
+		giros:dia_viaje     = giros:dia_viaje_canc
+	else
+		;0200
+		resetflag tlr:controla_firma,cancelacion
+	end if
+	
+	FYIMSG drv:fyimsg_list,\
+	"Enviando mensaje de cancelacion correspondiente a giros ... "
+END SUB
+
+/*******/

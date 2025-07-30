@@ -1,0 +1,203 @@
+/****o* Pendientes de agrupación/OFB:post:PCOLtranGral
+* NOMBRE
+*   OFB:post:PCOLtranGral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOLtranGral
+
+	IF (siaf:codigo_siaf == 12901 || siaf:codigo_siaf == 12902) THEN
+		//Tratamiento especial para Bolsines
+		DISABLECONTROL op:chk4
+		PROTFIELD tarifa
+		PROTFIELD tipo_descto
+		PROTFIELD descuento
+		PROTFIELD costo_opc
+		SETFLAG uso_int_flag,uso_interno
+		ALTERCONTROLSET op:chk4
+		UNPROTFIELD cli_int_obs
+		CLEARFIELD siaf:importe_tot_serv
+		REFRESH siaf:importe_tot_serv	    
+	ELSE
+		IF (siaf:codigo_siaf == 11104) THEN
+			//Carta Documento telegráfica. No franquea por lo que no admite descuento
+			PROTFIELD descuento
+			PROTFIELD tipo_descto
+			DISABLECONTROL drv:PBcb7
+		ELSE
+			UNPROTFIELD descuento
+			UNPROTFIELD tipo_descto
+			ENABLECONTROL drv:PBcb7
+		END IF
+			
+		IF (post:adt_serv_calc_rv == "S") THEN
+			//IF (siaf:codigo_siaf == 21401 || siaf:codigo_siaf == 21501 || \
+			//	siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) THEN
+			IF (caja_propia && post:adt_serv_medidas == "T") THEN
+				UNPROTFIELD aforo1
+				UNPROTFIELD aforo2
+				UNPROTFIELD aforo3
+			ELSE
+				PROTFIELD aforo1
+				PROTFIELD aforo2
+				PROTFIELD aforo3
+			END IF
+		END IF			
+			
+		/*Carina - Cliente Interno es solo para teclas rapidas*/
+		IF (post:estado_presu != 1 ) THEN
+			DISABLECONTROL op:chk4
+		ELSE
+			ENABLECONTROL op:chk4
+		END IF
+	END IF
+		
+	/****************************************************************/
+	/* Si tiene captura de medio de pago protejo el campo Medio de  */
+	/* pago. Hernán.     17/10/2000                                 */
+	/****************************************************************/
+	IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+		IF (siaf:adt_tran_med_pago != "S") THEN
+			post:captura_mp = siaf:adt_tran_med_pago 	
+			PROTFIELD siaf:moneda
+			siaf:moneda = 99
+			CLEARFIELD post:medio_pago_desc
+			DISABLECONTROL drv:PBcb1
+		ELSE   
+			;CALL post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0) 
+		END IF 
+	END IF
+        
+	/*Agrego también que si estoy en teclas rápìdas y tiene curso legal protejo el 
+	campo y si no tiene le muestro un mensaje de error y no le permito
+	hacer la transacción - Hernán 14/11/2000*/
+	IF (post:estado_presu == 1) THEN         
+		;Busco el medio de pago que tenga captura de CL	
+		CALL post:CDSMPago_Clegal_load
+		IF (RETVAL == 0) THEN
+			siaf:moneda = post:adt_mp_cod
+			PROTFIELD siaf:moneda
+			DISABLECONTROL drv:PBcb1
+		ELSE
+			ERRMSG LST:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+			RETURN (-2)
+		END IF    
+	END IF   
+	
+	IF (post:estado_presu == 4) THEN
+		PROTFIELD siaf:moneda
+		DISABLECONTROL drv:PBcb1
+		PROTFIELD post:cant_caja_prev
+		PROTFIELD post:cant_cinta_prev
+	END IF  
+
+	//IF (cli_tipo = CLIMED && consulta_ordenCM) THEN
+	IF (consulta_ordenCM == "S") THEN
+		//cant_caja_prev = cantidad
+		//REFRESH cant_caja_prev
+		PROTFIELD post:cant_caja_prev
+	END IF
+
+	/*Req 3247 - Control para apertura*/
+	CALL post:CDScontrol_apert
+	IF (RETVAL < 0) THEN
+		CLEARFIELD post:apertura
+		REFRESH post:apertura
+		PROTFIELD post:apertura
+		//IF (post:adt_serv_alcance == "I") || (post:adt_serv_alcance == "E") THEN /*postal internacional*/
+		DISABLECONTROL drv:PBcb5
+		//ELSE	/*postal nacional*/
+		//	DISABLECONTROL drv:PBcb6
+		//END IF
+	END IF
+	
+	//PROTFIELD post:apertura
+      
+	/*MFM - Verifico si el despacho al que corresponde la pieza está en BH2
+	y lo protejo */
+	IF (post:estado_presu != 4) THEN
+		IF (jnl_servicio_en_bh2 == "S") THEN
+			CALL MISCEnBlock_Horario(adt_serv_corteop,post:apertura)
+			IF (RETVAL == 0) THEN
+				PROTFIELD jnl_servicio_en_bh2
+			ELSE
+				UNPROTFIELD jnl_servicio_en_bh2
+			END IF
+		ELSE
+			IF (post:adt_relMod_desptipos == "TR") THEN
+				PROTFIELD jnl_servicio_en_bh2
+			ELSE
+				UNPROTFIELD jnl_servicio_en_bh2
+			END IF
+		END IF
+	ELSE
+		PROTFIELD jnl_servicio_en_bh2
+		PROTFIELD post:apertura
+	END IF
+		
+	/****************************************************************/
+	/* Pprotejo campo Dto.de promocion                 			    */
+	/* Maxi.    17/11/2003                                          */
+	/****************************************************************/
+	PROTFIELD post:fld_promo_imp
+	CLEARFIELD aux_cantidad
+	LET promo_aplica = "S"     
+
+  /*****************************************************************************
+  COMBOS: En caso de combo_nro>0  incializo y deahabilito variables.NBA
+  *****************************************************************************/
+  CALL post:MISCpostalCombo
+
+  //gpb:PS10707
+	//Paleativo, por algun motivo esta quedando sucio el campo post:cod_ctrol despues de imponer un Telegrama.
+	//Entonces si a continuacion se imponen piezas postales, este campo queda journalizado con el valor de tele:tele_nro_telegrama
+	//Con lo cual al realizar el Cierre de Contenedor las piezas que posean valor en dicho campo (post:cod_ctrol),  
+	//van a plasmar ese dato en la guia de contenedor y en el reporte a demanda
+	//(ver rutina post:CDScartaDetTmp para ver como se pisa el valor de post:Pieza_id con post:cod_ctrol)
+	IF (post:estado_presu == 1 || post:estado_presu == 2) THEN
+		/*gpb:PS10742-Limpio campos de identificación de Piezas */
+		IF (plataf:chosen_codtrn.NUMCHARS != 0 && post:cli_tipo != 1 && !OperacionCob && !OperacionAut)
+			//Si NO ingreso a la tx por Codigo de Barras 
+			IF (plataf:required_tt.NUMCHARS == 0) THEN
+				CLEARFIELD post:track_trace
+			END IF
+		ELSE
+			CLEARFIELD post:track_trace
+		END IF
+		
+		CLEARFIELD post:Pieza
+		CLEARFIELD post:Pieza_id
+		CLEARFIELD post:cod_ctrol
+		CLEARFIELD post:jnl_simp_esp
+	END if
+	//Se bloquea el check de Marca Piezas con Entrega Misma Sucursal.
+	if (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+			DISABLECONTROL TAG:op:chk5
+	endif
+  //gpb:NI50479
+	IF (post:estado_presu == 2 || post:estado_presu == 3) THEN
+		IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+			CALL post:MISCcargaImpoPed
+		ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_nc_ped)) THEN
+			CALL post:MISCcarga_nc_ped
+		ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+			CALL post:MISCcarga_fac_ped
+		END IF
+	END IF
+
+END SUB
+
+/*******/

@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:post:JNL_DP5_det
+* NOMBRE
+*   OFB:post:JNL_DP5_det
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNL_DP5_det
+LOCAL firma LIKE adt_novtt_firma
+    /* Nov. 1999 - B. Petrella */
+
+    CDS APPEND DSC:tlr:CONjnl_write \
+            post:Reencaminamiento \
+            post:AperDesc
+
+    CDS APPEND DSC:tlr:CONjnl_write \
+            post:Pieza \
+            post:codseq_dev
+
+	/*MFM - Se agrega el campo del operador al que se le transfiere la pieza*/
+    jnl_op_transf = ""
+    CDS APPEND DSC:tlr:CONjnl_write \
+    FLD:jnl_op_transf
+
+    /*FNR Este campo se agregó para poder marcar las piezas recibidas en la TX de recepción de
+          piezas de otro op., para que en la TX de transf. de pzas no se puedan volver a transferir. */
+    //El campo post:adt_est_pieza se agrega porque se utiliza cuando se fuerce una transferencia de piezas 
+    CDS APPEND DSC:tlr:CONjnl_write \
+               FLD:post:jnl_pieza_recibida  \
+               FLD:post:adt_est_pieza
+
+    /*MFM*/
+	CDS APPEND DSC:tlr:CONjnl_write \
+		post:adt_stockp_pie_obs AS post:jnl_stockp_pie_obs \
+		post:adt_stockp_reenc  AS post:jnl_stockp_reenc\
+		post:adt_stockp_reenc_cul AS post:jnl_stockp_reenc_cul
+				
+    if (testflag(tlr:tran_flags,correction)) then
+        /* Si se esta reversando hay que limpiar */
+        /* los campos de stockp: adt_stockp_Baja = N, adt_stockp_devol_op = "", */
+	    /* adt_stockp_devol_fe == "", adt_stockp_devol_hor = "" */
+	    /* Y se actualizan: adt_stockp_ult_modfe, adt_stockp_ult_modho, adt_stockp_ult_modop */
+		call CDSrevStockp_DP5
+		/*MFM - Se llama a esta rutina para ver si se elimina o no el scaneo O
+		generado en la devolucion correspondiente*/
+		IF (siaf:codigo_siaf == 99069 || siaf:codigo_siaf == 99070 || \
+		siaf:codigo_siaf == 99071 ||siaf:codigo_siaf == 99072) THEN
+	    	CALL CDSBorro_Scaneos ("D")
+	    	if (siaf:codigo_siaf == 99070) then
+	    		CALL post:CDSleyendaScaneoP("S")
+	    	end if
+	    END IF
+    else
+    	
+    	if (siaf:codigo_siaf == 99070) then
+			/*PARA PIEZAS INTERDICTAS:Actualizo la leyenda de los scaneos P*/
+			CALL CDSleyendaScaneoP("N")
+			//Genero scaneo P observacion para Piezas Interdictas y a Rebut
+	    	CALL MISCGeneroObserv(post:Pieza)
+		end if
+		if (siaf:codigo_siaf == 99072) then
+		   	//Genero Scaneo P9 con la nueva leyenda	
+			CALL MISCes_TT(Pieza)
+      		IF (RETVAL == 0) THEN
+				firma = "Rebut"
+				FPRINT adt_novtt_firma,"%-13.13s %-11.11s",Reencaminamiento, firma
+	    		//Si la pieza es observada grabo la hora de observacion y actualizo el estado entrega
+	    		CLEARFIELD adt_novtt_fecha_obs
+	    		if (adt_stockp_pie_obs == "S") then
+	    			adt_novtt_estado_ent = adt_stockp_est_ent
+	    			FPRINT post:adt_novtt_fecha_obs ,"%8.8e%6.6e",post:adt_stockp_fecha_obs,post:adt_stockp_hora_obs
+	    		else
+	    			adt_novtt_estado_ent = 9
+	    		endif
+			    adt_novtt_pieza = Pieza
+    			hora_scaneoP = common:time_of_day
+       			//adt_novtt_listo = "S"
+       			adt_novtt_listo = "N"
+    			adt_novtt_reenc = "N"
+    			CALL CDSGrabo_ScaneoP
+    		END IF
+    	end if
+    	
+    endif
+
+END SUB
+
+/*******/

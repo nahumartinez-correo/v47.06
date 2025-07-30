@@ -1,0 +1,146 @@
+/****o* Pendientes de agrupación/OFB:post:CDSfechaVChqMult
+* NOMBRE
+*   OFB:post:CDSfechaVChqMult
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSfechaVChqMult
+
+LOCAL fecha_aux like fec_d
+LOCAL imp_aux LIKE siaf:importe
+LOCAL parcial_desde like siaf:importe
+LOCAL parcial_hasta like siaf:importe
+//LOCAL porcentaje like excep_dif_hasta
+local l_fecha like lib:err_retval
+	
+	l_fecha = 0
+	
+	if (imp_intereses > 0) then
+		imp_aux = importeChqMult - imp_intereses 
+	else
+		imp_aux = importeChqMult
+	end if
+	
+/*	//convierto el importe del cheque a porcentaje
+	init 22,1
+	porcentaje = (imp_aux * 100) / post:importe_display2
+	init 22,0*/
+	
+	if (post:excepCM_tipo == EXCEP_DIFERIDA) then //solo excepción diferida
+		CDS SELECT FROM DSC:TABexcep_diferido BECOMES DSC:CONexcep_diferido \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		post:excep_dif_total <= post:importe_display2 && \
+		post:excep_dif_total_hta >= post:importe_display2 && \
+		post:excep_dif_usado != "S"
+		/*post:excep_dif_desde <= porcentaje && \
+		post:excep_dif_hasta >= porcentaje && \*/
+		
+	else
+		CDS SELECT FROM DSC:TABexcep_diferido BECOMES DSC:CONexcep_diferido \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		post:excep_dif_usado != "S"
+		/*post:excep_dif_desde <= porcentaje && \
+		post:excep_dif_hasta >= porcentaje && \*/
+	
+	end if
+	CDS FINDFIRST DSC:CONexcep_diferido NOLOCK
+	
+	DO
+		IF (CDSRETVAL == 0) THEN
+		
+			//CLEARFIELD post:excep_dif_total
+			CLEARFIELD excep_dif_desde
+			CLEARFIELD excep_dif_hasta
+			CLEARFIELD excep_dif_codseq
+			CLEARFIELD excep_dif_dias
+		
+			CDS EXTRACT DSC:CONexcep_diferido excep_dif_codseq excep_dif_dias excep_dif_desde excep_dif_hasta
+			//para evitar que me permita poner +/- dos centavos
+			init 22,1
+			parcial_hasta = (post:importe_display2 * excep_dif_hasta) / 100
+			parcial_desde = (post:importe_display2 * excep_dif_desde) / 100
+			init 22,0
+			if (parcial_desde <= imp_aux && imp_aux <= parcial_hasta) then
+				//Valido Fecha de Vencimiento
+				/*sumo la cantidad de dias financiables a la fecha de emision*/
+				call csr:date_add(fec_e,excep_dif_dias,"d",fecha_aux)
+				/*comparo la nueva fecha obtenida contra la fecha de vencimiento*/
+				call csr:date_compare(fecha_aux ,fec_d)
+				/*si la fecha de vencimiento es mayor a fecha_aux entonces sigo buscando si hay mas registros coincidentes*/
+				If (RetVal == 2)
+					l_fecha = -2
+					CDS FINDNEXT DSC:CONexcep_diferido NOLOCK
+					IF (CDSRETVAL < 0) THEN
+						CDS ENDSELECT DSC:CONexcep_diferido	
+						MSGBOX "Fecha de Vencimiento Inválida",0x00,"ERROR"
+						return (-2)
+					END IF
+				else	
+					CDS ENDSELECT DSC:CONexcep_diferido	
+					return (0)
+				end if
+			else
+				CDS FINDNEXT DSC:CONexcep_diferido NOLOCK
+				IF (CDSRETVAL < 0) THEN
+					if (l_fecha == -2) then
+						MSGBOX "Fecha de Vencimiento Inválida",0x00,"ERROR"
+						return (-2)
+					else
+						FPRINT common:csr_string, "La excepción no lo habilita a pagar un importe de $ %s con Cheque Diferido o ya ha cargado un cheque por ese importe.",imp_aux
+						MSGBOX common:csr_string,0x00,"Error"
+						CDS ENDSELECT DSC:CONexcep_diferido	
+						return -2
+					endif
+				END IF
+			end if
+			
+			/*//Valido Fecha de Vencimiento
+			//sumo la cantidad de dias financiables a la fecha de emision
+			call csr:date_add(fec_e,excep_dif_dias,"d",fecha_aux)
+			//comparo la nueva fecha obtenida contra la fecha de vencimiento
+			call csr:date_compare(fecha_aux ,fec_d)
+			//si la fecha de vencimiento es mayor a fecha_aux entonces sigo buscando si hay mas registros coincidentes
+			If (RetVal == 2)
+				CDS FINDNEXT DSC:CONexcep_diferido NOLOCK
+				IF (CDSRETVAL < 0) THEN
+					CDS ENDSELECT DSC:CONexcep_diferido	
+					MSGBOX "Fecha de Vencimiento Inválida",0x00,"ERROR"
+					return (-2)
+				END IF
+			else
+				CDS ENDSELECT DSC:CONexcep_diferido	
+				return (0)
+			end if*/
+			
+		ELSE
+			
+			CDS ENDSELECT DSC:CONexcep_diferido
+			if (l_fecha == -2) then
+				MSGBOX "Fecha de Vencimiento Inválida",0x00,"ERROR"
+				return (-2)
+			else
+				FPRINT common:csr_string, "La excepción no lo habilita a pagar un importe de $ %s con Cheque Diferido o ya ha cargado un cheque por ese importe.",imp_aux
+				MSGBOX common:csr_string,0x00,"Error"
+				return (-2)
+			endif
+		END IF
+				
+	LOOP
+			
+		
+END SUB
+
+/*******/

@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcalc_almac_imp
+* NOMBRE
+*   OFB:post:MISCcalc_almac_imp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcalc_almac_imp(dias)
+LOCAL l_calcBoni like siaf:i
+	l_calcBoni = false
+    IF (dias > 0) THEN
+        adt_serv_umstd = "DIA"
+        IF (adt_stockp_destino == "DEPOSITO INTER")
+            CALL CDSbasico("28402",dias,"DIA","INTERNACIONAL")
+            IF (RETVAL < 0)
+                //CALL CDSlimpFechStockp
+                MSGBOX "NO SE PUEDE CALCULAR LA TARIFA PARA LA PIEZA",0X00,"ERROR"
+                CLEARFIELD almac_dias
+                REFRESH almac_dias
+                RETURN (-2)
+            END IF
+            ;Las siguientes campos son usados para el calculo de bonificaciones locales MDG
+            post:destino = "INTERNACIONAL"
+            post:aux_cod_serv = "28402"
+            l_calcBoni = true
+            
+        ELSE
+            CALL CDSbasico("18401",dias,"DIA","NACIONAL")
+            IF (RETVAL < 0)
+                //CALL CDSlimpFechStockp
+                MSGBOX "NO SE PUEDE CALCULAR LA TARIFA PARA LA PIEZA",0X00,"ERROR"
+                CLEARFIELD almac_dias
+                REFRESH almac_dias
+                RETURN (-2)
+            END IF
+			;Las siguientes campos son usados para el calculo de bonificaciones locales MDG
+            post:destino = "NACIONAL"
+			post:aux_cod_serv = "18401"
+			l_calcBoni = true
+	    END IF
+
+    	CALL post:MISCtarifa_canal
+    	IF (RETVAL < 0)
+    	    RETURN (-2)
+    	END IF       
+    	IF (l_calcBoni == true) THEN
+			CLEARFIELD promo_imp_srv
+			CALL post:MISCLimpioPromo("Almac.")
+			CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+			IF (aplica_bonif_serv ==	"S") THEN
+				CALL post:CDScalcBonifGral( TIPO_DETALLE_BONIF_SERVICIO, adt_tarif_desde)
+			END IF			
+			IF (RETVAL == 1) THEN
+				CDS ENDSELECT DSC:post:promoDetalleCli_ctx
+				CDS ENDSELECT DSC:post:promoCabeSucu_ctx
+				IF (promoSrvTipoBon == TIPO_BONIF_PORCENTUAL || (promoSrvTipoBon == TIPO_BONIF_VALOR && \
+				 	(adt_tarif_precio / almac_dias) >= promo_srv_bon )) THEN
+					CALL post:MISCcalcBonifGral(promoSrvTipoBon, TIPO_ENTREGA_DE_PZA)
+					if (promoSrvTipoBon == TIPO_BONIF_VALOR) then
+						promo_imp_almc  = promo_imp_srv_ind * almac_dias
+						CALL post:MISCdetalleBonifGral(adt_promo_desc,adt_tarif_precio,"----",promo_imp_almc,"Almac.", "")
+					else
+						CALL post:MISCdetalleBonifGral(adt_promo_desc,adt_tarif_precio,adt_promo_bon,promo_imp_srv_ind,"Almac.", "")
+						promo_imp_almc  = promo_imp_srv_ind
+					end if
+					promo_desc_almc = promo_desc
+					promo_bon_almac = promo_bon
+					promo_cod_almac = promo_cod
+					promo_inhibeUpAlma = promo_inhibeUpServ
+					promoAlmaTipoBon = promoSrvTipoBon
+					costo_almac	= adt_tarif_precio
+					CALL post:MISCBonifEntrPieza
+				END IF
+			END IF
+		END IF	
+        almac_imp = adt_tarif_precio
+        tarif_desde_alm = adt_tarif_desde
+        tarif_hasta_alm = adt_tarif_hasta
+        tarif_modo_alm = adt_tarif_modo
+        uni_med_alm = adt_tarif_um
+        tarif_dest_alm = adt_tarif_dest
+        
+        /* Se agregan estos campos para que se journalice el hasta eq. para SAP y la 
+        Unidad de Medida Eq. para SAP en las Transacciones de Almacenaje -  ML 2/4/2000 */
+        LET tarif_hasta_eq_alm = adt_tarif_hasta_eq
+        LET tarif_um_eq_alm = adt_tarif_um_eq
+        /*Fin ML*/
+        
+        CALL MISCformulaDeCalculo(dias,adt_tarif_modo,tarif_aux,adt_tarif_fijo,adt_tarif_precio,adt_tarif_um)
+        formuCalc_alm = formuCalc
+    ELSE
+        almac_imp = 0
+    END IF
+    REFRESH almac_imp
+    CALL post:MISCimp_entrPieza //Actualizo el importe total
+END SUB
+
+/*******/

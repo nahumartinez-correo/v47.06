@@ -1,0 +1,200 @@
+/****o* Pendientes de agrupación/OFB:post:MISCsetBitRegCanPago
+* NOMBRE
+*   OFB:post:MISCsetBitRegCanPago
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCsetBitRegCanPago(consulta)
+
+
+    /*Prende los bits del Registro de Pago*/
+    local l_byte like common:csr_string
+    local fechaHora LIKE common:csr_string
+    local local_date like common:csr_string
+    local imp_aux like siaf:importe
+    local imp_aux2 like siaf:importe
+    local imp_aux3 like siaf:importe
+    local iva_aux like iva_Porcentaje
+    local varl_moneda like siaf:moneda	
+	
+    CALL MISCbitUp_1_2_3
+
+    if (TESTFLAG (giros:tran_send_mode, cancelacion)) then //CANCELACION
+
+	If (VentaUP_Excepcion == "S") Then //CANCELACION DE PAGO POR EXCEPCION 
+	    /*MFM - El monto se envia en cero*/
+	    monto_chk_dif = 0
+	    imp_aux = 0
+	else
+	    //monto_chk_dif = post:imp_afecta_saldo
+	    imp_aux = monto_chk_dif * 100
+	End If
+    else
+	If (consulta_excepcion != "S") Then //REGISTRO DE PAGO DIFERIDO
+    	    /*MFM - (20-03-2002)*/
+	    if (consulta == "T") then //REGISTRO DE PAGO DIFERIDO MODO CONSULTA
+		If (limite_up > monto_chk_dif) Then
+		    If (monto_chk_dif < monto_vta_neta ) Then
+			imp_afecta_saldo = monto_chk_dif
+			imp_aux = monto_chk_dif * 100
+		    else
+			imp_afecta_saldo = monto_vta_neta
+			monto_chk_dif = monto_vta_neta
+			imp_aux = monto_vta_neta * 100
+		    end if
+		else
+		    If (limite_up == monto_chk_dif) Then
+			imp_afecta_saldo =  limite_up
+			monto_chk_dif =  limite_up
+			imp_aux = limite_up * 100
+		    end if
+		    If (limite_up < monto_chk_dif) Then//quiere decir que los impuestos estan incluidos
+			imp_afecta_saldo =  limite_up
+			monto_chk_dif =  limite_up
+			imp_aux = limite_up * 100
+		    end if
+	  	endif
+	    else 
+		monto_chk_dif = siaf:importe
+		imp_aux = monto_chk_dif * 100
+	    end if
+
+        Else//REGISTRO DE PAGO DIFERIDO POR EXCEPCION
+
+	    if (consulta == "T") then
+		// Envio el monto sobre el cual se calcularan los intereses
+		//monto_chk_dif = post:excep_venta
+		If (monto_chk_dif < monto_vta_neta ) Then
+		    //este caso nunca podría darse porque hay una validación de que el monto que ingresa no puede
+		    //ser menor al monto de venta neto de la compra, ya que en la excepción debe comprar todo con
+		    // cheque diferido
+		    imp_aux = monto_chk_dif * 100
+		else
+		    monto_chk_dif = monto_vta_neta
+		    imp_aux = monto_vta_neta * 100
+		end if
+	    else 
+		//Envio el importe a pagar con cheque diferido
+		monto_chk_dif = siaf:importe
+		imp_aux = monto_chk_dif * 100
+	    end if
+	End if
+    end if
+
+    //Envio monto por el cual se debe calcular intereses
+    FPRINT l_byte,"%012.12d",imp_aux
+    call post:MISCprendeBit_UP(4,l_byte) 
+
+    If (consulta_excepcion != "S") Then 
+	//Envio monto por el cual se debe afectar saldo
+	If (consulta == "T") Then
+	    FPRINT l_byte,"%012.12d",imp_aux
+	    call post:MISCprendeBit_UP(6,l_byte) 
+	Else
+	    imp_aux2 = imp_afecta_saldo * 100
+	    FPRINT l_byte,"%012.12d",imp_aux2
+	    CALL post:MISCprendeBit_UP(6,l_byte) 
+	End If
+     Else
+	if (TESTFLAG (giros:tran_send_mode, cancelacion)) then //CANCELACION
+	    FPRINT l_byte,"%012.12d",imp_aux
+	else
+	    If (consulta == "T") Then
+		//Envio monto de excepcion para validacion del switch(la validacion se sacó)
+		imp_aux = excep_venta * 100
+		FPRINT l_byte,"%012.12d",imp_aux
+	    else
+		imp_aux = monto_vta_neta * 100
+		FPRINT l_byte,"%012.12d",imp_aux
+	    end if
+	endif
+	call post:MISCprendeBit_UP(6,l_byte) 
+
+    End If
+
+    CALL MISCbitUP_7_11_12_13
+
+    //CSZ - Si estoy en el registro debo setear el bit #15 con el valor del interés que me devolvió la consulta 
+    If (consulta == "F") Then
+	imp_aux3 = jnl_interes_diferido * 100
+	FPRINT l_byte,"%012.12d",imp_aux3
+	call post:MISCprendeBit_UP(15,l_byte) 		
+    END IF
+
+    call post:MISCprendeBit_UP(24,"")	
+
+    if (!TESTFLAG (giros:tran_send_mode, cancelacion)) then 
+	/*Prendo el Bit en donde se enviará la Provincia, para el calculo del interes*/
+	l_byte = substr(common:sucursal_activa,0,1)
+	call post:MISCprendeBit_UP(25,l_byte) 
+    end if
+
+
+    /*MFM - Si estoy registrando o cancelando el pago por excepcion debo enviar el id de la excepcion*/
+    IF (consulta_excepcion == "S" && (VentaUP_Diferida == "S" || TESTFLAG (giros:tran_send_mode,ventaUP_diferida))) THEN	
+	//Recuperar el id de la excepcion!
+	call post:CDSCheck_excepcion
+	FPRINT l_byte,"%010.10s",id_excep_comm
+	CALL post:MISCprendeBit_UP(26,l_byte)
+    else
+	if (giros:codigo_procesamiento == 997003)
+	    FPRINT l_byte,"%010.10s",id_excep_comm
+	    CALL post:MISCprendeBit_UP(26,l_byte)
+	end if
+    END IF
+
+    If (consulta == "F") Then
+	iva_aux = iva_Porcentaje * 100
+	FPRINT l_byte,"%012.12d",iva_aux
+	call post:MISCprendeBit_UP(27,l_byte) 		
+    End If
+
+    call post:MISCprendeBit_UP(28,common:sucursal_activa)
+
+    /*MFM - (20-03-2002)*/
+    if (consulta == "T") then 
+	l_byte = 1
+    else
+	l_byte = 0
+    end if
+    CALL post:MISCprendeBit_UP(29,l_byte)	
+
+    CALL MISCbitUP_31_41_60
+
+    CALL MISCarmaFirmaUP
+    /*Encripto la firma*/
+    CALL giros:MISCfirma
+
+    /*Prendo el Bit en donde se enviará la Firma*/
+    call post:MISCprendeBit_UP(117, common:csr_string_171)	
+
+    if (consulta == "T")
+	varl_moneda = post:adt_mp_cod
+    else
+	varl_moneda = siaf:moneda
+    end if
+
+    /*Prendo el Bit en donde se enviarán los datos del Cheque Diferido*/
+    fprint l_byte "%08.8d%8.8s%8.8s%03.3d%020.20s%02.2s%03.3s",post:nro_cheque, \
+    post:fec_e,post:fec_d,cod_banco,post:cuenta,varl_moneda,tes:clearing
+
+    call post:MISCprendeBit_UP(118,l_byte) 	
+
+END SUB	
+
+
+
+/*******/

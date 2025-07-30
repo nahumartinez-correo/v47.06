@@ -1,0 +1,104 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_DetCSaca
+* NOMBRE
+*   OFB:post:MISCjnl_DetCSaca
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALllenSaca
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_DetCSaca
+    /* Fuerzo la journalizacion del detalle       */
+    /* Mzo. 2000 - B. Petrella -                    */
+
+    UNGETKEY 0x0191 /* RT_SEND */
+    drv:INDscr = SCR:post:SCRNllenSacaHdr
+    CALL tlr:JNLtran /* Journaliza el Header */
+    /*MFM - Armo Caratula de la Saca*/
+    CALL MISCArmo_CS (CaratulaSaca)
+    /*MFM - Grabo Scaneo X en Novedades TT */
+    CALL MISCScaneoX_Saca
+    /*MFM - Grabo Scaneo B en Novedades TT */
+    CALL MISCScaneoB_Saca
+
+    init 33,0
+
+    siaf:codigo_siaf = 99046
+    /* MFM - Octubre 2000*/
+    siaf:tiene_reverso = "N"
+    siaf:imprime_comprobante = "N"
+    siaf:posible_off = "S"
+    siaf:afecta_efectivo = " "
+    tlr:tran_mnemonic = "SVDLSA"
+    siaf:nombre_transac = "DETALLE DE SACA"
+
+    drv:INDcur_tran = LST:post:TRANcontXsaca
+    drv:INDscreen[0] = SCR:post:SCRNllenSacaDet
+    drv:INDscr = SCR:post:SCRNllenSacaDet
+    drv:flags = "00000000000000000000000000C00000000000000000000000000"
+    drv:INDpre_col_rtn = OFB:post:PRECtranContSaca
+    drv:INDsend_rtn = OFB:post:SVALcontXsaca
+    drv:INDjnl_rtn = OFB:post:JNLllenSacaHdr
+    if (!testflag(tlr:tran_flags,correction))
+        move "0000000000000" to drv:data_collect
+    end if
+
+    CLEARFIELD drv:INDspc_rtn[2]
+    CLEARFIELD drv:INDspc_rtn[3]
+    CLEARFIELD drv:INDspc_rtn[4]
+    CLEARFIELD drv:INDspc_rtn[5]
+    CLEARFIELD drv:INDbut_list[0]
+    CLEARFIELD drv:INDpre_col_rtn
+
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+        (op:op_operator_id == op:op_operator_id && \
+         post:MarcaBorrado == " ")
+    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+
+    DO
+
+		IF (CDSRETVAL != 0)
+			BREAK
+		END IF
+		
+		CDS EXTRACT DSC:post:DetTmp_ctx ALL
+		
+		IF (post:track_trace != "NO CONTROL") THEN
+			CALL CDSmodifJNLsaca /* Modifica el journal de la Tx. original */
+			UNGETKEY 0x0191 /* RT_SEND */
+			CALL tlr:JNLtran /* Journaliza el detalle */
+		END IF
+		
+		//Agrego German
+		CALL post:CDSGrabaRepExp("CIERRESACA", post:Pieza_id,post:adt_novtt_sequence,post:jnl_date_ori) 
+		
+		init 33,0
+		CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+
+    LOOP
+
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+    /*Actualizo la hora del Scaneo B*/
+    CALL MISCAct_ScaneoB
+    /* Impresion de Guia de Saca */
+    call MISCimpSaca
+
+    drv:INDpre_col_rtn = OFB:post:PRECllenadoSaca
+    CLEARFIELD drv:INDsend_rtn
+    CLEARFIELD drv:INDjnl_rtn
+    drv:INDscreen[0] = SCR:post:SCRNllenadoSaca
+
+END SUB
+
+/*******/

@@ -1,0 +1,102 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVAL_8805
+* NOMBRE
+*   OFB:siaf:SVAL_8805
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVAL_8805
+
+	//Primero me fijo si alguna moneda tiene diferencia. Si tiene AVISO y salgo !
+	//Solo 1 vez (si el campo hay_diferencia es distinto de S
+	//Recorro el picklist y jounalizo cada uno por separado.	
+	IF (tes:hay_diferencia != "S") THEN
+		idx = PL_GETITEM
+		do
+			call csr:myPickcontrol(dsc:tes:PICPasesDisp,common:csr_string,idx)
+			if (retval < 0)
+				break
+			end if
+			siaf:importe2 = substr(common:csr_string,21,16)
+			siaf:moneda = substr(common:csr_string,38,2)
+	
+			post:importe_origen = tes:rend_importe_vec[siaf:moneda]
+			siaf:importe_dif = siaf:importe2 - post:importe_origen
+			IF (siaf:importe_dif != 0) THEN
+				MSGBOX "EXISTE DIFERENCIA. VERIFIQUE LOS IMPORTES.",0x00,"Aviso"
+				tes:hay_diferencia = "S"
+				RETURN -2
+			END IF
+			idx = idx + 1
+		loop	
+	END IF
+
+	//Recorro el picklist y jounalizo cada uno por separado.
+	idx = PL_GETITEM
+	do
+		call csr:myPickcontrol(dsc:tes:PICPasesDisp,common:csr_string,idx)
+		if (retval < 0)
+			break
+		end if
+		siaf:desc_moneda = substr(common:csr_string,0,20)
+		siaf:importe2 = substr(common:csr_string,21,16)
+		siaf:moneda = substr(common:csr_string,38,2)
+		post:importe_origen = tes:rend_importe_vec[siaf:moneda]
+		post:adt_mp_cod = siaf:moneda
+		call post:CDSadt_MedPago_load
+		if (post:importe_origen >= 0) then
+			siaf:importe_dif = siaf:importe2 - post:importe_origen
+			call post:MISCconvierto_coti(post:importe_origen)
+        	siaf:codigo_siaf = 8805
+        	siaf:nombre_transac = "APER EFVO POS C/ARQUEO"
+        	tlr:tran_mnemonic = "TECEIPA"
+        	let drv:INDscr = SCR:siaf:SCRNarqueo_inic_pos
+        	let drv:INDjnl_rtn = OFB:siaf:JNL_8805
+        	if (drv:INDspc_rtn[0] != 0 ) then
+        		tlr:INDtots_append = lst:siaf:TOTS8800		
+        		drv:INDspc_rtn[0] = lst:siaf:TOTS8800        		
+        	end if        	
+		else	
+			post:importe_origen = post:importe_origen * -1
+			siaf:importe_dif = siaf:importe2 - post:importe_origen
+			call post:MISCconvierto_coti(post:importe_origen)
+        	siaf:codigo_siaf = 8605
+        	siaf:nombre_transac = "APER EFVO NEG C/ARQUEO"
+        	tlr:tran_mnemonic = "TECEIPA"
+        	let drv:INDscr = SCR:siaf:SCRNarqueo_inic_pos
+        	let drv:INDjnl_rtn = OFB:siaf:JNL_8805     	
+        	/* Si la apertura es inicial le cambio la lista de totales.
+        	Me doy cuenta si es inicial porque tiene atachada lista de totales*/
+        	if (drv:INDspc_rtn[0] != 0 ) then
+        		tlr:INDtots_append = lst:siaf:TOTS8600		
+        		drv:INDspc_rtn[0] = lst:siaf:TOTS8600		
+        	end if
+		end if			
+		UNGETKEY RT_SEND
+    	if (siaf:importe_dif != 0) 
+        	/* Se pidio journalizar una descripcion diferente */
+	    	fprint siaf:nombre_transac,"DIF %-s",siaf:nombre_transac
+		end if
+
+        call tlr:JNLtran    	           
+		idx = idx + 1
+	loop		
+	clearfield tlr:INDtots_append
+	clearfield drv:INDspc_rtn[0]
+	clearfield drv:INDjnl_rtn
+    call post:MISCflecha_restore
+END SUB
+
+/*******/

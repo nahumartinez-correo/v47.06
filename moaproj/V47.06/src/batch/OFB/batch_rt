@@ -1,0 +1,97 @@
+/****o* Pendientes de agrupación/OFB:batch:batch_rt
+* NOMBRE
+*   OFB:batch:batch:batch_rt
+* DESCRIPCION
+*   Este OFB es el primero en ejecutarse cuando se corre al RT en modo de   
+*   proceso Batch. Desde aca se realiza (en base a la opcion ingresada en la
+*   linea de comando) el llamado a la/las rutinas que atiendan el pedido.   
+*   El parametro ingresado en la linea de comando esta guardado en el campo 
+*   batch:batch_options.                                                    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "batchofb.h"
+
+SUB batch:batch_rt
+    LOCAL fecha LIKE giros:cons_fecha_emi
+    LOCAL hora LIKE post:hor_a
+    local pos like siaf:i
+    local LLong like siaf:i
+
+    /*Obtengo el path en donde van a quedar los LOGS para la Recuperación de Caídas
+    en Vuelo - Gabriel Falciola*/
+    CALL csr:get_profile_string("cdsmain","CDS_DIRECTORY",log_path)
+   	CALL CSR:fld_to_upper(log_path)
+   	CALL CSR:str_search(log_path,"CDSMAIN",pos)
+   	log_path = substr(log_path,0,pos)
+
+    ;LMB - PS 9780 - 10.06.2008
+    ;Se parametriza el directorio temporal de listados para Mosaic
+    call csr:variable_environment("MOSAIC_TEMP",fld:common:dirTemporal)
+    if (retval < 0) then
+       ; El parametro no esta definido --> toma el valor por defecto
+       fld:common:dirTemporal = "\\TEMP\\"
+    endif
+
+    call csr:trimfield(common:dirTemporal)
+    ;Si el path definido no tiene la / al final se la agrego
+    LLong = common:dirTemporal.numchars - 1
+    if (( substr(fld:common:dirTemporal,LLong,1) != "\\") && ( substr(fld:common:dirTemporal,LLong,1) != "/")) then
+         fprint fld:common:dirTemporal, "%s%s", fld:common:dirTemporal, "\\"              	
+    endif
+
+    SELECT (fld:batch:batch_options)
+        CASE PARAM_BATCH_WEB
+        	/*Depuro los LOGS*/
+        	;LMB - PS 9780 - 04.07.2008         	
+        	;call batch:MISCclean_file_log("c:\\te mp\\RTbatch.log")
+        	fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "RTbatch.log"
+        	call batch:MISCclean_file_log(common:tmpDirTemporal)
+        	;call batch:MISCclean_file_log("c:\\te mp\\RTbatch.err")
+        	fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "RTbatch.err"
+            call batch:MISCclean_file_log(common:tmpDirTemporal)
+            CALL OFBmanejadorBatch
+            BREAK
+        CASE "REC_CAIDAS_VUELO"q
+        	; PAW 07.08.03 : No se olviden de las dlls
+        	call post:MISCdeclaracion_DLL
+        	/*Depuro los LOGS - Gabriel Falciola*/
+     			fprint common:csr_string,"%s\\RTbatch.log",log_path
+					call batch:MISCclean_file_log(common:csr_string)
+     			fprint common:csr_string,"%s\\RTbatch.err",log_path
+					call batch:MISCclean_file_log(common:csr_string)
+				/* MLD Proceso de envio de archivo de reporte comarcial */
+					call batch:MISCrep_comercial
+					
+					//NI 50596 - Recupero de la tabla de sucursales el campo de unidad de negocio, necesario para el envìo de consulta de pieza con captura de imagen a T&T
+					admin:adt_br_branch = common:sucursal_activa
+					call admin:CDSadt_br_load
+					common:br_CUN = admin:adt_br_CUN
+				
+           CALL OFBrecupCaidasVuelo
+           /*Si salió con -2 es porque hubo un error y aborta el proceso. Por lo tanto
+           imprimo en los LOGS el mensaje correspondiente - Gabriel Falciola*/
+					CALL MISCgeneraLog(common:csr_string_130,"AMBOS","S")
+            BREAK
+        CASE "CARGA_MASIVA_SUCURSALES"
+        	CALL batch:MiscCargaMasivaSuc
+        	break
+        CASE ELSE
+            CALL MISCgeneraLog("ERROR: la opcion ingresada por linea de comando es desconocida\n","ERROR","N")
+    END SELECT
+    BEEP
+    BEEP
+    BEEP
+END SUB
+
+/*******/

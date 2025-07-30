@@ -1,0 +1,86 @@
+/****o* Pendientes de agrupación/OFB:post:MISCchqMultViaje
+* NOMBRE
+*   OFB:post:MISCchqMultViaje
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCchqMultViaje
+	
+	/*RUTINA DE RECUPERACION DE TRAN CAIDAS EN VUELO
+		CSZ - 2002-01-30*/
+	CALL MISCrec_caidas_UP
+	IF (RETVAL == TRAN_CAIDA_VUELO )
+		MSGBOX "Problemas de Comunicación. Inténtelo nuevamente",0x00,"Atencion"
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+		CLEARFIELD lib:stat_message
+		REFRESH lib:stat_message		
+		RETURN (-2)
+	END IF
+
+	//HACER EL VIAJE DE REGISTRO EN MODO CONSULTA!!!
+	SETFLAG giros:tran_send_mode,ventaUP_diferida
+		
+	//CSZ
+	//Seteo el flag de consulta simple para que funcione como tal, por ejemplo en el caso
+	// de que se produzca una caida en vuelo, no intente grabarla en la jnl_caidas
+	SETFLAG giros:tran_send_mode,consulta_simple
+
+	post:consulta_pagodif = 1
+	giros:codigo_procesamiento = 997002
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	hcomm:INDhost_sndrt = OFB:post:SENDclimed_pagodif
+	hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_pagodif
+	
+	CALL hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N"))
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RESETFLAG giros:tran_send_mode,consulta_simple
+		RETURN (-2)
+	END IF 		
+		
+	//Calculo el STAN
+	Call post:CDSobtiene_secuen("STAN")
+	
+	/*Envio la consulta*/
+	CALL hcomm:COMM_host_tran
+	if (giros:err_firma == -1 )    // Error en Verificacion Firma 
+  		common:trap_reset = OFB:drv:KEYSreset_esc
+   		KEYDEF CLEAR
+   		CALL drv:KEYSnavigation
+		RESETFLAG giros:tran_send_mode,consulta_simple
+	//	monto_chk_dif = imp_diferido
+		return -2
+    end if
+ 
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	CLEARFIELD lib:stat_message
+	REFRESH STATUSLINE
+	If (hcomm:tran_status != HOST_ACCEPTED) THEN
+		RESETFLAG giros:tran_send_mode,consulta_simple
+		//monto_chk_dif = imp_diferido
+		RETURN -2
+	ELSE
+		CLEARFIELD lib:stat_message
+		REFRESH lib:stat_message
+	END IF
+   	
+   	RESETFLAG giros:tran_send_mode,consulta_simple
+   		
+END SUB
+
+/*******/

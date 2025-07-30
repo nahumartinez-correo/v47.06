@@ -1,0 +1,113 @@
+/****o* Caja Unificada/OFB:post:SVAL6680
+* NOMBRE
+*   OFB:post:SVAL6680
+* DESCRIPCION
+*   Rutina de Confirmacion de la TX de Operaciones WEB
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN6680
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1440
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL6680
+	LOCAL loc_retval LIKE lib:err_retval
+	LOCAL formulario_aux LIKE post:PreDForFis
+	LOCAL importe_aux LIKE siaf:importe
+
+	SELECT (post:estado_presu)
+		CASE 2
+			IF (post:adt_pweb_nombre.NUMCHARS == 0) THEN
+				MSGBOX "SELECCIONE UNA APLICACION WEB",0x00,"ERROR"
+				ENABLECONTROL drv:PBcb1  //BOTON ACEPTAR
+				RETURN (-2)
+			END IF 
+    		
+			//Verifico si se registraron novedades en la tabla web_tmp
+			CDS SELECT FROM DSC:web_tmp_tbl BECOMES DSC:web_tmp_ctx \
+				WHERE post:web_tmp_nro_tx_web != "999" && \
+				post:web_tmp_operator == op:op_operator_id && \
+				post:web_tmp_fecha == common:system_date && \
+				post:PresNro == post:PresNro
+
+			CDS FINDFIRST DSC:web_tmp_ctx LOCK
+			loc_retval = CDSRETVAL
+			IF (loc_retval == -801) THEN
+				CDS ENDSELECT DSC:web_tmp_ctx
+				MSGBOX "NO SE REALIZARON OPERACIONES WEB.",0x00,"Error"
+				//drv:INDrun_funct = LST:TRANimpre_fiscal
+				//CALL drv:do_mode
+				RETURN (-2)
+			ELSE
+				//CARGO LA PRESUDET!!!
+				WHILE (loc_retval == 0)
+					CDS EXTRACT DSC:web_tmp_ctx ALL
+					post:cantidad = 1
+					//Para desglosar el IVA del Servicio que cobra correo y dejarlo grabado en PresuDet
+					post:ImporteConIva = post:adt_pweb_tarifa * post:web_tmp_cantidad
+					CALL post:MISCdesglosaIva(post:ImporteConIva ,post:adt_pweb_iva,1,0)
+					siaf:importe = (post:web_tmp_impweb + (post:adt_pweb_tarifa * post:web_tmp_cantidad))
+					//Se acumula el Importe Total  en la tabla PresuPag
+					CALL post:MISCAcumTotalesSes
+  					
+  					//Motivo de prueba
+  					IF (adt_pweb_scaneoO == "S")
+  						//Obtengo datos necesarios para generar ScaneoO
+  						CALL MISCdatosScaneoO_WEB
+					END IF  					
+					//CARGO LA PRESUDET!!!
+					post:INDPresuD_Dat = OFB:CDSappend_6680
+					CALL post:MISCGrabaDetalleTrn
+					CDS FINDAGAIN DSC:web_tmp_ctx LOCK
+					//No se debe borrar porque se toman los datos para el listado de irregularidades.
+					//CDS DELETE DSC:web_tmp_ctx
+					CDS FINDNEXT DSC:web_tmp_ctx LOCK
+					loc_retval = CDSRETVAL
+				END WHILE
+				CDS ENDSELECT DSC:web_tmp_ctx
+			END IF
+		BREAK
+		CASE 4
+			/*IF (post:adt_pweb_ing_egr == 1) THEN
+			siaf:afecta_efectivo = "+"
+			LET drv:INDspc_rtn[0] = LST:TOTS6680
+			LET tlr:INDtots_append = LST:TOTS6680
+			ELSE
+			siaf:afecta_efectivo = "-"
+			LET drv:INDspc_rtn[0] = LST:TOTS6680_egr
+			LET tlr:INDtots_append = LST:TOTS6680_egr
+			END IF*/
+			//Se genera el nro de controlo del Ticko
+			IF (post:adt_pweb_cod_doc == "TICKO") THEN
+				CALL post:CDSobtiene_secuen(post:adt_pweb_codseq)
+				siaf:nro_impre = post:adt_codseq_nro
+			END IF
+		        
+			//Marca la tx  en la presudet como journalizada.
+			post:INDPresuD_Dat = OFB:CDSappend_6680
+			CALL post:MISCGrabaDetalleTrn
+			
+			//para que imprima ticko
+			siaf:imprime_comprobante = "D"
+			
+    BREAK 
+  END SELECT
+  
+	//gpb:NI50498 - Mercado Libre
+	IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+		//gpb:PS10853 - Ecommerce
+		IF (post:adt_pweb_formfisc == "TICKO" && post:adt_pweb_ecommerce != "S") THEN
+			LET drv:INDspc_rtn[2] = OFB:post:TRANprint6680
+		END IF
+	END IF
+  
+END SUB
+
+/*******/

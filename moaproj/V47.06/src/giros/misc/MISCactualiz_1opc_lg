@@ -1,0 +1,92 @@
+/****o* Lista de Giros/OFB:giros:MISCactualiz_1opc_lg
+* NOMBRE
+*   OFB:giros:MISCactualiz_1opc_lg
+* DESCRIPCION
+* 	Este OFB calcula el Costo de cada uno de los Opcionales seleccionados y lo coloca en el vector
+*   de costo de los opcionales en la ubicación correspondiente a ese opcional (Lista de Giros).
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:FVALsel_opc_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+
+
+#include "girosmisc.h"
+
+SUB giros:MISCactualiz_1opc_lg
+    LOCAL tmp             LIKE common:csr_string
+    LOCAL x               LIKE post:cantidad
+    LOCAL cant            LIKE post:cantidad
+    LOCAL loc_importe     LIKE siaf:importe
+	LOCAL l_preCantidad   LIKE post:cantidad
+	LOCAL canti           LIKE post:cantidad
+	LOCAL l_costo_opc_uni LIKE post:costo_opc_uni
+
+    //calcula importe opcionales.    
+    x = 0
+    post:sobretasa_opc = 0
+
+    l_costo_opc_uni = post:costo_opc_uni
+    l_preCantidad = post:cantidad
+    WHILE (x < post:cant_opc)
+         IF (post:inf_opc[x] == "S") THEN
+             CALL giros:CDSsuma_opcionalesLG(post:tipo_produc2,post:cod_opc[x],1,post:adt_tarif_dest)
+             IF (RETVAL == 0) THEN
+                 post:cos_opc[x] = post:tarif_resultado * post:cantidad
+             END IF
+
+             IF (post:cod_opc[x] == "AVRB") THEN
+                 post:valor_ar = post:cos_opc[x]
+             END IF
+             IF (post:cod_opc[x] == "CSAR") THEN
+                 post:valor_csar = post:cos_opc[x]
+             END IF
+             IF (post:estado_presu == 2 && post:IvaCod == "RNI") THEN
+                 cant = 1
+                 //SC 50170
+                 CALL post:MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],cant,0)
+                 post:sobretasa_opc = post:sobretasa_opc + post:SobreTasaIva
+                 post:tas_opc[x] = post:SobreTasaIva
+             END IF
+         ELSE
+             post:cos_opc[x] = 0
+         END IF
+
+         //SC 50170
+         CALL post:MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],post:cantidad,0)            
+         post:siniva_opc[x] = post:ImporteSinIva
+         //SC 50170 - FACTURACION
+         post:siniva_opc4[x] = post:ImporteSinIva_bis
+
+         x = x + 1
+         post:cantidad = l_preCantidad
+    END WHILE
+    post:costo_opc_uni = l_costo_opc_uni
+
+    post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+	loc_importe = post:tarifa +  post:costo_opc
+    siaf:importe = loc_importe + post:sobretasa
+
+    REFRESH siaf:importe
+    REFRESH post:sobretasa
+
+    /*Calcula la tarifa total del servicio*/
+    //CALL post:MISCact_tarif_serv
+    IF (!TESTFLAG(post:uso_int_flag,uso_interno)) THEN
+		siaf:importe_tot_serv = siaf:importe
+		IF (post:estado_presu != 4 && siaf:importe_tot_serv < 0)
+			CLEARFIELD siaf:importe_tot_serv
+		END IF
+	   	REFRESH siaf:importe_tot_serv
+	END IF
+
+END SUB
+
+/*******/

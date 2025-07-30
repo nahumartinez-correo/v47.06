@@ -1,0 +1,174 @@
+/****o* Pendientes de agrupación/OFB:post:CDSbasico_Opc
+* NOMBRE
+*   OFB:post:CDSbasico_Opc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSbasico_Opc
+
+
+LOCAL desc_temp LIKE post:adt_opc_desc
+LOCAL valor_temp LIKE post:valor_dec
+LOCAL l_Cantidad LIKE post:cantidad
+
+	post:cant_opc = 0
+	DO
+		if (post:cant_opc > 5) then
+			break
+		end if
+		if (item_opc_opci[post:cant_opc].numchars == 0) then
+			break
+		end if
+		/* Veo si el Opcional elegido requeria del 		*/
+		/* ingreso de algun valor como el de Valor 		*/
+		/* Declarado o Contrarembolso.	       		    */
+		desc_temp = item_opc_opci[post:cant_opc]
+		post:bonifCM_opc[post:cant_opc] = item_opc_bonif[post:cant_opc]
+	
+		CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE \
+	    post:adt_opc_opci == desc_temp && \
+	    post:adt_opc_valdec == "T"
+		CDS FINDFIRST OPC_CTX NOLOCK
+		IF (CDSRETVAL != -801) THEN
+	    	/* Etamos en el caso de Valor Declarado o 		*/
+	    	/* Contrarembolso, entonces tomo el valor que 	*/
+	    	/* viene en el vector.   						*/
+
+      		/************************************************/
+	    	/* Guardo el Valor Declarado anterior.          */
+      		/************************************************/
+	    	valor_temp = post:valor_dec
+      		CLEARFIELD post:valor_dec
+      		
+			post:valor_dec = item_opc_importe[post:cant_opc]
+			clearfield adt_opc_label
+			cds extract OPC_CTX adt_opc_label
+			
+		END IF
+   		/* Completo unos Flags que me van a servir  */
+    	/* luego y guardo el valor ingresado.   	*/
+    	IF (adt_opc_label == "V.D.") THEN
+   			post:tiene_vd = "S"
+   			post:vec_opc2[post:cant_opc] = post:valor_dec
+    	ELSE
+       		IF (adt_opc_label == "C.R.") THEN
+        		post:tiene_cre = "S"
+        		post:valor_cre = post:valor_dec
+       			post:vec_opc2[post:cant_opc] = post:valor_cre
+    			post:valor_dec = valor_temp
+       		ELSE
+       			/* Es otro Opcional con Valor */
+       			post:vec_opc2[post:cant_opc] = post:valor_dec
+       		END IF
+    	END IF
+
+	    /***********************************************************/
+	    /* A partir del Req. 600 todos los opcionales influyen 	*/
+	    /* Creo que no tiene más sentido este campo salvo	*/
+	    /* que en el futuro vuelvan a existir opcionales cuyo	*/
+	    /* costo no influya en el costo total de opcionales.		*/
+	    /***********************************************************/
+	    inf_opc[cant_opc] = "S"
+		/********************************/
+		/* Extraigo el Código de Opcional , el campo que determina si el opc. combina*/
+		/* y la Al¡cuota del IVA del mismo	*/
+		/********************************/
+		CLEARFIELD post:adt_opc_combina
+		CLEARFIELD post:adt_opc_opci
+		CLEARFIELD post:adt_opc_aliciva
+		CLEARFIELD post:adt_opc_cortepropio
+		CLEARFIELD post:adt_opc_disccp
+		
+		CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE \
+	    post:adt_opc_opci == desc_temp
+		CDS FINDFIRST OPC_CTX NOLOCK
+		CDS EXTRACT OPC_CTX post:adt_opc_opci \
+	    	post:adt_opc_aliciva \
+	   		post:adt_opc_cortepropio \
+	    	post:adt_opc_disccp \
+	    	post:adt_opc_combina
+		CDS ENDSELECT OPC_CTX
+		post:cod_opc[post:cant_opc] = post:adt_opc_opci
+		post:ali_opc[post:cant_opc] = post:adt_opc_aliciva
+		post:comb_opc[post:cant_opc] = post:adt_opc_combina
+		FPRINT post:cor_opc[post:cant_opc], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+		/*tratamiento embarazosa*/
+		IF (cod_opc[cant_opc] == "EMBA")
+	    	vec_opc2[post:cant_opc] = post:tarifa
+	    	posicion_emba = cant_opc
+	    	tiene_emba = "S"
+		END IF
+		
+		REFRESH post:cod_opc[post:cant_opc]
+		REFRESH post:vec_opc2[post:cant_opc]
+		/**************************************/
+		/* Extraigo el Modo de Cálculo y	*/
+		/* el porcentaje que fue aplicado 	*/
+		/*************************************/
+		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+		post:adt_opcserv_serv == post:tipo_produc2 && \
+		post:adt_opcserv_opci == desc_temp
+		CDS FINDFIRST OPC_SERV_CTX NOLOCK
+		CDS EXTRACT OPC_SERV_CTX \
+		post:adt_opcserv_valor INTO post:val_opc[post:cant_opc] \
+  		post:adt_opcserv_tipo INTO post:cal_opc[post:cant_opc]
+		CDS EXTRACT OPC_SERV_CTX \
+		post:adt_opcserv_uneg INTO post:flia_opc[post:cant_opc]
+		
+		CDS ENDSELECT OPC_SERV_CTX
+		
+		//Esta parte es necesaria para la facturacion de CLIENTE MEDIO
+		//Tratamiento solo para opcionales especiales de telegramas
+		//clearfield post:costo_opc_uni
+		if (item_codigo_trx == "13100") then
+			l_Cantidad = post:cantidad
+			call post:MISCopcCantPart(post:adt_opc_opci, post:tipo_produc, l_Cantidad)
+			post:costo_opc = post:costo_opc + (post:val_opc[post:cant_opc] * l_Cantidad)
+			//me estaba quedando el siaf:importe mal journalizado porque faltaba calcular
+			//este dato. Costo de los opcionales especiales
+			IF (RETVAL == 1) THEN
+			post:costo_opc_uni = post:costo_opc_uni + post:val_opc[post:cant_opc]
+			END IF
+		end if
+		
+		post:cant_opc = post:cant_opc + 1   		
+		
+		IF (!TESTFLAG(uso_int_flag,uso_interno)) THEN
+			
+			
+			if (item_codigo_trx != "13100") then
+		    	/**********************************************/
+				/* Actualizo el Costo Total de los Opcionales */
+				/**********************************************/
+		    	CALL post:MISCactualizo_opc
+		    	
+		    endif
+						
+			/****************************************************************/
+			/* Actualizo el costo de cada uno de los opcionales   		*/
+			/* por separado. Quizás parezca sin sentido hacer esto	*/
+			/* para cada opcional pero si el valor declarado actual 		*/
+			/* es mayor al anterior, cambia el costo de algunos de  	*/
+			/* los opcionales que ya estaban seleccionados.         		*/
+			/****************************************************************/
+			CALL MISCactualizo_1opc
+
+		END IF    	
+	
+	LOOP
+END SUB
+
+/*******/

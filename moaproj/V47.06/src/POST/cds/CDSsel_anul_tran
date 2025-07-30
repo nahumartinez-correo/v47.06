@@ -1,0 +1,222 @@
+/****o* Pendientes de agrupación/OFB:post:CDSsel_anul_tran
+* NOMBRE
+*   OFB:post:CDSsel_anul_tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsel_anul_tran
+	/* Selecciona del journal todas las transacciones correspondientes al presupuesto elegido
+	Gabriel Falciola*/
+	TranAnul_cant = 0
+	TranAnul_idx = 0
+	ImporteTotalNC = 0
+
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+		WHERE (tlr:jnl_operator == op:op_operator_id \
+		&& tlr:jnl_branch  == common:sucursal_activa \
+		&& tlr:jnl_bus_date == common:system_date \
+		&& tlr:jnl_sequence_corr == 0 \
+		&& post:PresNro == fld:post:PresNro \
+		&& tlr:jnl_status < 100 \
+		&& siaf:cancelacion == "" \
+		&& jnl_flia_tran != "PCL" \
+		&& jnl_flia_tran != "USR" \
+		&& siaf:jnl_tran_modpresu != "I")
+
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	IF (CDSRETVAL != 0) THEN
+		CDS ENDSELECT DSC:tlr:jnl_context
+		MSGBOX "No se encuentran las transacciones para anular",0x00,"ERROR"
+		RETURN (-2)
+	END IF
+	
+	DO
+		CLEARFIELD siaf:importe
+		CLEARFIELD ver_anulacion
+		CLEARFIELD cod_agrupacion
+		CLEARFIELD siaf:afecta_efectivo
+		CLEARFIELD tmpl_importe
+		CLEARFIELD PreDForFis
+		CLEARFIELD siaf:moneda
+		CLEARFIELD jnl_guia_cont
+		CLEARFIELD jnl_guia_saca
+		CLEARFIELD jnl_guia_despacho
+		CLEARFIELD jnl_flia_tran
+		CLEARFIELD jnl_op_transf
+		CLEARFIELD jnl_marca_excep
+		CLEARFIELD siaf:tiene_reverso
+		CLEARFIELD post:Pieza
+		CLEARFIELD post:PreDNroTrnAsoc //anulacion convenio producto
+		CLEARFIELD post:combo_nro //indica si el numer de combo dentro de la sesion
+		CLEARFIELD adt_PreDNroTrn       
+		CLEARFIELD tipo_produc       
+		CLEARFIELD headOrBodyTele      
+		CLEARFIELD post:adt_tran_sf1_codigo // para anulación de PFacil c/mensajería
+  		        
+		CDS EXTRACT DSC:tlr:jnl_context \
+			siaf:jnl_codigo_siaf siaf:nombre_transac siaf:importe tlr:jnl_sequence \
+			ver_anulacion cod_agrupacion siaf:afecta_efectivo tmpl_importe PreDForFis \
+			siaf:moneda post:jnl_guia_cont post:jnl_guia_saca post:jnl_guia_despacho \
+			post:jnl_flia_tran post:jnl_op_transf post:jnl_marca_excep siaf:tiene_reverso \
+			post:combo_nro post:adt_tran_sf1_codigo
+		
+		CDS EXTRACT DSC:tlr:jnl_context adt_PreDNroTrn tipo_produc headOrBodyTele
+
+		CDS EXTRACT DSC:tlr:jnl_context post:Pieza post:PreDNroTrnAsoc
+	
+		/*Se agrega esta condicion para templates antes de pasar las
+		transacciones al picklist - Gabriel Falciola*/
+		IF (post:ver_anulacion != "N") THEN
+			IF (cod_agrupacion.NUMCHARS == 0 || post:jnl_flia_tran == "CSM") THEN
+				FPRINT common:csr_string_200 "%-05.05s %-39.39s %14.14e %e %-05.05s %-1.1s"  \
+				siaf:jnl_codigo_siaf siaf:nombre_transac siaf:importe tlr:jnl_sequence cod_agrupacion \
+				siaf:afecta_efectivo
+			ELSE
+				;IF (post:jnl_flia_tran == "CSE" || \
+				;	post:jnl_flia_tran == "CSP" || post:jnl_flia_tran == "CME" || \
+				;	post:jnl_flia_tran == "TES" || post:jnl_flia_tran == "CST") THEN
+				SELECT (post:jnl_flia_tran)
+					CASE "CSE" /* encomiendas */
+					CASE "CSP" /* postales*/
+					CASE "CME" // ??
+					CASE "TES" /* tesoreria */
+					CASE "CST" /* telegrafia */
+					CASE "CMB" /* combos de productos. El reg. gral tiene el importe total del combo */
+					CASE "VAP"
+						FPRINT common:csr_string_200 "%-05.05s %-39.39s %14.14e %e %-05.05s %s"  \
+							siaf:jnl_codigo_siaf siaf:nombre_transac siaf:importe tlr:jnl_sequence cod_agrupacion \
+							siaf:afecta_efectivo
+					BREAK
+					CASE ELSE
+						FPRINT common:csr_string_200 "%-05.05s %-39.39s %14.14e %e %-05.05s %s"  \
+							siaf:jnl_codigo_siaf siaf:nombre_transac tmpl_importe tlr:jnl_sequence cod_agrupacion \
+							siaf:afecta_efectivo
+					BREAK
+				END SELECT
+			END IF
+			
+			/*Acumulo el total de la Sesion - Gabriel Falciola*/
+			IF (PreDForFis.NUMCHARS != 0) THEN
+				FPRINT common:csr_string_200 "%s FS %02s" common:csr_string_200 siaf:moneda
+				SELECT (siaf:afecta_efectivo)
+					CASE "+"
+						IF (cod_agrupacion.NUMCHARS == 0 || post:jnl_flia_tran == "CSM") THEN
+							ImporteTotalNC = ImporteTotalNC + siaf:importe
+						ELSE
+							;IF (post:jnl_flia_tran == "CSE" || post:jnl_flia_tran == "CSP" || \
+							;	post:jnl_flia_tran == "CME" || post:jnl_flia_tran == "TES") THEN
+							SELECT (post:jnl_flia_tran)
+								CASE "CSE" // encomiendas
+								CASE "CSP" // postales
+								CASE "CME" // ??
+								CASE "TES" // tesoreria
+								CASE "CST" // telegrafia
+								CASE "CMB" /* combos de productos */
+								CASE "VAP"
+									ImporteTotalNC = ImporteTotalNC + siaf:importe
+								BREAK
+								CASE ELSE
+									ImporteTotalNC = ImporteTotalNC + tmpl_importe
+							END SELECT
+						END IF
+					BREAK
+					CASE "-"
+						IF (cod_agrupacion.NUMCHARS == 0 || post:jnl_flia_tran == "CSM") THEN
+							ImporteTotalNC = ImporteTotalNC - siaf:importe
+						ELSE
+							;IF (post:jnl_flia_tran == "CSE" || post:jnl_flia_tran == "CSP" || \
+							;	post:jnl_flia_tran == "CME" || post:jnl_flia_tran == "TES") THEN
+							SELECT (post:jnl_flia_tran)
+								CASE "CSE" // encomiendas
+								CASE "CSP" // postales
+								CASE "TES" // tesoreria
+								CASE "CST" // telegrafia
+								CASE "CMB" /* combos de productos. El reg. gral tiene el importe total del combo */
+									ImporteTotalNC = ImporteTotalNC - siaf:importe
+								BREAK
+								CASE ELSE
+									ImporteTotalNC = ImporteTotalNC - tmpl_importe
+							END SELECT
+						END IF
+					BREAK
+				END SELECT
+			ELSE
+				FPRINT common:csr_string_200 "%s FN %02s" common:csr_string_200 siaf:moneda
+			END IF
+			
+      /*Las transacciones que ya fueron expedidas no se pueden reversar
+      Se esta haciendo ese control*/
+      CALL csr:trimfield(jnl_guia_despacho)
+      CALL csr:trimfield(jnl_guia_saca)
+      CALL csr:trimfield(jnl_guia_cont)
+      CALL csr:trimfield(jnl_op_transf)
+
+			IF (jnl_guia_despacho > 0) THEN
+				FPRINT common:csr_string_200 "%s %08.8d      " common:csr_string_200 post:jnl_guia_despacho
+			ELSE
+				IF (jnl_guia_saca > 0) THEN
+					FPRINT common:csr_string_200 "%s %08.8d      " common:csr_string_200 post:jnl_guia_saca
+				ELSE
+					FPRINT common:csr_string_200 "%s %08.8d %05.5d" common:csr_string_200 post:jnl_guia_cont post:jnl_op_transf
+				END IF
+			END IF
+
+			/*MFM - Si una pieza fue marcada como excepción no se puede reversar*/
+			IF (jnl_marca_excep.NUMCHARS > 0) THEN
+				FPRINT common:csr_string_200 "%s %01.01s" common:csr_string_200 post:jnl_marca_excep
+			ELSE
+				FPRINT common:csr_string_200 "%s  " common:csr_string_200
+			END IF
+            
+			/*Se agrega la familia de la Transaccion - Gabriel Falciola*/
+			FPRINT common:csr_string_200 "%s %-5.05s" common:csr_string_200 post:jnl_flia_tran
+
+			/*Se agrega un campo para saber si la tx tiene reverso*/
+			FPRINT common:csr_string_200 "%s %1.1s" common:csr_string_200 siaf:tiene_reverso
+
+			/*Se agrega para saber si una Pieza observada está entregada*/
+			FPRINT common:csr_string_200 "%s %-32.32s" common:csr_string_200 post:Pieza
+
+			/*Se agrega para saber si una Pieza fue afectada por un descuento (Cliente Medio)*/
+			FPRINT common:csr_string_200 "%s %05.5d" common:csr_string_200 post:PreDNroTrnAsoc
+
+			/*Se agrega para saber si es una transacción de pago facil IPLAN*/
+			/* sba 19.1.2004 - No se usa mas el paycode. Ahora es por el utility
+			FPRINT common:csr_string "%s %-6.6s" common:csr_string post:sf1_id_paycode
+			*/
+			FPRINT common:csr_string_200 "%s %-8.8s" common:csr_string_200 post:adt_tran_sf1_codigo
+
+			/*Se agrega para saber si es un combo de producto*/
+			FPRINT common:csr_string_200 "%s %-8.8s" common:csr_string_200 post:combo_nro
+			
+			/*Se agrega para saber si es tele. Multiples hay opc que se cobran solo en
+			primer destinatario*/
+			FPRINT common:csr_string_200 "%s %05.5s %05.5s %01.1s" common:csr_string_200 \
+				adt_PreDNroTrn tipo_produc headOrBodyTele
+										
+			CALL csr:f_saaddpl DSC:PICanulacion_tran common:csr_string_200
+			TranAnul_cant = TranAnul_cant + 1
+		END IF
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+  		IF (CDSRETVAL != 0) THEN
+    		CDS ENDSELECT DSC:tlr:jnl_context
+    		BREAK
+  		END IF
+	LOOP
+	ImporteRestoNC = ImporteTotalNC
+END SUB
+
+/*******/

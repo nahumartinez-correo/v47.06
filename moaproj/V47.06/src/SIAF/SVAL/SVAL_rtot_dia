@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:siaf:SVAL_rtot_dia
+* NOMBRE
+*   OFB:siaf:SVAL_rtot_dia
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafSVAL.h"
+
+SUB siaf:SVAL_rtot_dia
+    IF (LASTKEY == 0x0190) THEN
+      RETURN (-2)
+    END IF 
+    tlr:INDtots_append = OFB:TOTScustom_clear
+    tlr:jnl_bus_date = tlr:bus_date
+    tlr:jnl_sequence = tlr:sequence
+    CLEARFIELD hcomm:tran_status 
+    //CDS BEGINWORK 
+    
+    call siaf:MISCcustom_clear
+    //call tlr:TOTSwait
+    //CALL tlr:TOTScommit
+    //call tlr:TOTSwait
+    //IF (RETVAL != 0) THEN
+      //RESET TRAN 
+    //END IF 
+    UNDISPLAY SCRNsin_datos 
+    fecha_proceso = common:system_date
+    FYIMSG LST:common:fyimsg_list,"(L) REGENERANDO TOTALES..."
+    
+    ;SMC modifico el select para incluir las 99023 (fin de sesion)
+    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjnl_write WHERE \
+    	tlr:jnl_branch == FLD:op:op_branch_id && \
+    	tlr:jnl_operator == FLD:op:op_operator_id && \
+    	tlr:jnl_bus_date == FLD:tlr:bus_date && \
+		tlr:jnl_status < 100 && tlr:jnl_sequence_corr < 1 && \
+		(tlr:INDtots_append != 0 || (siaf:codigo_siaf == 99023 && post:rechazoDiferido != 1))
+
+    CDS FINDFIRST DSC:tlr:CONjnl_write NOLOCK 
+    WHILE (CDSRETVAL == 0) THEN
+		CDS CLEARBUFFER DSC:tlr:CONtots_write
+        call siaf:CDSdatos_rjournal
+        select (siaf:codigo_siaf)
+            case 99023
+                /*SMC Control Caja
+                 Se agrega rutina de grabacion de Totales Para todas las transacciones */
+                let tlr:INDtots_append_gral = LST:tes:TOTS_CCGRAL
+                CALL CSR:total_list(tlr:INDtots_append_gral,DSC:tlr:CONtots_write,tlr:jnl_tran_flags,0)
+                clearfield tlr:INDtots_append_gral
+                clearfield siaf:codigo_siaf
+                break
+            case else
+              INDscratch = OFB:tlr:TOTSopen_day
+              IF (tlr:INDtots_append != INDscratch) THEN
+                INDscratch = OFB:tlr:TOTSclose_day
+                IF (tlr:INDtots_append != INDscratch) THEN
+                  INDscratch = OFB:TOTScustom_clear
+                  IF (tlr:INDtots_append != INDscratch) THEN
+                     CALL CSR:total_list(tlr:INDtots_append,DSC:tlr:CONtots_write,tlr:jnl_tran_flags,0)
+                  END IF 
+                END IF 
+              END IF 
+              break
+         end select
+        CDS FINDNEXT DSC:tlr:CONjnl_write NOLOCK 
+	END WHILE 
+	tlr:INDtots_append = OFB:TOTSappend
+	CDS BEGINWORK 
+	CALL tlr:TOTScommit
+	CALL tlr:TOTSwait
+	/*
+	tlr:INDtots_append = OFB:TOTSappend_dos
+	CDS BEGINWORK 
+	CALL tlr:TOTScommit
+	CALL tlr:TOTSwait
+
+	tlr:INDtots_append = OFB:TOTSappend_gir
+	CDS BEGINWORK 
+	CALL tlr:TOTScommit
+	CALL tlr:TOTSwait
+	*/
+END SUB
+
+/*******/

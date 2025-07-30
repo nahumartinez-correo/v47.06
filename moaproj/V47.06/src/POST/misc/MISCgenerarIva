@@ -1,0 +1,651 @@
+/****o* Facturación/OFB:post:MISCgenerarIva
+* NOMBRE
+*   OFB:post:MISCgenerarIva
+* DESCRIPCION
+*   ESta rutina desglosa y graba el importe sin iva y del iva en la tabla AuxIva, que se usa
+*   luego para mostrar en la factura los netos gravados.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:MISCborrarIva
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenerarIva
+	LOCAL loc_cuenta LIKE post:cantidad
+	LOCAL loc_impSinIva LIKE siaf:importe
+	LOCAL loc_importe LIKE siaf:importe
+	LOCAL loc_tasa LIKE post:adt_serv_aliciva
+	LOCAL loc_cantidad LIKE post:cantidad
+	LOCAL NRO_ITEM LIKE post:cantidad
+	LOCAL ind LIKE siaf:i
+	LOCAL loc_imp_iva_bis LIKE post:ImporteIva_bis
+	
+	IF (siaf:adt_tran_afec_efvo == "+" || siaf:adt_tran_afec_efvo == "-") && \
+		 ((cli_tipo == 2) || (cli_tipo == CLIUP) || (cli_tipo == CLIMED)) && \
+		 (PreDForFis.NUMCHARS > 0 || siaf:codigo_siaf == 99019 || siaf:codigo_siaf == 99160) THEN
+	
+		loc_impSinIva = 0
+		SobreTasaIva = 0
+		
+		//gpb:PS10459 - PS10253 Recupero campos post:recup_cantidad ,post:recup_cantidad2 ,post:recup_tarifa ,post:recup_descuento de la PresuDet 
+		//para confrontar contra post:cantidad ,cantidad2 ,tarifa ,descuento
+		CALL post:CDSrecuperaPresuDet
+		
+		INIT 22,1
+		SELECT (siaf:adt_tran_fliatran)
+			CASE "CSE" //ENCOMIENDAS
+			#ifdef SUCU_VIRTUAL
+			CASE "NET"	//CARTA ELECTRONICA
+			#endif
+			CASE "EIV"	//ENCOMIENDA INTERNACIONAL VIRTUAL
+			CASE "CSP" //POSTALES
+			CASE "CMB" // COMBOS
+		
+				//gpb:PS10459 Recuperacion del valor del campo post:cantidad de la PresuDet
+				IF (post:cantidad != post:recup_cantidad) THEN
+					post:cantidad = post:recup_cantidad
+				END IF
+				
+				//gpb:PS10459 Recuperacion del valor del campo post:tarifa de la PresuDet
+				IF (post:tarifa != post:recup_tarifa) THEN
+					post:tarifa = post:recup_tarifa
+				END IF
+				
+				loc_importe = tarifa
+				loc_tasa = adt_serv_aliciva
+				loc_cantidad = cantidad
+	          
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+	
+				loc_importe = imp_bloques
+				
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+	
+				IF (post:promo_imp_srv_tot > 0 ) THEN
+					loc_importe = post:promo_imp_srv_tot
+					
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					//SC 50170-FACTURACION
+					ImporteSinIva_bis = ImporteSinIva_bis * -1
+					ImporteIva_bis = ImporteIva_bis * -1
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+				END IF
+	
+				IF (post:promo_imp_blq_tot > 0 ) THEN
+					loc_importe = post:promo_imp_blq_tot
+					
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					//SC 50170-FACTURACION
+					ImporteSinIva_bis = ImporteSinIva_bis * -1
+					ImporteIva_bis = ImporteIva_bis * -1
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+				END IF
+
+				//gpb:PS10253 Recuperacion del valor del campo post:descuento de la PresuDet
+				IF (post:descuento != post:recup_descuento) THEN
+					post:descuento = post:recup_descuento
+				END IF            
+	        
+				IF (post:descuento > 0) THEN
+					loc_importe = descuento
+					
+					;Si la Tasa del Servicio Pedido por Nina PJM 22-02-1998
+					loc_cantidad = 1
+					
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					;PJM 15-02-1999 pedida por Nina par que los descuentos resten
+					//SC 50170-FACTURACION 
+					ImporteSinIva_bis = ImporteSinIva_bis * -1
+					ImporteIva_bis = ImporteIva_bis * -1
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+				END IF
+	  	    
+				IF (estado_presu == 3 && LASTKEY == RT_ESC) THEN
+					/*NI 50324 - Es dcto de bien de cambio
+					IF (post:DctoCM_bc > 0) THEN
+						INIT 22,1
+						loc_importe  = (siaf:importe * post:DctoCM_bc) / 100
+						INIT 22,0
+						//SC 50170 - FACTURACION
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+						CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+					END IF*/
+						
+					IF (post:Dcto_CliMed > 0) THEN
+						INIT 22,1
+						loc_importe = (tarifa * post:Dcto_CliMed) / 100
+						INIT 22,0
+						
+						//SC 50170
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+						
+						//SC 50170 - FACTURACION
+						ImporteSinIva_bis = ImporteSinIva_bis * -1
+						ImporteIva_bis = ImporteIva_bis * -1
+						CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+					END IF
+				END IF
+	
+				//gpb:PS10459 Recuperacion del valor del campo post:cantidad de la PresuDet
+				IF (post:cantidad != post:recup_cantidad) THEN
+					post:cantidad = post:recup_cantidad
+				END IF
+					
+				/*MFM*/loc_cantidad = post:cantidad
+				IF (post:cant_opc > 0) THEN
+					loc_cuenta = 0		
+					DO
+						/*MFM*/
+						;PS9490
+						CALL post:MISCopcCantPart(post:cod_opc[loc_cuenta], post:tipo_produc, loc_cantidad)
+						IF (retval == 1) THEN
+							loc_importe = cos_opc[loc_cuenta]
+							loc_tasa = ali_opc[loc_cuenta]
+							
+							//SC 50170-FACTURACION
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+								
+							//SC 50170-FACTURACION
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+								
+							IF (post:promo_imp_opc_tot[loc_cuenta] > 0) THEN
+								loc_importe = post:promo_imp_opc_tot[loc_cuenta]
+								
+								//SC 50170-FACTURACION
+								CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+								
+								//SC 50170-FACTURACION
+								ImporteSinIva_bis = ImporteSinIva_bis * -1
+								ImporteIva_bis = ImporteIva_bis * -1
+								CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+							END IF
+	            		 
+							IF (estado_presu == 3 && LASTKEY == RT_ESC) THEN
+								IF (post:Dcto_CliMed > 0 && post:bonifCM_opc[loc_cuenta] == "S") THEN
+									INIT 22,1
+									loc_importe = (post:cos_opc[loc_cuenta] * post:Dcto_CliMed) / 100
+									INIT 22,0
+									//SC 50170
+									CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+									ImporteSinIva_bis = ImporteSinIva_bis * -1
+									ImporteIva_bis = ImporteIva_bis * -1
+									CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+								END IF
+							END IF
+						ELSE
+
+							WHILE (loc_cantidad >= 1)
+								/*loc_importe = cos_opc[loc_cuenta] */
+								loc_importe = cos_opc[loc_cuenta] / cantidad
+								loc_tasa = ali_opc[loc_cuenta]
+								/*loc_cantidad = 1*/
+								/*CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad)*/
+								
+								//SC 50170-FACTURACION
+								CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+								
+								//SC 50170-FACTURACION
+								CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+				  	
+								IF (post:promo_imp_opc_tot[loc_cuenta] > 0) THEN
+									loc_importe = post:promo_imp_opc_tot[loc_cuenta] / cantidad
+									
+									//SC 50170-FACTURACION
+									CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+									
+									//SC 50170-FACTURACION
+									ImporteSinIva_bis = ImporteSinIva_bis * -1
+									ImporteIva_bis = ImporteIva_bis * -1
+									CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+								END IF
+								loc_cantidad = loc_cantidad - 1
+							END WHILE
+			 	
+							IF (estado_presu == 3 && LASTKEY == RT_ESC) THEN
+								IF (post:Dcto_CliMed > 0 && post:bonifCM_opc[loc_cuenta] == "S") THEN
+									INIT 22,1
+									loc_importe = (post:cos_opc[loc_cuenta] * post:Dcto_CliMed) / 100
+									INIT 22,0
+									//SC 50170
+									CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+									ImporteSinIva_bis = ImporteSinIva_bis * -1
+									ImporteIva_bis = ImporteIva_bis * -1
+									CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+								ENDIF
+							END IF
+						END IF
+						/*FIN MFM*/
+							
+						loc_cuenta = loc_cuenta + 1
+							
+						IF (loc_cuenta == post:cant_opc)
+							BREAK
+						ELSE
+							//gpb:PS10459 Recuperacion del valor del campo post:cantidad de la PresuDet
+							IF (post:cantidad != post:recup_cantidad) THEN
+								post:cantidad = post:recup_cantidad
+							END IF
+								
+							/*MFM - Restauro la cantidad para que vuelva a entrar al while y
+							calcule el importe sin iva del siguiente opcional*/
+							loc_cantidad = post:cantidad
+						END IF
+					LOOP
+				END IF
+			BREAK
+			CASE "CME" //MERCHA
+				//loc_importe = siaf:importe + imp_bloques
+				loc_importe = siaf:importe
+				loc_tasa = adt_prodvs_aliciva
+				
+				//gpb:PS10459 Recuperacion del valor del campo post:cantidad2 de la PresuDet
+				IF (post:cantidad2 != post:recup_cantidad2) THEN
+					post:cantidad2 = post:recup_cantidad2
+				END IF
+					
+				loc_cantidad = cantidad2
+				
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa,  ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+				
+				IF (post:fld_promo_imp > 0) THEN
+					loc_importe = fld_promo_imp
+					
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					//SC 50170-FACTURACION
+					ImporteSinIva_bis = ImporteSinIva_bis * -1
+					ImporteIva_bis = ImporteIva_bis * -1
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+				END IF
+	            
+				IF (estado_presu == 3 && LASTKEY == RT_ESC) THEN
+					//NI 50324 - Es dcto de bien de cambio
+					IF (post:DctoCM_bc > 0) THEN
+						INIT 22,1
+						loc_importe = (siaf:importe * post:DctoCM_bc) / 100
+						INIT 22,0
+						//SC 50170 - FACTURACION
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+						ImporteSinIva_bis = ImporteSinIva_bis * -1
+						ImporteIva_bis = ImporteIva_bis * -1
+						CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+					ELSE
+						IF (post:Dcto_CliMed > 0) THEN
+							INIT 22,1
+							loc_importe = (siaf:importe * post:Dcto_CliMed) / 100
+							INIT 22,0
+							//SC 50170 - FACTURACION
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+							ImporteSinIva_bis = ImporteSinIva_bis * -1
+							ImporteIva_bis = ImporteIva_bis * -1
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+						ENDIF
+					END IF
+				END IF
+			BREAK
+			CASE "CSV" //SERVICIOS VARIOS
+				/*Carina - genera el iva para la transaccion de templates*/
+				IF (siaf:codigo_siaf == 6900) THEN //TEMPLATES
+					CALL post:CDSgeneraIva_tmpl
+				ELSE
+					//loc_importe = siaf:ImporteSinSello + imp_bloques
+					loc_importe = siaf:ImporteSinSello
+					
+					//gpb: SC50368 - AUT-1692
+					IF (siaf:codigo_siaf == 7210) THEN
+						loc_tasa = post:TasaIva
+					ELSE
+						loc_tasa = siaf:adt_mot_aliciva
+					END IF
+						
+					loc_cantidad = 1
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					//Tratamiento cliente medio
+					IF (siaf:codigo_siaf == 6800 && (post:Dcto_CliMed > 0 || post:Dcto_CliMedAux > 0) && post:estado_presu == 3 && post:tran_presu_est == "M") THEN
+						post:PreDNroTrnAsoc = post:PreDNroTrn
+						CALL CDSTrnDctoCMAnt(6800)
+						
+						//SC 50170-FACTURACION ???
+						ImporteSinIva_bis = ImporteSinIva_bis - siaf:ImporteSinIva
+						ImporteIva_bis = ImporteIva_bis - (siaf:ImporteConIva - siaf:ImporteSinIva)
+					END IF
+							
+					//SC 50170-FACTURACION
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+				END IF
+			BREAK
+			CASE "TES" //TESORERIA
+				;loc_tasa  = tes:adt_espv_aliciva
+				loc_impSinIva = 0
+				IF (RegeneraIva == "S" ) THEN
+					/* Se cambia la estructura anterior (vector de 14 posiciones:
+					una posicion para cada subespecie) por una nueva que no
+					limita la cantidad de subespecies por especie */
+					//******************************************************************************/
+					IF (NotaCredito == "S") THEN
+						CDS SELECT FROM DSC:tes:AuxEspV_tbl BECOMES DSC:tes:AuxEspV_ctx \
+							WHERE tes:adt_evaux_suc == op:op_branch_id && \
+							tes:adt_evaux_op == op:op_operator_id && \
+							tes:adt_evaux_tesoro == "N" && \
+							tes:adt_evaux_prestran == tes:adt_evaux_prestran && \
+							post:jnl_sequence_dire == "D"
+							
+						//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+						/*tes:adt_evaux_codigo == tes:espv_cod && \*/
+					ELSE
+						CDS SELECT FROM DSC:tes:AuxEspV_tbl BECOMES DSC:tes:AuxEspV_ctx \
+							WHERE tes:adt_evaux_suc == op:op_branch_id && \
+							tes:adt_evaux_op == op:op_operator_id && \
+							tes:adt_evaux_tesoro == "N" && \
+							tes:adt_evaux_prestran == tes:adt_evaux_prestran
+							//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+							/*tes:adt_evaux_codigo == tes:espv_cod && \*/
+					END IF
+					//*****************************************************************************/
+				ELSE
+					IF (tes:EscVta == "S") THEN
+						CDS SELECT FROM DSC:tes:AuxEspV_tbl BECOMES DSC:tes:AuxEspV_ctx \
+							WHERE tes:adt_evaux_suc == op:op_branch_id && \
+							tes:adt_evaux_op == op:op_operator_id && \
+							tes:adt_evaux_tesoro == "N" && \
+							tes:adt_evaux_prestran == post:PreDNroTrn
+							//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+							/*tes:adt_evaux_codigo == tes:espv_cod && \*/
+					ELSE
+						/* Se cambia la estructura anterior (vector de 14 posiciones:
+						una posicion para cada subespecie) por una nueva que no
+						limita la cantidad de subespecies por especie */
+						CDS SELECT FROM DSC:tes:AuxEspV_tbl BECOMES DSC:tes:AuxEspV_ctx \
+							WHERE tes:adt_evaux_suc == op:op_branch_id && \
+							tes:adt_evaux_op == op:op_operator_id && \
+							tes:adt_evaux_tesoro == "N" && \
+							tes:adt_evaux_prestran == 0
+							//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+							/*tes:adt_evaux_codigo == tes:espv_cod && \*/
+					END IF
+	  		END IF
+	         
+				CDS FINDFIRST DSC:tes:AuxEspV_ctx LOCK
+				LET lib:err_retval = CDSRETVAL
+					
+				DO
+					IF (lib:err_retval != 0) THEN
+						BREAK
+					END IF
+					
+					CDS EXTRACT DSC:tes:AuxEspV_ctx ALL
+					
+					IF (tes:adt_evaux_importe > 0) THEN
+						//loc_importe = tes:adt_evaux_importe + imp_bloques
+						loc_importe = tes:adt_evaux_importe
+						loc_importe = tes:adt_evaux_importe
+						loc_cantidad = tes:adt_evaux_cantidad
+						loc_tasa = tes:adt_espv_aliciva
+						
+						//SC 50170-FACTURACION
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+						
+						//SC 50170-FACTURACION
+						CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+					END IF
+						
+					IF (post:fld_promo_imp > 0) THEN
+						loc_importe = fld_promo_imp
+						
+						//SC 50170-FACTURACION
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+						
+						//SC 50170-FACTURACION
+						ImporteSinIva_bis = ImporteSinIva_bis * -1
+						ImporteIva_bis = ImporteIva_bis * -1
+						CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+					END IF
+					
+					IF (estado_presu == 3 && LASTKEY == RT_ESC) THEN
+						IF (post:Dcto_CliMed > 0 && tes:adt_espv_bonifCM == "S") THEN
+							INIT 22,1
+							loc_importe = (tes:adt_evaux_importe * post:Dcto_CliMed) / 100
+							INIT 22,0
+							
+							//SC 50170
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, 1,0)
+							ImporteSinIva_bis = ImporteSinIva_bis * -1
+							ImporteIva_bis = ImporteIva_bis * -1
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+						END IF
+					END IF
+					
+					//CDS UNLOCK DSC:tes:AuxEspV_ctx
+					CDS FINDNEXT DSC:tes:AuxEspV_ctx LOCK
+					LET lib:err_retval = CDSRETVAL
+				LOOP
+					
+				CDS UNLOCK DSC:tes:AuxEspV_ctx
+				CDS ENDSELECT DSC:tes:AuxEspV_ctx
+			BREAK
+			CASE "TAV" //ACTIVIDADES VARIAS			
+				SELECT (siaf:codigo_siaf)
+					CASE 99008
+						loc_importe = siaf:importe
+						loc_tasa = adt_serv_aliciva
+						//SC 50170-FACTURACION
+						CALL MISCdesglosaIva(loc_importe, loc_tasa, cantidad,0)
+						//SC 50170-FACTURACION
+						CALL CDSUpdate_ImpreIva(loc_tasa,  ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)					
+						INIT 22,0
+						RETURN 0
+					CASE 99200  // reempl. chq rech
+					CASE 99240	// reempl. cheq rob
+					CASE 99242  // reempl. chq rob. Empresa Recaudadora
+						IF (siaf:siaf_status != HOST_REJECTED) THEN
+							loc_importe = post:comision_rechazo
+							loc_cantidad = 1
+							loc_tasa = post:adt_serv_aliciva
+							
+							//SC 50170-FACTURACION
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+							
+							//SC 50170-FACTURACION
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+						END IF
+						INIT 22,0
+						RETURN 0
+					CASE 99020 //Entrega de Piezas a Clientes en Ventanilla
+						CALL MISCgenerarIva_EP
+						INIT 22,0
+						RETURN 0
+					CASE 99124 
+						IF (siaf:siaf_status != HOST_REJECTED) THEN
+							loc_importe = post:EnPol_ImpPresAd
+							loc_cantidad = 1
+							loc_tasa = post:EnPol_TasaPresAd
+							
+							//SC 50170-FACTURACION
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+							
+							//SC 50170-FACTURACION
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+							
+							loc_importe = post:EnPol_ImpGestEn
+							loc_cantidad = 1
+							loc_tasa = post:EnPol_TasaGestEn
+							//SC 50170-FACTURACION
+							CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+							
+							//SC 50170-FACTURACION
+							CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+						END IF
+						INIT 22,0
+						RETURN 0
+					CASE 99480
+						loc_importe = siaf:importe
+						loc_cantidad = 1
+						loc_tasa = post:adt_serv_aliciva
+					BREAK
+					CASE 6680
+						loc_importe = post:adt_pweb_tarifa * post:web_tmp_cantidad
+						loc_cantidad = 1
+						loc_tasa = post:adt_pweb_iva
+					BREAK
+					CASE ELSE
+						// no hago nada
+						INIT 22,0
+						RETURN 0
+				END SELECT			
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+			BREAK
+			CASE "SVC" //SERVICIOS VARIOS CORREO
+				//loc_importe = siaf:importe + imp_bloques
+				loc_importe = siaf:importe
+				loc_tasa  = adt_serv_aliciva
+					
+				SELECT (siaf:codigo_siaf)
+					CASE 18201
+						loc_cantidad = 1
+					BREAK
+					CASE 18301
+					CASE 18501
+						//loc_importe = siaf:importe + imp_bloques
+						loc_importe = siaf:importe
+						loc_cantidad = cantidad
+					BREAK
+					CASE ELSE
+						loc_cantidad = cantidad
+					BREAK
+				END SELECT
+	            
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa,  ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+				
+				IF (post:fld_promo_imp > 0) THEN
+					loc_importe = fld_promo_imp
+					
+					//SC 50170-FACTURACION
+					CALL MISCdesglosaIva(loc_importe, loc_tasa, loc_cantidad,0)
+					
+					//SC 50170-FACTURACION
+					ImporteSinIva_bis = ImporteSinIva_bis * -1
+					ImporteIva_bis = ImporteIva_bis * -1
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva_bis, ImporteIva_bis, SobreTasaIva)
+				END IF
+			BREAK
+			CASE "CSM" // Giros
+				CALL giros:MISC_CSM_IVA
+			BREAK
+			CASE "PCL"
+				IF (siaf:codigo_siaf == 99019) THEN /*Bonificación a Unidades Postales*/
+					ind = 0
+					loc_cantidad = cantidad
+					
+					WHILE (ind < 20 && docfis_tasa_por[ind].NUMCHARS != 0)
+						//SC 50170
+						//loc_importe = docfis_importe[ind] - docfis_imp_siva[ind]
+						;PS9756
+						IF (docfis_tasa_por[ind] > 0) THEN
+							loc_imp_iva_bis = docfis_importe[ind] - docfis_imp_siva4[ind]
+							CALL CDSUpdate_ImpreIva(docfis_tasa_por[ind], docfis_imp_siva4[ind], loc_imp_iva_bis, SobreTasaIva)
+						ELSE
+							loc_imp_iva_bis = docfis_importe[ind] - docfis_imp_siva[ind]
+							CALL CDSUpdate_ImpreIva(docfis_tasa_por[ind], docfis_imp_siva[ind], loc_imp_iva_bis, SobreTasaIva)
+						END IF
+						ind = ind + 1
+					END WHILE
+				END IF
+			    
+				IF (siaf:codigo_siaf == 99160) THEN /*Interes Cobrado por financiacion*/
+					//SC 50170 No es necesario porque en la factura
+					//no sale como un item mas  sino que se muestra despues del SUBTOTAL
+					CALL CDSUpdate_ImpreIva(post:iva_Porcentaje, post:jnl_interes_diferido, post:jnl_iva_int_dif, 0)
+				END IF
+			  
+			  //gpb:NI50479
+				//IF (siaf:codigo_siaf == 99300) THEN /*Descuento cliente medio*/
+				IF (siaf:codigo_siaf == 99300 || siaf:codigo_siaf == 30300) THEN /*Descuento cliente medio - cliente medio ped*/
+					/*loc_importe = post:ImporteConIva - post:ImporteSinIva
+					CALL CDSUpdate_ImpreIva(post:AliTrnCM, ImporteSinIva, loc_importe, 0)*/
+					//SC 50170
+					CALL CDSUpdate_ImpreIva(post:AliTrnCM, ImporteSinIva_bis, ImporteIva_bis, 0)
+				END IF
+
+				IF (siaf:codigo_siaf == 99095) THEN //*Descuento sur postal*/
+					loc_tasa = adt_prodvs_aliciva
+					CALL CDSUpdate_ImpreIva(loc_tasa, ImporteSinIva, ImporteIva, 0)
+					//SC 50170 No es necesario porque siempre tiene alicuota 0,00 y ademas no
+					//está desglosando el iva con la MISCDesglosoIva con lo cual generaba problemas.
+				END IF
+			   
+				IF (siaf:codigo_siaf == 99350) THEN /*Descuento cliente medio OC*/
+					//loc_importe = post:ImporteConIva - post:ImporteSinIva
+					//CALL CDSUpdate_ImpreIva(post:AliTrnCM, ImporteSinIva, loc_importe, 0)
+					//SC 50170
+					CALL CDSUpdate_ImpreIva(post:AliTrnCM, ImporteSinIva_bis, ImporteIva_bis, 0)
+				END IF
+			   
+				IF (siaf:codigo_siaf == 99511) THEN //Indemnizacion de Servicio por Alicuota
+					siaf:afecta_efectivo = "+"
+					CALL CDSUpdate_ImpreIva(post:AliTrnCM, post:ImporteSinIva_bis, post:ImporteIva_bis, 0)
+				END IF
+				
+				IF (siaf:codigo_siaf == 99513) THEN //Descuento cliente medio OC NC
+					siaf:afecta_efectivo = "-"
+					CALL CDSUpdate_ImpreIva(post:AliTrnCM, post:ImporteSinIva_bis, post:ImporteIva_bis, 0)
+				END IF
+			   
+			BREAK
+			CASE "CST" //TELEGRAFIA
+				CALL tele:MISCgeneraIva_CST
+			BREAK
+			CASE "VAP" //VUELTA A PAGAR
+				//loc_importe = siaf:importe + imp_bloques
+				loc_importe = siaf:importe
+				loc_tasa = adt_serv_aliciva
+				
+				//SC 50170-FACTURACION
+				CALL MISCdesglosaIva(loc_importe, loc_tasa, cantidad,0)
+				
+				//SC 50170-FACTURACION
+				CALL CDSUpdate_ImpreIva(loc_tasa,  ImporteSinIva_bis, ImporteIva_bis ,SobreTasaIva)
+			BREAK			
+		END SELECT			
+		INIT 22,0
+	END IF
+	
+END SUB
+
+/*******/

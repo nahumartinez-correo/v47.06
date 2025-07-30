@@ -1,0 +1,154 @@
+/****o* Sesión Correo/OFB:post:MISCcapturo
+* NOMBRE
+*   OFB:post:MISCcapturo
+* DESCRIPCION
+* Esta rutina se encarga de capturar los números para la impresion de factura / NC. 
+* Además mantiene actualizada en la 99023 los números y los rescata en caso de caída
+* En caso de Autoimpresión, genera los números correspondientes.                    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  OFB:post:MISCbloqueDir,OFB:post:MISCbloqueRev
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcapturo(leyenda, p_ticket)
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 22/04/99]   Esta rutina se encarga de capturar los números para la impresion de factura / NC. */
+   /* [PAW - 13/05/99]   Además mantiene actualizada en la 99023 los números y los rescata en caso de caída*/
+   /* [PAW - 12/08/99]   En caso de Autoimpresión, genera los números correspondientes.                    */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+	local centAux like common:br_CEC
+	local modoAux like modoPrt
+	local l_retval like lib:err_retval
+
+	captuNc = "S"
+	protfield DocInic
+	protfield DocFin
+	if (enSesion != "S")
+		estado_presu = 1  // [PAW] --> se perdia al hacer las directas.
+	endif
+
+	//50249
+	if (importe_sesion > 0 || post:OperacionNC)
+		call MISCleyenda(leyenda)
+		clearfield DocInicNC
+		clearfield DocFinNC
+		centAux = common:br_CEC
+		Call PREScaptura
+		clearfield adt_DocInic
+		call post:CDStraeNum
+		if (adt_DocInic.numchars != 0)
+			DocInicNC = adt_DocInic
+			DocFinNC = adt_DocFin
+;			protfield DocInicNC
+;			protfield DocFinNC
+;			setvaldone DocInicNC
+;			setvaldone DocFinNC
+;			LASTKEY = RT_ESC
+;			while (LASTKEY == RT_ESC)
+;				popup post:SCRNfact_sinsesion PREScaptura, PCOLcaptura
+;			end while
+		else
+			if (estAnul == "F2c")
+				call CDScentEmisMan
+				common:br_CEC = admin:adt_br_CEC_manu
+				unprotfield DocInicNC
+				unprotfield DocFinNC
+				LASTKEY = RT_ESC
+				while (LASTKEY == RT_ESC)
+					popup post:SCRNfact_sinsesion PREScaptura, PCOLcaptura, SVALcaptura
+				end while
+				protfield DocInicNC
+				protfield DocFinNC
+				if (revTicket == "S")
+					Fprint nro_impre "%08.8s", substr(post:DocInicNC,6,13)
+				endif
+				Call post:MISCcontrol_fac_save
+				call post:CDSgrabaNum(captuNc)
+			else
+				call MISCleeEstado(FACTURAS)
+				l_retval = retval
+				if (p_ticket == "S" && estAnul != "F2c" && l_retval == VERDAD)
+					call MISCcalcNumDocs("S")
+				else
+					if (p_ticket == "S")
+						post:Tipo_Formulario = FACTURA_B
+					endif
+					call MISCcalcNumDocs("N")
+					if (p_ticket == "S" && l_retval == VERDAD)
+						post:Tipo_Formulario = TICKET
+					endif
+				endif
+				call MISCleeEstado(NOTACRED)
+				if (p_ticket == "S" && estAnul != "F2c" && retval == FALSO)
+					Fprint DocInicNC "%1.1s%04.4s%08.8s0" "4",\
+					substr(op:op_branch_id,1,4),nro_impre
+					DocFinNC  = DocInicNC
+				endif
+			endif
+			clearfield NotaCredito
+		endif
+		common:br_CEC = centAux
+	else
+		DocInicNC = 0
+		DocFinNC = 0
+		clearfield DocFiscal
+		clearfield p_ticket
+	endif
+
+	clearfield captuNc
+	DocInic = DocInicNC
+	DocFin = DocFinNC
+	refresh DocInic
+	refresh DocFin
+	unprotfield DocInic
+	unprotfield DocFin
+	clearfield recienCaido
+	if (post:estAnul == "F2c") then
+		;Factura Manual
+		//Si la transaccion es la de Cobranza a Cliente Medio, e involucra una factura con saldo positivo
+		//debo imprimir un recibo que contiene el numero de factura, por lo que debe imprimirse despues de
+		//la impresion de la factura. (esto lo indica el flag (post:ImprimeRecCob)
+		if (post:ImprimeRecCob) then
+			Call post:DOCS99460
+		end if
+		//Si la transaccion es Adelanto tambien viene informado en la presu en ModalidadT
+		if (post:ModalidadAT)
+			Call post:DOCS99430
+		end if		
+		if (post:ImprimeAcuseRec) then
+			Call post:DOCSacuse_recibo
+		end if
+		if (post:OperacionNC) then
+			Call post:DOCSacuse_reciboNC
+		end if
+		;Actualizo las tablas stockp y StockpCDD con el número de factura
+        call post:CDSstockp_CDD_up_Fac
+        ;SC50288 Imprime reportes de rendición de CREM
+        call post:DOCSreportesCREM	
+	end if
+	; ya marco el docAnulado (el que aparecera en la leyenda de la posible NC)
+	call MISCleeEstado(NOTACRED)
+	if (retval == FALSO)
+		if (p_ticket == "S")
+			Tipo_Formulario = TICKET
+			DocFiscal = "TICKET"
+		endif
+		docAnulado = post:DocInic
+		call post:CDSgrbEstado("")
+	endif
+END SUB
+
+/*******/

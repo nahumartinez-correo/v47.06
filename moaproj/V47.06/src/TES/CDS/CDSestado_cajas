@@ -1,0 +1,82 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSestado_cajas
+* NOMBRE
+*   OFB:tes:CDSestado_cajas
+* DESCRIPCION
+*  Este OFB tiene como finalidad encontrar los cajeros cuyas cajas todavia
+*  no hayan sido  cerradas (verificando la marca de cierre en la tabla 
+*  rend_caj). 								
+* ENTRADAS
+*	fecha_guia: fecha contra la cual se compara
+*	modo_compara: que tipo de comparacion se realizara con la fecha.
+*	fecha:	-BEFORE: anterior, -IQUAL: igual, -SAME_OR_BEFORE: anterior o igual
+* SALIDAS
+*	RETVAL:  (-2): no se pudo leer la tabla	
+*	           0 : no hay cajeros sin rendir
+*	           n : cantidad de cajeros sin rendir (n es entero posit.)
+*		       Si hay cajeros sin rendir entonces en el vector
+*		       texto_aux[1]...[n] estan los cod. de operador.	
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSestado_cajas(fecha_guia,modo_compara)
+	local i like siaf:i 		// indice para el vector
+
+	if (modo_compara == "BEFORE") then // la fechas son anteriores
+		CDS SELECT tes:rend_op_id,tes:rend_marca_cierre,tes:rend_fecha \
+		FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context \
+		WHERE tes:rend_suc_id == op:op_branch_id && \
+		      tes:rend_fecha < fecha_guia
+	end if
+	if (modo_compara == "IQUAL") then // la fecha debe ser la misma
+		CDS SELECT tes:rend_op_id,tes:rend_marca_cierre,tes:rend_fecha \
+		FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context \
+		WHERE tes:rend_suc_id == op:op_branch_id && \
+		      tes:rend_fecha == fecha_guia
+	end if
+	if (modo_compara == "SAME_OR_BEFORE") then
+		CDS SELECT tes:rend_op_id,tes:rend_marca_cierre,tes:rend_fecha \
+		FROM DSC:tes:rend_caj_table BECOMES DSC:tes:rend_caj_context \
+		WHERE tes:rend_suc_id == op:op_branch_id && \
+		      tes:rend_fecha <= fecha_guia
+	end if
+	CDS FINDFIRST DSC:tes:rend_caj_context NOLOCK
+	let lib:err_retval = cdsretval
+	if (lib:err_retval == -801) then
+	    if (modo_compara == "SAME_OR_BEFORE") then
+		errmsg common:errmsg_list, \
+			"No hay registros en la tabla de Rendicion"
+		CDS ENDSELECT DSC:tes:rend_caj_context
+		return (-2) // la opcion igual o anterior contempla todo reg.
+	    end if
+	    CDS ENDSELECT DSC:tes:rend_caj_context
+	    return (0) // no encontro reg. pero no significa que no haya.
+	end if
+
+	let i = 0
+	do
+		CDS EXTRACT DSC:tes:rend_caj_context ALL
+		if (tes:rend_marca_cierre != "X" && tes:rend_fecha != "") then
+			let i = i + 1
+			let texto_aux[i] = tes:rend_op_id
+		end if
+		CDS FINDNEXT DSC:tes:rend_caj_context NOLOCK
+		let lib:err_retval = cdsretval
+		if (lib:err_retval == -801) then
+			break
+		end if
+		clearfield tes:rend_marca_cierre
+		clearfield tes:rend_fecha
+		clearfield tes:rend_op_id
+	loop
+	CDS ENDSELECT DSC:tes:rend_caj_context
+	return (i)
+END SUB
+
+/*******/

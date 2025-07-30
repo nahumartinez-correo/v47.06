@@ -1,0 +1,310 @@
+/****o* Pendientes de agrupación/OFB:post:CDScargaDetSaca
+* NOMBRE
+*   OFB:post:CDScargaDetSaca
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaDetSaca
+	/* Carga DetTmp con las encomiendas o contenedores que no estan     */
+	/* en ninguna Saca.-                               */
+	/* May. 1998 - B. Petrella -                       */
+	/* Req. 462: Que los T&T estén ordenados en la Guía de Cont. */
+	/* y Sacas - Dic. 1998 - B. Petrella */
+	/* MFM - Agosto 2000 - Modificaciones: se actualizan los nombres de los campos de 
+	SacasTmp*/	
+	LOCAL marca LIKE idx
+	LOCAL Dev_CDSretval LIKE lib:err_retval
+	LOCAL aux_retval LIKE lib:err_retval
+
+	marca = 0
+
+	/* Resguardo peso_en_kgs */
+	SWAPDUP peso_en_kgs
+	SWAPDUP siaf:jnl_codigo_siaf
+
+	/* Para controlar que por lo menos haya encontrado una pieza */
+	LET idx = 0
+	LET orden = 1
+
+	/* datos para el select */
+	IF (post:reimpresion != "S") THEN /* Reimpresión Oct. 1999*/
+		CLEARFIELD post:adt_codseq_nro
+		CLEARFIELD post:jnl_guia_saca
+	ELSE
+		LET post:adt_relMod_grucorte = post:jnl_grucorte_cod
+	ENDIF
+	CLEARFIELD tlr:jnl_sequence_corr
+	LET post:adt_corteop_saca = "S"
+	LET post:adt_corteop_guiacont = "N"
+
+	IF (post:reimpresion != "S") THEN  /* Reimpresión Oct. 1999*/
+		/* Según los grupos de Corte Op. accedo al journal */
+		CDS SELECT FROM DSC:post:SacasTmp_table BECOMES DSC:post:SacasTmp_ctx WHERE \
+			(op:op_operator_id == op:op_operator_id && \
+			post:MarcaIncluye == ">>")
+
+		CDS FINDFIRST DSC:post:SacasTmp_ctx LOCK
+		LET Dev_CDSretval = CDSRETVAL
+	ELSE
+		LET Dev_CDSretval = 0
+	END IF
+
+	DO
+		LET post:adt_corteop_saca = "S"
+		LET post:adt_corteop_guiacont = "N"
+
+		IF (Dev_CDSretval < 0) THEN
+			BREAK
+		ELSE
+			IF (post:reimpresion != "S")  /* Reimpresión Oct. 1999*/
+				CDS EXTRACT DSC:post:SacasTmp_ctx ALL
+			END IF
+		END IF
+
+		/* NO CONTROL - may. 2000 - B.E. Petrella */
+		CALL CDScargoNoControl /* Si No es de Control no debe entrar al IF */
+
+		IF ((RETVAL < 0 && post:reimpresion != "S") || post:reimpresion == "S") THEN
+			LET post:adt_corteop_saca = "S"
+			LET post:adt_corteop_guiacont = "N"
+
+			IF (post:reimpresion != "S") THEN /* Reimpresión Oct. 1999*/
+				IF (mostrar_reenc == "S") THEN
+					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+						post:jnl_corteop_saca == post:adt_corteop_saca && \
+						post:jnl_grucorte_cod == post:adt_novtt_grupo && \
+						post:jnl_apertura_cod == post:adt_novtt_apertura && \
+						post:jnl_guia_saca == post:adt_codseq_nro && \
+						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+						tlr:jnl_status < 100 && \
+						tlr:jnl_branch == op:op_branch_id && \
+						post:jnl_stockp_reenc_cul == "S") SORT "Cierre"
+				 ELSE
+					/* Cambio por optimización de tiempos */
+					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+						post:jnl_corteop_saca == post:adt_corteop_saca && \
+						post:jnl_grucorte_cod == post:adt_novtt_grupo && \
+						post:jnl_apertura_cod == post:adt_novtt_apertura && \
+						post:jnl_guia_saca == post:adt_codseq_nro && \
+						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+						tlr:jnl_status < 100 && \
+						tlr:jnl_branch == op:op_branch_id) SORT "Cierre"
+				 END IF
+			ELSE
+				CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+					op:op_operator_id == op:op_operator_id
+				CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+				IF (mostrar_reenc == "S") THEN
+					/* Cambio por optimización de tiempos */
+;					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+;						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+;						post:jnl_grucorte_cod == post:adt_novtt_grupo && \
+;						post:jnl_guia_saca == post:adt_codseq_nro && \
+;						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+;						tlr:jnl_status < 100 && \
+;						tlr:jnl_branch == op:op_branch_id && \
+;						post:jnl_stockp_reenc_cul == "S") SORT "Cierre"
+
+					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+						post:jnl_guia_saca == post:adt_codseq_nro && \
+						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+						tlr:jnl_status < 100 && \
+						tlr:jnl_branch == op:op_branch_id && \
+						post:jnl_stockp_reenc_cul == "S") SORT "Cierre"
+				ELSE
+					/* Cambio por optimización de tiempos */
+;					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+;						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+;						post:jnl_grucorte_cod == post:adt_novtt_grupo && \
+;						post:jnl_guia_saca == post:adt_codseq_nro && \
+;						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+;						tlr:jnl_status < 100 && \
+;						tlr:jnl_branch == op:op_branch_id) SORT "Cierre"
+
+					CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context WHERE \
+						(post:jnl_corteop_guiacont == post:adt_corteop_guiacont && \
+						post:jnl_guia_saca == post:adt_codseq_nro && \
+						tlr:jnl_sequence_corr == tlr:jnl_sequence_corr && \
+						tlr:jnl_status < 100 && \
+						tlr:jnl_branch == op:op_branch_id) SORT "Cierre"
+				END IF
+			END IF
+
+			CDS FINDFIRST DSC:tlr:jnl_context LOCK
+			IF (marca == 0) THEN
+				marca = 1
+			END IF
+			DO
+				CLEARFIELD jnl_marca_excep
+				
+				IF (CDSRETVAL != 0) THEN
+					BREAK
+				END IF
+
+				IF (post:jnl_guia_saca == post:adt_codseq_nro) THEN
+					/* Limpio campos de identificaciòn de Piezas */
+					CLEARFIELD track_trace
+					CLEARFIELD Pieza
+					CLEARFIELD Pieza_id
+					CLEARFIELD cod_ctrol
+					CLEARFIELD TipoContenido
+					/*CSZ*/
+					CLEARFIELD jnl_simp_esp
+					/*MFM*/
+					CLEARFIELD jnl_stockp_reenc
+					CLEARFIELD jnl_stockp_reenc_cul
+						
+					/* Extrae le clave del journal */
+					CDS EXTRACT DSC:tlr:jnl_context tlr:jnl_sequence \
+						tlr:jnl_date tlr:jnl_branch tlr:jnl_operator \
+						tlr:jnl_time tlr:jnl_bus_date
+	
+					CDS EXTRACT DSC:tlr:jnl_context siaf:jnl_codigo_siaf \
+						post:jnl_apertura_cod \
+						post:jnl_corteop_guiacont \
+						post:jnl_corteop_despacho \
+						post:jnl_corteop_cod \
+						post:jnl_grucorte_cod
+	                    
+					/*CSZ-Extraigo el campo simple especial del journal*/                    
+					CDS EXTRACT DSC:tlr:jnl_context siaf:jnl_codigo_siaf \
+						post:jnl_simp_esp
+						
+					/*MFM (20.11.2001)*/
+					/*Extraigo los campos de reencaminamiento y de error de reencaminamiento para
+					saber si se emite guia de reencaminamiento o no*/
+					CDS EXTRACT DSC:tlr:jnl_context \
+						post:jnl_stockp_reenc post:jnl_stockp_reenc_cul
+						
+					IF (siaf:jnl_codigo_siaf == "99030") THEN
+						/* Contenedor */
+						CDS EXTRACT DSC:tlr:jnl_context post:jnl_guia_cont \
+							post:adt_corteop_ctrl
+	
+						FPRINT Pieza_id "%8.8s" jnl_guia_cont
+						/*LET track_trace = jnl_guia_cont */
+						/* Obs. 112 - Oct. 1999 */
+						LET adt_corteop_guiacont = "S"
+						LET TipoContenido = "C" /* Indica Contenedor */
+						/*MFM - Seteo este campo en N
+						post:jnl_stockp_reenc = "N"*/
+					ELSE
+						/* Imposicion */			
+						CDS EXTRACT DSC:tlr:jnl_context post:track_trace \
+							post:Pieza post:cod_ctrol
+							
+						/*MFM - Extraigo marca de excepcion para saber si la pieza debe expedirse o no*/
+						CDS EXTRACT DSC:tlr:jnl_context \
+		    			post:jnl_marca_excep post:jnl_excep_existe
+
+
+						/*MFM - Si la pieza tiene marca de excepcion y no existe fisicamente no se puede expedir!!*/
+						IF (jnl_marca_excep != "S" || (jnl_marca_excep == "S" && jnl_excep_existe == "S")) THEN		
+							IF (reimpresion != "S") THEN
+								SWAPDUP post:adt_corteop_guiacont 
+								SWAPDUP post:adt_corteop_saca 
+								SWAPDUP post:adt_corteop_despacho
+								/* Obtengo adt_corteop_ctrl */
+								CALL CDScorteCtrl
+								SWAPDUP post:adt_corteop_guiacont 
+								SWAPDUP post:adt_corteop_saca 
+								SWAPDUP post:adt_corteop_despacho
+							END IF
+							/* Obs. 112 - Oct. 1999 */
+							LET adt_corteop_guiacont = "N"
+							LET TipoContenido = "A" /* Indica Pieza */
+							CLEARFIELD jnl_guia_cont
+							IF (track_trace.NUMCHARS != 0) THEN
+								Pieza_id = track_trace
+							END IF
+							IF (Pieza.NUMCHARS != 0) THEN
+								Pieza_id = Pieza
+							END IF
+							IF (cod_ctrol.NUMCHARS != 0) THEN
+								Pieza_id = cod_ctrol
+							END IF
+						END IF
+					END IF
+						
+					/*MFM - Si la pieza tiene marca de excepcion y no existe fisicamente no se puede expedir!!*/
+					IF (jnl_marca_excep != "S" || (jnl_marca_excep == "S" && jnl_excep_existe == "S")) THEN
+						IF (Pieza_id.NUMCHARS != 0) THEN
+							
+									CLEARFIELD post:DocFisPed
+					    		//gpb:Verifico que la pieza no sea una Nota de Credito PED o una Refacturacion PED	
+									CDS EXTRACT DSC:tlr:jnl_context post:DocFisPed
+									IF (post:DocFisPed == "")THEN															
+											/* Resguardo orden */
+											SWAPDUP orden
+											DUPFIELD orden
+											
+											CALL CDSexisDetSaca
+											LET aux_retval = RETVAL
+												
+											/* Recupero orden */
+											SWAPDUP orden
+							 
+											IF (aux_retval < 0)	 THEN
+												/* EXCLUSION May. 2000 - B. Petrella */
+												LET MarcaBorrado = "*"
+												
+												LET idx = idx + 1
+												marca = 2
+												CALL CDSgrabaDetSaca
+											END IF
+									END IF		
+						END IF
+					END IF
+				END IF
+
+				CDS FINDNEXT DSC:tlr:jnl_context LOCK
+			LOOP
+		END IF
+		IF (post:reimpresion != "S") THEN /* Reimpresión Oct. 1999*/
+			CDS FINDNEXT DSC:post:SacasTmp_ctx LOCK
+			LET Dev_CDSretval = CDSRETVAL
+		ELSE
+			LET Dev_CDSretval = -1
+		END IF
+	LOOP
+
+	IF (post:reimpresion != "S") THEN /* Reimpresión Oct. 1999*/
+		CDS UNLOCK DSC:post:SacasTmp_ctx
+		CDS ENDSELECT DSC:post:SacasTmp_ctx
+	END IF
+
+	IF (marca >= 1) THEN
+		CDS UNLOCK DSC:tlr:jnl_context
+		CDS ENDSELECT DSC:tlr:jnl_context
+		IF (marca == 2)
+			CDS UNLOCK DSC:post:DetTmp_ctx
+			CDS ENDSELECT DSC:post:DetTmp_ctx
+		END IF
+	END IF
+
+	/* Recupero peso_en_kgs */
+	SWAPDUP peso_en_kgs
+	SWAPDUP siaf:jnl_codigo_siaf
+
+	IF (idx == 0) THEN
+		RETURN (-2)
+	END IF
+END SUB
+
+/*******/

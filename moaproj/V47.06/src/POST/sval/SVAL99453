@@ -1,0 +1,86 @@
+/****o* Transferencias Bancarias/OFB:post:SVAL99453
+* NOMBRE
+*   OFB:post:SVAL99453
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar la tx de Adelanto por Transferencias Bancarias.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99453
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99453
+	local varl_marca   like post:nro_factura
+	local varl_importe like common:csr_string
+
+	if (post:estado_presu != 4) then
+        //limpia vectores con los datos de las transferencias bancarias, que se journalizaran
+        // para luego imprimir el recibo en trx 99451.
+		call csr:cleararray(vec_fectb)
+	    call csr:cleararray(vec_nrotb)
+	    call csr:cleararray(vec_imptb)
+
+		siaf:importe = post:monto_TB
+		//marco las transferencias utilizadas
+		call post:CDSabmTransfBanc("M", siaf:importe, "", "ADELANTO")
+		
+		IF (post:convenioAnticipo > 0) THEN
+    		siaf:motivo = "ADEVS"
+    	ENDIF
+    	IF  (post:convenio_lg > 0) THEN
+    		siaf:motivo = "ADEMO"
+    	ENDIF
+	end if
+	
+	if (post:estado_presu == 4) then
+	    //giros:codigo_procesamiento = 997030
+	    giros:codigo_procesamiento = 997032
+	    giros:hora_viaje = common:time_of_day
+	    giros:dia_viaje  = common:system_date
+            call post:CDSobtiene_secuen("STAN")
+	    
+	    call post:CDSpresu_climed_load
+	    varl_importe = siaf:importe * 100
+	   
+       	    post:PreDForFis = "RECIB"
+            
+            fprint post:datos_msg108,"%-3.3s%1.1s%015.15s%012.12s",\
+	    substr(post:PreDForFis,0,3),"",post:nro_recibo,varl_importe
+       	
+   		//Mandar en los bits 105/106/107 los datos de las TB y del Adelanto.
+   		CALL post:MISCcm_armar_tb_adel
+   		
+   		//AUT-652 grabo la tabla AdelTB con la aplicacion de TB a Adelantos
+		call post:CDSgrabar_AdelTB
+	endif
+
+  	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola*/
+	call MISCTotalTransac(siaf:codigo_siaf) 
+	call post:MISCAcumTotalesSes
+	
+	post:INDPresuD_Dat = OFB:CDSappend_99453
+    
+   	//Controlar si admite cheque diferido
+   	call post:MISCRestFlia
+
+   	Call post:MISCGrabaDetalleTrn 
+ 	
+	//Flag para saber si confirmamos desde la transaccion o si hubo alguna caida y se confirma por fuera.
+	post:TrxOpeCan = TRUE
+
+  	RETURN (RETVAL)
+  	
+END SUB
+
+		
+	
+/*******/

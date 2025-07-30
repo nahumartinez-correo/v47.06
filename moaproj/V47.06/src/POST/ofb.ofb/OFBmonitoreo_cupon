@@ -1,0 +1,132 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:OFBmonitoreo_cupon
+* NOMBRE
+*   OFB:post:OFBmonitoreo_cupon
+* DESCRIPCION
+*   Rutina que vuelve a dejar los cupones listos para enviar para aquellos en los que se haya producido un error
+*   ,tambien envia un mensaje de alerta al HOST
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:OFBgenera_alertas
+* DOCUMENTACION
+*		https://jirats.atos.net.ar/jira/browse/AUT-2291
+*   https://jirats.atos.net.ar/jira/browse/AUT-2326
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBmonitoreo_cupon
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_cdsretval  LIKE lib:err_retval
+	LOCAL cant_reg LIKE tlr:jnl_branch
+	LOCAL l_op_operator LIKE tlr:jnl_operator
+	LOCAL l_hora LIKE common:time_of_day
+
+	//Resguardo el operador 
+	LET l_op_operator = tlr:jnl_operator
+
+;;	//Inicializo la tabla alertas para CCT 
+;;	CALL post:CDSclr_cup_msg_rech
+	
+	;PROCESO TRATAMIENTO MONITOREO INGRESO/CANCELACION DE CUPON
+	//Captura la ventana de tiempo en que se debe ejecutar el RT-Batch, lo deja en el campo batch:tBatch
+	CALL batch:MISCtimeweb_Batch
+
+	//Le resto la ventana de tiempo del RT-Batch
+	CALL CSR:f_time_subtract(common:system_date, batch:tBatch, common:system_date, common:time_of_day, l_hora)
+	
+	//Si arrojo error le seteo la hora actual
+	IF (RETVAL != 0) THEN
+		l_hora = common:time_of_day
+	END IF
+
+	//Traigo los cupones rechazados y los que estan pendientes de envio
+	CDS SELECT FROM DSC:post:cupon_table BECOMES DSC:post:cupon_ctx WHERE \
+		tlr:jnl_branch == FLD:common:sucursal_activa && \
+		(tlr:jnl_status >= HOST_REJECTED || \
+		(tlr:jnl_status == "001" && (tlr:jnl_date < common:system_date ||  tlr:jnl_date == common:system_date && tlr:jnl_time < l_hora))) \
+		SORT "primary"
+		
+	/* Si encontró al menos uno, me fijo cuántos son*/
+	cant_reg = 0
+	CDS AGGREGATE DSC:post:cupon_ctx COUNT tlr:jnl_branch AS cant_reg
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:post:cupon_ctx cant_reg
+		CALL post:MISCinicProgressBar("ACTIVANDO CUPONES RECHAZADOS - ", cant_reg)
+	END IF	
+	
+	CDS FINDFIRST DSC:post:cupon_ctx LOCK
+	l_cdsretval = CDSRETVAL
+	WHILE (l_cdsretval == 0)
+		CLEARFIELD tlr:jnl_operator
+		CLEARFIELD post:adt_cupon_node
+	
+		CDS EXTRACT DSC:post:cupon_ctx ALL
+
+		CDS BEGINWORK
+	
+		CALL CDScupon_msg_rech
+		
+		LET l_retval = RETVAL
+	
+		//Actualizo codRechazoCCT
+		IF (l_retval == 0) THEN
+			//Limpio campos del viaje del cupon 
+			CLEARFIELD siaf:adt_jnlc_locktime
+			CLEARFIELD giros:codigo_procesamiento
+			CLEARFIELD giros:CodRespuesta_comm
+			CLEARFIELD post:adt_codseq_nro
+			CLEARFIELD giros:hora_viaje
+			CLEARFIELD giros:dia_viaje
+			//Dejo el campo como pendiente de envio para que lo tome el rt-batch en la proxima iteracion
+			LET tlr:jnl_status = "001"
+				
+			CDS CLEARBUFFER DSC:post:cupon_ctx
+			
+			CDS APPEND DSC:post:cupon_ctx siaf:adt_jnlc_locktime \
+				giros:codigo_procesamiento \
+				giros:CodRespuesta_comm \
+				post:adt_codseq_nro \
+				giros:hora_viaje \
+				giros:dia_viaje \
+				tlr:jnl_status
+			
+			CDS UPDATE DSC:post:cupon_ctx LOCK
+			
+			//Si actualizo OK la tabla cupon y codRechazoCCT
+			IF (CDSRETVAL == 0) THEN
+				CDS COMMITWORK
+			else
+			//EL ROLLBACK HACE QUE SE PIERDAN CONTEXTO DE LA TABLA DE CUPONES, JOURNAL, TOTALS, ETC Y SALTEN ERRORES EN VARIAS RUTINAS
+				//CDS ROLLBACKWORK 
+				CDS COMMITWORK
+			END IF
+		ELSE
+			//EL ROLLBACK HACE QUE SE PIERDAN CONTEXTO DE LA TABLA DE CUPONES, JOURNAL, TOTALS, ETC Y SALTEN ERRORES EN VARIAS RUTINAS
+			//CDS ROLLBACKWORK
+			CDS COMMITWORK
+  	END IF
+  	
+		NAP 250
+		
+		CALL post:MISCactProgressBar("ACTIVANDO CUPONES RECHAZADOS - ", 1, BARRAPORCENT, 1)
+	
+		
+		CDS FINDNEXT DSC:post:cupon_ctx LOCK
+		l_cdsretval = CDSRETVAL
+	END WHILE
+
+	CALL post:MISCfinProgressBar
+	
+	CDS UNLOCK DSC:post:cupon_ctx
+	CDS ENDSELECT DSC:post:cupon_ctx
+
+	//Vuelvo a recuperar el operador 
+	LET tlr:jnl_operator = l_op_operator
+END SUB
+
+/*******/

@@ -1,0 +1,220 @@
+/****o* Pendientes de agrupación/OFB:post:MISCcombo_tx_data
+* NOMBRE
+*   OFB:post:MISCcombo_tx_data
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCcombo_tx_data
+local loc_retval 		like lib:err_retval
+local loc_opc_array[6]	like post:adt_opc_opci
+local loc_index			like siaf:idx
+local loc_quantity		like post:cantidad
+
+let loc_retval = 0
+
+
+		// busco la cantidad de combos que se quiere vender...
+		call post:CDScombo_qnt_2sell(op:op_operator_id,PresNro,adt_cb_cod,combo_nro)
+		if (retval > 0) then
+			loc_quantity = retval
+		else
+			// si algo salio mal... asumo que se vende uno
+			loc_quantity = 1
+		endif
+		
+		//
+		// cargo datos para la transaccion
+		//
+		if (adt_concb_usa_tarif == "S") then
+			;let siaf:codigo_siaf =  post:adt_concb_interno // codigo transaccion
+			// leo de la tabla RanProdCombo 
+			call CDSranprcb_load(adt_cb_cod,adt_concb_producto,adt_concb_jerarquia)
+			let loc_retval = retval
+			if (loc_retval == 0) then
+				
+				select (post:adt_concb_tipo)
+					case "PO"
+					case "EN"
+						if (post:adt_rpdcb_destino.NUMCHARS > 0) then
+							post:destino = adt_rpdcb_destino
+							call post:MISCiniPostCombo
+							let loc_retval = retval
+						endif
+						post:cantidad = adt_concb_cantidad * loc_quantity
+						if (post:cantidad > 1 && post:adt_serv_piezacont == "T")
+							protfield post:track_trace
+						else 
+							unprotfield post:track_trace
+						end if
+						if (adt_rpdcb_uni_med.NUMCHARS > 0) then
+							post:adt_serv_umstd = adt_rpdcb_uni_med
+							// tengo que leer la uni.med. del servicio!
+						endif
+						if (adt_rpdcb_uni_med != "GMS") then 
+							post:peso_en_kgs = adt_rpdcb_hasta
+						endif
+						if (post:adt_concb_colecta == "N" && \
+						    post:track_trace.NUMCHARS == 0 && \
+						    post:cantidad == 1 && post:cli_tipo != 1) then
+								// tengo que colectar el T&T
+								if (post:adt_serv_piezacont == "T") then
+									let desc_transac = siaf:adt_tran_desc 
+									clearfield post:track_trace
+									retval = -1
+									while (post:track_trace.NUMCHARS == 0 && retval == -1) 
+										popup SCR:post:SCRNtt_codpost_1
+    									if (LASTKEY != RT_SEND) then
+    										//cgw:si no presiono enter vuelve a pedir track_trace.
+    										clearfield post:track_trace
+    										retval = -1
+    									endif	
+									end while
+								endif
+						endif
+						break
+					case "MO"
+						if (adt_rpdcb_destino.NUMCHARS > 0) then
+							post:destino = adt_rpdcb_destino
+						endif
+						post:cantidad = adt_concb_cantidad // * loc_quantity 
+						if (giros:ImporteNeto == 0) then
+							giros:ImporteNeto = adt_rpdcb_hasta
+						endif
+						if (adt_rpdcb_uni_med.NUMCHARS > 0) then
+							post:adt_serv_umstd = adt_rpdcb_uni_med
+						endif
+						break
+					case "TE"
+						if (combo_cambia_a_prod != adt_concb_producto) then
+							call CDSget_tele_categ(combo_cambia_a_prod,tele:tele_tipo_serv)
+						else
+							call CDSget_tele_categ(adt_concb_producto,tele:tele_tipo_serv)
+						endif
+						post:destino = adt_rpdcb_destino
+						if (post:destino.NUMCHARS > 0) then
+							call tele:MISCiniTeleCombo
+							let loc_retval = retval
+						else
+							// cargo la param. de servicio
+							if (combo_cambia_a_prod != adt_concb_producto) then
+								let post:tipo_produc = combo_cambia_a_prod
+								let post:tipo_produc2 = combo_cambia_a_prod 
+							else
+								let post:tipo_produc = adt_concb_producto 
+								let post:tipo_produc2 = adt_concb_producto 
+							endif
+							call tele:MISCdatos_serv
+						endif
+						tele:tele_cant_palabras = adt_rpdcb_hasta
+						post:cantidad = adt_concb_cantidad * loc_quantity
+						break
+				end select
+				refresh post:destino
+				refresh post:cantidad
+				refresh post:peso_en_grs
+				refresh post:adt_serv_umstd
+				refresh giros:ImporteNeto
+				refresh tele:tele_cant_palabras
+				refresh tele:tele_tipo_serv
+				
+				// CARGO DATOS DE OPCINALES (si los hubiera o hubiese)
+				if (adt_concb_usa_opc == "S") then
+					call CDSopscb_data_load(adt_cb_cod,adt_concb_jerarquia,adt_concb_producto,loc_opc_array[0], \
+																							  loc_opc_array[1], \
+																							  loc_opc_array[2], \
+																							  loc_opc_array[3], \
+																							  loc_opc_array[4], \
+																							  loc_opc_array[5])
+					loc_index = 0
+					while (loc_index < 6) 
+						if (loc_opc_array[loc_index].NUMCHARS > 0) then
+							// agrego el opcional a la transaccion
+							if (adt_concb_tipo == "TE") then
+								// los telegramas colectan los opcionales de otra manera
+							   	post:cant_opc = post:cant_opc + 1
+					           	call CSR:f_saaddpl(DSC:tele:OpcInd_sel,loc_opc_array[loc_index])
+					           	let loc_retval = loc_retval + retval
+        					else
+								if (adt_concb_tipo == "MO") then
+									call giros:MISCopcioObli(loc_opc_array[loc_index])
+								else
+									let post:sel_opc = loc_opc_array[loc_index]
+									call csr:set_currentfield post:sel_opc
+									call FVALsel_opc
+								endif
+								let loc_retval = loc_retval + retval
+							endif
+						endif
+						let loc_index = loc_index + 1
+					end while
+				endif
+				
+				// la venta de combo es sin Bienes de Cambio
+				clearfield post:adt_serv_usa_caja
+				clearfield post:adt_serv_prodvs
+				clearfield post:adt_serv_espv_cod
+				clearfield post:adt_serv_espv_subcod
+				clearfield post:adt_serv_prodvsCC
+				clearfield post:adt_serv_usa_formu
+				clearfield codesp_prod
+				clearfield subcod_prod
+				clearfield prod_serv
+				clearfield codesp_serv
+				clearfield subcod_serv
+
+			endif
+		else
+			select (post:adt_concb_tipo)
+			case "EV"
+				;let siaf:codigo_siaf = 8500
+				
+;				if (post:adt_concb_colecta == "N") then
+					// carga los datos de la venta
+					let tes:espv_cod = adt_concb_producto
+					let tes:adt_evaux_subcod = adt_concb_interno
+					let tes:adt_evaux_cantidad = adt_concb_cantidad * loc_quantity
+					let tes:adt_evaux_importe = tes:adt_espv_valor * post:adt_concb_cantidad
+;				endif
+				break
+			case "PV"
+					let post:adt_prodvs_cod = adt_concb_interno
+					let post:cantidad2 = adt_concb_cantidad * loc_quantity
+				break
+			end select
+		endif
+
+		if (loc_retval < 0) then
+			return (-2)
+		endif
+		
+		select (adt_concb_tipo)
+			case "PO"
+			case "EN"
+				call csr:set_currentfield post:cp
+				break
+			case "MO"
+				call csr:set_currentfield giros:ImporteNeto
+				break
+			case "PV"
+				call csr:set_currentfield post:adt_prodvs_cod
+				break
+			case "EV"
+				call csr:set_currentfield tes:espv_cod
+				break
+		end select
+END SUB
+
+/*******/

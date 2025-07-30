@@ -1,0 +1,142 @@
+/****o* Recepción de Piezas/OFB:post:PRESasigna_destino
+* NOMBRE
+*   OFB:post:PRESasigna_destino
+* DESCRIPCION
+*   En esta rutina se protegen y asignan los campos de la pantalla de Recepcion de piezas
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANasigna_destino
+* DOCUMENTACION
+*	crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+*	crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+* NI50569-RPP (RESPUESTA POTAL PAGA)
+* SOURCE
+*/
+#include "postpres.h"
+
+Sub post:PRESasigna_destino
+
+	if (!testflag(tlr:tran_flags,correction))
+		//creo el picklist de las sacas_simples
+		CALL csr:f_sanewpl "Sacas Simples" PIC:PICsacas_simples 800 600
+		
+		//Consulto la ultima fecha de actualizacion del Maestro de Clientes (CCT)
+		//y de las piezas pendientes PED de la suc		
+ 		call giros:CDSconsulta_fec_CCT 
+
+		//CCT
+   		if (giros:adt_dgralsuc_fec_CCT == common:system_date) then 
+		   //no se debe realizar la consulta al host
+		   clearfield hcomm:INDhost_sndrt
+		   clearfield hcomm:INDhost_rcvrt
+		else
+	       //Mensaje de Consulta Maestro Clientes (CCT)
+	       call post:OFBconsulta_CCT_CREM
+    	   if (retval < 0)
+    		   resetflag giros:tran_send_mode,consulta_simple
+	    	   resetflag giros:tran_send_mode,consulta_multiple
+    		   clearfield post:climed_ult_item
+	       else
+    		   //Se graba la fecha del dia en la DGralSuc para que no se vuelva a realizar la consulta del maestro de clientes
+    		   call giros:CDSgrabo_fec_CCT 
+	       endif
+    	endif
+    	
+    	//PED
+     	IF (common:br_admitePED == "S" || common:br_imponePED == "S")
+			if (giros:adt_dgralsuc_fec_PED == common:system_date) then 
+				//no se debe realizar la consulta al host
+				clearfield hcomm:INDhost_sndrt
+				clearfield hcomm:INDhost_rcvrt
+			else
+				//Mensaje de Consulta al Centralizado PED para obtener todas las piezas pendientes de la suc
+				CALL post:OFBconsMult_PEDpend
+				if (retval == 0)
+					//Se graba la fecha del dia en la DGralSuc para que no se vuelva a realizar la consulta del maestro de clientes
+					call giros:CDSgrabo_fec_PED 
+				end if
+				resetflag giros:tran_send_mode,consulta_simple
+				resetflag giros:tran_send_mode,consulta_multiple
+				clearfield post:climed_ult_item
+			endif
+		END IF
+	endif
+	
+	/*crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+	CALL siaf:MISCSuc_CapImagen     
+	if (RETVAL != -2) THEN // SI no se pudo realizar la consulta o dio un error nuevo no se continua con el proceso.
+		//crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+ 		 CALL post:CDSConsulta_Imagen("T")
+  ENDIF*/
+  //SE TIENE QUE CONSULTAR SI HAY PIEZAS EN STOCKP CON DESTINO ECOMMERCE QUE TENGAN PALABRA CLAVE Y CON ENTREGA AUN NO REALIZADA. SE ENVIA POR CADA UNA
+  //UNA CONSULTA A T&T PARA SABER SI FUERON ENTREGADAS POR HANDHELD Y ASI REALIZAR LA ACTUALIZACION CORRESPONDIENTE EN LA STOCKP (BAJA = "S" FECHA DE ENTREGA DEL DIA DE LA CONSULTA O LA DEVUELVA T&T?) 
+
+	/*Borro los registros de la tabla temporal correspondientes al operador*/
+    CALL CDSstockp_temp_del
+    
+	siaf:nombre_transac.HIGHLITE = 0
+    siaf:codigo_siaf = 99000
+    siaf:tiene_reverso = "S"
+    siaf:imprime_comprobante = "N"
+    siaf:posible_off = "S"
+    siaf:afecta_efectivo = " "
+    //seteo que No Asigna Destino por default
+	tipo_operacionRP = "ASIGNA DESTINO"
+	refresh tipo_operacionRP
+	AsignaDestino = "S"
+	cantidad = 0
+	
+    CALL CSR:proc_list(F_CLEAR,LST:LISTstockp_CM_elifld)
+    post:stockp_en_devol = "N"
+	post:stockp_franq_inc = "N"
+	
+	
+	stockp_es_grancl = "N"
+	stockp_rend_cent = "N"
+	stockp_rct = "N"
+    stockp_laboral = "N"
+    
+    clearfield es_mayorista
+    clearfield stockp_es_guarda
+    clearfield ord_guarda_pieza
+    refresh ord_guarda_pieza
+    CALL CSR:proc_list(F_REFRESH,LST:LISTstockp_CM_elifld)
+    
+ 	
+ 	PROTFIELD tipo_operacionRP
+ 	PROTFIELD checksum_piezas
+    PROTFIELD checksum_piezasV23
+    PROTFIELD stockp_Orden
+    PROTFIELD stockp_dias_alm
+    PROTFIELD stockp_plazoguarda
+    PROTFIELD stockp_vtofecha
+    PROTFIELD cantidad
+    PROTFIELD stockp_rct
+    PROTFIELD stockp_laboral
+    PROTFIELD post:stockp_rend_cent
+    PROTFIELD post:stockp_rct
+    PROTFIELD ord_guarda_pieza
+    
+    hidefield stockp_abonado 
+    hidefield stockp_Oficio
+    hidefield stockp_destin_nom
+    hidefield Leyenda_aux
+    hidefield Leyenda_vto
+    hidefield post:stockp_vtofecha_oe
+    hidefield stockp_rpp_corp
+    hidefield leyenda_rpp
+ //endif
+    
+    CALL siaf:PRESfecha_hora
+    If (RETVAL < 0) Then
+        RETURN (-1)
+    End If
+
+End Sub
+
+/*******/

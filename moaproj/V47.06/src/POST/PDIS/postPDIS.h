@@ -1,0 +1,8 @@
+#include "ofbdefs.h"
+#include "tesoro.h"
+#include "giros.h"
+#include "drv.h"
+#include "csr.h"
+#include "ofbdefs.h"
+#include "impresio.h"
+#define DESCTO_SERVICIO "SERVICIOS:"

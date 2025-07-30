@@ -1,0 +1,114 @@
+/****o* Lista de Giros/OFB:giros:CDSchk_caidas_lg
+* NOMBRE
+*   OFB:giros:CDSchk_caidas_lg
+* DESCRIPCION
+*   Chequea si existe una tx con caida en la tabla jnl_lg_caidas y la recupera
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:PBEnvio_Teleg_LG
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosCDS.h"
+
+
+SUB giros:CDSchk_caidas_lg
+
+	local varl_cdsretval   like lib:err_retval
+	local varl_estado      like giros:estado_gm
+	local window_node      like common:window_node
+	local varl_importe_aux like giros:ImporteNeto
+	
+	varl_importe_aux = giros:ImporteNeto
+
+	CDS SELECT FROM DSC:giros:jnl_caidas_lg_tbl BECOMES DSC:giros:jnl_caidas_lg_ctx \
+	WHERE giros:jnl_lg_operador == op:op_operator_id && \
+	giros:lg_status > HOST_REJECTED	&& \
+	giros:lg_status < RECH_REV_AUTO
+
+  	CDS FINDFIRST DSC:giros:jnl_caidas_lg_ctx LOCK
+   	let varl_cdsretval = cdsretval
+
+	if  (CDSRETVAL == 0 )
+
+		CDS EXTRACT DSC:giros:jnl_caidas_lg_ctx  ALL
+
+		select (giros:jnl_lg_flia)
+			case "P"
+				if (giros:codigo_procesamiento == 992001 )
+					siaf:codigo_siaf = 70030
+					hcomm:INDhost_sndrt = OFB:giros:SEND70030
+					hcomm:INDhost_rcvrt = OFB:giros:RCVE70030_masivos
+				else
+					siaf:codigo_siaf = 70300
+					hcomm:INDhost_sndrt = OFB:giros:SEND70300
+					hcomm:INDhost_rcvrt = OFB:giros:RCVE70300_masivos
+					giros:cod_mot_fld = "C0002"	
+					clearfield giros:ImporteNeto
+				end if
+				break
+			case "T"
+				siaf:codigo_siaf = 70050
+				hcomm:INDhost_sndrt = OFB:giros:SEND70050
+				hcomm:INDhost_rcvrt = OFB:giros:RCVE70030_masivos
+				break
+	
+		end select
+
+		setflag tlr:controla_firma,cancelacion
+		setflag tlr:controla_marca,cancel
+
+		clearfield siaf:tran_retval
+		window_node = common:window_node
+    	common:window_node = op:op_node_id
+		move giros:hora_viaje to tlr:jnl_time
+		move giros:dia_viaje  to tlr:jnl_date
+		move giros:jnl_lg_flia to giros:flia_giro_fld
+		move giros:jnl_lg_tipo to giros:tipo_giro_fld
+
+		call  hcomm:COMM_stat_init
+
+		call hcomm:COMM_host_tran
+
+		resetflag tlr:controla_firma,cancelacion
+		resetflag tlr:controla_marca,cancel
+		common:window_node = window_node
+
+		if (siaf:tran_retval == TRAN_CAIDA_VUELO )
+			clearfield siaf:tran_retval
+			CDS UNLOCK DSC:jnl_caidas_lg_ctx
+			CDS ENDSELECT DSC:jnl_caidas_lg_ctx
+			giros:ImporteNeto = varl_importe_aux
+			return TRAN_CAIDA_VUELO
+		end if
+
+		varl_estado = "C"
+		CDS CLEARBUFFER dsc:giros:jnl_caidas_lg_ctx
+		CDS APPEND dsc:giros:jnl_caidas_lg_ctx \
+			giros:CodRespuesta_comm \
+			hcomm:tran_status as giros:lg_status \
+			varl_estado as giros:estado_lg
+
+		CDS UPDATE dsc:jnl_caidas_lg_ctx LOCK
+
+		call giros:CDSupdate_caida_lg
+
+	end if
+
+	CDS UNLOCK DSC:jnl_caidas_lg_ctx
+	CDS ENDSELECT DSC:jnl_caidas_lg_ctx
+
+	giros:ImporteNeto = varl_importe_aux
+	clearfield lib:stat_message
+	refresh lib:stat_message
+
+END SUB
+
+/*******/
+

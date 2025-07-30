@@ -1,0 +1,89 @@
+/****o* Pendientes de agrupación/OFB:post:CDSDelete_99300
+* NOMBRE
+*   OFB:post:CDSDelete_99300
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSDelete_99300
+/*Esta rutina resta de los impuestos en donde impactó la transacción
+de Descuento y luego elimina la misma de la PresuDet*/	
+	
+	call  csr:cleararray(fliatran_vec)
+	call  csr:cleararray(impciva_vec)
+	call  csr:cleararray(impsiva_vec)
+
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+    WHERE post:fecha == common:system_date && \
+    post:op_operator_id == op:op_operator_id && \
+    post:PresNro == post:PresNro && siaf:codigo_siaf == 99300
+	CDS FINDFIRST DSC:CONPresuDeta2 NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS EXTRACT DSC:CONPresuDeta2 ALL
+		CDS ENDSELECT DSC:CONPresuDeta2
+		
+		//Borro el descuento solo a las transacciones que permiten bonificacion a cliente medio
+		CALL MISCConvenioSesionV("B")
+		call MISCagregTrnPrec
+		call MISCobt_med_pag_pres	
+		CALL MISCAgregaTrnImpre(PresNro)
+		// PJM 21-07-1998 pedido por marcelo agregado para que pida el importe a pagar
+		// efectivo pesos y dolares
+		// pesos
+		Call post:MISCcalc_dol_pesos
+		// Esto fue Agreagado para la pantalla que lleva el Estado de la Sesio
+		// PJM 27-05-1998
+		// Resto 1 en el Contador de Transacciones
+		Cuenta_Postal = Cuenta_Postal - 1
+		/*Se Actualiza el Total del Importe*/
+		call post:CDSTotSesionPag
+
+		INIT 22,1 //cgw:SC 50170 (Redondea al pasar campo post:importe de 4 dec a otro de 2 dec.)
+		Total_importe = post:importe
+		/*Dependiendo del signo del importe, seteo un título u otro - Gabriel Falciola*/
+		if (post:importe >= 0)
+		    post:Paga_o_Cobra = "TOTAL A COBRAR:"
+		    post:importe_display = post:importe
+		else
+		    post:Paga_o_Cobra = " TOTAL A PAGAR:"
+		    post:importe_display = post:importe * -1
+		end if
+		INIT 22,0
+
+		refresh post:importe_display
+		refresh post:Paga_o_Cobra
+		//para que el campo Diferencia de la pantalla de Confirma Sesión se actualice
+		call post:FVALimp_dif_pesos
+		// Rutina de Captura de Medio de Pago Pjm
+		Call MISCagregoCapturaMed
+		
+		/*Una vez que actualicé todo borro el registro de la PresuDet*/
+		CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 \
+	    WHERE post:fecha == FLD:common:system_date && \
+    	post:op_operator_id == FLD:op:op_operator_id && \
+	    post:PresNro == post:PresNro && \
+    	siaf:codigo_siaf == 99300
+		CDS FINDFIRST DSC:CONPresuDeta2 LOCK
+		IF (CDSRETVAL == 0) THEN
+  			CDS DELETE DSC:CONPresuDeta2
+			ConvenioSesionV = false //(actualizarlo en la presu)
+			CALL post:CDSadt_presu_save
+		ENDIF
+		CDS UNLOCK DSC:CONPresuDeta2
+	END IF
+	CDS ENDSELECT DSC:CONPresuDeta2
+END SUB
+
+/*******/

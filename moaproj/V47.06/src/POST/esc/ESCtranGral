@@ -1,0 +1,95 @@
+/****o* Uso General/OFB:post:ESCtranGral
+* NOMBRE
+*   OFB:post:ESCtranGral
+* DESCRIPCION
+*   Dependiendo si se entró a la TX por  el buscador/codigo tt o desde el menu de vtaPostal la rutina
+*   tiene dos comportamientos distintos:
+*   Caso 1:Se ejecuta el ESC tradicional.
+*   Caso 2:Salgo de la TRANgral a la que accedí mediante la tx de VtaPostal y fuerzo el ESC de la 11000
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*    LST:post:TRANgral
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postesc.h"
+
+SUB post:ESCtranGral
+
+	/*Esto era antes de poder cambiar de tx dentro de la misma
+	IF (TESTFLAG(flag_vtaPostal, en_tranGral))
+		//Si viene de la tranGral, ya levante los datos de la tx elegida en la PBcambia_tx
+		//por lo que le doy un enter para que siga normalmente para simular estar en la
+		//nueva tx. Es decir, encuentra un ENTER y ejecuta la SVAL con el do_mode
+		//No llamo al do_mode directamente porque quiero simular que la nueva tx elegida
+		//se esta llamando desde la vtaPostal...
+		UNGETKEY RT_SEND
+	ELSE
+		IF (post:estado_presu == 2)
+			//Salgo de la TRANgral en forma normal entonces fuerzo el ESC de la 11000
+			UNGETKEY RT_ESC
+		ELSE
+			//Como no estoy llamando a la tx desde la VtaPostal debe ejecutar el ESC tradicional
+			CALL post:ESCtransaccion
+		END IF
+	END IF*/	
+	
+	IF (post:estado_presu == 1 && post:adt_serv_alcance == "I" && \
+		post:cantidad == 1 && post:adt_serv_piezacont == "T") THEN
+		//si estoy en teclas rápidas con una imposicion internacional
+		//con cantidad 1 y que tenga T&T, cuando doy ESC borro la tabla track_trace
+		//para que pueda usarse despues
+		CALL post:CDSborro_tt_canc
+	END IF
+	
+	//OJO: la tx puede venir desde el buscador/codigo tt o desde la tx vtaPostal
+	//Acà tendrìa que preguntar por un flag que me diga por donde viene. El by_menu
+	//me esta indicando que se entró por el menú de Venta Postal 
+	IF (TESTFLAG(flag_vtaPostal,by_menu)) THEN
+		//Se entró a la tx postal mediante el boton del menu
+		IF (post:estado_presu == 2) THEN
+			RESETFLAG flag_vtaPostal,by_menu
+			//Salgo de la TRANgral a la que accedí mediante la tx de VtaPostal 
+			//fuerzo el ESC de la 11000
+			UNGETKEY RT_ESC
+		ELSE
+			//Como no estoy llamando a la tx desde la VtaPostal debe ejecutar el ESC tradicional
+			CALL post:ESCtransaccion
+		END IF
+	ELSE
+		//gpb:NI50479
+		IF ((TESTFLAG(post:sesion_ped_flags,es_sesion_ped) || TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) && post:estado_presu == 2) THEN
+			//Seteo el flag de ESC de la tx del Servicio PED
+			SETFLAG post:sesion_ped_flags,esc_servicio_ped
+			//Actualizo el flag en la Presu
+			CALL post:CDSactPresuPed_flags
+			
+			IF (TESTFLAG(post:sesion_ped_flags,es_sesion_ped)) THEN
+				//limpio la marca que reserva el registro
+				CALL post:CDSupdMarca_ped("del")
+			ELSEIF (TESTFLAG(post:sesion_ped_flags,genera_fac_ped)) THEN
+				//dejo la pieza disponible para que pueda ser usada por otro operador
+				//"NTCR" - Pieza con Nota de Credito generada
+				CALL post:CDSupd_est_NCped("NTCR")				
+			END IF
+			
+			//Fuerzo el Fin de Sesion
+			LET drv:INDrun_funct = LST:post:TRANimpre_fiscal
+			CALL drv:do_mode
+			CALL OFB:drv:PBesc			
+		ELSE
+			//Se entró a la tx postal mediante el buscador o tt
+			CALL post:ESCtransaccion
+		END IF
+	END IF
+
+END SUB
+
+/*******/

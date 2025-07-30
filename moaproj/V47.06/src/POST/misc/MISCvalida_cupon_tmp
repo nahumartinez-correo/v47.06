@@ -1,0 +1,96 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISCvalida_cupon_tmp
+* NOMBRE
+*   OFB:post:MISCvalida_cupon_tmp
+* DESCRIPCION
+*   Validaciones del cupon a ingresar al lote de la tabla cupon_tmp
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2) = Debe seleccionar un comitente
+*   RETURN (-2) = Debe seleccionar un servicio
+*   RETURN (-2) = Debe ingresar el identificador de cupon
+*   RETURN (-2) = Debe ingresar el importe del cupon
+*   RETURN (-2) = Cupon Duplicado, no sera cobrado
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCcupon_tmp_agreg
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+SUB post:MISCvalida_cupon_tmp
+    LOCAL l_id_comitente LIKE post:adt_cct_comitente
+    LOCAL l_cod_serv     LIKE post:adt_cct_cod_serv
+    LOCAL l_fecha_vto LIKE common:csr_string
+	LOCAL l_fecha_valida LIKE common:csr_string
+
+	IF (TESTFLAG(admin:mode_flags,grb)) THEN
+	    //AGREGAR (Los campos del comitente y servicio extraidos de ParamCCT)
+		l_id_comitente = post:adt_cct_comitente
+		l_cod_serv = post:adt_cct_cod_serv
+	END IF
+	IF (TESTFLAG(admin:mode_flags,act)) THEN
+	    //MODIFICAR (Los campos del comitente y servicio extraidos de cupon_tmp)
+	    l_id_comitente = post:id_comitente_CCT
+	    l_cod_serv = post:cupon_cod_serv
+    END IF
+	IF (l_id_comitente.numchars == 0) THEN
+		MSGBOX "DEBE SELECCIONAR UN COMITENTE",0X00,"AVISO"
+		NEXTFIELD post:cod_barra_CCT //lo posiciono en el cod barra porque el campo comitente esta protegido
+		RETURN (-2)
+	END IF
+	IF (l_cod_serv.numchars == 0) THEN
+		MSGBOX "DEBE SELECCIONAR UN SERVICIO",0X00,"AVISO" //lo posiciono en el cod barra porque el campo servicio esta protegido
+		RETURN (-2)
+	END IF
+
+	IF (post:id_cupon_CCT.numchars == 0) THEN
+		MSGBOX "DEBE INGRESAR EL IDENTIFICADOR DE CUPÓN",0X00,"AVISO"
+		NEXTFIELD post:id_cupon_CCT
+		RETURN (-2)
+	END IF
+	IF (post:importe_CCT.numchars == 0 || post:importe_CCT == 0) THEN
+		MSGBOX "DEBE INGRESAR EL IMPORTE DEL CUPÓN",0X00,"AVISO"
+		NEXTFIELD post:importe_CCT
+		RETURN (-2)
+	END IF
+	
+	l_fecha_vto = post:fecha_vto_CCT
+	CALL post:MISCFtrim(l_fecha_vto)
+	IF (l_fecha_vto.NUMCHARS > 0 ) THEN
+		//gpb:ART-776, OJO!!!! no usar el formato "DDDDDDDDD MMMMMMMMM dd, yyyy"
+		//que el interprete Java no le gusta nada!!!
+		//CALL csr:date_convert(l_fecha_vto,  "DDDDDDDDD MMMMMMMMM dd, yyyy", l_fecha_valida)
+		CALL csr:date_convert(l_fecha_vto,  "ddmmyyyy", l_fecha_valida)
+		IF (RETVAL < 0 )  THEN
+			MSGBOX "FECHA DE VENCIMIENTO INVALIDA",0X00,"AVISO"
+			RETURN (-2)
+		END IF
+	END IF
+	
+	IF ((post:fecha_vto_CCT.numchars == 0 || post:fecha_vto_CCT == "") && post:adt_cct_ctrl_venc == "S") THEN
+		MSGBOX "DEBE INGRESAR LA FECHA DE VENCIMIENTO",0X00,"AVISO"
+		NEXTFIELD post:fecha_vto_CCT
+		RETURN (-2)
+	END IF
+	
+	CALL post:MISCtotal_cupon_tmp("CONSULTA")
+	IF (RETVAL < 0 )  THEN
+		RETURN (-2)
+	END IF
+	
+	IF (TESTFLAG(admin:mode_flags,grb)) THEN
+    //Al agregar valida si el cupon se encuentra duplicado en la tabla cupon.
+		CALL post:CDSverif_cupon_dupli(post:adt_cct_comitente, post:adt_cct_cod_serv, post:id_cupon_CCT)
+		IF (RETVAL < 0) THEN
+			//se encuenta duplicado y avisa al operador, quedando en el la desicion de igualmente cobrarlo.
+			msgbox "¿El cupón ya ha sido cobrado, desea ingresarlo nuevamente?",OFB_YESNO,"Aviso"
+			IF (RETVAL == 7) then  /*No*/				
+				RETURN (-2)
+			END IF	
+		END IF
+	END IF
+END SUB    
+/*******/

@@ -1,0 +1,231 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalida_adicional
+* NOMBRE
+*   OFB:post:MISCvalida_adicional
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalida_adicional
+
+local prov like post:adt_pcia_cod
+	//Necesario para validar restricciones de la especie
+	prov = substr(common:sucursal_activa,0,1)
+
+#ifdef COMPILA_SAP
+    // Si es cliente de Cuentas Corrientes, hay que validar si esta en
+    // condiciones para SAP de realizar esta transaccion.
+    if (estado_presu == 2 || estado_presu == 3) then
+       	if (cli_tipo == 1 && !testflag(tlr:tran_flags,correction)) then
+        	if (codesp_serv.numchars > 0)
+		    	tes:espv_cod = codesp_serv
+	  	       //call sap_valida_espv
+	  	       CALL post:MISCbuscar_prod_sap("ESPV")
+	            if (retval < 0) then
+	                return (-2)
+	            end if
+			end if
+			if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad) then
+	        	tes:espv_cod = codesp_prod
+	  	        //call sap_valida_espv
+	  	        CALL post:MISCbuscar_prod_sap ("ESPV")
+	            if (retval < 0) then
+	                return (-2)
+	            end if
+	    	end if
+        end if
+    end if
+#endif
+
+	if (estado_presu == 2 || estado_presu == 3) then
+
+		/*Si vende algun producto, y el cliente es Venta UP controlo que la familia merch lo admita*/
+		if (prod_serv.numchars > 0 && cant_caja_prev < cantidad && cli_tipo == 4) then
+			call post:CDSverificaFliaUP("CME")
+			if (retval == NOTOK)
+				msgbox "LA FAMILIA DEL PRODUCTO NO PERMITE VENTA UP",0x00,"Error"
+				return (-2)
+			endif
+		end if
+
+		/*Si es Cliente CC y el servicio tiene un producto asociado, chequeo que el mismo no supere stock.*/
+		if ((post:cli_tipo == 1 || (post:cli_tipo == 5 && post:consulta_ordenCM == "S"))&& prodCC_serv.numchars > 0)
+			Call post:MISCcontrol_stk_prod(cantidad,prodCC_serv)
+			IF (RETVAL < 0)
+		        RETURN (-2)
+		    END IF
+		end if
+
+		if (codesp_serv.numchars > 0)
+		    /*Se chequea que la Especie asociada al servicio no supere el Stock*/
+			Call post:MISCcontrol_stk_espv(codesp_serv,subcod_serv,cantidad,ESPECIE_SERV)
+			IF (RETVAL < 0)
+		        RETURN (-2)
+		    END IF
+		end if
+
+		/*Si vende alguna especie asociada al productos,
+		y el cliente es UP controlo que la familia TES lo admita*/
+		if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad && cli_tipo == 4) then
+			call post:CDSverificaFliaUP("TES")
+			if (retval == NOTOK)
+				msgbox "LA FAMILIA DE LA ESPECIE NO PERMITE VENTA UP",0x00,"Error"
+				return (-2)
+			endif
+		end if
+
+		/*Si vende alguna especie asociada al producto y el cliente es Venta UP
+		controlo que dicha especie admita al cliente
+		if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad && cli_tipo == 4) then
+			call post:MISCAdmiteUP(codesp_prod,subcod_prod)
+			if (retval < 0) then
+				return (-2)
+			end if
+		end if		*/
+	end if
+
+	if (post:estado_presu != 4) then
+		/*Si vende algun producto, controlo que el producto no tenga restricciones*/
+		if (prod_serv.numchars > 0 && cant_caja_prev < cantidad) then
+			call post:MISCvalidaVentasRest("PRD", prod_serv, "", "",common:sucursal_activa, post:cli_tipo, "")
+				if (retval < 0)
+					select (retval)
+						case -1
+							fprint common:csr_string "Las restricciones cargadas de regiones no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -2
+							fprint common:csr_string "Las restricciones cargadas de provincias no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -3
+							fprint common:csr_string "Las restricciones cargadas de sucursales no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+						case -4
+							fprint common:csr_string "Las restricciones cargadas de clientes no permiten la venta del producto %s asociado al servicio!", post:adt_prodvs_desc
+							break
+					end select
+					msgbox common:csr_string,OFB_OK,"ERROR"
+					RETURN -2
+				endif
+		end if
+
+		/*Si vende alguna especie asociada al productos, verifico que
+		la misma no tenga restricciones (ni de sucursal, ni de cliente, ni de provincia*/
+		if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad) then
+			tes:adt_espv_cod = codesp_prod
+		    tes:adt_espv_subcod = subcod_prod
+		    CALL tes:CDSadt_esp_load
+			if (post:cli_tipo == CLIUP) then
+				call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, post:NisUP)
+			else
+				call post:MISCvalidaVentasRest("ESP", codesp_prod, subcod_prod, "", common:sucursal_activa, post:cli_tipo, "")
+			endif
+			if (RETVAL < 0) then
+				select (retval)
+					case -1
+					fprint common:csr_string "Las restricciones cargadas de regiones no permiten la venta de la especie %s%s",codesp_prod,subcod_prod
+					break
+					case -2
+					fprint common:csr_string "Las restricciones cargadas de provincias no permiten la venta de la especie %s%s",codesp_prod,subcod_prod
+					break
+					case -3
+					fprint common:csr_string "Las restricciones cargadas de sucursales no permiten la venta de la especie %s%s",codesp_prod,subcod_prod
+					break
+					case -4
+					fprint common:csr_string "Las restricciones cargadas de clientes no permiten la venta de la especie %s%s",codesp_prod,subcod_prod
+					break
+					case -5
+					fprint common:csr_string "Las restricciones cargadas de up no permiten la venta de la especie %s%s",codesp_prod,subcod_prod
+					break
+				end select
+				msgbox common:csr_string,OFB_OK,"ERROR"
+				RETURN -2
+			endif
+		end if
+
+		//PS Dcto Cliente Medio - Bienes de Cambio
+		//Si el Cliente Medio y es venta por excepcion por producto.
+		if (post:cli_tipo == CLIMED && consulta_excepcionCM == "S") then
+			//Si vende algun producto, y si este no bonifica aviso
+			if (prod_serv.numchars > 0 && cant_caja_prev < cantidad) then
+				adt_prodvs_cod = prod_serv
+				Call post:CDSprodvs_load
+				if (adt_prodvs_bonifCM != "S") then
+					if (post:ExcepProducto) then
+						MSGBOX "El producto asociado al servicio no está habilitado para bonificar a Cliente Medio.\nPor lo tanto no será afectado por el descuento.",0x00,"AVISO"
+					endif
+					if (post:ExcepSesion) then
+						MSGBOX "El producto asociado al servicio no está habilitado para bonificar a Cliente Medio.\nPor lo tanto no podrá comprar el servicio",0x00,"AVISO"
+						return -2
+					end if
+				end if
+			end if
+			//Si vende alguna especie asociada al producto y esta no bonifica aviso
+			if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad) then
+				tes:adt_espv_cod = codesp_prod
+				tes:adt_espv_subcod = subcod_prod
+				Call tes:CDSadt_esp_load
+				if (tes:adt_espv_bonifCM != "S") then
+					if (post:ExcepProducto) then
+						MSGBOX "La especie asociada al producto no está habilitada para bonificar a Cliente Medio.\nPor lo tanto no será afectada por el descuento.",0x00,"AVISO"´
+					endif
+					if (post:ExcepSesion) then
+						MSGBOX "La especie asociada al producto no está habilitada para bonificar a Cliente Medio.\nPor lo tanto no podrá comprar el servicio.",0x00,"AVISO"
+						return -2
+					endif
+				end if
+			end if
+		end if
+
+	end if
+
+	if (post:estado_presu == 1 || post:estado_presu == 4) then
+		/*Controla es stock delo que se vende, con el stock real*/
+		IF (!OperacionAut && !OperacionCob)
+			Call MISCcontrol_stk_real
+			if (retval < 0) then
+				return (-2)
+			end if
+		END IF
+	end if
+
+	/*Para Teclas Rapidas, valida que la especie asodicada al producto (si es que tiene y se vende),
+	no tenga fommulario fiscal = factura*/
+	if (post:estado_presu == 1)
+		if (codesp_prod.numchars > 0 && cant_cinta_prev < cantidad) then
+			tes:adt_espv_cod = codesp_prod
+	    	tes:adt_espv_subcod = subcod_prod
+	    	CALL tes:CDSadt_esp_load
+			if (tes:adt_espv_formfiscal == "FACTU")
+				MSGBOX "Especie asociada al producto no admitida por modo rapido (Formulario Fiscal = Factura)",0x00,"Error"
+			    RETURN (-2)
+			end if
+		end if
+	end if
+
+	/*Para Teclas Rapidas, valida que el producto asociado (si es que tiene y se vende),
+	no tenga fommulario fiscal = factura*/
+	if (post:estado_presu == 1)
+		if (prod_serv.numchars > 0 && cant_caja_prev < cantidad) then
+			post:adt_prodvs_cod = prod_serv
+	    	CALL post:CDSprodvs_load
+			if (post:adt_prodvs_formfisca == "FACTU")
+				MSGBOX "El producto asociado al servicio no admite modo rapido (Formulario Fiscal = Factura)",0x00,"Error"
+			    RETURN (-2)
+			end if
+		end if
+	end if
+
+END SUB
+
+/*******/

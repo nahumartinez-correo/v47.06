@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:tes:PBcheq_borraTodo_tes
+* NOMBRE
+*   OFB:tes:PBcheq_borraTodo_tes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tespb.h"
+
+SUB tes:PBcheq_borraTodo_tes
+	LOCAL l_last_button LIKE drv:last_button
+	LOCAL l_err_cds LIKE lib:err_retval  
+	LOCAL l_cant_total LIKE siaf:i
+	
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	
+	LET l_cant_total = 0
+	
+	MOVE op:op_branch_id TO adt_cheqaux_suc
+	MOVE common:window_node TO adt_cheqaux_termi
+	IF (drv:dt_app == 4) THEN
+		LET adt_cheqaux_tesoro = "S"
+		LET adt_cheqaux_op = op:op_tesoro_id
+	ELSE
+		LET adt_cheqaux_tesoro = "N"
+		LET adt_cheqaux_op = op:op_operator_id
+	END IF  
+	
+	//Esta consulta carga la barra de progreso
+	CDS SELECT FROM DSC:AuxCheq_tbl BECOMES "TesoCheq2_ctx" \
+		WHERE adt_cheqaux_suc == FLD:adt_cheqaux_suc \
+		&& adt_cheqaux_op == FLD:adt_cheqaux_op \
+		&& adt_cheqaux_tesoro == FLD:adt_cheqaux_tesoro \
+		&& adt_cheqaux_moneda == FLD:adt_cheqaux_moneda \
+		&& adt_cheqaux_termi == FLD:adt_cheqaux_termi		
+		
+	CDS FINDFIRST "TesoCheq2_ctx" NOLOCK
+	IF (CDSRETVAL == 0) THEN
+		CDS AGGREGATE "TesoCheq2_ctx" COUNT tes:adt_cheqaux_cuenta
+		CDS EXTRACT "TesoCheq2_ctx" tes:adt_cheqaux_cuenta INTO l_cant_total
+	END IF
+	CDS ENDSELECT "TesoCheq2_ctx"
+	
+	IF (l_cant_total == 0) THEN
+		MSGBOX "No existen cupones cargados",0x00,"AVISO" 
+		
+		CALL drv:back_but_status 
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+		
+		RETURN -1
+	END IF
+	
+	CALL post:MISCinicProgressBar("CARGANDO CUPONES    - ", l_cant_total)		
+
+	//Esta consulta me trae todos los cupones a eliminar de la AuxCheq
+	CDS SELECT FROM DSC:AuxCheq_tbl BECOMES DSC:AuxCheq_ctx \
+		WHERE adt_cheqaux_suc == FLD:adt_cheqaux_suc \
+		&& adt_cheqaux_op == FLD:adt_cheqaux_op \
+		&& adt_cheqaux_tesoro == FLD:adt_cheqaux_tesoro \
+		&& adt_cheqaux_moneda == FLD:adt_cheqaux_moneda \
+		&& adt_cheqaux_termi == FLD:adt_cheqaux_termi		
+	
+	CDS FINDFIRST DSC:AuxCheq_ctx LOCK
+	LET l_err_cds = CDSRETVAL
+	WHILE (l_err_cds == 0) 
+		CDS DELETE DSC:AuxCheq_ctx 
+		
+		CALL post:MISCactProgressBar("QUITANDO CUPONES    - ", 1, BARRAPORCENT, 1)
+		NAP 500
+		
+		CDS FINDNEXT DSC:AuxCheq_ctx  LOCK
+		l_err_cds = CDSRETVAL
+	END WHILE
+	CDS UNLOCK DSC:AuxCheq_ctx
+	CDS ENDSELECT DSC:AuxCheq_ctx 
+	
+	CALL post:MISCfinProgressBar
+	
+	CALL ABMcheques_clear
+	CALL ABMcheques_refresh
+	CLEARFIELD tes:cheques_ingresados
+	REFRESH tes:cheques_ingresados
+	NEXTFIELD siaf:cod_banco
+	
+	CALL drv:back_but_status 
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+    
+END SUB
+
+/*******/

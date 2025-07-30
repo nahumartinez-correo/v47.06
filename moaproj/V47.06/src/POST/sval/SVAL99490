@@ -1,0 +1,98 @@
+/****o* Clientes Medios/OFB:post:SVAL99490
+* NOMBRE
+*   OFB:post:SVAL99490
+* DESCRIPCION
+*   Rutina de Confirmacion de la TX de Facturacion de Comprobantes Pendientes de CM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99490
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL99490
+local varl_marca like post:nro_factura
+
+	;if (post:estado_presu == 2) then
+		;if (ErrorPresu) then
+			;msgbox "Error en la Presupuestación, no podrá continuar con la cobranza", OFB_OK ,"Aviso"
+			;return (-2)
+		;end if
+	;end if			
+	
+	if (post:estado_presu != 4)
+		//Controlo que no hayan mas de 10 facturas o 30 remitos seleccionados.
+		Call post:MISCctrl_cant_rem		
+		select (retval)
+			case -2
+				msgbox "Solo se cobraran los primeros 30 comprobantes de imposicion.\nDebera volver a ingresar para cobrar el resto de los comprobantes.", OFB_OK ,"Aviso"
+				break
+			case -1
+				msgbox "No tiene Comprobantes para Cobrar", OFB_OK ,"Aviso"
+				return (-2)
+				break
+		end select			
+	end if
+	
+	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola*/
+	call MISCTotalTransac(siaf:codigo_siaf) 
+	call post:MISCAcumTotalesSes
+	
+	post:INDPresuD_Dat = OFB:CDSappend_99490
+    
+   	//Controlar si admite cheque diferido
+   	call post:MISCRestFlia
+    
+   	//if (post:estado_presu != 4 )
+   		Call post:MISCGrabaDetalleTrn 
+	//end if
+
+	//Flag para saber si confirmamos desde la transaccion o si hubo alguna caida y se confirma por fuera.
+	post:TrxOpeCob = 1
+	
+	/* Si estoy en jefe de Oficina consulta la fecha de facturacion para grabarla en la Presu*/
+	if (drv:dt_app != 2) then
+		Call tes:CDScons_suc_sucur
+		post:fecha_factCM = tes:suc_fecha
+		post:FechaAnt = TRUE
+	end if
+	/* Inicializo el consumo del Anticipo en 0, si luego viene informado se setea */
+	if (!testflag(tlr:tran_flags,correction) && post:estado_presu != 4) then
+		post:ConsumoAnticipo = 0
+		post:OperacionAut = 1
+		post:ConvenioSesion = FALSE
+		post:ConvenioProducto = FALSE		
+		//Seteo una marca de inicio para la Presupuestacion (se graba en la Presu)
+		post:AuxPresupuestacion = TRUE
+		post:ImprimeAcuseRec = TRUE		
+		if (post:adt_oc_nro.numchars != 0) then
+			post:ModalidadOC = TRUE
+		else
+			post:ModalidadOC = FALSE
+		end if		
+		call post:CDSpresu_modalidadCM
+		call post:MISCRemito_Item(SESION)
+		if (retval == 1) /* Hay remitos, Llamo al secuenciador interno de facturas que preciasa Susana */
+			call post:MISCobtSeqIdentFact 
+		end if
+		//Reseteo la marca en la Presu
+		Call post:CDSgrabo_marcaCob
+	end if
+
+	//PS 10117 - Nunca se borran las tabla de remitos y rem_item y esto trae problemas en los listados.
+	if (post:estado_presu == 4) then
+		call post:CDSborrar_deuda
+	endif
+	
+  	RETURN (RETVAL)
+  	
+END SUB
+
+/*******/

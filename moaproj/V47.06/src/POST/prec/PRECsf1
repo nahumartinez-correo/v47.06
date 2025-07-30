@@ -1,0 +1,87 @@
+/****o* Pendientes de agrupación/OFB:post:PRECsf1
+* NOMBRE
+*   OFB:post:PRECsf1
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprec.h"
+
+SUB post:PRECsf1
+   local esSesion like siaf:i
+   local esTeclasR like siaf:i
+   local capturaMP like siaf:i
+   local confirmando like siaf:i
+    if (post:estado_presu == 1) && (Modo != "R") then
+        let siaf:moneda = "00"
+        call post:FVALMedio_PagoSf1
+        protfield siaf:moneda
+        drv:button = 0
+        CALL drv:but_disable
+    end if
+
+
+    /*  si estoy en teclas rápidas y tiene curso legal protejo el
+       campo y si no tiene le muestro un mensaje de error y no le permito
+       hacer la transacción - Hernán 14/11/2000*/
+    ; [PAW] - pidieron que si no captura MP en sesion tambien tome el MP de curso legal. 08-01-2001
+
+   	esSesion = (post:estado_presu == 2 || post:estado_presu == 3)
+	confirmando = (post:estado_presu == 4)
+	esTeclasR = (post:estado_presu == 1)
+	capturaMP = (siaf:adt_tran_med_pago == "S")
+
+	if ((confirmando && !capturaMP))
+		siaf:adt_tran_med_pago = "S"
+	endif
+
+	; En Afip protejo el campo tanto para Mod rapido como sesion
+	;en Pago Facil solo en Teclas Rapidas.
+	if (((esSesion && !capturaMP) || esTeclasR) && siaf:codigo_siaf == 6840) || \
+	  ((esSesion && !capturaMP) && siaf:codigo_siaf == 6820) then
+	 call post:CDSMPago_Clegal_load
+	  if (retval == 0) then
+	     siaf:moneda = post:adt_mp_cod
+         call post:FVALMedio_PagoSf1
+	     protfield siaf:moneda
+	     DISABLECONTROL drv:PBcb0
+		 siaf:adt_tran_med_pago = "S"
+	  else
+	     errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+	     return (-2)
+	  end if
+	end if
+
+    // FGB 1.11.2000: Agrego mensaje que le pidieron a la gente de SEPSA
+    if (post:estado_presu == 4) then
+        if (siaf:codigo_siaf == 6820 ) THEN
+            fyimsg drv:fyimsg_list, \
+                   "Pase el codigo de barras del servicio por la lectora..."
+        endif
+        protfield siaf:moneda
+        drv:button = 0
+        CALL drv:but_disable
+    // FGB fin
+end if
+// MLD 11-01-2002 Para modo rapido se desproteje el campo del medio de pago. Las barras se
+// habilitan una vez ingresado el medio de pago.
+
+if (post:Modo == "R") then
+	disablecontrol post:CHK0
+	disablecontrol post:CHK1
+	disablecontrol post:CHK2
+end if
+
+end sub
+
+/*******/

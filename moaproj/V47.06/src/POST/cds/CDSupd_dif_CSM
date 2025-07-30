@@ -1,0 +1,92 @@
+/****o* Facturación/OFB:post:CDSupd_dif_CSM
+* NOMBRE
+*   OFB:post:CDSupd_dif_CSM
+* DESCRIPCION
+*   Actualiza la diferencia por redondeo (para los giros masivos) en el registro de la 
+*	PresuDet correspondiente al registro de la DifFact
+* ENTRADAS
+*   tabla: nombre de la tabla sobre la cual se hará el barrido (PresuDet o PresuDetOC)
+*   contexto: nombre del contexto sobre el cual se trabajará
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSupd_dif_PresuDet
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1290
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSupd_dif_CSM(tabla, contexto)
+	local x like siaf:i
+	CDS SELECT FROM tabla BECOMES contexto WHERE \
+		post:fecha == post:adt_diffact_fecha && \
+	    post:op_operator_id == adt_diffact_op && \
+	    post:PresNro == post:adt_diffact_presn && \
+	    post:PreDNroTrn == post:adt_diffact_trann			    
+	CDS FINDFIRST contexto LOCK
+	IF (CDSRETVAL == 0)
+		CDS CLEARBUFFER contexto
+		clearfield cod_dif_aplicada 
+		//IF (adt_diffact_codigo == "OPC")
+		SELECT (adt_diffact_codigo)
+			CASE "OPC"
+			CDS EXTRACT contexto cant_opc
+			x = 0
+			//recorro el vector de opcionales para extraer el valor correspondiente
+			//y aplicar la diferencia al campo siniva_opc[]
+			WHILE (x < cant_opc)
+				CDS EXTRACT contexto \
+					post:cod_opc[x] \
+					post:siniva_opc[x] \
+					post:flia_opc[x]
+				IF (post:cod_opc[x] == adt_diffact_opc)
+					post:siniva_opc[x] = post:siniva_opc[x] - adt_diffact_dif_calc
+					post:dif_opc[x] = adt_diffact_dif_calc
+					CDS APPEND contexto \
+						post:siniva_opc[x] \
+						post:dif_opc[x] 
+				END IF
+				x = x + 1
+			END WHILE
+			BREAK
+		//ELSE
+			//SELECT (adt_diffact_esp)
+				//clearfield cod_dif_aplicada 
+				CASE "COMIS"
+					cod_dif_aplicada = "COMIS"
+					CDS EXTRACT contexto \
+						giros:ComisionSinIva_fld \
+						giros:IvaComision_fld
+					giros:ComisionSinIva_fld = giros:ComisionSinIva_fld - adt_diffact_dif_calc
+					giros:IvaComision_fld = giros:IvaComision_fld + adt_diffact_dif_calc
+					CDS APPEND contexto \
+						giros:ComisionSinIva_fld \
+						giros:IvaComision_fld \
+						adt_diffact_dif_calc as dif_calculada \
+						cod_dif_aplicada
+					BREAK
+				CASE "TASA"
+					cod_dif_aplicada = "TASA"
+					CDS EXTRACT contexto \
+						giros:TasaSinIva_fld \
+						giros:IvaTasa_fld
+					giros:TasaSinIva_fld = giros:TasaSinIva_fld - adt_diffact_dif_calc
+					giros:IvaTasa_fld = giros:IvaTasa_fld + adt_diffact_dif_calc
+					CDS APPEND contexto \
+						giros:TasaSinIva_fld \
+						giros:IvaTasa_fld \
+						adt_diffact_dif_calc as dif_calculada_tasa \
+						cod_dif_aplicada				
+					BREAK
+			END SELECT
+		//END IF
+		CDS UPDATE contexto LOCK
+	END IF
+	CDS UNLOCK contexto
+	CDS ENDSELECT contexto	
+END SUB
+
+/*******/

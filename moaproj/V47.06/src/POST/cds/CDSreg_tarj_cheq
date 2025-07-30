@@ -1,0 +1,78 @@
+/****o* Pendientes de agrupación/OFB:post:CDSreg_tarj_cheq
+* NOMBRE
+*   OFB:post:CDSreg_tarj_cheq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSreg_tarj_cheq
+/*Si estoy anulando transacciones (Nota de Credito) no debo hacer esto - Gabriel Falciola*/
+	if (NotaCredito == "S")
+		return (0)
+	end if
+
+    CDS SELECT FROM DSC:TABPresuPago BECOMES DSC:CONPresuPago \
+               WHERE post:fecha == FLD:post:fecha                    && \
+                     post:op_operator_id == fld:post:op_operator_id  && \
+                     post:PresNro == fld:post:PresNro                && \
+                     post:PrePEst == 1 && \
+                     post:MedPTipMon != "EFEC"
+
+    CDS FINDFIRST DSC:CONPresuPago LOCK
+    LET lib:err_retval = CDSRETVAL
+    CDS CLEARBUFFER DSC:CONPresuPago
+    DO
+       if (lib:err_retval == -801) then
+      break
+       end if
+       CDS EXTRACT DSC:CONPresuPago ALL
+       IF ((MedPTipMon == "TARJ" || MedPTipMon == "CHEQ") && PrePImp != 0)
+
+          adt_mon_cod = siaf:moneda
+          CALL post:CDSadt_moneda_load //busca la descripcion de la moneda
+          siaf:desc_moneda = adt_mon_desc
+
+          IF (MedPTipMon == "TARJ")
+             siaf:codigo_siaf         = 99024
+             LET tlr:INDtran_name     = LST:post:TRANautoriz_tarj
+             PreDEst                  = 1
+             PrePEst                  = 1
+             siaf:importe             = post:PrePImp
+             let siaf:adt_tran_codigo = siaf:codigo_siaf
+             call siaf:CDSadt_tran_load
+          ELSE
+             siaf:codigo_siaf         = 99025
+             LET tlr:INDtran_name     = LST:post:TRANautoriz_cheq
+             PreDEst                  = 1
+             PrePEst                  = 1
+             siaf:importe             = post:PrePImp
+             let siaf:adt_tran_codigo = siaf:codigo_siaf
+             call siaf:CDSadt_tran_load
+          END IF
+          call CDSIncSecSesion(post:PresNro,"TRN",1, enAnulacion)
+		  PreDNroTrn = retval
+	      Cds SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta   \
+		  WHERE (FLD:post:fecha == FLD:post:fecha ) && \
+		  (Fld:post:op_operator_id == fld:post:op_operator_id )&& \
+		  (fld:post:PresNro == fld:post:PresNro)
+	      CALL post:CDSpresudet_graba
+       END IF
+       CDS FINDNEXT DSC:CONPresuPago LOCK
+       let lib:err_retval = cdsretval
+    LOOP
+    CDS ENDSELECT DSC:CONPresuPago
+END SUB
+
+/*******/

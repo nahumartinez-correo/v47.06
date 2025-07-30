@@ -1,0 +1,104 @@
+/****o* Clientes Medios/OFB:plataf:MISCModalidadesCM
+* NOMBRE
+*   OFB:plataf:MISCModalidadesCM
+* DESCRIPCION
+*   Esta rutina controla el limite de credito del CM en la imposición de un CM Cuenta Correntista o Cobro Diferido.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:presu_adicionales
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-652
+* SOURCE
+*/
+#include "platafMisc.h"
+
+SUB plataf:MISCModalidadesCM
+
+LOCAL credito_aux	   LIKE post:limite_CM
+//LOCAL local_importe    LIKE post:Total_importe
+
+	//Controlo Limite de Credito solo en la imposición!!
+	//Demo 09/10/2003 - No se usa el limite de credito cuando está consumiendo adelanto.
+	//Se usa el credito cuando tiene una modalidad asociada o está usando la orden de compra
+	
+	if (!post:OperacionNC && !post:ModalidadAT && !post:ConsumoAnticipo && !post:ModalidadCTB && \
+		(post:ConvenioSesion || post:ConvenioProducto || post:consulta_ordenCM == "S")) then
+			
+	if (post:cli_tipo == CLIMED && (post:ModalidadCC || post:ModalidadCD)) then
+		//cgw: NI50295 - Agrego controles para que no considere el ingreso de items,
+		//     en sesion de Listas de Giros.
+		if (!post:OperacionCob && !post:OperacionInt && !post:OperacionAut && \
+		    (!testflag(giros:giros_importacion,proc_imp_lg)) && \
+		    (!testflag(giros:giros_importacion,proc_em_lg))) then
+		    			
+			credito_aux = post:limite_CM - post:saldo_CM
+			
+			//Solicitud de Cambio 50072  - No se consume el credito de facturacion diferida cuando está usando OC, pero si se factura diferido
+			if (post:consulta_ordenCM == "S") then
+				credito_aux = post:Total_importe
+			endif
+						
+			if (credito_aux < post:Total_importe) then
+				MSGBOX "El monto de la compra supera su límite de Crédito disponible.",0x00,"AVISO"
+				//restaurar el Total_importe si estoy en orden de compra
+				/*if (post:consulta_ordenCM == "S") then
+					post:Total_importe = local_importe
+				endif*/
+				//tengo que volver atrás el descuento por sesion!!
+				if (post:ConvenioSesionV) then
+					CALL post:CDSDelete_99300
+				endif
+				//Regenero la grilla
+				call post:MISCgrilla_sesion
+				refresh post:Total_importe
+				clearfield post:consulta_presu //habilita para presionar F12
+				
+				RETURN -2
+			else
+				//Si es una imposición de Cobro Diferido,
+				//genero la tx de Cobro Dif para saldar la sesión.
+				//La transaccion debe afectar la captura pero no el fin de sesion (idem consumo de adelanto)
+				if (post:Total_importe > 0 && post:ModalidadCD) then
+					//Grabo la tx de Cobro Diferido en la PresuDet
+    				call post:MISCagregTrnCD
+				end if
+				//genero la tx de Ingreso Items de Imposicion para mandar el viaje de items.
+				//if (post:Total_importe > 0 && post:ModalidadCC) then
+				if (post:ModalidadCC) then
+					//restaurar el Total_importe si estoy en orden de compra
+					/*if (post:consulta_ordenCM == "S") then
+						post:Total_importe = local_importe
+					endif*/
+					call post:MISCcm_ctrl_items
+					if (retval < 0 )
+						//tengo que volver atrás el descuento por sesion!!
+						if (post:ConvenioSesionV) then
+							CALL post:CDSDelete_99300
+						endif
+						//Regenero la grilla
+						call post:MISCgrilla_sesion
+						refresh post:Total_importe
+						clearfield post:consulta_presu //habilita para presionar F12
+						return -2
+					end if
+					call post:MISCagregTrnCC
+					//FLAG para NINA
+					post:ImpCC_Min = "S"
+					
+				endif
+			end if
+			//A pedido de NINA!
+			//Seteo un campo para indicar que es una imposicion de un cliente facturacion diferida
+			//Este campo queda en null en inicio y fin de sesion
+			call post:MISCSeteo_ImpCC
+		end if
+	end if
+	endif
+END SUB
+
+/*******/

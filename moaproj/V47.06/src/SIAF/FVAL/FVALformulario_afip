@@ -1,0 +1,221 @@
+/****o* Pendientes de agrupación/OFB:siaf:FVALformulario_afip
+* NOMBRE
+*   OFB:siaf:FVALformulario_afip
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafFVAL.h"
+
+SUB siaf:FVALformulario_afip
+	LOCAL loc_sf1_secuencia LIKE common:csr_string
+	LOCAL TerminalAFIP LIKE common:csr_string
+	LOCAL LRetVal LIKE lib:err_retval
+	LOCAL Proyecto LIKE common:csr_string
+	LOCAL Indice LIKE post:tipo_produc
+	LOCAL Lstring_aux LIKE common:csr_string 
+	LOCAL Lplataforma LIKE giros:checkpoint_emision
+	LOCAL loc_op_title LIKE op:op_title
+	LOCAL l_descPagoFacil LIKE common:csr_string	
+
+	IF (post:estado_presu == 4) THEN
+		RETURN (0)
+	END IF        
+	IF (TESTFLAG(tlr:tran_flags,correction)) THEN
+		RETURN
+	ENDIF
+	adt_mot_modulo = 1
+	CALL FVALformu_afip
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	IF (siaf:adt_formulario.NUMCHARS == 0) THEN
+		RETURN (-2)
+	END IF
+
+	siaf:formulario = siaf:adt_formulario
+	IF (!TESTFLAG (siaf:estado_bob_flag,rech) ) THEN
+		CALL siaf:MISCafip_LimpCamp
+		
+		;IF (post:sf1_nro_secuencia == 0) THEN
+		let post:sf1_nro_secuencia = 0
+		CALL post:CDSobtiene_secuen("PAGFA")
+		FPRINT common:csr_string,"%08.08s", post:adt_codseq_nro
+		FPRINT post:sf1_nro_secuencia, "%04.04s", SUBSTR(common:csr_string,4,4)
+		;post:sf1_nro_lote      = 1
+		//FGB - GAF 23.01.2002: se utiliza nro. de presupuesto para evitar trx's repetidas en interfaz
+		FPRINT Lstring_aux "%08.8s" post:PresNro
+		FPRINT post:sf1_nro_lote "%04.4d" SUBSTR(Lstring_aux,4,4)
+		
+		CALL post:CDSobtiene_secuen("AFIP")
+		FPRINT common:csr_string,"%08.08s", post:adt_codseq_nro
+
+		FPRINT TerminalAFIP "%06.06s" post:sf1_id_terminal
+		FPRINT NroSecuenciaAFIP "%s%s" SUBSTR(TerminalAFIP,1,5) SUBSTR(common:csr_string,1,7)
+		;END IF
+	END IF
+
+	loc_sf1_secuencia = post:sf1_nro_secuencia
+	LET post:sf1_secuencia = post:sf1_nro_secuencia
+	
+	IF (RETVAL < 0) THEN
+		;REFRESH WINDOW
+		RETURN (-2)
+	END IF
+
+	//buscar el grupo a la que pertenece la transaccion. form_grupo 
+	CALL CDSbuscar_grupo
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	//para AFIP
+	CALL FVALAfip_General
+	IF (RETVAL < 0) THEN
+		// FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+		// campos, asi que por si las moscas...
+		PROTFIELD siaf:cuit_empresa
+		PROTFIELD siaf:per_fis_afipmmaaaa
+		RETURN (-2)
+	END IF
+
+	CALL csr:get_profile_string("project","description",Proyecto)
+	CALL  csr:str_search (Proyecto, " ", Indice)
+	IF (RETVAL >= 0) THEN
+		Proyecto = SUBSTR(Proyecto,0,Indice)
+	END IF
+	FPRINT common:csr_string "rt%s" ,Proyecto
+
+	DLL FindWindowA(common:csr_string,"Olivetti North America Branch Automation")
+	post:rt_handle = retval
+
+	DLL bob_do (post:rt_handle, "inicio", 0)
+	DLL bob_do (post:rt_handle, "afip", 0)
+	IF (RETVAL > 0) THEN
+		IF (siaf:grupo_form == 1 || siaf:grupo_form == 2 )
+			FPRINT ,common:csr_string "INSERTE EL DISKETTE"
+			MSGBOX common:csr_string ,OFB_OK,"Advertencia"
+		END IF   			
+
+		FYIMSG drv:fyimsg_list,"Inicializando Datos AFIP ... Por Favor Espere"
+		CALL post:CDSmoneda_sf1_load
+		IF (RETVAL < 0) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//ERRMSG LST:common:errmsg_list,"Medio de Pago inexistente en Tabla Medios de Pago/Pago Facil"
+			FPRINT l_descPagoFacil,"Medio de Pago inexistente en Tabla Medios de Pago/%s",DSC:post:descPagoFacil
+			ERRMSG LST:common:errmsg_list,FLD:l_descPagoFacil
+
+			CALL post:MISClimpia_sf1
+			CALL post:MISCrefresh_sf1
+			//FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+			//campos, asi que por si las moscas...
+			PROTFIELD siaf:cuit_empresa
+			PROTFIELD siaf:per_fis_afipmmaaaa
+			RETURN (-2)
+		END IF
+
+		serv_moneda = post:adt_sf1_moneda
+		serv_med_pago = post:adt_sf1_med_pago
+		post:sf1_moneda = serv_moneda
+		post:sf1_med_pago = serv_med_pago
+
+    //Agrego las variables necesarias al Bob
+    DLL free_variables()      
+    DLL agregar_variables ("codigo_de_barras", siaf:afip_codbarras)
+    DLL agregar_variables ("cajero",op:op_login_id)
+    DLL agregar_variables ("medio_de_pago",serv_med_pago)
+    DLL agregar_variables ("codigo_de_moneda",serv_moneda)
+    DLL agregar_variables ("modo_de_ingreso", "L")
+    DLL agregar_variables ("codigo_duplicado", "0")
+    DLL agregar_variables ("nro_secuencia",loc_sf1_secuencia)
+    ;DLL agregar_variables ("codigo_secuencia", loc_sf1_secuencia)
+    DLL agregar_variables ("terminal", post:sf1_id_terminal)
+    DLL agregar_variables ("grupo_form", siaf:grupo_form)
+    DLL agregar_variables ("nrotx_mosaic_afip", siaf:NroSecuenciaAFIP)
+    CALL csr:trimfield op:op_title loc_op_title
+    DLL agregar_variables ("nombre_del_cajero_bob" , loc_op_title) // se agrega nombre del cajero al tck
+
+    /*Se agrega la variable para especificar la Plaraforma - Gabriel Falciola*/
+    LET Lplataforma = "M"
+    DLL agregar_variables ("plataforma", Lplataforma)
+
+    CLEARFIELD serv_msgerror 
+    CLEARFIELD serv_coderror
+
+    FYIMSG drv:fyimsg_list,"Verificando datos cargados del Formulario AFIP ... Por Favor Espere"
+
+		DLL bob_execute (post:rt_handle, "validar_form", 0, 0, 0)
+		LET LRetVal = RETVAL
+		FYIMSG CLEAR
+
+		IF (LRetVal != 1) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (ERROR DE EJECUCION %s)",LRetVal
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			SETFLAG siaf:estado_bob_flag,rech   
+			//FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+			//campos, asi que por si las moscas...
+			PROTFIELD siaf:cuit_empresa
+			PROTFIELD siaf:per_fis_afipmmaaaa
+			RETURN -2  
+		END IF
+
+		DLL MOSAIC_get_variable ("mensaje_de_error",serv_msgerror, 60)
+		DLL MOSAIC_get_variable ("codigo_de_error", serv_coderror, 5)
+		IF (serv_msgerror.NUMCHARS > 0) THEN
+			FPRINT common:csr_string_tmp "BOBLIB MSG (%s) %s",serv_coderror,serv_msgerror
+			MSGBOX common:csr_string_tmp,OFB_OK,"Error"
+			SETFLAG siaf:estado_bob_flag,rech   
+			//FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+			//campos, asi que por si las moscas...
+			PROTFIELD siaf:cuit_empresa
+			PROTFIELD siaf:per_fis_afipmmaaaa
+			RETURN -2  
+		END IF
+
+		//Tomo los Datos que me deja el BoB
+		CALL siaf:MISCleo_afip_bob
+		IF (RETVAL <0) THEN
+			//FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+			//campos, asi que por si las moscas...
+			PROTFIELD siaf:cuit_empresa
+			PROTFIELD siaf:per_fis_afipmmaaaa
+			RETURN (-2)
+		END IF
+
+		siaf:importe = serv_importe /100
+		
+		// FGB muestro mensaje en el visor
+		CALL post:MISCmensaje_visor("D")
+		
+		IF (siaf:grupo_form == 1 || siaf:grupo_form == 2 )
+			FPRINT ,common:csr_string "RETIRE EL DISKETTE Y\nENTREGUELO AL CLIENTE"
+			MSGBOX common:csr_string ,OFB_OK,"Advertencia"
+		END IF    			
+	ELSE
+		MSGBOX "No se Encontro el Archivo Inicio.bob (BOBLIB)",OFB_OK,"Error"
+		RETURN -2
+	END IF
+	CALL MISCrefresh_afip
+
+	//FGB 5.9.00: Es posible que se hayan desprotegido alguno de los
+	//campos, asi que por si las moscas...
+	PROTFIELD siaf:cuit_empresa
+	PROTFIELD siaf:per_fis_afipmmaaaa
+	//SETVALDONE motivo
+	SETVALDONE siaf:adt_formulario
+	SETFLAG siaf:estado_bob_flag, ok
+
+END SUB
+
+/*******/

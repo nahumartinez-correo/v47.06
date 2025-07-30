@@ -1,0 +1,108 @@
+/****o* Pendientes de agrupación/OFB:post:PBordenCM_auto
+* NOMBRE
+*   OFB:post:PBordenCM_auto
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBordenCM_auto
+
+local dd 			like common:csr_string
+local mm			like common:csr_string
+local aa 			like common:csr_string
+local varl_oc_imp 	like post:ordenCM_saldo
+local varl_oc_cons 	like post:ordenCM_saldo
+
+
+	CALL CSR:proc_list(F_CLEAR,LST:LISTcampos_ordenCM)
+	CALL CSR:proc_list(F_REFRESH,LST:LISTcampos_ordenCM)
+
+	;VISUALIZACION DEL PICKLIST DE ORDENES DE COMPRA DE CLIENTE MEDIOS
+	call csr:f_sadopl(DSC:busca_orden,common:csr_string)
+	if ( retval < 0 )
+		drv:button = 1
+		call drv:but_up_enable
+		return -2
+	end if
+	drv:button = 1
+	call drv:but_up_enable
+	clearfield post:climed_ult_item
+	
+	move substr(common:csr_string,4,9)   to post:adt_oc_nro
+	move substr(common:csr_string,16,30) to post:adt_oc_desc
+	move substr(common:csr_string,52,3)  to post:adt_oc_dias_fact
+	//ojo, queda mal grabada la fecha!
+	move substr(common:csr_string,61,2) to dd
+	move substr(common:csr_string,64,2) to mm
+	move substr(common:csr_string,67,4) to aa
+	fprint post:adt_oc_Finicio "%s%s%s", aa,mm,dd
+	
+	//no los muestro en el campo de pantalla
+	move substr(common:csr_string,88,16) to varl_oc_imp
+	move substr(common:csr_string,105,1) to post:ordenCM_tipo
+	move substr(common:csr_string,107,16) to varl_oc_cons
+	move substr(common:csr_string,124,16) to post:ordenCM_tol
+	
+	
+	post:ordenCM_saldo = (varl_oc_imp - varl_oc_cons) + post:ordenCM_tol
+	
+	if (post:ordenCM_tol > post:ordenCM_saldo) then
+		post:ordenCM_tol = post:ordenCM_saldo
+	endif
+	
+	FPRINT post:ordenCM_autorizadas "%-09.09e %-30.30s %-3.3e                  %-10.10e ",post:adt_oc_nro,post:adt_oc_desc,post:adt_oc_dias_fact,post:adt_oc_Finicio
+	//move common:csr_string to post:ordenCM_autorizadas
+	refresh post:ordenCM_autorizadas
+	
+	//Solicitud 50092: mensaje de saldo y tolerancia de oc por monto total
+	IF (post:ordenCM_tipo == "T") THEN
+		FPRINT common:csr_string "Importe disponible para el consumo (incluida la tolerancia): $ %e \nImporte de tolerancia: $ %e",post:ordenCM_saldo, post:ordenCM_tol
+		//MOVE common:csr_string to siaf:mensaje	
+		MSGBOX common:csr_string,0X00,"Mensaje"
+	ENDIF
+	
+	//borrar las tablas temporales por si hubo una orden de compra seleccionada anteriormente
+	call MISCDel_tblOrdenCM
+	if (retval < 0) then
+		clearfield post:ordenCM_autorizadas
+		refresh post:ordenCM_autorizadas
+		return -2
+	end if
+	clearfield post:climed_ult_item
+	
+	call CDSorden_compra_save
+	if (retval < 0 )
+		msgbox "ERROR AL ACTUALIZAR/GRABAR LOS DATOS DE LA ORDEN DE COMPRA.",OFB_OK,"Atencion"
+		clearfield post:ordenCM_autorizadas
+		refresh post:ordenCM_autorizadas
+		return -2
+	end if
+	
+	call post:OFBcmedio_orden
+	if ( retval < 0 )
+		resetflag giros:tran_send_mode,consulta_simple
+		resetflag giros:tran_send_mode,consulta_multiple
+		ungetkey RT_ESC
+		return -2
+	end if
+	
+	
+	resetflag giros:tran_send_mode,consulta_simple
+	resetflag giros:tran_send_mode,consulta_multiple
+
+		
+END SUB
+
+/*******/

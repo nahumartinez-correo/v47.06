@@ -1,0 +1,152 @@
+/****o* Recepcion de Piezas/OFB:post:PRTaviso_visita
+* NOMBRE
+*   OFB:post:PRTaviso_visita
+* DESCRIPCION
+*   Esta rutina imprime el reporte de Aviso de Visita de la TX de REcepcion de Piezas. Lista todas las piezas con destino 
+*   Casilla de Correo y hace corte de control por nro de abonado y fecha de vencimiento.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SENDasigna_destino,post:SENDRecep_Piezas(vieja)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+Sub post:PRTaviso_visita
+
+Local nro_abonado like stockp_abonado
+Local fecha like stockp_vtofecha
+    
+	CDS SELECT FROM DSC:stockp_temp_tbl BECOMES DSC:stockp_temp_ctx \
+    WHERE (post:stockp_operador == op:op_operator_id) ASCENDING SORT "Abonado"
+    
+    CDS FINDFIRST DSC:stockp_temp_ctx NOLOCK
+    If (CDSRETVAL == -801) Then
+        CDS ENDSELECT DSC:stockp_temp_ctx
+	    RETURN -2
+	End If
+    
+    //PS 9927 se hace un clear de todos los campos de crem pues en el listado se arrastran los datos del remitente cuando 
+    //la pieza no tiene crem
+    clearfield post:stockp_ctaOM
+    clearfield post:stockp_tipo_doc
+    clearfield post:stockp_doc
+    clearfield post:stockp_rem_nom
+    
+    CDS EXTRACT DSC:stockp_temp_ctx ALL
+    LET siaf:INDencab_lis = OFB:PRTenc_aviso_visita
+    LET siaf:i = 1
+    LET nro_abonado = stockp_abonado
+    LET fecha = stockp_vtofecha
+    CALL PRTenc_aviso_visita
+
+    DO
+      If (stockp_destino == "CASILLA DE CORREO") Then
+		
+		//Busco el nombre del cliente 
+		IF (stockp_ctaOM != "") THEN
+    		adt_climay_ctaclie = stockp_ctaOM
+    		adt_climay_tipodoc = stockp_tipo_doc
+    		adt_climay_nrodoc = stockp_doc
+    		CALL CDSCliMay_crem_sel
+    		IF (RETVAL == 0) THEN
+    			//Cargo los datos del cliente mayorista crem
+				stockp_rem_nom = adt_climay_razon
+			END IF
+		ELSE
+    		IF (stockp_tipo_doc != "") && (stockp_doc != "") THEN
+    			CloTipDoc = stockp_tipo_doc
+    			CloCuit = stockp_doc
+    			CALL CDSCliOca_sel
+    			IF (RETVAL == 0) THEN
+    				//Cargo los datos del cliente ocacional
+    				IF (CloRazon != "") THEN
+    					stockp_rem_nom = CloRazon
+    				ELSE	
+    					FPRINT stockp_rem_nom "%s %s", CloNombre, CloApellido
+    				END IF
+    			END IF
+    		END IF
+    	END IF
+		
+        If (stockp_abonado == nro_abonado && stockp_vtofecha == fecha) Then
+            PRT  TEXTSIZE *120
+            PRT  STYLE 32
+            FPRINT common:csr_string "    %-32.32e  %-30.30e    $%10.10e", \
+                stockp_pieza,stockp_rem_nom,stockp_crem_imp
+            CALL MISCwrite_lis3
+
+        Else
+            If ((stockp_abonado != nro_abonado)||(stockp_vtofecha != fecha)) Then
+               /*Tengo que hacer un salto de pagina*/
+                /*Imprimo el pie de pagina*/
+                common:csr_string = "    "
+                CALL MISCwrite_lis3
+                FPRINT common:csr_string  "    Fecha de devolución al remitente: %8e",fecha
+                CALL MISCwrite_lis3
+                /*Imprimo fecha y hora de emision de comprobante*/
+                PRT  STYLE 3
+                common:csr_string_130 = "                                                            "
+                FPRINT  common:csr_string "    %65.65s %8e - %8e" common:csr_string_130, common:system_date, common:time_of_day
+                CALL MISCwrite_lis3
+                If (siaf:i != 8) Then/*Todavia no imprimio el encabezado*/
+                   DO
+                      common:csr_string = "    "
+                      CALL MISCwrite_lis3
+                      If (siaf:i == 8) Then
+                        BREAK
+                      End If
+                   LOOP
+                End If
+                PRT  TEXTSIZE *120
+                PRT  STYLE 32
+                FPRINT common:csr_string "    %-32.32e  %-30.30e    $%10.10e", \
+                stockp_pieza,stockp_rem_nom,stockp_crem_imp
+                CALL MISCwrite_lis3
+                fecha = stockp_vtofecha
+                nro_abonado = stockp_abonado
+            End If
+       End If
+      End If/*No es casilla de correo*/
+      /*Busco el siguiente registro*/
+      CDS FINDNEXT DSC:stockp_temp_ctx NOLOCK
+      If (CDSRETVAL == -801) Then
+        /*Imprimo el pie de pagina*/
+        common:csr_string = "    "
+        CALL MISCwrite_lis3
+        common:csr_string = "    "
+        CALL MISCwrite_lis3
+        common:csr_string = "    "
+        CALL MISCwrite_lis3
+        PRT  STYLE 30
+        PRT  TEXTSIZE *120
+        FPRINT common:csr_string "    Fecha de devolución al remitente: %8e" stockp_vtofecha
+        CALL MISCwrite_lis3
+        /*Imprimo fecha y hora de emision de comprobante*/
+        PRT  STYLE 3
+        common:csr_string_130 = "                                                            "
+        FPRINT  common:csr_string "    %65.65s %8e - %8e" common:csr_string_130, common:system_date, common:time_of_day
+        CALL MISCwrite_lis3
+        CDS ENDSELECT DSC:stockp_temp_ctx
+        BREAK
+      End If
+      
+      //PS 9927 se hace un clear de todos los campos de crem pues en el listado se arrastran los datos del remitente cuando 
+      //la pieza no tiene crem
+      clearfield post:stockp_ctaOM
+      clearfield post:stockp_tipo_doc
+      clearfield post:stockp_doc
+      clearfield post:stockp_rem_nom
+    
+      CDS EXTRACT DSC:stockp_temp_ctx ALL
+
+    LOOP
+END SUB
+
+/*******/

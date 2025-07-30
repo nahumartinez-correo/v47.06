@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:siaf:MISCop_sin_operar
+* NOMBRE
+*   OFB:siaf:MISCop_sin_operar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafMISC.h"
+
+SUB siaf:MISCop_sin_operar(fecha_sin_op)   //siaf:CDSsuc_tots
+    local mone like cant
+/**************************************************************************
+Para hacer este listado se lee de la tabla de rendicion.
+Si el operador no tiene fecha del dia solo se acumula en monto_no_oper el
+efectivo inicial mas el efectivo que le haya quedado. Luego en el listado se
+imprimirá el total de la sucursal y el total de los cajero que no operaron.
+***************************************************************************/
+    CALL CSR:cleararray(suma_monto_vec)
+    CALL CSR:cleararray(suma_cant_vec)
+    CALL CSR:cleararray(suma_piezas_vec)
+    CALL CSR:cleararray(monto_no_oper)
+
+    /* selecciono los cajeros que hayan trabajado en el dia de hoy */
+    CDS SELECT tes:rend_op_id tes:rend_fecha \
+    FROM dsc:tes:rend_caj_table BECOMES dsc:tes:rend_caj_context \
+    WHERE tes:rend_suc_id == op:op_branch_id
+          ;tes:rend_fecha == common:system_date
+
+    if (retval == 0) then
+       cds findfirst DSC:tes:rend_caj_context NOLOCK
+       //call lib:MISCcds_find_err
+       //if (retval == 0) then
+       if (cdsretval == 0) then
+          fyimsg LST:common:fyimsg_list,"Procesando Totales"
+
+          /* Proceso por cada registro de rendicion encontrado en el select */
+          DO
+             CDS EXTRACT DSC:tes:rend_caj_context ALL
+             if (cdsretval == 0) then
+                // busco el registro de totales del cajero que trabajo en la fecha
+                CDS SELECT FROM DSC:tlr:TABtots BECOMES DSC:CONtots_read WHERE  \
+                tlr:tots_branch == fld:op:op_branch_id && \
+                tlr:tots_operator == tes:rend_op_id
+                ;tlr:tots_bus_date == common:system_date && \
+
+                CDS FINDFIRST DSC:CONtots_read NOLOCK
+                //call lib:MISCcds_find_err
+                if (cdsretval == 0) then
+                   // Me fijo si tiene la fecha del dia, porque si no tiene la fecha
+                   // de rendicion del dia lo tengo que acumular en cajas que no
+                   // operaron
+                   IF (tes:rend_fecha != fecha_sin_op) then
+                      CALL CSR:cleararray(monto_vec)
+                      CALL CSR:cleararray(monto_auxi)
+
+                      // extraigo solo el efectivo inicial mas el efectivo en caja
+                      // de los que no operaron
+                      CDS EXTRACT DSC:CONtots_read array siaf:tefec_inic_vec into array monto_vec \
+                      array siaf:tefectivo_vec into array monto_auxi
+                      if (cdsretval == 0) then
+                         mone = 0
+                         do
+                            IF (mone > IDX_MONEDA) then
+                               break
+                            endif
+                            monto_no_oper[mone] = monto_no_oper[mone] + monto_vec[mone] + monto_auxi[mone]
+                            mone = mone + 1
+                         loop
+                      endif
+                   endif // Resultado de la pregunta por fecha
+                end if // resultado del findfirst del registro de totales
+
+                /* Proxima seleccion de la tabla de rendicion */
+                CDS FINDNEXT DSC:tes:rend_caj_context NOLOCK
+                if (cdsretval != 0) then
+                   break
+                end if
+             end if // Resultado del extract de la tabla de rendición
+          LOOP
+          FYIMSG CLEAR
+       END IF
+    END IF
+END SUB
+
+/*******/

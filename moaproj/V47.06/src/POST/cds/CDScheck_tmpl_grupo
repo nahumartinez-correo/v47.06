@@ -1,0 +1,150 @@
+/****o* Pendientes de agrupación/OFB:post:CDScheck_tmpl_grupo
+* NOMBRE
+*   OFB:post:CDScheck_tmpl_grupo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScheck_tmpl_grupo
+	local grupo_aux like post:adt_tmpl_grupiva
+	local mot like post:adt_tmpl_motivo
+	local mod like post:adt_tmpl_motmod
+	local smod like post:adt_tmpl_motsubmod
+	local cli_ant like post:cli_tipo
+	local tot_mot like siaf:i
+	local LRetval like lib:err_retval
+
+	call csr:cleararray(mot_cliente)
+	call csr:cleararray(mot_cli_aux)
+	clearfield cli_ant
+	
+	tot_mot = 0
+	/*Valida que todos los motivos seleccionados para el template pertenezcan al mismo
+  	grupo de iva - Gabriel Falciola*/
+  	clearfield grupo_aux
+	CDS SELECT FROM DSC:TmplMot_aux_tbl BECOMES DSC:TmplMot_aux_ctx \
+		WHERE adt_tmpl_cod == FLD:adt_template_cod
+	CDS FINDFIRST DSC:TmplMot_aux_ctx NOLOCK
+	WHILE (CDSRETVAL != -801)
+		CDS EXTRACT DSC:TmplMot_aux_ctx adt_tmpl_grupiva \
+		adt_tmpl_motivo into mot \
+		adt_tmpl_motmod into mod \
+		adt_tmpl_motsubmod into smod
+		
+		if (adt_tmpl_grupiva.numchars != 0)
+			if (grupo_aux.numchars == 0)
+				grupo_aux = adt_tmpl_grupiva
+			else
+				if (grupo_aux != adt_tmpl_grupiva)
+		    		MSGBOX "Los Motivos del Template deben pertenecer al mismo Grupo de Iva",0x00,"ERROR"
+		    		CDS ENDSELECT DSC:TmplMot_aux_ctx
+		    		RETURN (-2)
+				end if
+			end if
+		end if			
+	
+		
+		/* MLD  04-04-2020 Verifico que lo motivos del template pertenzcan todos al mismo 
+		cliente para el caso de 4 */
+			
+		cds select from dsc:siaf:adt_motiv_table becomes dsc:siaf:adt_motiv_context where \
+		siaf:adt_mot_codigo == mot && \
+		siaf:adt_mot_modulo == mod && \
+		siaf:adt_mot_submodulo == smod
+		
+		/* MLD Los motivos del template deben tener al menos un cliente en común*/
+		cds findfirst dsc:siaf:adt_motiv_context nolock
+		if (cdsretval == 0)      
+			cds extract dsc:siaf:adt_motiv_context \
+			siaf:adt_mot_cliente[0] into post:mot_cliente[0] \
+			siaf:adt_mot_cliente[1] into post:mot_cliente[1] \
+			siaf:adt_mot_cliente[2] into post:mot_cliente[2] \
+			siaf:adt_mot_cliente[3] into post:mot_cliente[3] \
+			siaf:adt_mot_cliente[4] into post:mot_cliente[4] \
+			siaf:adt_mot_cliente[5] into post:mot_cliente[5] \
+			siaf:adt_mot_cliente[6] into post:mot_cliente[6] \
+			siaf:adt_mot_cliente[7] into post:mot_cliente[7] \
+			siaf:adt_mot_cliente[8] into post:mot_cliente[8] \
+			siaf:adt_mot_cliente[9] into post:mot_cliente[9]
+		end if
+		cds endselect dsc:siaf:adt_motiv_context
+		
+		siaf:i = 0
+		/* Acumulo en un array apara cada cliente cuantos motivos lo admiten.
+		Al final deben quedar, en al menos un cliente, acumulados tantos como motivos haya*/
+		do 
+			if (siaf:i > 9) then
+				break
+			end if
+			if (mot_cliente[siaf:i] == "S") then
+				mot_cli_aux[siaf:i] = mot_cli_aux[siaf:i] + 1
+			end if
+			siaf:i = siaf:i + 1
+		loop
+		
+		tot_mot = tot_mot + 1
+		/*
+		if (cli_ant.numchars == 0) then
+			cli_ant = "1" //para poner algo nomas...
+			do
+				if (siaf:i > 9)
+					break
+				end if
+				mot_cli_aux[siaf:i] = mot_cliente[siaf:i]
+				siaf:i = siaf:i + 1
+			loop
+		else
+			do
+				if (siaf:i > 9)
+					break
+				end if
+				if (mot_cli_aux[siaf:i] != mot_cliente[siaf:i] && mot_cli_aux[siaf:i].numchars != 0 && mot_cliente[siaf:i].numchars != 0) then
+			    	MSGBOX "Los Motivos del Template deben pertenecer al mismo Cliente",0x00,"ERROR"
+			    	return (-1)
+				end if
+				siaf:i = siaf:i + 1
+			loop
+			;if (cli_ant == 0) then
+				;cli_ant = cliente_aux
+			;end if
+	end if		
+	/* FIN MLD 04-04-2002 */
+		
+	CDS FINDNEXT DSC:TmplMot_aux_ctx LOCK
+	END WHILE
+	CDS ENDSELECT DSC:TmplMot_aux_ctx
+	
+	siaf:i = 0
+	LRetval = 0
+	do 
+		if (siaf:i > 9 || LRetval == 1) then
+			break
+		end if
+		/* Alguno de los clientes tiene acumulados todos los motivos*/
+		if (mot_cli_aux[siaf:i] == tot_mot) then
+			LRetval = 1
+		end if
+		siaf:i = siaf:i + 1
+	loop
+	
+	if (LRetval == 0) then	
+		MSGBOX "Los Motivos del Template deben tener al menos un Cliente en Común",0x00,"ERROR"
+		return (-1)
+	end if
+			
+	adt_template_grupiva = grupo_aux
+END SUB  
+
+/*******/

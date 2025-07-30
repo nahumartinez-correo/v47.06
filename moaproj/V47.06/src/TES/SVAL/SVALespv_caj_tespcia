@@ -1,0 +1,190 @@
+/****o* Tesorería/OFB:tes:SVALespv_caj_tespcia
+* NOMBRE
+*   OFB:tes:SVALespv_caj_tespcia
+* DESCRIPCION
+*   Rutina que se ejecuta al confirmar las transacciones de Entrada/salida de Especies
+*	de Caja a Tesoreria Provincial
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:tes:TRAN9290; LST:tes:TRAN9310; OFB:tes:MISCreverso_sesion
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALespv_caj_tespcia
+    local superviso like tes:rend_marca_cierre
+    local tmp_importe like siaf:importe
+    local tmp_cantidad like siaf:cantidad    
+
+    IF (!(testflag(tlr:tran_flags,correction)))
+       	
+        if (siaf:importe == 0)
+            move "(L) IMPORTE TOTAL NO PUEDE SER 0" to drv:error_msg
+            call  OFB:drv:error_msg
+            nextfield adt_evaux_cantidad
+            return (-2)
+        end if
+        popup tes:SCRNconfirma
+        if (siaf:continua_transaccion == "N" || lastkey == RT_ESC)
+            return (-2)
+        end if
+    END IF
+        
+    CALL siaf:SVALnivel_sup_ev
+    if (retval < 0)
+        return (-2)
+    end if
+    // Guardo si fue supervisada para marcar las otras
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+	let superviso = "S"
+    else
+	let superviso = "N"
+    end if
+    
+    IF (!(testflag(tlr:tran_flags,correction)))
+        let adt_evaux_importe = 0
+	    let adt_evaux_cantidad = 0
+	    ;let espv_subcod = TOTAL_TESO
+	    clearfield espv_subcod
+	    clearfield espv_cod
+	    clearfield adt_espv_cod
+        clearfield adt_espv_subcod
+        /* El header de los movimientos graba el importe total
+        y la cantidad correspondiente en cero. 27/08/99 - Andrea */  
+        tmp_importe = siaf:importe
+        tmp_cantidad = siaf:cantidad
+        refresh tmp_importe
+        refresh tmp_cantidad
+	    siaf:importe = 0
+	    siaf:cantidad = 0
+        refresh siaf:importe
+        refresh siaf:cantidad
+        
+	    FLD:drv:INDjnl_rtn = OFB:tes:JNLespv_tespcia
+	    ungetkey 0x190
+	    call siaf:MISClleno_modalidad
+	    
+	    select (siaf:codigo_siaf)
+	    	case 9290 //salida
+		        let drv:INDscr = SCR:tes:SCRNsal_ev_hdr_TP
+			    call tlr:JNLtran
+			    let drv:INDscr = SCR:tes:SCRNsal_ev_mov_TP	    		
+	    		break
+	    	case 9310 //entrada
+		        let drv:INDscr = SCR:tes:SCRNent_ev_hdr_TP
+			    call tlr:JNLtran
+			    let drv:INDscr = SCR:tes:SCRNent_ev_mov_TP
+	    		break
+	    end select
+        
+        aux_sequence_mov = tlr:jnl_sequence
+      
+        siaf:importe = tmp_importe
+        siaf:cantidad = tmp_cantidad
+        refresh siaf:importe
+        refresh siaf:cantidad
+                        
+	    // le sumo 6 al codigo de transacción porque cada uno de los pases
+	    // tiene ese código de transacción
+	    let siaf:codigo_siaf = siaf:codigo_siaf + 6	
+	    select (siaf:codigo_siaf)
+	        case 9296	                 
+	             let siaf:nombre_transac = "SAL.EV.CAJ A TES.PCIA."
+	             move "SEVCTP" to tlr:tran_mnemonic
+	             let drv:INDscr = SCR:tes:SCRNsal_ev_mov_TP
+	             break
+	        case 9316
+	             let siaf:nombre_transac = "ENT.EV.CAJ DE TES.PCIA."
+	             move "EEVCTP" to tlr:tran_mnemonic
+	             let drv:INDscr = SCR:tes:SCRNent_ev_mov_TP
+	             break
+	    end select
+	
+	    //let drv:INDscr = SCR:tes:SCRNmov_ev
+        cds select FROM DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx \
+            where tes:adt_evaux_suc == op:op_branch_id && \
+	              adt_evaux_op == op:op_operator_id && \
+	              adt_evaux_tesoro == "N" && \
+	              adt_evaux_es_venta == "N"
+	    cds findfirst DSC:AuxEspV_ctx LOCK
+        let lib:err_retval = CDSRETVAL  
+		    
+	    call csr:f_sadroppl dsc:Especie
+        call csr:f_sanewpl dsc:Especie pic:Especie
+            
+        let post:importe = 0 
+            
+	    do
+	        if (lib:err_retval != 0) then
+	            break
+	        end if
+	         
+		    cds extract DSC:AuxEspV_ctx ALL
+		    move tes:adt_evaux_codigo to espv_cod
+		    move tes:adt_evaux_codigo to adt_espv_cod
+		    move tes:adt_evaux_subcod to adt_espv_subcod
+		    move tes:adt_evaux_subcod to espv_subcod
+		    move tes:adt_evaux_importe to siaf:importe
+		    move adt_evaux_cantidad to siaf:cantidad
+		    move tes:adt_evaux_suc to adt_espv_suc
+		    let tes:es_tesoro = "S"
+		 
+		    FLD:drv:INDjnl_rtn = OFB:tes:JNLespv_tespcia
+		    ungetkey 0x190
+		    call siaf:MISClleno_modalidad
+		    if (superviso == "S") then
+		        // si la primera fue supervisada , marco todas
+	    	     setflag tlr:tran_flags,supovr_granted
+	        end if
+		    call tlr:JNLtran
+		 
+		 	         
+            if (siaf:codigo_siaf == 9296) then	         
+                fprint common:csr_string "%6.6e     %-20.20s           %13.13s        %13.13s", \
+                       adt_evaux_cantidad,espv_cod,adt_evaux_subcod,adt_evaux_importe
+            else 
+                if (siaf:codigo_siaf == 9316) then
+                	 fprint common:csr_string "%-20s %-20s    %13.13s \n", \
+                            adt_evaux_codigo,adt_evaux_subcod,adt_evaux_importe
+                end if
+            end if
+            call csr:f_saaddpl dsc:Especie common:csr_string
+	        let post:importe = post:importe + siaf:importe 
+	         
+ 	 	    cds delete dsc:AuxEspV_ctx
+		    cds unlock DSC:AuxEspV_ctx
+		    cds findnext DSC:AuxEspV_ctx LOCK
+		    let lib:err_retval = CDSRETVAL
+	    loop
+
+	    CLEARFIELD drv:INDjnl_rtn
+	    if (!(testflag(tlr:tran_flags,correction))) then
+            if (siaf:codigo_siaf == 9296) then	         
+                call TRANprt_sal_tespcia
+            else 
+                if (siaf:codigo_siaf == 9316) then
+                    let drv:INDspc_rtn[2] = ofb:TRANprint_salida_ev 	 
+                end if
+            end if
+        end if       
+        cds endselect DSC:AuxEspV_ctx
+        call post:MISCactivar_buts
+        
+    ELSE
+        if (siaf:codigo_siaf == 9290 || siaf:codigo_siaf == 9310) then
+            CALL MISCreverso_sesion
+	        if (retval < 0) then
+	            return (-2)
+	        end if
+	    end if	   
+    END IF
+END SUB
+
+/*******/

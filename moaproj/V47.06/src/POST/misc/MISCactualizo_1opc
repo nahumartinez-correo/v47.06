@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:post:MISCactualizo_1opc
+* NOMBRE
+*   OFB:post:MISCactualizo_1opc
+* DESCRIPCION
+* 	Este OFB calcula el Costo de cada uno de los Opcionales   
+* 	seleccionados y lo coloca en el vector de costo de los    
+* 	opcionales en la ubicación correspondiente a ese opcional.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postmisc.h"
+
+SUB post:MISCactualizo_1opc
+    LOCAL tmp LIKE common:csr_string
+    LOCAL x LIKE post:cantidad
+    LOCAL cant LIKE post:cantidad
+    LOCAL loc_importe   LIKE siaf:importe
+	LOCAL l_preCantidad LIKE post:cantidad
+	LOCAL canti like post:cantidad
+	LOCAL l_costo_opc_uni LIKE costo_opc_uni
+    IF (post:cli_tipo != 1 && \
+        post:enCombo != "S") THEN
+        //cgw:si no es un producto de un combo, calcula opcionales.
+        /* Calculo el Importe solo si es Minorista */
+        x = 0
+        post:sobretasa_opc = 0
+        IF (siaf:adt_tran_fliatran != "CSM" && siaf:codigo_siaf != "13100") THEN
+        	clearfield promo_imp_tot_opc
+        END IF
+        l_costo_opc_uni = costo_opc_uni
+        l_preCantidad = post:cantidad
+        WHILE (x < cant_opc)
+        	IF (siaf:adt_tran_fliatran != "CSM" && siaf:codigo_siaf != "13100") THEN
+        		CALL post:MISCopcCantPart(post:cod_opc[x], post:tipo_produc, post:cantidad)
+        		call post:MISCLimpioPromo(post:cod_opc[x])
+            END IF
+            
+            IF (post:inf_opc[x] == "S") THEN
+                CALL post:CDSsuma_opcionales(post:tipo_produc2,post:cod_opc[x],\
+                    ,1,post:adt_serv_umstd,post:adt_tarif_dest,0)
+                
+                IF (RETVAL != -1) /*Para el caso de que el modo sea porcentual y no este cargada la tarifa*/
+                    
+                    IF (post:cantidad > 1)
+                        ; PS9490 si el costo es unitario post:cantidad = 1 para el cálculo del OPC *** MDG
+                        CALL post:MISCopcCantPart(post:cod_opc[x], post:tipo_produc, post:cantidad)
+                    END IF
+                    post:cos_opc[x] = post:tarif_resultado * post:cantidad
+                END IF
+                IF (post:cod_opc[x] == "AVRB") THEN
+                    post:valor_ar = post:cos_opc[x]
+                END IF
+                IF (post:cod_opc[x] == "CSAR") THEN
+                    post:valor_csar = post:cos_opc[x]
+                END IF
+                IF ((post:estado_presu == 2 || post:estado_presu == 3) && \
+                    post:IvaCod == "RNI") THEN
+                    cant = 1
+                    //SC 50170
+                    CALL MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],cant,0)
+                    post:sobretasa_opc = post:sobretasa_opc + post:SobreTasaIva
+                    post:tas_opc[x] = post:SobreTasaIva
+                END IF
+            ELSE
+                post:cos_opc[x] = 0
+            END IF
+            /* Agregado para quede grabado para cada Opcional */
+            /* cual es el costo del mismo sin el IVA */
+
+            //MFM:saco esta linea
+             /*cant = 1*/
+            //MFM:saco esta linea
+            /*CALL MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],cant)*/
+
+            /*MFM - Llamo con la cantidad real para que el precio sin iva unitario se calcule correctamente*/
+            /*ACP - Ps 9318 error de redondeo */
+            ;if (canti == 1)
+             ;   CALL MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],1)
+             ;else
+                //SC 50170
+                CALL MISCdesglosaIva(post:cos_opc[x],post:ali_opc[x],cantidad,0)
+            ;end if
+            post:siniva_opc[x] = post:ImporteSinIva
+            //SC 50170 - FACTURACION
+            post:siniva_opc4[x] = post:ImporteSinIva_bis
+            IF (siaf:adt_tran_fliatran != "CSM" && siaf:codigo_siaf != "13100") THEN
+				promo_imp_opc_tot[x] = promo_imp_opc_ind[x] * post:cantidad
+				promo_imp_tot_opc = promo_imp_tot_opc + promo_imp_opc_tot[x]
+				if (promo_imp_opc_tot[x] > 0 ) then
+					CALL post:MISCdetalleBonifGral(promo_desc,post:cos_opc[x],promo_opc_bon[x],promo_imp_opc_tot[x],TIPO_OPCIONAL,post:cod_opc[x])
+				end if
+			END IF
+            x = x + 1
+            post:cantidad = l_preCantidad
+        END WHILE
+        costo_opc_uni = l_costo_opc_uni
+        /*MDG se agrego el descuento por promocion*/
+        IF (siaf:adt_tran_fliatran != "CSM" && siaf:codigo_siaf != "13100") THEN
+			CALL post:MISCaplicaBonif(TIPO_OPCIONAL)
+			IF (aplica_bonif_opc ==	"S") THEN
+				CALL post:MISCSumaBonifOpc()
+			END IF
+		END IF
+        /*MDG AGREGUE EL DESCUENTO post:fld_promo_imp*/
+
+        post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+		loc_importe = post:tarifa + post:imp_bloques +  post:costo_opc - post:descuento
+        siaf:importe = loc_importe + post:sobretasa
+    END IF
+
+    IF (tiene_emba == "S")
+        vec_opc2[posicion_emba] = post:tarifa
+        REFRESH vec_opc2[posicion_emba]
+    END IF
+
+    REFRESH siaf:importe
+    REFRESH post:sobretasa
+
+	/*Calcula la tarifa total del servicio*/
+     CALL MISCact_tarif_serv
+END SUB
+
+/*******/

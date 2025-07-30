@@ -1,0 +1,561 @@
+/****o* Pendientes de agrupación/OFB:post:PBopcionales
+* NOMBRE
+*   OFB:post:PBopcionales
+* DESCRIPCION
+* 	Este OFB selecciona de la Tabla de Opcionales, aquellos 
+* 	disponibles para un determinado Servicio y los displaya 
+* 	en un Picklist.                                         
+* 	Además maneja todo lo referido a los Opcionales.	      
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBopcionales
+	LOCAL cont LIKE post:cant_opc
+	LOCAL indice LIKE post:cant_opc
+	LOCAL ya_esta LIKE post:sel_opc
+	LOCAL opc_temp LIKE post:adt_opcserv_opci
+	LOCAL desc_temp LIKE post:adt_opc_desc
+	LOCAL desc_corta_temp LIKE post:adt_opc_opci
+	LOCAL pick_titulo LIKE post:adt_opc_desc
+	LOCAL valor_temp LIKE post:valor_dec
+    /* giros */
+    local l_importe like common:local_int
+    ;/* fin giros */
+	;/**************************************************/
+	;/* En modo Confirmación no se deben abrir los Combos 	*/
+	;/**************************************************/
+	IF (post:estado_presu == 4) THEN
+    	drv:button = drv:last_button
+    	CALL drv:but_up_enable
+    	RETURN (0)
+	END IF
+
+	/**************************************************/
+	/* De aqui en mas esta todo el codigo referido a   		*/
+	/* buscar en las Tablas de Opcionales aquellos que 		*/
+	/* corresponden a un determinado Servicio y luego  		*/
+	/* displayarlos en un combo.		       				*/
+	/**************************************************/
+	pick_titulo = "opcionales"
+	drv:button = drv:last_button
+	CALL drv:but_down_disable
+	SETFLAG drv:mode_flags,picklist_mode
+	/******************************************/
+	/* Busco los opcionales correspondientes a este 	*/
+	/* Servicio y desplego un picklist con ellos. 		*/
+	/******************************************/
+	IF (post:cli_tipo != 1) THEN
+		/* No es Cuentacorrentista */
+		//PS Opcionales
+		IF (post:cli_tipo == CLIMED) THEN
+			/* se agrega para giros la familia */
+			IF (post:estado_presu != 1 || TESTFLAG(uso_int_flag,uso_interno) || siaf:adt_tran_fliatran == "CSM") THEN
+	    		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+	   			post:adt_opcserv_serv == post:tipo_produc2 && \
+	   			post:adt_opcserv_habil == "T" && \
+	   			post:adt_opcserv_cliente == "S"
+			ELSE
+	    		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+	   			post:adt_opcserv_serv == post:tipo_produc2 && \
+	   			post:adt_opcserv_habil == "T" && \
+	   			post:adt_opcserv_opci == "AVRB" && \
+	   			post:adt_opcserv_cliente == "S"
+			END IF
+		ELSE
+			/* se agrega para giros la familia */
+			IF (post:estado_presu != 1 || TESTFLAG(uso_int_flag,uso_interno) || siaf:adt_tran_fliatran == "CSM") THEN
+	    		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+	   			post:adt_opcserv_serv == post:tipo_produc2 && \
+	   			post:adt_opcserv_habil == "T"
+			ELSE
+	    		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+	   			post:adt_opcserv_serv == post:tipo_produc2 && \
+	   			post:adt_opcserv_habil == "T" && \
+	   			post:adt_opcserv_opci == "AVRB"
+			END IF
+		END IF
+	ELSE
+    	/* Es Cuentacorrentista */
+    	CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+   		post:adt_opcserv_serv == post:tipo_produc2
+	END IF
+	CDS FINDFIRST OPC_SERV_CTX NOLOCK
+	IF (CDSRETVAL == -801) THEN
+    	MSGBOX "NO EXISTEN OPCIONALES PARA ESTE SERVICIO",0x00,"SERVICIO SIN OPCIONALES"
+    	CLEARFIELD post:sel_opc
+    	INIT 33,0
+    	drv:button = drv:last_button
+    	CALL drv:but_up_enable
+    	RETURN (0)
+	END IF
+	CALL CSR:f_sanewpl pick_titulo PIC:PICKH_opc 380,150
+	DO
+    	CDS EXTRACT OPC_SERV_CTX post:adt_opcserv_opci INTO opc_temp
+    	CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE \
+    	post:adt_opc_opci == opc_temp
+    	CDS FINDFIRST OPC_CTX NOLOCK
+    	IF (CDSRETVAL != 0) THEN
+       		BREAK
+    	END IF
+        CDS EXTRACT DSC:OPC_CTX FLD:adt_opc_desc INTO FLD:desc_temp  \
+        FLD:adt_opc_opci INTO FLD:desc_corta_temp FLD:adt_opc_canal  \
+        INTO FLD:adt_opc_canal
+        ; Comparo los canales de los opcionales con el canal del servicio
+        ; si difieren no son insertados en el picklist, Mariano Gecik.-
+
+        if (cli_tipo == 1)
+			if (adt_opc_canal == "MAYORISTA" || adt_opc_canal == "AMBOS")
+            	FPRINT common:csr_string,"%s - %s",desc_corta_temp,desc_temp
+            	CALL CSR:f_saaddpl(pick_titulo,common:csr_string)
+          	endif
+        else
+        	if (adt_opc_canal == "MINORISTA" || adt_opc_canal == "AMBOS")
+            	FPRINT common:csr_string,"%s - %s",desc_corta_temp,desc_temp
+            	CALL CSR:f_saaddpl(pick_titulo,common:csr_string)
+          	endif
+        endif
+
+        ; fin de modificación de canales, Mariano Gecik.-
+    	CDS FINDNEXT OPC_SERV_CTX NOLOCK
+    	IF (CDSRETVAL == -801) THEN
+        	BREAK
+    	END IF
+	LOOP
+	CDS ENDSELECT OPC_SERV_CTX
+	CDS ENDSELECT OPC_CTX
+	SETFLAG drv:mode_flags, picklist_mode
+	CALL CSR:f_sadopl pick_titulo post:sel_opc
+	/************************************************/
+	/* Aqui se selecciona o no algo del combo, y esta 		*/
+	/* todo el codigo referido a incorporar ese nuevo 		*/
+	/* Opcional a los vectores de Opcionales.	      			*/
+	/************************************************/
+	IF (RETVAL >= 0) THEN
+    	/********************************/
+    	/* Selecciono algo del Picklist. 		*/
+    	/* Veo si ese Opcional ya estaba 		*/
+    	/********************************/
+    	WHILE (cont < post:cant_opc)
+        	IF (post:cod_opc[cont] == SUBSTR(common:csr_string,0,4)) THEN
+            	/* Ese Opcional ya habia sido elegido */
+            	ya_esta = "SI"
+            	/*********************************/
+            	/* Guardo el indice en el que estaba    */
+	    		/* por si lo seleccionó para eliminarlo 	*/
+            	/********************************/
+            	indice = cont
+            	BREAK
+        	END IF
+        	cont = cont + 1
+    	END WHILE
+
+    	IF (ya_esta != "SI") THEN
+    		/****************************************/
+        	/* No había sido elegido aún ese Opcional. 		*/
+    		/* Veo si el Opcional elegido requiere del 		*/
+    		/* ingreso de algun valor como el de Valor 		*/
+    		/* Declarado o Contrarembolso.	       		*/
+    		/****************************************/
+			IF (post:cant_opc == 6) THEN
+				MSGBOX "NO SE PUEDE INCLUIR MAS OPCIONALES",0x0190,""
+				CLEARFIELD post:sel_opc
+				NEXTFIELD post:sel_opc
+	    		drv:button = drv:last_button
+	    		CALL drv:but_up_enable
+				RETURN (-2)
+			END IF
+			desc_temp = SUBSTR(common:csr_string,0,4)
+			//PS Opcionales
+            if (consulta_excepcionCM == "S") then
+	    		CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+	   			post:adt_opcserv_serv == post:tipo_produc2 && \
+	   			post:adt_opcserv_opci == desc_temp
+				CDS FINDFIRST OPC_SERV_CTX NOLOCK
+				IF (CDSRETVAL == 0)
+					CDS EXTRACT DSC:OPC_SERV_CTX post:adt_opcserv_bonifCM
+					IF (post:ExcepProducto) THEN
+						//Valido si se quiere vender un opcional no pactado en la excepcion
+						call post:CDSValido_ProdOpc(desc_temp)
+						IF (RETVAL < 0) THEN
+							CLEARFIELD post:sel_opc
+							NEXTFIELD post:sel_opc
+			    			drv:button = drv:last_button
+			    			CALL drv:but_up_enable
+	    					RETURN -2
+	    				ENDIF
+	    			ENDIF
+					//Solicitud de Cambio 50071 Punto 3)
+					if (PerfilDireccion && post:ExcepProducto) then
+						post:adt_opcserv_bonifCM = "S"
+					endif
+					//Si esta todo bien, veo si el opcional bonifica, de no ser asi doy aviso.
+					If (post:adt_opcserv_bonifCM != "S") THEN
+						IF (post:ExcepProducto) THEN
+							FPRINT common:csr_string,"El opcional %-4.4s no está habilitado para bonificar a Cliente Medio.\nPor lo tanto no será afectado por el descuento.",desc_temp
+							MSGBOX common:csr_string,0x00,"AVISO"
+						ENDIF
+						IF (post:ExcepSesion) THEN
+							FPRINT common:csr_string,"El opcional %-4.4s no está habilitado para bonificar a Cliente Medio.\nPor lo tanto no podrá seleccionarlo.",desc_temp
+							MSGBOX common:csr_string,0x00,"ERROR"
+							CDS ENDSELECT OPC_SERV_CTX
+							CLEARFIELD post:sel_opc
+							NEXTFIELD post:sel_opc
+					   		drv:button = drv:last_button
+					   		CALL drv:but_up_enable
+							RETURN (-2)
+						END IF
+					END IF
+				END IF
+				CDS ENDSELECT OPC_SERV_CTX
+			end if
+            /* se agrego para giros */
+            giros:mnemonic_opc_wu = SUBSTR(common:csr_string,0,4)
+            giros:desc_opc_wu = common:csr_string
+  	    	if (siaf:adt_tran_fliatran == "CSM")
+	   	        call giros:MISCflg_opc_wu(desc_temp)
+       	    	call giros:MISCOpcionalesWU(desc_temp) //,valor_temp)
+       			if (lastkey == RT_ESC || retval == -2) then
+       				clearfield post:sel_opc
+    			    refresh post:sel_opc
+    			    drv:button = drv:last_button
+					CALL drv:but_up_enable
+    			    return (-2)
+				end if
+           	end if
+        	CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE \
+            post:adt_opc_opci == desc_temp && \
+            post:adt_opc_valdec == "T"
+        	CDS FINDFIRST OPC_CTX NOLOCK
+        	IF (CDSRETVAL != -801) THEN
+				/************************************************/
+    	    	/* Debe ingresar un Valor ya que estamos en el 		*/
+    	    	/* caso de Valor Declarado o Contrarembolso.   			*/
+	       		/************************************************/
+            	clearfield adt_opc_label
+            	CDS EXTRACT OPC_CTX \
+            		post:adt_opc_valmsg INTO post:msg_opc \
+            		post:adt_opc_label 
+            	CDS ENDSELECT OPC_CTX
+            	INIT 33,0
+	      		/************************************************/
+    	    	/* Guardo el Valor Declarado anterior.              		*/
+	      		/************************************************/
+    	    	valor_temp = post:valor_dec
+	      		CLEARFIELD post:valor_dec
+	      		/*****************************************************/
+    	    	/* Muestro la Pantalla para que ingrese el valor     */
+    	    	/* requerido. Si es con Valor Declarado, la pantalla */
+    	    	/* que debo mostrar debe pedir el C.P. de destino ya */
+	       		/* el envío no va al destinatario sino a la sucursal */
+	       		/* de ese C.P. y ah¡ lo va a buscar el destinatario. */
+    	    	/* Si el Servicio es uno que requiere C.P. entonces  */
+	       		/* no se lo pido de nuevo pués ya lo tengo.          */
+	       		/****************************************************/
+    			CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+		        post:adt_opcserv_serv == post:tipo_produc && \
+				(post:adt_opcserv_opci == desc_temp || post:adt_opcserv_opci == post:sel_opc)
+		        CDS FINDFIRST OPC_SERV_CTX NOLOCK
+		        CDS EXTRACT OPC_SERV_CTX ALL
+		        IF (CDSRETVAL != 0) THEN
+		            /****************************************/
+		            /* ALGUNO DE LOS DOS CAMPOS NO EXISTIA  */
+		            /* PARA EL REGISTRO AL QUE ACCEDI.      */
+		            /****************************************/
+		            IF (post:adt_opcserv_montomin == "") THEN
+		                LET post:adt_opcserv_montomin = 0
+		            END IF
+		        END IF
+		        CDS ENDSELECT OPC_SERV_CTX
+				IF (adt_opc_label == "V.D." && post:cp == "" && post:adt_serv_alcance == "N") THEN
+           			POPUP post:SCRNmsg_opc2
+        		ELSE
+           			POPUP post:SCRNmsg_opc
+        		END IF
+        		IF (LASTKEY == 0x190) THEN
+        			post:valor_dec = valor_temp
+	     			CLEARFIELD valor_temp
+           			GOTO FIN
+        		END IF
+	       		/********************************************/
+	       		/* Completo unos Flags que me van a servir  */
+            	/* luego y guardo el valor ingresado.   */
+	       		/********************************************/
+	        	IF (adt_opc_label == "V.D.") THEN
+           			post:tiene_vd = "S"
+           			post:vec_opc2[post:cant_opc] = post:valor_dec
+           			post:label_opc[post:cant_opc] = adt_opc_label
+	        	ELSE
+	           		IF (adt_opc_label == "C.R.") THEN
+	  	        		post:tiene_cre = "S"
+	            		post:valor_cre = post:valor_dec
+               			post:vec_opc2[post:cant_opc] = post:valor_cre
+            			post:valor_dec = valor_temp
+            			post:label_opc[post:cant_opc] = adt_opc_label
+	           		ELSE
+	           			/* Es otro Opcional con Valor */
+	           			post:vec_opc2[post:cant_opc] = post:valor_dec
+	           		END IF
+	        	END IF
+	        END IF
+	        /***********************************************************/
+	        /* A partir del Req. 600 todos los opcionales influyen 	*/
+	        /* Creo que no tiene más sentido este campo salvo	*/
+	        /* que en el futuro vuelvan a existir opcionales cuyo	*/
+	        /* costo no influya en el costo total de opcionales.		*/
+	        /***********************************************************/
+	        inf_opc[cant_opc] = "S"
+       		/********************************/
+        	/* Extraigo el Código de Opcional , el campo que determina si el opc. combina*/
+      		/* y la Al¡cuota del IVA del mismo	*/
+      		/********************************/
+      		CLEARFIELD post:adt_opc_combina
+        	CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE \
+            post:adt_opc_opci == desc_temp
+        	CDS FINDFIRST OPC_CTX NOLOCK
+        	CDS EXTRACT OPC_CTX post:adt_opc_opci \
+            	post:adt_opc_aliciva \
+           		post:adt_opc_cortepropio \
+            	post:adt_opc_disccp \
+            	post:adt_opc_combina
+        	CDS ENDSELECT OPC_CTX
+        		post:cod_opc[post:cant_opc] = post:adt_opc_opci
+        		post:ali_opc[post:cant_opc] = post:adt_opc_aliciva
+        		post:comb_opc[post:cant_opc] = post:adt_opc_combina
+        	FPRINT post:cor_opc[post:cant_opc], "%s%s",post:adt_opc_cortepropio,post:adt_opc_disccp
+        	cont = 0
+
+#ifdef COMPILA_SAP
+			// FGB: para cuentas corrientes, si el opcional no combina
+			//      tengo que validarlo como un producto aparte ante SAP.
+			if (cli_tipo == 1) then
+			    // si el opcional no combina, lo valido
+			    if (comb_opc[cant_opc] == "N") then
+			       //call sap_valida_opc
+			       CALL post:MISCbuscar_prod_sap("OPC")
+			       if (retval < 0) then
+			          goto FIN
+			       end if
+			    end if
+			end if
+#endif
+        	/*tratamiento embarazosa*/
+        	IF (cod_opc[cant_opc] == "EMBA")
+        	    vec_opc2[post:cant_opc] = post:tarifa
+        	    posicion_emba = cant_opc
+        	    tiene_emba = "S"
+        	END IF
+
+
+        	REFRESH post:cod_opc[post:cant_opc]
+        	REFRESH post:vec_opc2[post:cant_opc]
+      		/**************************************/
+      		/* Extraigo el Modo de Cálculo y	*/
+      		/* el porcentaje que fue aplicado 	*/
+      		/*************************************/
+        	CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE \
+    		post:adt_opcserv_serv == post:tipo_produc2 && \
+        		post:adt_opcserv_opci == desc_temp
+        	CDS FINDFIRST OPC_SERV_CTX NOLOCK
+        	CDS EXTRACT OPC_SERV_CTX \
+			post:adt_opcserv_valor INTO post:val_opc[post:cant_opc] \
+	      	post:adt_opcserv_tipo INTO post:cal_opc[post:cant_opc]
+        	CDS EXTRACT OPC_SERV_CTX \
+     		post:adt_opcserv_uneg INTO post:flia_opc[post:cant_opc]
+ 			//Se agrega un vector que indica si el opcional BonificaCM
+        	CDS EXTRACT OPC_SERV_CTX \
+     		post:adt_opcserv_bonifCM INTO post:bonifCM_opc[post:cant_opc]
+     		if (PerfilDireccion && post:ExcepProducto) then
+				post:bonifCM_opc[post:cant_opc] = "S"
+			endif
+        	CDS ENDSELECT OPC_SERV_CTX
+        	post:cant_opc = post:cant_opc + 1
+			IF (!TESTFLAG(uso_int_flag,uso_interno)) THEN
+    			/**********************************************/
+    			/* Actualizo el Costo Total de los Opcionales */
+    			/**********************************************/
+    			CALL MISCactualizo_opc
+    			/****************************************************************/
+    			/* Actualizo el costo de cada uno de los opcionales   		*/
+    			/* por separado. Quizás parezca sin sentido hacer esto	*/
+    			/* para cada opcional pero si el valor declarado actual 		*/
+    			/* es mayor al anterior, cambia el costo de algunos de  	*/
+    			/* los opcionales que ya estaban seleccionados.         		*/
+    			/****************************************************************/
+				post:calculaBonifOpc = "S" //para el calculo de bonificacion de opc
+    			CALL MISCactualizo_1opc
+
+      			//	IF (post:adt_opcserv_tipo == "P") THEN
+            	//	    post:vec_opc2[post:cant_opc - 1] = post:tarifa
+            	//	END IF
+                /* giros */
+              	if (siaf:adt_tran_fliatran == "CSM")
+            		if (testflag(giros:opcionales_wu,palabra_adicional))
+            			call giros:MISCopc_pala_wu
+            		end if
+        	    end if
+        	    /* fin giros */
+			END IF
+    	ELSE
+        	/*******************************************/
+        	/* Ese Opcional ya habia sido elegido, 	*/
+        	/* por lo tanto, debe querer eliminarlo 	*/
+        	/*******************************************/
+        	MSGBOX "ESTA SEGURO QUE DESEA ELIMINAR ESE OPCIONAL ?",0x01,""
+        	IF (RETVAL == 1) THEN
+
+        	    /*Trarmiento Embarazosa*/
+           		IF (tiene_emba != "")
+           		    IF (posicion_emba < cant_opc)
+           		        posicion_emba = posicion_emba - 1
+           		    ELSE
+           		        IF (posicion_emba == cant_opc)
+           		            CLEARFIELD posicion_emba
+           		        END IF
+           		    END IF
+           		END IF
+
+
+				/*****************************************************/
+				/* Quiere eliminarlo, pero primero debo ver			*/
+				/* si era Valor Declarado o Contra Reembolso		*/
+				/******************************************************/
+	      		IF (post:label_opc[indice] == "V.D.") THEN
+	      			post:tiene_vd = "N"
+	      			CLEARFIELD post:valor_dec
+           			IF (post:adt_corteop_conrest != "S") THEN
+               			CLEARFIELD post:cp
+          			END IF
+	        	ELSE
+            		IF (post:label_opc[indice] == "C.R.") THEN
+	   	        		post:tiene_cre = "N"
+	            		CLEARFIELD post:valor_cre
+               		ELSE
+               			IF (post:cod_opc[indice] == "AVRB") THEN
+    	       				/* Eliminó el Opcional Aviso de Recibo */
+              				/* Limpio el Costo del Aviso de Recibo */
+               				CLEARFIELD post:valor_ar
+                  		ELSE
+          	                IF (post:cod_opc[indice] == "EMBA")
+          	                    CLEARFIELD tiene_emba
+           	                ELSE
+           	                	IF (post:cod_opc[indice] == "CSAR")
+          	                    	CLEARFIELD valor_csar           	                	
+           	                	END IF
+           	                END IF
+              			END IF
+	        		END IF
+	   			END IF
+
+				/*MDG se agrego el tratamiento descuento por promocion */
+				IF (siaf:adt_tran_fliatran != "CSM" && siaf:codigo_siaf != "13100") THEN
+ 		       		CALL post:MISCRestaBonifOpc(indice)
+ 		       	END IF
+				/*MDG */
+
+        		WHILE (indice < (post:cant_opc))
+            			cont = indice + 1
+            			IF (cont != 6) THEN
+							post:cod_opc[indice] = post:cod_opc[cont]
+            				post:vec_opc2[indice] = post:vec_opc2[cont]
+            				post:ali_opc[indice] = post:ali_opc[cont]
+            				post:cos_opc[indice] = post:cos_opc[cont]
+            				post:inf_opc[indice] = post:inf_opc[cont]
+    						post:siniva_opc[indice] = post:siniva_opc[cont]
+    						post:comb_opc[indice] = post:comb_opc[cont]
+    						/*CSZ*/
+    						post:cal_opc[indice] = post:cal_opc[cont]
+    						post:val_opc[indice] = post:val_opc[cont]
+		    				post:flia_opc[indice] = post:flia_opc[cont]
+		    				post:bonifCM_opc[indice] = post:bonifCM_opc[cont]
+		    				post:promo_imp_opc[indice] = post:promo_imp_opc[cont] //MDG
+		    				post:promo_imp_opc_ind[indice] = post:promo_imp_opc_ind[cont] //MDG
+		    				post:promo_imp_opc_tot[indice] = post:promo_imp_opc_tot[cont] //MDG
+            				post:label_opc[indice] = post:label_opc[cont]
+            				//SC 50170 FACTURACION
+            				post:siniva_opc4[indice] = post:siniva_opc4[cont]
+            			ELSE
+            				CLEARFIELD post:cod_opc[indice]
+            				CLEARFIELD post:vec_opc2[indice]
+            				CLEARFIELD post:ali_opc[indice]
+            				CLEARFIELD post:cos_opc[indice]
+            				CLEARFIELD post:inf_opc[indice]
+    						CLEARFIELD post:siniva_opc[indice]
+    						CLEARFIELD post:comb_opc[indice]
+    						/*CSZ*/
+    						CLEARFIELD post:cal_opc[indice]
+    						CLEARFIELD post:val_opc[indice]
+    						CLEARFIELD post:flia_opc[indice]
+    						CLEARFIELD post:bonifCM_opc[indice]
+    						CLEARFIELD post:promo_imp_opc[indice] //MDG
+    						CLEARFIELD post:promo_imp_opc_ind[indice] //MDG
+    						CLEARFIELD post:promo_imp_opc_tot[indice] //MDG
+    						CLEARFIELD post:label_opc[indice]
+    						//SC 50170 FACTURACION
+    						CLEARFIELD post:siniva_opc4[indice]
+            		    END IF
+                        /*AGREGADO POR WU*/
+       		           if (siaf:adt_tran_fliatran == "CSM" )
+                           call giros:MISCclr_text_op(indice,cont)
+                        end if
+            			REFRESH post:cod_opc[indice]
+            			REFRESH post:vec_opc2[indice]
+            			indice = indice + 1
+        		END WHILE
+                /* giros */
+                if (siaf:adt_tran_fliatran == "CSM")
+    	   			desc_temp = SUBSTR(common:csr_string,0,4)
+    	    		call giros:MISCnoflg_opcwu(desc_temp)
+    	    		call giros:MISCno_pcionalesWU(desc_temp)
+    	    	end if
+    		    /* fin giros */
+
+            	post:cant_opc = post:cant_opc - 1
+            	IF (!TESTFLAG(uso_int_flag,uso_interno)) THEN
+            		CALL MISCactualizo_opc
+            		post:calculaBonifOpc = "N" //para el calculo de bonificacion de opc
+            		CALL MISCactualizo_1opc
+            	END IF
+
+            	CALL post:FVALdescuento
+	            IF (RETVAL < 0) THEN
+	            	drv:button = drv:last_button
+	                CALL drv:but_up_enable
+	                siaf:importe = post:tarifa
+	                REFRESH siaf:importe
+					/*Calcula la tarifa total del servicio*/
+				    CALL MISCact_tarif_serv
+					CLEARFIELD post:sel_opc
+					NEXTFIELD post:descuento
+    	            RETURN (-2)
+				END IF
+                /* giros */
+                IF (siaf:adt_tran_fliatran == "CSM")
+        			IF (testflag(giros:opcionales_wu,palabra_adicional))
+        				call giros:MISCopc_pala_wu
+        		    END IF
+        	    END IF
+        	    /* fin giros */
+        	END IF
+    	END IF
+	END IF
+FIN:
+	RESETFLAG drv:mode_flags,picklist_mode
+	INIT 33,0
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+	CLEARFIELD post:sel_opc
+	NEXTFIELD post:sel_opc
+END SUB
+
+/*******/

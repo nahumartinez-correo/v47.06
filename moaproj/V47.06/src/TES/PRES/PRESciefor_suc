@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:tes:PRESciefor_suc
+* NOMBRE
+*   OFB:tes:PRESciefor_suc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRES.h"
+#define DT_TRAN_DEBUG 99
+
+SUB tes:PRESciefor_suc
+
+	//gpb:Verifico mapeo unidad W:
+	CALL post:MISCcheck_MoaPDF
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	CLEARFIELD tes:adt_secuen_firma //cgw:limpia firma manual
+	CALL OFB:tlr:JNLinitialize
+	IF (tlr:bus_date == "") THEN
+		// si sale con la fecha vacia le pongo la de hoy para que no de
+		// error al journalizar
+		tlr:bus_date = common:system_date
+	END IF
+	
+	IF (tes:dt_app_aux == 5) THEN
+		ERRMSG LST:common:errmsg_list,"Debe salir de la Sucursal para hacer el Cierre"
+		RETURN (-2)
+	END IF
+	
+	/* datos de una PRES */
+	siaf:nombre_transac.HIGHLITE = 0
+	siaf:codigo_siaf = 9550
+	siaf:imprime_comprobante = "N"
+	
+	//gpb:AUT-1334
+	//Elimino todos los picklist en memoria, menos los asociados a esta transaccion.
+	CALL common:CDSprotectedPick
+
+	/* controla por cajas abiertas en el dia de la fecha */
+	CALL tes:MISCctrl_open_caj
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	/* Controla por el tesoro abierto en el día de la fecha */
+	CALL tes:MISCctrl_open_tes(common:system_date,"TODAY")
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+
+	/* controla la fecha de registro de la sucursal*/
+	CALL CDScons_suc_sucur
+	CALL csr:date_compare(tes:suc_fecha,common:system_date)
+	IF (RETVAL == 1 || RETVAL < 0) THEN
+		LET common:csr_string = "Fecha de Sucursal no corresponde"
+		ERRMSG common:errmsg_list,FLD:common:csr_string
+		RETURN (-2)
+	END IF
+
+	/* controla la marca de cierre (datos ya cargados por ctrl fecha) */
+	IF (tes:suc_marca_cierre != "") THEN
+		LET common:csr_string = "La Sucursal ya esta cerrada"
+		ERRMSG common:errmsg_list,FLD:common:csr_string
+		RETURN (-2)
+	END IF
+
+	//Llamo a una rutina que verifica si se han cargado los Compromisos de Pago, del dia anterior
+	// de no ser así, aviso al RSC de tal situacion y dependiendo de la respuesta
+	// del mismo linkedito la tx de compromisos o no.
+	CALL post:MISCdispara_Comp
+	IF (RETVAL < 0) THEN
+		RETURN RETVAL
+	END IF    
+
+	CALL siaf:PRESfecha_hora
+	IF (RETVAL < 0) THEN
+		RETURN (-2)
+	END IF
+	
+	//gpb:Generacion de alertas
+	CALL post:OFBgenera_alertas
+	
+	/* CGW: Deshabilito F5 Sucursal */
+	CALL  CSR:tag TAG_REDRAW TAG_PBD BUT_GHOST -1 -1 -1 -1 -1 RT_NORMAL "0 1"
+	KEYDEF KEY_PBD_OFF /*con F5 sucursal, pero deshabilitado*/	    
+END SUB
+
+/*******/

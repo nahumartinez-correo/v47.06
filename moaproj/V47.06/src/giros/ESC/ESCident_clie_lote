@@ -1,0 +1,64 @@
+/****o* Giros Masivos/OFB:giros:OFB:giros:ESCident_clie_lote
+* NOMBRE
+*   OFB:giros:ESCident_clie_lote
+* DESCRIPCION
+*   Rutina de ESC de la transaccion TRANident_clie_lote. Verifica que no haya giros ingresados en
+*	una sesion gm. Si esisten graba un registro en la tabla SesionGm_cabc ysi no hay borra su registro
+*	correspondiente en la tabla SesionGm:cabec. Tambien linkedita el fin de sesion
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:giros:TRANident_clie_lote
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girosESC.h"
+
+
+SUB giros:ESCident_clie_lote
+	
+	//Verificar en la tabla sesion_gm si hay giros enviados
+	CALL CSDhay_giros_env
+	IF (retval == 0)
+		MSGBOX "HAY GIROS ENVIADOS, DEBE FINALIZAR EL PRESUPUESTO",0x00,"Error" 
+		setflag tlr:state_flags,tran_active
+		return (-1)
+	END IF	
+	
+	
+	//Verificar en la tabla sesion_gm si se ha cargado algun giro para este lote. De ser asi se emite un mensaje
+	// indicando que hay una sesion activa, si de todos modos quiere abandonar la tx
+	CALL CDSver_sesGM_activa(giros:nro_sesion_gm)
+	IF (retval == 0)
+		MSGBOX "HAY GIROS CARGADOS SIN ENVIAR, LA SESION QUEDARA PENDIENTE. DESEA ABANDONAR LA TRANSACCION?",OFB_YESNO,"Atención" 
+		if (retval == 7) then
+			setflag tlr:state_flags,tran_active
+			return (-1)
+		else
+			//Grabo la tabla SesionGm_cabec con la sesion pendiente
+			CALL CDSsave_SesGm_cabec
+		end if
+	ELSE
+		//Borro la cabecera por si el operador elimino todos los giros cargados
+		CALL CDSdel_SesGm_cabec
+	END IF
+	
+	call post:ESCtransaccion
+	                
+	call post:MISCEnabl_BloqN_Act
+	let drv:INDrun_funct = LST:post:TRANimpre_fiscal
+	call drv:do_mode
+
+	call giros:CDSchk_giros_masivos
+	call csr:proc_list(F_CLEAR,LST:LISTgm_clear)
+	call csr:proc_list(F_REFRESH,LST:LISTgm_clear)
+
+END SUB
+
+/*******/
+

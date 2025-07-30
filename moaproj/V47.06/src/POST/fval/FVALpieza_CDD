@@ -1,0 +1,111 @@
+/****o* Rendición Piezas CDD/OFB:post:FVALpieza_CDD
+* NOMBRE
+*   OFB:post:FVALpieza_CDD
+* DESCRIPCION
+*   Rutina de Validacion del campo Nro de Pieza de la TX de Rendicion de piezas CDD.
+*   Valida que la pieza no exista ni en la tabla StockpCDD, ni en la stockp, ni en la stockpHist, ni en la stockpHist_CDD.
+*   Verifica que si existe en la StockpCDD_Aux tenga la misma fecha y nro que los ingresados por pantalla.
+*   En base a dichas validaciones habilita/deshabilita los botones de Alta, Baja y Modificacion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   SCR:post:SCRNRendicion_CDD
+* DOCUMENTACION
+*   SC50190.doc:http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=639223&
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpieza_CDD
+
+	//VERIFICAR QUE LA FECHA, NRO Y TOTAL SE HAYAN INGRESADO CORRECTAMENTE
+	CALL post:FVALplan_total
+	IF (RETVAL < 0) THEN
+		RETURN -2
+	ENDIF
+	
+	//Verificar si es un lote existente en la StockpCDD y no permitir la carga!!
+	CALL CDSverif_lote_CDD	
+	if (RETVAL < 0) then
+	    RETURN -2
+	endif
+	//PS 10361 (AUT 1864) Se está permitiendo ingresar blancos luego de la pieza!!
+	call csr:trimfield(post:Pieza)
+	
+    //CORRECCION BUG AUT-428 - NAM
+	IF (post:CDD_total_ing < post:CDD_plan_total) THEN
+	   IF (post:Pieza.numchars == 0 ) THEN
+		   MSGBOX "POR FAVOR INGRESE EL NRO DE PIEZA.",0X00,"ERROR"
+		   RETURN -2
+	   ENDIF
+	ENDIF
+	//FIN CORRECCION AUT-428 - NAM	
+	
+	CALL post:MISCes_TT(Pieza)
+	if (retval == 0) then
+		CALL MISCcant_digitos_tt(Pieza,"8")
+	endif
+
+	//Verificar que la pieza no se encuentre en la PEDpend
+	post:stockp_pieza = Pieza
+	CALL post:CDS_PEDpend_load
+	clearfield post:stockp_pieza
+	IF (RETVAL == 0)
+		//clearfield post:stockp_pieza
+		//Si esta en la PEDpend no es CDD
+		MSGBOX "LA PIEZA INGRESADA NO ES UNA PIEZA CDD. SOLO PODRA SER RECIBIDA COMO 'PAGO EN DESTINO'",0x00,"ERROR"
+		RETURN -2
+	END IF
+	
+	//VALIDAR QUE LA PIEZA NO EXISTA NI EN LA StockpCDD, ni en la stockp,
+	//ni en la stockpHist, ni en la stockpHist_CDD, ni en la stockp_recep
+	//Verificar que si existe en la StockpCDD_Aux tenga la misma fecha y nro que los ingresados
+	CALL MISCExiste_Pieza_CDD
+	//si no la encontró realizar habilitacion de boton de alta.
+	if (RETVAL == -801) then 
+		clearfield post:CDD_crem_imp
+		refresh post:CDD_crem_imp
+		clearfield post:cod_barra_CREM
+		refresh post:cod_barra_CREM
+		ENABLECONTROL drv:PBcb5
+    	DISABLECONTROL drv:PBcb6
+ 		DISABLECONTROL drv:PBcb7
+ 		clearfield post:adt_climay_razon
+    	clearfield post:id_cupon_CCT
+ 		clearfield post:adt_cct_nis_liq
+		clearfield post:adt_cct_comitente
+		clearfield post:adt_cct_cod_serv
+		clearfield post:adt_cct_def_cupon
+		clearfield post:adt_cct_cta_sap
+		clearfield post:adt_cct_rend_fis
+  	endif 
+
+ 	if (RETVAL == 0) then
+ 		//si la encontró en StockpCDD_Aux realizar habilitacion de botones de modif y borrar.
+		DISABLECONTROL drv:PBcb5
+    	ENABLECONTROL drv:PBcb6
+ 		ENABLECONTROL drv:PBcb7
+ 		;PROTFIELD post:Pieza //cgw:Si la pieza existe, protejo el campo de la pieza. 		
+ 	endif
+ 	if (retval == 3) then
+ 	    //si la encontró en alguna tabla (en particular en la StockpCDD_Aux con datos diferentes)
+ 		clearfield post:Pieza
+ 		refresh post:Pieza
+ 		clearfield post:CDD_crem_imp
+		refresh post:CDD_crem_imp
+		//cgw:desprotejo el campo de la pieza y deshabilito botones.
+		UNPROTFIELD post:Pieza
+		DISABLECONTROL drv:PBcb5
+    	DISABLECONTROL drv:PBcb6
+ 		DISABLECONTROL drv:PBcb7
+ 		RETURN -2
+ 	endif
+ 	
+ 	SETVALDONE Pieza
+END SUB
+
+/*******/

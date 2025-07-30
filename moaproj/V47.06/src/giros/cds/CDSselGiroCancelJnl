@@ -1,0 +1,170 @@
+/****o* Pendientes de agrupación/OFB:giros:CDSselGiroCancelJnl
+* NOMBRE
+*   OFB:giros:CDSselGiroCancelJnl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+SUB giros:CDSselGiroCancelJnl
+
+	LOCAL status_mayor_cien LIKE tlr:jnl_status
+	
+	//Busco en el journal la transaccion de giros que encontré ne la PresuDet (se
+	//supone que fue aceptada en el host)
+	CDS SELECT FROM "journal" BECOMES dsc:post:journal_ctx1	\
+		where post:PresNro == post:PresNro && 				\
+			tlr:jnl_bus_date == common:system_date && 		\
+			tlr:jnl_operator == op:op_operator_id && 		\
+			tlr:jnl_branch == common:sucursal_activa && \
+			tlr:jnl_date == post:fecha && \
+			siaf:codigo_siaf == siaf:codigo_siaf && \
+			post:adt_PreDNroTrn == post:PreDNroTrn
+	CDS FINDFIRST dsc:post:journal_ctx1 NOLOCK
+	IF (CDSRETVAL < 0)
+		CDS UNLOCK dsc:post:journal_ctx1
+		CDS ENDSELECT dsc:post:journal_ctx1
+		MSGBOX "No pueden encontrarse los Datos de la Transacción a enviar",0x00,"ERROR"
+		RETURN (-1)
+	END IF
+	
+
+	CDS EXTRACT DSC:post:journal_ctx1 giros:clave_hdr_giros  \
+	giros:clave_hdr_giros into giros:clave_hdr_prev \
+	giros:cons_nro_ctrol \
+	giros:codigo_procesamiento \
+	siaf:codigo_siaf into giros:cod_tran_canc \
+	giros:flia_giro_fld \
+	giros:Serie_fld \
+	giros:NroGiro_fld \
+	giros:digito_fld \
+	giros:hora_viaje \
+	giros:dia_viaje \
+	post:PresNro into giros:PresNro_canc
+	
+	IF (flia_giro_fld == "W")
+	    mtcn_canc = clave_hdr_giros
+	ELSE
+	    clearfield mtcn_canc
+	END IF
+	
+	CDS EXTRACT DSC:post:journal_ctx1 \
+	    FechaEmision_fld INTO cons_fecha_emi \
+	    ImporteNeto \
+	    siaf:jnl_sucursal INTO CodSucEmis_fld \
+	    siaf:jnl_sucursal INTO CodSucSoli_fld \
+	    CodPaisResidEmis INTO CodPaisEmis_fld \
+	    CodPaisResidBenef INTO CodPaisBenef_fld  \
+	    giros:SucSel2_fld INTO prov_pagad_fld \
+	    CodSucBenef_fld INTO Sucursal_fld \
+	    giros:SucSel3_fld \
+	    giros:CodSuc_fld 
+
+	CDS EXTRACT DSC:post:journal_ctx1 \
+	ImporteNeto \
+	SucSel_fld \
+	CodSucEmis_fld \
+	ProvEmis_fld \
+	siaf:moneda \
+	siaf:importe \
+	FLD:post:ImporteConIva \
+	FLD:post:ImporteSinIva \
+	FLD:EstadoGiro_fld \
+	FLD:cancelacion
+
+	CDS EXTRACT DSC:post:journal_ctx1 \
+	NombreBenef_fld \
+	ApellidoBenef_fld \
+	TipoDocBenef_fld \
+	NroDocBenef_fld \
+	CalleBenef_fld \
+	NroCalleBenef_fld \
+	PisoBenef_fld \
+	DptoBenef_fld \
+	TelBenef_fld \
+	CodPostBenef_fld \
+	ProvSucBenef_fld \
+	CiudadBenef_fld \
+	CodProvBenef_fld \
+	LocBenef_WU \
+	CodPaisResidBenef \
+	PaisResidBenef 
+
+	CDS EXTRACT DSC:post:journal_ctx1 \
+	NombreEmi_fld \
+	ApellidoEmis_fld \
+	TipoDocEmis_fld \
+	NroDocEmis_fld \
+	CalleEmis_fld \
+	NroCalleEmis_fld \
+	PisoEmis_fld \
+	DptoEmis_fld \
+	TelEmis_fld \
+	CodPostEmis_fld \
+	CiudadEmis_fld \
+	CodProvEmis_fld \
+	ProvSucEmis_fld \
+	LocEmis_WU \
+	CodPaisResidEmis \
+	PaisResidEmis
+
+	CDS EXTRACT DSC:post:journal_ctx1 \
+		giros:CodPaisEmis_fld  into giros:CodPaisEmis_aux \
+		giros:CodPaisBenef_fld into giros:CodPaisBenef_aux
+
+	if (giros:cod_tran_canc == 70140 || giros:cod_tran_canc == 70141)
+		CDS EXTRACT DSC:post:journal_ctx1 giros:vieja_serie_fld \
+		giros:viejo_num_giro_fld \
+		giros:viejo_dig_fld
+	end if
+
+  	if ( giros:flia_giro_fld  == "I" )
+		;PARA TRANSACCIONES INTERNACIONALES
+		CDS EXTRACT DSC:post:journal_ctx1 \
+			giros:pay_indicator \
+			giros:MoneyTKey_fld \
+			giros:ImportePago_fld \
+			giros:cons_nro_ctrol into giros:mtcn_canc \
+			giros:CodPaisEmis_fld \
+			giros:CodPaisBenef_fld \
+			post:adt_codseq_nro into giros:codseq_nro_canc \
+			giros:hora_viaje    into giros:hora_viaje_canc \
+			giros:dia_viaje     into giros:dia_viaje_canc
+	end if
+
+	CDS EXTRACT DSC:post:journal_ctx1 \
+		siaf:nombre_transac into nombre_tran_canc
+
+	CDS ENDSELECT DSC:post:journal_ctx1
+
+
+	//Llamo a la rutina que envía el mensaje de cancelacion al host
+	CALL giros:MISCmsgCancelGiro
+	IF (RETVAL < 0)
+		//Este caso se da cuando vuelvo de la rutina anterior por un error de tablas(-1) o porque no hay linea(-2) 
+		RETURN (RETVAL)
+	END IF
+	IF (hcomm:tran_status > 100)
+		MSGBOX "No se pudo cancelar el giro. Inténtelo nuevamente o finalice el Presupuesto y Anúlelo por Comprobantes",0x00,"Aviso"
+		return (-2)
+	ELSE
+		IF (hcomm:tran_status == 100)
+			MSGBOX "No se pudo cancelar el giro. El Presupuesto finalizará. Anúlelo por Comprobantes",0x00,"Aviso"
+			return (-1)			
+		END IF
+	END IF		
+	RETURN (RETVAL)
+END SUB
+
+/*******/

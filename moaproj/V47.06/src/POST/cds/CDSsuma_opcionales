@@ -1,0 +1,232 @@
+/****o* Pendientes de agrupación/OFB:post:CDSsuma_opcionales
+* NOMBRE
+*   OFB:post:CDSsuma_opcionales
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsuma_opcionales (tarif_servicio,lista,tarif_cantidad,tarif_uni_medida,tarif_destino,dias_alma)
+    LOCAL cant LIKE post:adt_epp_nro
+    LOCAL totopc LIKE post:adt_tarif_precio
+    LOCAL l_importe_aux  LIKE post:adt_tarif_precio
+    LOCAL lista_aux LIKE common:csr_string
+    LOCAL destino_aux LIKE common:csr_string
+    LOCAL uni_medida_aux LIKE common:csr_string
+    LOCAL posi LIKE post:adt_epp_nro
+    LOCAL posi1 LIKE post:adt_epp_nro
+    LOCAL posi2 LIKE post:adt_epp_nro
+    LOCAL lista_tmp LIKE common:csr_string
+    LOCAL opcional_tmp LIKE common:csr_string
+    LOCAL opci LIKE post:adt_opc_opci
+    LOCAL opcional LIKE post:adt_opc_opci
+    LOCAL l_retval LIKE lib:err_retval
+	LOCAL cont_opc LIKE cantidad
+    CALL csr:trimfield(tarif_servicio)
+    CALL csr:trimfield(lista)
+    CALL csr:trimfield(tarif_destino)
+    CALL csr:trimfield(tarif_uni_medida)
+    lista_tmp = lista
+    LET totopc = 0
+    costo_opc_uni = 0
+    WHILE (lista_tmp != "")
+    	CALL csr:str_search(lista_tmp,",",posi)
+    	IF (posi == 0) THEN
+        	LET opcional = lista_tmp
+        	LET lista_tmp = ""
+    	ELSE
+        	LET posi1 = posi
+        	MOVE substr(lista_tmp,0,posi1) to opcional
+        	LET posi1 = posi + 1
+        	LET lista_aux = lista_tmp
+        	CALL csr:trimfield(lista_aux)
+        	LET cant = lista_aux.numchars
+        	LET posi2 = cant - posi1
+        	MOVE substr(lista_tmp,posi1,posi2) to lista_tmp
+    	END IF
+    	
+    	 //cont_opc = 0
+    	
+    	WHILE (opcional != "")
+        	CDS SELECT FROM OPC_TAB BECOMES OPC_CTX WHERE\
+            	post:adt_opc_opci == opcional
+        	CDS FINDFIRST OPC_CTX NOLOCK
+        	CDS EXTRACT OPC_CTX adt_opc_especial
+        	CDS ENDSELECT OPC_CTX
+        	CDS SELECT FROM OPC_SERV_TAB BECOMES OPC_SERV_CTX WHERE\
+            	post:adt_opcserv_serv == tarif_servicio && \
+            	post:adt_opcserv_opci == opcional
+        	IF (CDSRETVAL == 0) THEN
+            	CDS FINDFIRST OPC_SERV_CTX NOLOCK
+            	IF (CDSRETVAL == 0) THEN
+                	opci = opcional
+            	    /* CDS EXTRACT OPC_SERV_CTX adt_opcserv_valor, \
+                    	adt_opcserv_tipo, adt_opcserv_otro INTO opcional,\
+                            adt_opcserv_base */
+            	    CDS EXTRACT OPC_SERV_CTX ALL
+            	    CDS ENDSELECT OPC_SERV_CTX
+            	    cant = 1
+            	    CALL post:MISCopcCantPart(opcional, post:tipo_produc, cant)
+		            l_retval = RETVAL
+            	    IF (opci == opcional)
+                    	CLEARFIELD opcional
+            	    END IF
+                    IF (adt_opc_especial == "F") THEN
+                        SELECT (adt_opcserv_tipo)
+                            CASE "S"
+                                l_importe_aux = adt_opcserv_valor
+                                IF (l_retval == 1) THEN
+		                            costo_opc_uni = costo_opc_uni + l_importe_aux
+		                        END IF
+                                LET totopc = totopc + l_importe_aux
+                                BREAK
+                            CASE "P"
+                                CALL csr:trimfield(adt_opcserv_base)
+                                IF (adt_opcserv_base.numchars == 0) THEN
+                                	LET destino_aux = tarif_destino
+                                	CALL csr:trimfield(destino_aux)
+                                	LET uni_medida_aux = tarif_uni_medida
+                                	CALL csr:trimfield(uni_medida_aux)
+                                	IF (tarif_destino == "")
+                                    	tarif_destino = destino
+                                    	destino_aux = destino
+                                	END IF
+                                	IF (tarif_cantidad == 0) || (destino_aux.numchars == 0) || \
+                                    	 (uni_medida_aux.numchars == 0) THEN
+                                    	RETURN (-1)
+                                	ELSE
+                                    	CALL CDSbasico (tarif_servicio,adt_tarif_desde,tarif_uni_medida,tarif_destino)
+                                    	IF (RETVAL == 0) THEN
+                                        	IF (adt_tarif_precio == 0) THEN
+                                        		RETURN (-4)
+                                        	ELSE
+                                        	    l_importe_aux = (adt_opcserv_valor*adt_tarif_precio/100)
+                                        		IF (l_retval == 1) THEN
+		                                            costo_opc_uni = costo_opc_uni + l_importe_aux
+		                                        END IF
+                                                LET totopc = totopc + l_importe_aux
+                                        	END IF
+                                		ELSE
+                                        	RETURN (-4)
+                                		END IF
+                                	END IF
+                                ELSE
+                                	CALL CDSbasico (adt_opcserv_base,tarif_cantidad,tarif_uni_medida,tarif_destino)
+                           	    	IF (RETVAL == 0) THEN
+                           	    	    l_importe_aux = (adt_opcserv_valor*adt_tarif_precio/100)
+                                		IF (l_retval == 1) THEN
+		                                    costo_opc_uni = costo_opc_uni + l_importe_aux
+		                                END IF
+                                		LET totopc = totopc + l_importe_aux
+                                	ELSE
+                                		RETURN (-4)
+                                	END IF
+                                END IF
+                                BREAK
+                            CASE "V"
+                                //IF (valor_decla == 0) THEN
+                                cont_opc = 0
+                                WHILE (cont_opc < 6)
+                                	IF (opci == cod_opc[cont_opc])
+                                		BREAK
+                                	END IF
+                                	cont_opc = cont_opc + 1 
+                                END WHILE
+                        
+                        
+                                IF (vec_opc2[cont_opc] == 0) THEN	
+                                    RETURN (-4)
+                                ELSE
+                                    /*IF (((adt_opcserv_valor * valor_decla) / 100) < post:adt_opcserv_montomin) THEN
+                                        LET totopc = totopc + post:adt_opcserv_montomin
+                                    ELSE
+                                        LET totopc = totopc + (adt_opcserv_valor * valor_decla / 100)
+                                    END IF*/
+                                    
+                                  
+                                    
+                                    IF (((adt_opcserv_valor * vec_opc2[cont_opc]) / 100) < post:adt_opcserv_montomin) THEN
+                                        l_importe_aux = post:adt_opcserv_montomin
+                                    ELSE
+                                        l_importe_aux = (adt_opcserv_valor * vec_opc2[cont_opc] / 100)
+                                    END IF                            
+                                    IF (l_retval == 1) THEN
+		                                costo_opc_uni = costo_opc_uni + l_importe_aux
+		                            END IF
+                                    LET totopc = totopc + l_importe_aux
+                                    
+                                END IF
+                                BREAK
+                            CASE "A"
+                                IF (dias_alma == 0) THEN
+                                	RETURN (-4)
+                                ELSE
+                                    l_importe_aux = (adt_opcserv_valor * dias_alma / 100)
+                                	IF (l_retval == 1) THEN
+		                                costo_opc_uni = costo_opc_uni + l_importe_aux
+		                            END IF
+                                	LET totopc = totopc + l_importe_aux
+                                END IF
+                                BREAK
+                        END SELECT
+                    ELSE /* adt_opc_especial != "F" */
+                        CALL CDStiposerv (tarif_servicio)
+                        IF (adt_serv_tipo != "EN") THEN
+                            RETURN (-4)
+                        ELSE
+                            CALL CDSconver (tarif_cantidad,tarif_uni_medida,"KGS")
+                            CDS SELECT FROM dsc:Reembal_tbl \
+                                BECOMES dsc:Reembal_ctx WHERE adt_reembal_desde <= tarif_peso \
+                            && adt_reembal_hasta >= tarif_peso
+                            IF (CDSRETVAL == 0) THEN
+                                CDS FINDFIRST dsc:Reembal_ctx NOLOCK
+                                IF (CDSRETVAL == 0) THEN
+                                    CDS EXTRACT dsc:Reembal_ctx adt_reembal_precio
+                                    IF (CDSRETVAL == 0) THEN
+                                        l_importe_aux = adt_reembal_precio
+                                	    IF (l_retval == 1) THEN
+		                                    costo_opc_uni = costo_opc_uni + l_importe_aux
+		                                END IF
+                                	    LET totopc = totopc + l_importe_aux
+                                        CDS ENDSELECT dsc:Reembal_ctx
+                                    ELSE
+                                        CDS ENDSELECT dsc:Reembal_ctx
+                                        RETURN (-4)
+                                    ENDIF
+                                ELSE
+                                    RETURN (-4)
+                                ENDIF
+                            ELSE
+                                RETURN (-4)
+                            ENDIF
+                            CALL csr:trimfield(adt_opcserv_otro)
+                            LET opcional = adt_opcserv_otro
+                        END IF
+                    END IF
+                ELSE
+                    CDS ENDSELECT "opc"
+                    LET opcional = ""
+                END IF
+            ELSE
+                LET opcional = ""
+            ENDIF
+        
+            //cont_opc = cont_opc + 1
+        
+        END WHILE
+    END WHILE
+    LET tarif_resultado = totopc
+END SUB
+
+/*******/

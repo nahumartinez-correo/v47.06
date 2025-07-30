@@ -1,0 +1,95 @@
+/****o* Pendientes de agrupación/OFB:post:OFBproc_batch_simon
+* NOMBRE
+*   OFB:post:OFBproc_batch_simon
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBproc_batch_simon
+local l_estado like adt_benTmp_estado
+local l_cod_proc like giros:codigo_procesamiento
+local l_estado_J like adt_benTmp_estado
+local l_estado_R like adt_benTmp_estado
+local l_operator like op:op_operator_id
+    l_operator = op:op_operator_id
+    CDS ENDSELECT "ctx_simon_caidas"
+    CDS SELECT FROM "simon_caidas" BECOMES "ctx_simon_caidas" WHERE\
+    adt_benTmp_estado == "X" || \
+    adt_benTmp_estado == "Y"
+    
+    CDS FINDFIRST "ctx_simon_caidas" NOLOCK
+    
+    while (CDSRETVAL == 0)
+        clearfield post:fecha
+        CDS EXTRACT "ctx_simon_caidas" ALL
+        
+        Select (adt_benTmp_estado)
+            case "X"
+                ;CONFIRMA EL ENVIO DE RENDICION DE BENEFICIOS PAGADOS
+                l_cod_proc = 970010
+                l_estado = "X"
+                l_estado_J = "JX"
+                l_estado_R = "RX"
+                marca_masivo = "S"
+                break
+            CASE "Y"
+                ;CONFIRMA EL ENVIO DE RENDICION DE BENEFICIOS NO PAGADOS
+                l_cod_proc = 970021
+                l_estado = "Y"
+                l_estado_J = "JY"
+                l_estado_R = "RY"
+            break
+        end select
+        ;Marco el flags con batch_mode a fin de que no se muestren msgbox y se generen en su lugar
+        ;el log correspondiente
+        Setflag common:rt_flags,batch_mode
+        op:op_operator_id = adt_benTmp_operator
+        siaf:codigo_siaf = 6650
+        operativo = adt_benTmp_operativo
+        beneficio = adt_benTmp_benef
+        giros:codigo_procesamiento = l_cod_proc
+        importe_benef = adt_benTmp_importe
+        siaf:importe = importe_benef
+        call post:CDSobtiene_secuen("STAN")
+        giros:hora_viaje = common:time_of_day
+        giros:dia_viaje  = common:system_date
+        post:fecha = adt_benTmp_fecha_pag
+        call post:OFBconsulta_simon(l_cod_proc)
+        clearfield siaf:importe
+        if (retval == 0) then
+            adt_benTmp_estado = l_estado_J
+        else
+            if (hcomm:tran_status == HOST_REJECTED) then
+                adt_benTmp_estado = l_estado_R
+            else
+                adt_benTmp_estado = l_estado
+            ENDIF
+        end if
+        CDS FINDAGAIN "ctx_simon_caidas" LOCK
+        CDS CLEARBUFFER "ctx_simon_caidas"
+        CDS APPEND "ctx_simon_caidas" \
+        adt_benTmp_estado
+        CDS UPDATE "ctx_simon_caidas" LOCK
+        CDS UNLOCK "ctx_simon_caidas"
+        CDS FINDNEXT "ctx_simon_caidas" NOLOCK
+    end while 
+    CDS ENDSELECT "ctx_simon_caidas"
+    // Se comenta el reseteo del flag ya que trae problemas con las demas rutinas que se invocan desde
+    // post:OFBproc_batch_Cupon. Ademas que no deberia reseterse porque ES un proceso batch.
+    //resetflag common:rt_flags,batch_mode
+    op:op_operator_id = l_operator
+END SUB
+
+/*******/

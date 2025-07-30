@@ -1,0 +1,167 @@
+/****o* Tratamiento de Cheques/OFB:post:SVALreemp_chqrob
+* NOMBRE
+*   OFB:post:SVALreemp_chqrob
+* DESCRIPCION
+*   Rutina de confirmacion de la TX de Reemplazo de Cheque Robado.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   OFB:post:MISCacredito_adel,post:SVALreemp_chqrech_up,OFB:post:SVALcanc_reemp,OFB:post:SVALcancReempRob
+*	OFB:post:MISCverif_ch_acred,OFB:post:MISCcalc_adel_lg
+* REFERENCIADO POR
+*   LST:post:TRAN99240,LST:post:TRAN99242
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postSVAL.h"
+
+SUB post:SVALreemp_chqrob
+    LOCAL loc_imp LIKE siaf:importe
+	//LOCAL imp2    LIKE siaf:importe
+	LOCAL imp_total LIKE siaf:importe
+    local l_new_date like post:fec_e
+   	local l_en_plazo like common:csr_string
+   	
+    // se comenta porque esto trae problemas con la captura
+    //   if (post:estado_presu == 4) then
+    //   	siaf:moneda = cheqrech_moneda
+    //   end if
+
+    if (!testflag(tlr:tran_flags,correction))
+
+	   if (post:estado_presu == 2 || post:estado_presu == 3) then
+	    	siaf:moneda = 99
+	    end if
+        
+        if (post:cod_banco.numchars == 0 && post:cuenta.numchars == 0 && \
+        	post:nro_cheque.numchars == 0) then
+        	errmsg lst:common:errmsg_list, "Faltan Datos del Cheque a Reemplazar"
+        	return (-2)
+        end if
+
+        if (siaf:f_emision.numchars == 0)
+        	errmsg lst:common:errmsg_list, "Debe Consultar el Cheque a Reemplazar"
+        	return (-2)
+        end if          
+
+		loc_imp = post:imp_aux + post:comision_rechazo
+        if (loc_imp != siaf:importe)  
+            //MSGBOX "El importe del reemplazo difiere del importe del cheque a reemplazar\n (tener en cuenta si hay que cobrar comisión)",0x00,"ERROR"
+            MSGBOX "El Total de los Medios de Pago debe ser igual al cheque a reemplazar más la comisión",0x00,"ERROR"
+            ;nextfield siaf:importe2
+            return (-2)
+        end if
+    
+    	/*
+        popup tes:SCRNconfirma  
+        if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+            return (-2)
+	    end if
+	    */
+
+	    let post:SobreTasaIva = 0
+	    let post:ImporteIva = 0
+	    let post:ImporteSinIva = 0
+	    let post:TasaIva = 0
+	    /* */
+	    ;post:PreDForFis = post:adt_serv_formfiscal
+	    
+		if (post:comision_rechazo > 0) then	    
+			//SC 50170
+			CALL post:MISCdesglosaIva(post:comision_rechazo,post:adt_serv_aliciva,1,0)
+		end if	
+	  
+		if (post:estado_presu != 4) then
+		/* Ya los tengo cargados supuestamente */
+			//50295 - Verificar si el cheque reemplazado es un cheque certificado en plazo
+			if (post:cheqrech_moneda == 15) then
+				post:adt_mp_cod = post:cheqrech_moneda
+				CALL post:CDSadt_MedPago_load
+				call csr:date_add (siaf:f_emision,  post:adt_mp_dias_plazo,  "d",  l_new_date)
+				call csr:date_compare(common:system_date ,l_new_date)
+				/*si l_new_date es igual o mayor a la fecha del dia entonces el cheque esta en plazo*/
+				If (RETVAL == 0 || RETVAL == 2) Then
+					l_en_plazo = "S"
+				else
+					l_en_plazo = "N"
+				endif
+			else
+				l_en_plazo = "N"
+			endif
+			
+			CALL MISCpago_reemp_up(l_en_plazo)
+			
+			if (retval < 0) then
+				return (-2)
+			end if
+		end if
+		
+	 /* Se calcula el Importe Total sin IVA de la Transacción - Gabriel Falciola*/
+	    if (post:estado_presu != 1 && post:estado_presu != 4)
+		
+		     /* Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr y Medios de Pago - Gabriel Falciola*/
+			call post:MISCAcumTotalesSes
+	    end if
+	    
+		
+	    IF (post:estado_presu != 4)
+	        ;post:PreDForFis = adt_serv_formfiscal
+	        call post:MISCGrabaDetalleTrn
+	    end if 
+
+	    IF (post:estado_presu == 4)
+	         
+	        /* Se acumula el importe total según la Especie - HERNAN - 26/10/2000 */
+		 	;call post:MISCTotalTransac(tes:adt_evaux_codigo) 
+		 	;call post:MISCTotalTransac(siaf:codigo_siaf)
+	        	;call post:MISCGrabaDetalleTrn // se pasa la actualización de la PresuDet a la rutina de LINK
+	    end if
+	    
+
+	    //Calculo el STAN
+		IF (!testflag(tlr:controla_firma,cancelacion))
+			Call post:CDSobtiene_secuen("STAN")
+			giros:hora_viaje = siaf:hora
+			giros:dia_viaje = siaf:fecha
+		END IF	
+		giros:codigo_procesamiento = 997007
+        //MFM - Seteo el flag de consumo en false para que no se arme lio.
+        post:ConsumoAnticipo = FALSE
+		call post:CDSpresu_modalidadCM
+    ELSE
+        
+        CALL siaf:SVALnivel_sup
+        IF (RETVAL < 0) THEN
+            RETURN (-2)
+        END IF
+    END IF                     
+    
+    //cant_valores = 2
+    
+    //se o no reversa se debe hacer esto    
+    call MISCcalc_Tot_PagCli
+    ;siaf:importe_calc = siaf:importe_chq + siaf:importe2 
+    ;siaf:importe = siaf:importe_chq + siaf:importe2
+    ;post:cli_tipo = 0
+	
+	// fgb: si el reemplazo tiene comisión por rechazo, entonces el importe sin impuestos es:
+	// sin_impuesto (siaf:importe2) = importe_total (siaf:importe) - importe_iva (post:ImporteIva)
+	siaf:importe2 = siaf:importe - post:ImporteIva
+	
+	
+	
+	//Clientes Medios - Modalidades
+	if (!testflag(tlr:tran_flags,correction) && post:estado_presu != 4) then
+		post:ConsumoAnticipo = FALSE
+		post:ModalidadCC = FALSE
+		post:ModalidadCD = FALSE
+		call post:CDSpresu_modalidadCM
+	end if
+	
+END SUB
+
+
+/*******/

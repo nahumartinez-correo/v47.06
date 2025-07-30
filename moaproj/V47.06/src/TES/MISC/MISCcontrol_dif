@@ -1,0 +1,253 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCcontrol_dif
+* NOMBRE
+*   OFB:tes:MISCcontrol_dif
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCcontrol_dif
+local ltesoro like op:op_tesoro
+local lsubtesoro like op:op_subtesoro
+local TotalMP like siaf:importe
+local mp_aux like siaf:moneda
+local LRetval like lib:err_retval
+local Resto like siaf:importe
+local idx_aux like siaf:idx
+local idx_pant like siaf:idx
+local hay_pantalla like tes:marca_dif
+local hay_pase like tes:marca_dif
+local LocalRetval like lib:err_retval
+local pone_dif like tes:marca_dif
+
+	idx_pant = 0
+	idx_aux = 0
+	call csr:cleararray(mp_texto_ent)
+	call csr:cleararray(importes_max)
+	call csr:cleararray(importes_dif)
+	call csr:cleararray(acepta_ent_mp)
+	call csr:cleararray(mp_dif)
+	call csr:cleararray(adt_cheqaux_dif)
+	call csr:cleararray(adt_cheqaux_marca)
+	
+	do    
+	    if (idx_aux > 13) then
+	    	break
+	    end if
+    	protfield mp_texto_ent[idx_aux]
+    	protfield importes_max[idx_aux]
+    	protfield importes_dif[idx_aux]
+    	protfield acepta_ent_mp[idx_aux]
+    	idx_aux = idx_aux + 1
+    loop
+        
+    cds select from dsc:AuxCheq_tbl BECOMES dsc:AuxCheq2_ctx where \
+	tes:adt_cheqaux_suc    == op:op_branch_id   && \
+	tes:adt_cheqaux_op     == op:op_operator_id
+
+    cds findfirst dsc:AuxCheq2_ctx lock
+
+	let lib:err_retval = cdsretval	
+    //Recorro la tabla temporal
+    LocalRetval = cdsretval
+    
+    /*
+    if (lib:err_retval != 0) then
+        return
+    end if
+    */
+    hay_pantalla = "N"
+    if (lib:err_retval == 0) then
+    	cds extract dsc:AuxCheq2_ctx all
+    
+
+    	
+    end if
+        
+    idx_aux  = 0
+    do    
+    	if (idx_aux > 13)
+    		break
+    	end if	
+    	if (mp_texto[idx_aux].numchars > 0) then
+    		mp_aux = mp_codigo[idx_aux]
+    		
+    		TotalMP = siaf:tefectivo_vec[mp_aux] + siaf:tefec_inic_vec[mp_aux]
+    		if (importes_pase[idx_aux] > TotalMP) then
+    			/*Ajuste Positivo */
+    		
+    			adt_cheqaux_dif[idx_aux] = importes_pase[idx_aux] - TotalMP
+    			hidefield acepta_ent_mp[idx_aux]
+    			hidefield importes_max[idx_aux]
+    			hidefield importes_dif[idx_aux]
+    			/* No pone la plata, hace fallo */
+    			tes:adt_cheqaux_marca[idx_aux] = "N"					  
+
+    			
+    		else
+    			
+    			if (TotalMP > importes_pase[idx_aux] ) then
+    				tes:adt_limha_mp = mp_aux
+    				clearfield tes:adt_limha_caja
+    				call CDSlimihabi_load
+    				LRetval = 0
+    				Resto = TotalMP - importes_pase[idx_aux]    			
+    				protfield tes:adt_limha_caja
+    				protfield post:adt_mp_desc
+    				post:adt_mp_desc = mp_texto[idx_aux]
+					/* MLD 17-07-03 Lo pongo en su formato porque viene mal cargado en la tabla
+					y trae problemas al hacer la resta */
+    				fprint tes:adt_limha_caja "%12e",tes:adt_limha_caja
+    				    				
+    				if (Resto > tes:adt_limha_caja) then
+    					siaf:importe_dif = Resto - adt_limha_caja
+    					if (siaf:importe_dif > common:emp_limite) then
+    						importes_dif[idx_aux] = siaf:importe_dif
+    						importes_max[idx_aux] = tes:adt_limha_caja
+    						refresh importes_max[idx_aux]
+    						refresh importes_dif[idx_aux]   						
+    						post:adt_mp_cod = mp_codigo[idx_aux]   						
+    						call post:CDSadt_MedPago_load
+    						mp_texto_ent[idx_aux] = post:adt_mp_desc
+    						refresh mp_texto_ent[idx_aux]   						    						    						
+    						unprotfield acepta_ent_mp[idx_aux]
+    						refresh acepta_ent_mp[idx_aux]
+    						hay_pantalla = "S"
+    					else    				
+			    			hidefield acepta_ent_mp[idx_aux]
+			    			hidefield importes_max[idx_aux]
+			    			hidefield importes_dif[idx_aux]			    		
+			    			/* Es un ajuste Negativo */			
+					    	tes:adt_cheqaux_dif[idx_aux] = siaf:importe_dif * -1
+					    	/* No pone la plata, hace fallo */
+					    	tes:adt_cheqaux_marca[idx_aux] = "N"					  
+    					end if
+    				else
+						/* No hay diferencia */
+						hidefield acepta_ent_mp[idx_aux]
+						hidefield importes_max[idx_aux]
+						hidefield importes_dif[idx_aux]			    					
+    				end if		
+    			else
+					/* No hay diferencia */
+					hidefield acepta_ent_mp[idx_aux]
+					hidefield importes_max[idx_aux]
+					hidefield importes_dif[idx_aux]			    					
+    			end if
+    		end if
+		else
+			hidefield acepta_ent_mp[idx_aux]
+			hidefield importes_max[idx_aux]
+			hidefield importes_dif[idx_aux]			    					
+		end if			
+		idx_aux = idx_aux + 1
+	loop	
+	
+	LRetval = 0	
+	if (hay_pantalla == "S") then				 
+		do	
+			if (LRetval == 1) 
+				break
+			end if
+			
+			display tes:SCRNDif_caja
+			collect
+			if (lastkey != RT_ESC) then
+				LRetval = 1
+			end if
+		loop
+	
+		INIT 33,0
+		FYIMSG CLEAR
+		undisplay tes:SCRNDif_caja					
+	end if
+	
+	idx_aux = 0
+	pone_dif = "N"
+	do
+		if (idx_aux > 13) then
+			break
+		end if
+		
+		if (mp_texto_ent[idx_aux].numchars > 0) then
+			if (acepta_ent_mp[idx_aux] == "S") then
+		    	tes:adt_cheqaux_dif[idx_aux] = tes:importes_dif[idx_aux]
+		    	tes:importes_pase[idx_aux] = tes:importes_pase[idx_aux] + tes:importes_dif[idx_aux]
+		    	tes:adt_cheqaux_marca[idx_aux] = "S"
+		    	pone_dif = "S"					  
+			else
+				tes:adt_cheqaux_dif[idx_aux] = tes:importes_dif[idx_aux] * -1
+				tes:adt_cheqaux_marca[idx_aux] = "N"					  
+
+			end if
+		end if
+		idx_aux = idx_aux + 1
+	loop
+	
+	/* Me fijo si hay algun pase cargado por el sistema y el registro no está grabado en
+	la tabla */
+	idx_aux = 0
+	hay_pase = "N"
+	do
+		if (idx_aux > 13) then
+			break
+		end if
+		if (tes:importes_pase[idx_aux] > 0) then
+			hay_pase = "S"
+		end if
+		idx_aux = idx_aux + 1 
+	loop
+	LRetval = 0
+	/* Si hay un pase, pero al operador ficticio, colecto el operador */
+	if (hay_pase == "S" && tes:adt_cheqaux_cuenta == 0) then
+		clearfield tes:login_dest	
+		do	
+			if (LRetval == 1) 
+				break
+			end if
+		
+			display tes:SCRNop_dest
+			collect
+			if (lastkey != RT_ESC) then
+				LRetval = 1
+			end if
+		loop
+	
+		INIT 33,0
+		FYIMSG CLEAR
+		undisplay tes:SCRNop_dest
+		tes:adt_cheqaux_cuenta = tes:operator_id_dest
+		
+	end if
+	if (LocalRetval == 0) then				
+		/* Actualizo los importes y el operador destino */
+		cds clearbuffer dsc:AuxCheq2_ctx
+		cds append dsc:AuxCheq2_ctx tes:adt_cheqaux_cuenta \
+		array tes:adt_cheqaux_dif array tes:importes_pase \
+		array tes:adt_cheqaux_marca	tes:login_dest
+		cds update dsc:AuxCheq2_ctx lock
+    	cds endselect dsc:AuxCheq2_ctx
+    end if
+    
+	/* Si hay pase y solicitud de clave y agrega plata le debo pedir la clave de nuevo */
+	if (hay_pase == "S" && adt_cheqaux_clave == 1 && pone_dif == "S" )then
+		call MISCsolo_clave
+	end if
+	
+
+		    
+    
+END SUB
+
+/*******/

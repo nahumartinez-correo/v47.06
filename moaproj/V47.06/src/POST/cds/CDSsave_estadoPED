@@ -1,0 +1,91 @@
+/****o* Pago en Destino/OFB:post:CDSsave_estadoPED
+* NOMBRE
+*   OFB:post:CDSsave_estadoPED
+* DESCRIPCION
+*   Graba en la tabla estadoPED el nuevo estado de la pieza ped 
+*	para que sean enviados al HOST por el RT_BATCH
+* ENTRADAS
+*   estado = "RPD" / "REC" / 
+*	tipo = "D" DIRECTA "C" CANCELACION
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  
+*  
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684
+*   https://jirats.atos.net.ar/jira/browse/AUT-2311
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDSsave_estadoPED(estado,tipo) //CDScupon_save(estado,tipo,serv)
+	CDS SELECT FROM "estadoPED" BECOMES "estadoPED_ctx" \
+	WHERE tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence == tlr:jnl_sequence 
+		
+	CDS FINDFIRST "estadoPED_ctx" LOCK
+	
+	IF (CDSRETVAL == -801) THEN
+		
+		IF (tipo == "D")
+			post:estadoPED_cancelado = "N" 
+			//Si es directa se asocia la terminal del operador que origina la directa
+			post:estadoPED_node = op:op_node_id  	
+		ELSE
+		    //Si es cancelacion se asocia la terminal del operador que origina la directa
+		    post:estadoPED_node = siaf:jnl_window_node
+		    post:estadoPED_cancelado = "S" 
+		ENDIF
+	
+        fprint tlr:jnl_status,"%.*d",tlr:jnl_status.LENGTH,UNPOSTED
+		post:estadoPED_operacion = tipo
+		post:estadoPED_estado = estado
+		
+		CDS CLEARBUFFER "estadoPED_ctx"
+		CDS APPEND "estadoPED_ctx" \
+			FLD:tlr:jnl_branch \
+			FLD:tlr:jnl_operator \
+			FLD:tlr:jnl_date \
+			FLD:tlr:jnl_time \
+			FLD:tlr:jnl_bus_date \
+			FLD:tlr:jnl_sequence \
+			FLD:tlr:jnl_status \
+			FLD:post:estadoPED_node \
+			FLD:post:estadoPED_cancelado \
+			FLD:op:op_login_id AS FLD:post:estadoPED_operador \
+			FLD:post:estadoPED_operacion \
+			
+		CDS APPEND "estadoPED_ctx" \
+			FLD:post:estadoPED_id_pieza \
+			FLD:post:estadoPED_pieza \
+			FLD:post:estadoPED_estado \
+			FLD:post:estadoPED_NISorig \
+			FLD:post:estadoPED_NISdest
+			
+		
+		IF (tipo == "C")
+		
+		//ver que pasa con estos datos!!!!!!!!!!!!!!!!!!!!!!!! porque no
+		//se si son necesarios estos datos para la cancelacion del estado!!!!!!!!
+		
+			//se deben grabar los datos de stan, dia y hora de viaje de la Directa
+			CDS APPEND "estadoPED_ctx" \
+				post:adt_codseq_nro   \
+				giros:hora_viaje  \
+				giros:dia_viaje  \
+				post:jnl_sequence_ori1
+		ENDIF
+		
+		CDS INSERT "estadoPED_ctx" LOCK
+	ENDIF
+	CDS UNLOCK "estadoPED_ctx"
+	CDS ENDSELECT "estadoPED_ctx"
+
+END SUB
+
+/*******/

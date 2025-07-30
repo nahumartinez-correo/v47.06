@@ -1,0 +1,120 @@
+/****o* Lista de Giros/OFB:giros:OFBproceso_AnulChq
+* NOMBRE
+*   OFB:giros:OFBproceso_AnulChq
+* DESCRIPCION
+*  Tratamiento de Envio de Anulaciones de cheques postales que quedan como resto
+*	en la ultima plancha de giros que se ha emitido y no han sido utilizados
+*  Se obtienen de un vector almacenado en la Presu
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*	OFB:giros:OFBproceso_lg; OFB:giros:PBEnvio_Post_LG
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBproceso_AnulChq
+	local loc_retval like lib:err_retval
+	local cant_int like siaf:i
+	local rec_caidas like siaf:i
+	local varl_mensaje      like common:csr_string
+	local l_sesion like giros:nro_sesion_lg
+	
+	l_sesion = nro_sesion_lg
+		
+    CDS SELECT FROM dsc:giros:AnulChq_tbl BECOMES dsc:giros:AnulChq_ctx WHERE \
+   		op:op_operator_id == op:op_operator_id && \
+   		(lg_status == MEMO || lg_status > HOST_REJECTED)
+
+	CDS FINDFIRST DSC:giros:AnulChq_ctx  LOCK
+	lib:err_retval = CDSRETVAL
+		
+		
+	DO
+		IF (lib:err_retval == -801) THEN
+			break 
+		ENDIF
+		
+		CDS EXTRACT DSC:giros:AnulChq_ctx  ALL
+				
+		//este while se hace para reintentar el envio 2 veces mas en caso de que haya una caida en vuelo
+		cant_int = 0
+		While (cant_int < 3)
+			call giros:OFBenv_AnulChq
+			if (retval < 0 )
+				loc_retval = -2
+				break
+			end if
+			select (hcomm:tran_status)
+				case HOST_ACCEPTED
+					cant_int = 3
+					//actualizo o borro la tabla???
+					CALL CDSupd_AnulChq
+					break
+				case HOST_REJECTED
+					cant_int = 3
+					//anula el cheque rechazado en RecepChk
+					CALL giros:CDSavanza_cheq("AN")								
+					fprint varl_mensaje,"%s : %s-%s-%s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld
+					msgbox varl_mensaje,OFB_OK,"Error en envio de Operaciones"
+					CALL CDSupd_AnulChq
+					nro_sesion_lg = l_sesion
+					return -1
+					break
+				case else //caida en vuelo
+					rec_caidas = 0
+					//intento 3 veces recuperar la caida
+					While (rec_caidas < 3)
+						FYIMSG drv:fyimsg_list,\
+							"Proceso de Recuperacion de Transacciones Caidas en Vuelo"						
+						call giros:CDSchk_caidas_lg
+						if (retval < 0)
+							//hubo una caida en la recuperacion de caida
+							rec_caidas = rec_caidas + 1
+						else
+							//pudo recuperar correctamente la caida
+							rec_caidas = 4
+						end if
+						FYIMSG CLEAR
+					end while
+					IF (rec_caidas == 4)
+						//Recupero correctamente la caida de la recuperacion de caida
+						//Entonces intento mandar nuevamente el giro
+						CALL CDSupd_AnulChq
+						cant_int = cant_int + 1
+					ELSE
+						//luego de intentar 3 veces no pudo recuperar la caida de la 
+						//recuperacion de caida por lo que se aborta el proceso de envios
+						CALL giros:CDSavanza_cheq("AN")
+						fprint varl_mensaje,"%s : %s-%s-%s","COMUNIQUESE CON CALL CENTER\nSOLICITANDO LA ANULACION DE LA EMISION DEL CHEQUE",giros:Serie_fld,giros:NroGiro_fld,giros:digito_fld
+						msgbox varl_mensaje,OFB_OK,"Error en envio de operaciones"
+						CDS UNLOCK DSC:giros:AnulChq_ctx
+						CDS ENDSELECT DSC:giros:AnulChq_ctx
+						nro_sesion_lg = l_sesion
+						return -3
+					END IF
+					break
+			end select
+		END WHILE
+
+		CDS FINDNEXT DSC:giros:AnulChq_ctx  LOCK
+		lib:err_retval = CDSRETVAL
+
+	loop		
+	
+	CDS UNLOCK DSC:giros:AnulChq_ctx
+	CDS ENDSELECT DSC:giros:AnulChq_ctx
+	
+	nro_sesion_lg = l_sesion
+	return loc_retval
+
+END SUB
+
+/*******/
+

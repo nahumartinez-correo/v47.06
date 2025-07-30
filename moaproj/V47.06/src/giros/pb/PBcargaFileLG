@@ -1,0 +1,339 @@
+/****o* Lista de Giros/OFB:giros:PBcargaFileLG
+* NOMBRE
+*   OFB:giros:PBcargaFileLG
+* DESCRIPCION
+*   Carga los datos del archivo de Lista de Giros a Importar
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:BUTCargaListaGiros
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girospb.h"
+
+SUB giros:PBcargaFileLG
+  LOCAL l_str_error LIKE common:csr_string_aux
+	LOCAL l_directorio LIKE common:csr_string
+	LOCAL caracter LIKE common:csr_string
+	LOCAL caracter2 LIKE common:csr_string
+	LOCAL l_registro LIKE common:csr_string_4096
+	LOCAL l_cabecera LIKE common:csr_string_4096
+	LOCAL l_registro_1 LIKE common:csr_string_4096
+	LOCAL l_registro_2 LIKE common:csr_string_4096
+	LOCAL l_registro_3 LIKE common:csr_string_4096
+	LOCAL l_mensaje LIKE common:csr_string_4096
+	LOCAL Linea LIKE common:csr_string
+	LOCAL l_cont LIKE siaf:i
+	LOCAL l_docu_emi_tipo LIKE common:csr_string
+	LOCAL l_docu_emi_nro LIKE common:csr_string
+	LOCAL l_cuit_emi_nro LIKE common:csr_string
+	LOCAL l_flag_cab LIKE siaf:i
+	LOCAL l_flag_reg LIKE siaf:i
+	LOCAL l_seq_cab LIKE post:adt_codseq_nro
+	LOCAL l_seq_req LIKE post:adt_codseq_nro
+	LOCAL l_mod LIKE siaf:i
+	LOCAL l_cec LIKE common:csr_string
+	LOCAL l_cont_status_bar LIKE siaf:i
+	LOCAL l_NroDocEmisGm_fld LIKE common:csr_string
+  LOCAL l_last_button LIKE drv:last_button
+  
+  LET l_cont = 99999
+  LET Linea = ""
+  LET l_directorio = ""
+  LET l_docu_emi_tipo = ""
+  LET l_docu_emi_nro = ""
+  LET l_flag_cab = 0
+  LET l_flag_reg = 0
+  LET l_cabecera = ""
+  LET l_registro_1 = ""
+  LET l_registro_2 = ""
+  LET l_registro_3 = ""
+  l_cont_status_bar = 0
+
+  l_last_button = drv:last_button 
+  drv:button = drv:last_button    
+  CALL drv:but_down_disable
+  CALL drv:all_but_disable
+
+  CALL post:MISCFtrim(giros:mdata_detalleArchLG)
+  
+  IF (giros:mdata_detalleArchLG.NUMCHARS == 0) THEN
+	FPRINT l_str_error "Debe seleccionar un archivo para la importacion."
+	MSGBOX l_str_error, OFB_OK, "Aviso"
+	GOTO error         
+  END IF
+
+  l_directorio = giros:mdata_detalleArchLG
+  FPRINT l_mensaje "LEYENDO DATOS DEL ARCHIVO %s", l_directorio
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+    
+	FPRINT caracter "%s", "\\"
+	FPRINT caracter2 "%s", "/"
+	CALL post:MISCremplazaCaracter(l_directorio,caracter2,caracter)
+	
+  CALL CSR:file_open 1 l_directorio "r"
+	IF (RETVAL < 0)
+		FPRINT l_str_error "El archivo seleccionado no se puede abrir, verifique su existencia."
+		MSGBOX l_str_error, OFB_OK, "Aviso"
+		GOTO error 
+	END IF
+	
+  FPRINT l_mensaje "CALCULANDO LA FIRMA DEL ARVHIVO %s", l_directorio
+	FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+	
+	//Genero la firma MD5 del archivo y busco existencia en la tabla MD5_lg
+  CALL giros:MISCMD5_lg (l_directorio,Linea)
+  
+  IF (RETVAL < 0) THEN
+      CALL CSR:file_close 1
+      GOTO error
+  END IF
+	
+	LET post:mdata_nroRegistros = "0"
+  REFRESH post:mdata_nroRegistros
+  LET post:mdata_nroRechazos = "0"
+  REFRESH post:mdata_nroRechazos
+  
+  //Si el Emisor es persona juridica.
+  IF (TESTFLAG(giros:pers_jur_flag,persona_juridica)) THEN
+  	giros:NombreEmi_fld = "."
+  	giros:ApellidoEmis_fld = giros:RazonSocEmis_fld
+  ELSE
+    // Al no tener en pantalla la opción de cargar nombre y apellido para persona física, instanciamos
+    // estos campos con la Razon social, para que pueda tener valores que no traigan por las problemas
+    // en los viajes al host.
+    giros:NombreEmi_fld = giros:RazonSocEmis_fld
+  	giros:ApellidoEmis_fld = giros:RazonSocEmis_fld
+  END IF
+    
+  CDS BEGINWORK
+
+	DO
+		CLEARFIELD l_registro
+		//obtiene registro externo
+		CALL csr:file_getline(1,l_registro)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF
+	     
+	    CALL giros:MISCstatusbar_LG (l_cont_status_bar,"Validando")
+	    l_cont_status_bar = l_cont_status_bar + 1
+  
+	    IF (l_cont == 99999) THEN
+            //Valido tipo y nro de documento del cliente que inicio la sesion
+            LET l_docu_emi_tipo = SUBSTR(l_registro,198,2)
+            LET l_docu_emi_nro = SUBSTR(l_registro,200,8)
+            LET l_cuit_emi_nro = SUBSTR(l_registro,130,11)
+           
+            CALL post:MISCpadNmb(l_docu_emi_nro,11,"0")
+            
+            IF (giros:TipoDocEmisGm_fld == l_docu_emi_tipo) THEN
+                IF (l_docu_emi_tipo == 80 || l_docu_emi_tipo == 86) THEN
+                    IF (giros:CuitEmisGm == l_cuit_emi_nro) THEN
+                        LET l_flag_cab = 1
+                    END IF
+                ELSE
+                    l_NroDocEmisGm_fld = giros:NroDocEmisGm_fld
+                    CALL post:MISCpadNmb(l_NroDocEmisGm_fld,11,"0")
+                
+                    IF (l_NroDocEmisGm_fld == l_docu_emi_nro) THEN
+                        LET l_flag_cab = 1
+                    END IF
+                END IF 
+            END IF
+            
+            IF (l_flag_cab == 0) THEN
+                MSGBOX "     Los datos del cliente de la Lista de Giros \n no corresponde con el usuario que inicio la Sesion.", OFB_OK, "Aviso"
+                CALL CSR:file_close 1
+                GOTO error
+            ELSE
+                LET l_cabecera = l_registro
+                LET l_cont =  0
+            END IF
+           
+        ELSE
+            IF (l_cont == 0) THEN
+                //Capturo la primera parte del registro
+                LET l_registro_1 = l_registro
+                LET l_cont = 1
+            ELSE
+               	IF (l_cont == 1) THEN
+               		//Capturo la segunda parte del registro
+                	LET l_registro_2 = l_registro
+                	LET l_cont = 2
+	        	ELSE
+	                //Capturo la tercera parte del registro
+	                LET l_registro_3 = l_registro
+	                
+	                //Hago las validaciones de los registros
+	                CALL giros:MISCvalRegLG(l_cabecera,l_registro_1,l_registro_2,l_registro_3)
+	                
+	                IF (RETVAL == 0) THEN
+	                    LET l_flag_reg = 1
+	                ELSE
+	                    LET l_flag_reg = 0
+	                END IF
+	                
+	                LET l_registro_1 = ""
+	                LET l_registro_2 = ""
+	                LET l_registro_3 = ""
+	                LET l_cont =  0
+	            END IF
+	        END IF
+            
+            //Si el registro de la Lista de Giros es valido
+            IF (l_flag_reg == 1) THEN
+                
+                //Lo hago para recuperar el dato
+                IF (giros:nro_sesion_lg.NUMCHARS == 0) THEN
+                    DUPFIELD giros:nro_sesion_lg
+                    SWAPDUP giros:nro_sesion_lg
+                END IF
+                
+                IF (giros:nro_sesion_lg.NUMCHARS == 0) THEN
+                    //Llamo a la rutina que consulta en la Presu si ya existe el nro de sesion de lista de giros 
+                    CALL giros:CDSPresuNroSesionLG
+                    
+                    IF (RETVAL != 0) THEN
+                        //Llamo a la rutina que me calcula el nro de sesion de lista de giros
+                        CALL giros:MISCcec_seq_LG 
+                        IF (RETVAL != 0) THEN
+                            GOTO error
+                        ELSE
+                            //Seteo el flag de importacion de lista de giros
+                            SETFLAG giros:giros_importacion,proc_imp_lg
+                            //RESETFLAG giros:giros_importacion,proc_em_lg
+                            LET post:tipo_giro_presu = "LG" 
+                            //Graba en Presu
+                            CALL giros:CDSPresuImpLG 
+                        END IF
+                    END IF
+                END IF
+                
+                //Llamo a la rutina que me graba el registro en sesion_lg
+                LET post:adt_codseq_nro = giros:nro_trx_lg
+                LET giros:estado_lg = "I"      
+                LET giros:a_emitir = "N"
+                
+                //Grabamos el codigo siaf de la trx de emision (postal o telegrafico). 
+                IF (giros:tipo_giro_fld == "P")
+                    //giro postal
+                    siaf:codigo_siaf = 70030
+                ELSE
+                    //giros telegrafico
+                    siaf:codigo_siaf = 70050
+                END IF
+
+                //Inicio gpb:AUT-1453
+                //verifico que tenga en memoria los datos del Emisor, sino los recupero
+            	CALL MISCrecuperoCliMedLG
+            	
+            	IF (RETVAL < 0) THEN
+                    CLEARFIELD post:directorio_mdata
+                    REFRESH post:directorio_mdata
+                    UNPROTFIELD post:directorio_mdata
+                    
+                    CLEARFIELD giros:mdata_detalleArchLG
+                    REFRESH giros:mdata_detalleArchLG
+                    
+                    CALL drv:back_but_status
+                    drv:button = l_last_button
+                    CALL drv:but_up_enable  
+                    
+                    //limpio el buffer del teclado
+                    INIT 33,0
+                    
+                    RETURN (0)
+            	END IF
+                //Fin gpb:AUT-1453
+                
+				CLEARFIELD giros:clave_hdr_giros //para que no arrastre valor despus de una trx de giros con viaje.
+								//Pago Abierto - Se fuerza la marca de genera telegrama en S y se blanquea la sucursal pagadora para que el giro pueda cobrarse en cualquiera de ellas
+								if (siaf:codigo_siaf == 70050) then
+									giros:genera_teleg = "S"
+									//clearfield giros:CodSucBenef_fld
+								else
+									giros:genera_teleg = ""
+								endif
+                CALL giros:CDSgrabaSesionLG
+                  
+                //Si grabo el registro actualizo contadores
+                IF (RETVAL == 0) THEN
+                    LET post:mdata_nroRegistros = post:mdata_nroRegistros + 1
+                    REFRESH post:mdata_nroRegistros
+                END IF
+                
+                //Reutilizo este flag para validar que cargo una vez la tabla MD5_lg
+                IF (l_flag_cab == 1) THEN
+                    CALL giros:CDSgrabaMD5lg (Linea)
+                    LET l_flag_cab = 0
+                END IF
+                
+                LET l_flag_reg = 0
+                
+            END IF
+	    END IF
+
+	LOOP   
+    CALL CSR:file_close 1
+    
+    //Si el archivo no contiene datos
+    IF (l_cont == 99999) THEN
+        FPRINT l_str_error "El archivo seleccionado no contiene datos."
+		MSGBOX l_str_error, OFB_OK, "Aviso"
+    END IF    
+    
+    //Si le falto la ultima linea de opcionales
+    IF (l_cont == 2) THEN
+        //FPRINT l_str_error "Al archivo le falta una ultima linea de opcionales."
+		//MSGBOX l_str_error, OFB_OK, "Aviso"
+		//Hago las validaciones de los registros
+	    CALL giros:MISCvalRegLG(l_cabecera,l_registro_1,l_registro_2,l_registro_3)
+	    
+    END IF
+    
+    LET l_mensaje = ""
+    FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+    
+    CLEARFIELD post:directorio_mdata
+    REFRESH post:directorio_mdata
+    UNPROTFIELD post:directorio_mdata
+    
+    CALL drv:back_but_status
+    drv:button = l_last_button
+    CALL drv:but_up_enable  
+   
+    CDS COMMITWORK
+    
+    //limpio el buffer del teclado
+    INIT 33,0
+   
+    RETURN (0)
+    
+error:
+    //UNPROTFIELD post:directorio_mdata
+    CALL giros:PRECCargaFileLG
+   
+    LET l_mensaje = ""
+    FYIMSG LST:common:fyimsg_list, FLD:l_mensaje
+    
+    CALL drv:back_but_status
+    drv:button = l_last_button
+    CALL drv:but_up_enable 
+    
+    CDS COMMITWORK
+        
+    //limpio el buffer del teclado
+    INIT 33,0
+    
+    RETURN (-2)
+    
+END SUB
+
+/*******/

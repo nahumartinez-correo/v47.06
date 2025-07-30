@@ -1,0 +1,108 @@
+/****o* Pendientes de agrupación/OFB:post:SVAL_DP3_DCLote
+* NOMBRE
+*   OFB:post:SVAL_DP3_DCLote
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL_DP3_DCLote
+    /* B. Petrella - Nov. 1999              */
+    /* MFM - Modificaciones - Septiembre 2000 */
+  if (!testflag(tlr:tran_flags,correction))
+	 call CDSselect_DevPza3
+     if (retval < 0) then
+       	errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA PIEZA"
+       	return -2
+	 end if
+	 call FVALcaratRecSaca
+     if (retval < 0) then
+		CALL MISCprotUnprot_DP3
+       	return -2
+	 end if
+	 call FVALpres_DP3
+     if (retval < 0) then
+		CALL MISCprotUnprot_DP3
+       	return -2
+	 end if
+	 CALL FVALpesoKgSaca
+	 IF (RETVAL < 0)
+	   let common:csr_string = "Debe Ingresar el Peso."
+	   errmsg common:errmsg_list,FLD:common:csr_string
+	   CALL MISCprotUnprot_DP3
+	   nextfield peso_en_kgs
+	   return -2
+	 END IF
+     call csr:save_currentfield
+     /*CSZ - Llama rutina que verifica si hay piezas simple especial seleccionadas para
+     ser enviadas y cuantas son*/
+     CALL CDShay_simp_esp("Devolucion",DSC:DevPza3_tbl,DSC:DevPza3_ctx1) 
+     
+     /*MFM - Esta rutina verifica si hay piezas reencaminadas seleccionadas para
+     ser enviadas y cuantas son*/
+     /*MFM (04.12.2001)*/
+     IF (mostrar_reenc == "S") THEN
+     	hay_piezas_reenc = "S"
+     ELSE
+     	CALL CDShay_piezas_reenc("Devolucion",DSC:DevPza3_tbl,DSC:DevPza3_ctx1) 
+     END IF
+     
+     move "S"  to siaf:continua_transaccion
+     popup siaf:SCRNcontinua
+	 if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+       	/* 0x0190 = ESC */
+	   	call csr:restore_currentfield
+		INIT 33,0
+     	return -2
+     endif
+     /* Marca para terminar de procesar */
+	 LET FLD:post:adt_table = DSC:post:DevPza3_tbl
+	 LET FLD:post:adt_ctx = DSC:post:DevPza3_ctx
+	 /*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+     los detalles. Esto es util para la reversa*/
+     CLEARFIELD post:codseq_dev
+     CALL CDSobtiene_secuen("CABEC")
+     post:codseq_dev = post:adt_codseq_nro
+     call CDS_DevPza1_max
+     /* Journaliza con otra pantalla */
+     drv:INDscr = SCR:post:SCRN_DP3_Hdr
+     let post:adt_formu_cod = "GUIAC"
+     
+     call CDSbuscoCodSeq
+     let orden = 0
+	else
+		/* MFM - Septiembre 2000 - Verifico si la saca generada en dicha devolución ya 
+		se fue en el corte de linea*/
+  		CALL CDSverif99066
+	  	IF (RETVAL == 0) THEN
+  			tlr:INDdcol_scrn[0] = SCR:post:SCRN_DP3_Hdr
+  			tlr:INDjnl_append = OFB:post:JNL_DP3_DCLote
+	  		CALL MISCreversa_transac
+	  		/*Tengo que borrar el scaneo x y el b generados por el encabezado*/
+	  		SWAPDUP tlr:jnl_sequence
+	  		CALL CDSBorro_Scaneos("D")
+	  		SWAPDUP tlr:jnl_sequence
+  			/* MFM - Septiembre 2000 - Reverso los detalles*/
+  			CALL CDSSelect_Piezas("2")	
+  		ELSE
+  		  	MSGBOX "Las piezas han sido expedidas.No pueden reversarse",0x00,"AVISO"
+  		END IF
+  		;Para que no journalice de más....
+	  	CALL post:MISCclear_campos_jou
+  		;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+	  	Resetflag tlr:tran_flags,correction
+	end if
+END SUB
+
+/*******/

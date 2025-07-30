@@ -1,0 +1,83 @@
+/****o* Pendientes de agrupación/OFB:post:CDSverifRelCorr
+* NOMBRE
+*   OFB:post:CDSverifRelCorr
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSverifRelCorr
+
+   /**********************************************************************/
+   /*                                                                    */
+   /* [PAW - 08/03/00]      Esta rutina se encarga de analizar si se     */
+   /*                       produjo alguna caída y quedó mal la relación */
+   /*                       cruzada de las reversas en el journal.       */
+   /*                                                                    */
+   /**********************************************************************/
+
+	local seqAct like tlr:jnl_sequence
+	local statusAct like tlr:jnl_status
+	local codTx like siaf:codigo_siaf
+	
+	CDS SELECT FROM dsc:tlr:TABjnl BECOMES dsc:Jounarl_anul_Ctx \
+		WHERE (siaf:codigo_siaf != 98040 && 					\
+			   tlr:jnl_operator == op:op_operator_id && 		\
+			   tlr:jnl_bus_date == common:system_date)
+
+	CDS FINDLAST Jounarl_anul_Ctx NOLOCK
+	if (CDSRETVAL == 0)
+		CDS EXTRACT Jounarl_anul_Ctx \
+			tlr:jnl_sequence_corr \
+			tlr:jnl_sequence into seqAct \
+			tlr:jnl_status into statusAct
+			
+		if (tlr:jnl_sequence_corr.numchars != 0)
+			CDS ENDSELECT Jounarl_anul_Ctx
+			CDS SELECT FROM dsc:tlr:TABjnl BECOMES dsc:Jounarl_anul_Ctx \
+				WHERE (tlr:jnl_sequence == tlr:jnl_sequence_corr && 	\
+					   tlr:jnl_operator == op:op_operator_id && 		\
+					   tlr:jnl_bus_date == common:system_date)
+
+			CDS FINDFIRST Jounarl_anul_Ctx NOLOCK
+			if (CDSRETVAL == 0)
+				CDS EXTRACT Jounarl_anul_Ctx \
+				tlr:jnl_sequence_corr \
+				siaf:codigo_siaf into codTx
+				if (tlr:jnl_sequence_corr != seqAct)
+					tlr:jnl_sequence = seqAct
+					
+					
+					//Tratamiento para que las sig. tx no graben el sequence_corr
+					//cuando hay una caida del sitema durante la journalizacion.
+					if ((codTx == 99060 || codTx == 99280 || \
+						codTx == 9326 || codTx == 9336 || \
+						codTx == 8756 || codTx == 8726 || \
+						codTx == 9346 || codTx == 9356) && statusAct >= 100)
+						CDS UNLOCK Jounarl_anul_Ctx
+					else
+						CDS CLEARBUFFER Jounarl_anul_Ctx
+						CDS FINDAGAIN Jounarl_anul_Ctx LOCK
+						CDS APPEND Jounarl_anul_Ctx tlr:jnl_sequence as tlr:jnl_sequence_corr
+						CDS UPDATE Jounarl_anul_Ctx LOCK
+						CDS UNLOCK Jounarl_anul_Ctx
+					end if
+				endif
+			endif
+		endif
+	endif
+	CDS ENDSELECT Jounarl_anul_Ctx
+END SUB
+
+/*******/

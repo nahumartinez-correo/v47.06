@@ -1,0 +1,148 @@
+/****o* Pendientes de agrupación/OFB:post:MISCretiros_pend
+* NOMBRE
+*   OFB:post:MISCretiros_pend
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCretiros_pend(FlagCierre,fecha_cierre)
+    	LOCAL loc_jnl_rtn   LIKE drv:INDjnl_rtn
+        LOCAL loc_tran_name LIKE tlr:jnl_tran_name
+        LOCAL loc_mnemonic  LIKE tlr:tran_mnemonic
+        LOCAL loc_nom_tran  LIKE siaf:nombre_transac
+        LOCAL mone          LIKE siaf:cant
+        LOCAL loc_scr       LIKE drv:INDscr
+
+        loc_jnl_rtn   = drv:INDjnl_rtn
+        loc_tran_name = tlr:jnl_tran_name
+        loc_mnemonic  = tlr:tran_mnemonic
+        loc_nom_tran  = siaf:nombre_transac
+        loc_scr       = drv:INDscr
+
+
+        let tes:fecha_valor = fecha_cierre
+        
+ /*       tlr:bus_date = common:system_date
+        drv:INDjnl_rtn      = "REPITT"
+        tlr:jnl_tran_name   = "REPITT"
+        tlr:tran_mnemonic   = "REPITT"
+        siaf:nombre_transac = "RETIRO DE PIEZAS TRANSPORTE/TRANSFERENCIA"
+        let siaf:codigo_siaf = 99015   */
+
+        call siaf:CDSadt_sucur_load
+    
+        if (post:adt_sucur_dia_dump == "")
+            return (0)
+        end if
+            
+	// Selecciono del journal las transacciones de retiro de piezas
+	// del dia anterior posteriores al último cierre de dia efectuado
+	// Si no hubo cierre forzado, busco todas las que se hayan hecho 
+	// despues del la hora de cierre hasta el dia de hoy
+	if (FlagCierre == "N")
+        CDS select from dsc:tlr:TABjnl becomes "ct_journal" where \
+        tlr:jnl_branch == common:sucursal_activa && \
+        (siaf:codigo_siaf == 99015 || siaf:codigo_siaf == 99016) && \
+        post:marca_journal == "N" && \
+        ((tlr:jnl_bus_date == post:adt_sucur_dia_dump && \
+        (tlr:jnl_time > post:adt_sucur_hs_dump || \
+        tlr:jnl_date > post:adt_sucur_dia_dump)) || \
+        (tlr:jnl_bus_date > post:adt_sucur_dia_dump && \
+        tlr:jnl_bus_date < common:system_date))
+
+    else
+    // Si hubo cierre forzado solo busco las que pudieron habert quedado 
+    // entre mayores a la fecha de cierre y menores al dia de hoy
+        CDS select from dsc:tlr:TABjnl becomes "ct_journal" where \
+        tlr:jnl_branch == common:sucursal_activa && \
+        (siaf:codigo_siaf == 99015 || siaf:codigo_siaf == 99016) && \
+        post:marca_journal == "N" && \
+        (tlr:jnl_bus_date > tes:fecha_valor && \
+        tlr:jnl_bus_date < common:system_date)
+    end if        
+        
+    cds findfirst "ct_journal" lock
+    let lib:err_retval = cdsretval
+    do
+          
+            select (lib:err_retval)
+            case -801
+                cds unlock "ct_journal"
+                cds endselect "ct_journal"
+                break
+            case -803
+                errmsg lst:common:errmsg_list, "No se puede leer Retiros de Piezas Anteriores"
+                cds unlock "ct_journal"
+                cds endselect "ct_journal"
+                break
+            case 0
+                cds extract "ct_journal" post:f_llegada_trans \
+                post:h_llegada_trans post:f_retiro_trans post:h_retiro_trans \
+                post:operador_TT post:desp_transf post:cod_transp \
+                post:desc_despacho siaf:codigo_siaf
+                
+                IF (siaf:codigo_siaf == 99015)
+                    tlr:bus_date = common:system_date
+                    drv:INDjnl_rtn      = "REPITT"
+                    tlr:jnl_tran_name   = "REPITT"
+                    tlr:tran_mnemonic   = "REPITT"
+                    siaf:nombre_transac = "RETIRO DE PIEZAS TRANSPORTE/TRANSFERENCIA"
+                ELSE
+                    IF (siaf:codigo_siaf == 99016)
+                        tlr:bus_date = common:system_date
+                        drv:INDjnl_rtn      = "DESBRP"
+                        tlr:jnl_tran_name   = "DESBRP"
+                        tlr:tran_mnemonic   = "DESBRP"
+                        siaf:nombre_transac = "DESBLOQUEO RETIRO DE PIEZAS"
+                    END IF
+                END IF
+                break
+            end select
+        
+            if (lib:err_retval != 0)
+                break
+            end if
+		    IF (siaf:codigo_siaf == 99015)
+		        let drv:INDscr = SCR:post:SCRNretiro_piezas
+		        let siaf:tiene_reverso = "N"
+		        let post:marca_journal = "N"		    
+			    drv:INDjnl_rtn = ofb:post:JNLretiro_pieza
+			ELSE
+			    IF (siaf:codigo_siaf == 99016)
+		            let drv:INDscr = SCR:post:SCRNdesb_RetPie
+		            let siaf:tiene_reverso = "N"
+		            let post:marca_journal = "N"		    
+			        drv:INDjnl_rtn = ofb:post:JNLdesb_RetPie
+			    END IF
+			END IF			    
+			UNGETKEY 0x190
+			call tlr:JNLtran
+			//cds findagain "ct_journal"
+		    // marco el registro journalizado
+		    cds clearbuffer "ct_journal"
+		    let post:marca_journal = "S"
+		    cds append "ct_journal"	post:marca_journal
+		    cds update "ct_journal" lock
+    		cds findnext "ct_journal" lock
+	    	let lib:err_retval = cdsretval
+	loop
+	drv:INDjnl_rtn      = loc_jnl_rtn
+    tlr:jnl_tran_name   = loc_tran_name
+    tlr:tran_mnemonic   = loc_mnemonic
+    siaf:nombre_transac = loc_nom_tran
+    drv:INDscr          = loc_scr
+END SUB
+
+/*******/

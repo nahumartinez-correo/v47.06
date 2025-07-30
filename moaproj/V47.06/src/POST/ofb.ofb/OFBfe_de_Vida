@@ -1,0 +1,176 @@
+/****o* Pendientes de agrupación/OFB:post:OFBfe_de_vida
+* NOMBRE
+*   OFB:post:OFBfe_de_Vida
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBfe_de_vida(P_COD_PROCESAMIENTO)
+    /*
+    P_COD_PROCESAMIENTO PUEDE SER:
+        970010 Pago
+        970011 Cancelación de Pago
+        970020 Retiro de oficina
+        970021 Cancelación Retiro de oficina
+        970090 Consulta multiple por operativo
+        970100 Consulta multiple por beneficiario y apoderado
+        970110 Consulta simple por Beneficio
+    */
+	resetflag giros:tran_send_mode,consulta_multiple
+	resetflag giros:tran_send_mode,consulta_simple
+	if (!TESTFLAG(giros:tran_send_mode,cancelacion)) then
+	    giros:codigo_procesamiento = P_COD_PROCESAMIENTO
+	    select (siaf:codigo_siaf)
+	        case 6650
+	        case 6640
+	            select (giros:codigo_procesamiento)
+	                case 970020
+	                case 970021
+	                case 970010
+	                case 970011
+	                    break
+	                case else
+	                    call post:CDSobtiene_secuen("STAN")
+	                    giros:hora_viaje = common:time_of_day
+	                    giros:dia_viaje  = common:system_date
+	                    break
+	            end select
+	            break
+	        case else
+	            call post:CDSobtiene_secuen("STAN")
+	            giros:hora_viaje = common:time_of_day
+	            giros:dia_viaje  = common:system_date
+	            break
+        end select
+    end if
+	hcomm:INDhost_sndrt = OFB:SENDconsulta_simon
+	hcomm:INDhost_rcvrt = OFB:RCVEconsulta_simon
+	call hcomm:COMM_stat_init
+
+	call siaf:CDSchk_trxs_caidas
+    if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,\
+		"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+            clearfield hcomm:INDhost_sndrt 
+            clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+    elseif (retval == -5) then
+		 // quedaron trx's pendientes de recuperacion por el proc. batch...
+    	clearfield hcomm:INDhost_sndrt
+    	clearfield hcomm:INDhost_rcvrt
+    end if
+
+
+	select (P_COD_PROCESAMIENTO)
+		;case 970010
+		;case 970020
+		;case 970011
+		;case 970021
+		case 970110   
+			setflag giros:tran_send_mode,consulta_simple
+			break
+		case 970090
+		case 970100
+			setflag giros:tran_send_mode,consulta_multiple
+			break
+		break
+	end select
+
+
+    call giros:OFBdisable_bt_msg
+    call hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+    call giros:OFBenable_bt_msg
+	clearfield lib:stat_message
+	refresh lib:stat_message
+	refresh statusline
+    resetflag tlr:controla_firma,cancelacion
+	tlr:jnl_status = hcomm:tran_status
+	if (hcomm:tran_status != HOST_ACCEPTED) then
+		clearfield giros:codigo_procesamiento
+		return -2
+	end if
+    
+    select (P_COD_PROCESAMIENTO)
+        case 970010
+        case 970020
+        case 970011
+        case 970021
+	    case 970110   
+	        setflag giros:tran_send_mode,consulta_simple
+        break
+        case 970090
+	    case 970100
+	        setflag giros:tran_send_mode,consulta_multiple
+	        break
+	    break
+    end select
+    
+    if (testflag(giros:tran_send_mode,consulta_multiple)) then
+	    call csr:trimfield BulkFld_105
+	    call csr:trimfield BulkFld_106
+	    call csr:trimfield BulkFld_107
+        
+        ;El siguiente picklist debe ser generado antes de entrar a esta OFB
+	    ;call csr:f_sadroppl("pic_beneficios")
+	    ;call csr:f_sanewpl("pic_beneficios",PIC:climedio_multiple)
+        
+	    if (BulkFld_105.NUMCHARS != 0)
+	    	call MISCconsulta_simon(BulkFld_105,Longitud_105)
+	    	if (retval < 0 )
+	    		return -2
+	    	end if
+	    end if
+        
+	    if (BulkFld_106.NUMCHARS != 0)
+	    	call MISCconsulta_simon(BulkFld_106,Longitud_106)
+	    	if (retval < 0 )
+	    		return -2
+	    	end if
+	    end if
+        
+	    if (BulkFld_107.NUMCHARS != 0)
+	    	call MISCconsulta_simon(BulkFld_107,Longitud_107)
+	    	if (retval < 0 )
+	    		return -2
+	    	end if
+	    end if
+    end if
+    
+    if (testflag(giros:tran_send_mode,consulta_simple)) then
+	    call csr:trimfield BulkFld_109
+	    call csr:trimfield BulkFld_110
+        
+	    if (BulkFld_109.NUMCHARS != 0)
+	    	call MISCcons_simon109
+	    end if
+        
+	    if (BulkFld_110.NUMCHARS != 0)
+	    	call MISCcons_simon110
+	    end if
+    end if
+    
+    call csr:trimfield BulkFld_111
+    
+    if (BulkFld_111.NUMCHARS != 0)
+		call MISCcons_simon111
+	end if
+    clearfield giros:codigo_procesamiento
+END SUB
+
+/*******/

@@ -1,0 +1,165 @@
+/****o* Pendientes de agrupación/OFB:post:PRT_Anexo_Fact
+* NOMBRE
+*   OFB:post:PRT_Anexo_Fact
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postprt.h"
+
+SUB post:PRT_Anexo_Fact
+	local cont_imp like cantidad
+	local INDICE like post:cantidad /* indice que cuentas las lineas del cuerpo */
+	local NROITEM like post:cantidad /* indice que cuentas las lineas del cuerpo */
+	local PRECIO_UNITARIO like post:importe_impre
+   	local primero like post:adt_cativa_discri  // un char.
+	local cont LIKE cantidad
+	local desc_impre_tmp like desc_impre
+;  	local ITEM like post:cantidad /* indice que cuentas las lineas del cuerpo */
+	local cantDig like post:cantidad
+	local codAnterior like cod_agrupacion
+	local auxPresNroTT like post:PresNro_tt
+	;ITEM = 0
+	primero = "S"
+	NROITEM = 0
+	Clearfield NroTrn_tt
+
+	// Comienazo del Encabezado
+	post:nro_impre = post:DocInic
+	Call  post:PRT_Hdr_Anexo
+	//  Fin del Encabezado
+	// Comienzo del Cuerpo del Ticket
+	giros:anexo = "S"
+   Call giros:PRT_Factura_Giros
+	giros:anexo = "N"
+	INDICE = 6 + giros:indice
+//			ITEM = ITEM + giros:ITEM
+    Call post:MISCinic_datos_imp
+    If  ( Retval >= 0 )
+		Do
+			/* Imprimo el El Cuerpo del Remito */
+			ClearField nro_ingrvario
+			Call post:CDSbuscaDatosImp
+			If ( Retval < 0 )
+					// [PAW] --> me falta el ultimo bloque de servicios.
+					if (codAnterior == 0)
+						call CDSimpreServ(INDICE, -1, 0)
+					else
+						call CDSimpreServ(INDICE, -1, codAnterior)
+					endif
+					INDICE = retval
+				Break
+			Else
+				if ( tipo_impre != DESCUENTO && tipo_impre != OPCIONAL && \
+				    primero != "S")
+					if (cod_agrupacion == 0)
+						if (cod_agrupacion != codAnterior)
+							call CDSimpreServ(INDICE, -1, codAnterior)
+						else
+							call CDSimpreServ(INDICE, -1, 0)
+						endif
+						INDICE = retval
+					else
+						if (cod_agrupacion != codAnterior)
+							call CDSimpreServ(INDICE, -1, codAnterior)
+							INDICE = retval
+						endif
+					endif
+				endif
+				codAnterior = cod_agrupacion
+				primero = "N"
+				impAnexo = "N"
+				// [PAW] --> me falta el extract all que le saque a la CDSbuscaDatosImp
+
+				// [PAW] --> Lo siguiente se hace porque el campo post:PresNro_tt
+				// debe mantenerse hasta imprimir los track & trace. El problema es
+				// que el campo solo esta en la cabecera, y si tiene algun opcional,
+				// este se lee antes, asi que borra el campo.
+				// Lo que se hace es simplemente resguardar el campo y volver a
+				// tomarlo en caso de que se levante un descuento u opcional.
+
+				auxPresNroTT = post:PresNro_tt
+				clearfield post:PresNro_tt
+				Clearfield leyenlar_bloq
+				CDS FINDAGAIN DSC:CtxImpreTmp LOCK
+				CDS EXTRACT DSC:CtxImpreTmp ALL
+				if (tipo_impre == DESCUENTO || tipo_impre == OPCIONAL)
+					post:PresNro_tt = auxPresNroTT
+				endif
+				if (impAnexo == "S")
+					// PJM 21/12/98 se agrego para que se descrimine el Iva tambien para las Facturas B
+					//SUC-964:Resolución General N° 5614/2024: solo aplica para mostar el iva Contenido al final de la facturas B
+					If ( adt_cativa_discri == "S" && (IvaCod !=  TICKFACTB &&  IvaCod != TICKFACTB2   &&  IvaCod != TICKFACTB3) )
+						//SC 50170
+						//importe_impre = importe_impre -  importeIva_impre
+						importe_impre = importeSinIva_impre
+					Endif
+					If ( nro_ingrvario.numchars != 0 )
+						Fprint desc_impre "%s %010.10s" desc_impre , nro_ingrvario
+					EndIf
+					If ( tipo_impre != DESCUENTO && tipo_impre != OPCIONAL )
+;						ITEM = ITEM + 1
+						desc_impre = substr(desc_impre, 0, longDesc)
+						;post:itemFact = post:itemFact + giros:ITEM
+						Fprint common:csr_string "%3.3s %-29.29s\n", post:itemFact, desc_impre
+						call post:MISCprt2laser(common:csr_string)
+						INDICE = INDICE + 1
+						if (formuCalc.numchars != 0)
+							Fprint common:csr_string "%30.30s\n",formuCalc
+							call post:MISCprt2laser(common:csr_string)
+							INDICE = INDICE + 1
+						endif
+					Else
+						if (tipo_impre != DESCUENTO)
+							if (leyenlar_bloq.numchars == 0)
+								// [PAW] --> Concateno a descripción reducida del opcional.
+								longDesc = longDesc + 1
+								desc_impre = substr(desc_impre, longDesc, 999)
+								Fprint desc_impre " %s%s", codigo_impre, desc_impre
+								if (importe_impre < 0)
+									importe_impre = importe_impre * -1
+								endif
+								Fprint common:csr_string  "   %-32.32s\n", desc_impre
+								call post:MISCprt2laser(common:csr_string)
+								INDICE = INDICE + 1
+							else
+                				// [PAW] --> pedido por Maricel (Mariano Gecik) bloq. adicionales.
+				                // ---------------------------------------------------------------
+				                CALL CSR:trimfield(post:leyencor_bloq)
+								Fprint common:csr_string  "   %-32.32s\n", leyencor_bloq
+								call post:MISCprt2laser(common:csr_string)
+								INDICE = INDICE + 1
+							endif
+						endif
+					Endif
+/*				else
+					if (cod_agrupacion != 0)
+						;[PAW] -> si es un template...
+						ITEM = ITEM + 1
+						Fprint common:csr_string "%2.2s %-30.30s\n", ITEM, desc_impre
+						call post:MISCprt2laser(common:csr_string)
+						INDICE = INDICE + 1
+					endif*/
+				Endif
+			endif
+		loop
+
+		// la guillotina esta ubicada antes que el rodillo de impresion por lo tanto hay lineas
+		// impresas abajo de esta. para solucionar el problema hay que avanzar un par de lineas.
+		Call post:MISCavaz_linea_imp(20)
+		Call post:PRT_Ticket_Corte
+	Endif
+	Call post:MISCclose_datos_imp
+END SUB
+
+/*******/

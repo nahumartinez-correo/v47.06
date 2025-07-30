@@ -1,0 +1,114 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSadt_chk_sel
+* NOMBRE
+*   OFB:tes:CDSadt_chk_sel
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSadt_chk_sel
+	LOCAL item LIKE siaf:i
+
+    SELECT (siaf:codigo_siaf)
+        CASE 70010
+        CASE 70431
+			CDS SELECT FROM dsc:RecepChk BECOMES dsc:RecepChk WHERE \
+			          giros:adt_chk_suc == op:op_branch_id && \
+			          giros:adt_chk_tesoro == "S" && \
+			          giros:adt_chk_estado == 9
+            BREAK
+        CASE 9900
+			CDS SELECT FROM dsc:RecepChk BECOMES dsc:RecepChk WHERE \
+			          giros:adt_chk_suc == op:op_branch_id && \
+			          giros:adt_chk_tesoro == "S" && \
+			          giros:adt_chk_estado == 0
+            BREAK
+        CASE 9920
+			CDS SELECT FROM dsc:RecepChk BECOMES dsc:RecepChk WHERE \
+			          giros:adt_chk_suc == op:op_branch_id && \
+			          giros:adt_chk_op  == op:op_operator_id && \
+			          giros:adt_chk_tesoro == "N" && \
+			          giros:adt_chk_estado == 2
+            BREAK
+    END SELECT
+	CDS FINDFIRST dsc:RecepChk NOLOCK
+    call csr:f_sadroppl dsc:RecepChk
+    call csr:f_sanewpl  dsc:RecepChk pic:RecepChk
+	WHILE (CDSRETVAL == 0)
+	    CDS EXTRACT dsc:RecepChk ALL
+	    
+	    /* Obtengo el Primer Cheque Habil */
+ 	    giros:adt_chk_proxim = giros:adt_chk_nrogiro
+	    LET item = 0
+	    WHILE (item < giros:adt_chk_cantid)
+			IF (giros:adt_chk_cheque[item] == "HA") THEN
+		 	    LET giros:adt_chk_proxim = giros:adt_chk_nrogiro + item
+		 	    FPRINT giros:adt_chk_proxim "%06d" giros:adt_chk_proxim
+		 	    BREAK
+			END IF
+			LET item = item + 1
+	    END WHILE
+	    
+	    /* Obtengo cantidad de cheques habiles */
+ 	    LET giros:adt_chk_libres = 0
+	    LET item = 0
+	    WHILE (item < giros:adt_chk_cantid)
+			IF (giros:adt_chk_cheque[item].NUMCHARS == 0 || giros:adt_chk_cheque[item] == "HA") THEN
+		 	    LET giros:adt_chk_libres = giros:adt_chk_libres + 1
+			END IF
+			LET item = item + 1
+	    END WHILE
+	    
+    	CDS SELECT FROM DSC:AuxChkV_tbl BECOMES DSC:AuxChkV_ctx \
+        	WHERE adt_chk_suc == giros:adt_chk_suc && \
+        	    adt_chk_serie == giros:adt_chk_serie && \
+    	        adt_chk_nrogiro == giros:adt_chk_nrogiro
+        	CDS FINDFIRST DSC:AuxChkV_ctx NOLOCK
+        	IF (CDSRETVAL < 0)
+				/*" OP     FECHA    HORA    SE   PRIMER   CAN   PROXIM    LIB    REMITO"
+				"00001..99999999..999999...A...999999...999...999999....999....9999999999" */
+	    	   FPRINT common:csr_string "%05d  %08d  %06d   %s   %06d   %3d   %06d    %3d    %010d" \
+                    giros:adt_chk_op giros:adt_chk_fecha giros:adt_chk_hora giros:adt_chk_serie \
+                    giros:adt_chk_nrogiro giros:adt_chk_cantid giros:adt_chk_proxim \
+                    giros:adt_chk_libres giros:adt_chk_remito
+    		   CALL csr:f_saaddpl dsc:RecepChk common:csr_string
+        END IF
+        CDS ENDSELECT DSC:AuxChkV_ctx
+    	CDS FINDNEXT dsc:RecepChk NOLOCK
+	END WHILE
+	CDS ENDSELECT dsc:RecepChk
+	
+    CALL csr:f_sadopl dsc:RecepChk common:csr_string
+   	IF (RETVAL >= 0)
+       LET giros:adt_chk_serie   = SUBSTR (common:csr_string, 26, 1)
+       LET giros:adt_chk_nrogiro = SUBSTR (common:csr_string, 30, 6)
+       LET giros:adt_chk_proxim  = SUBSTR (common:csr_string, 45, 6)
+       LET giros:adt_chk_libres  = SUBSTR (common:csr_string, 55, 3)
+	   CDS SELECT FROM dsc:RecepChk BECOMES dsc:RecepChk WHERE \
+	          giros:adt_chk_suc == op:op_branch_id && \
+        	  giros:adt_chk_serie == giros:adt_chk_serie && \
+    	      giros:adt_chk_nrogiro == giros:adt_chk_nrogiro
+	   CDS FINDFIRST dsc:RecepChk NOLOCK
+       CDS EXTRACT   dsc:RecepChk ALL
+ 	   CDS ENDSELECT dsc:RecepChk
+    ELSE
+       IF (RETVAL != -399)
+           msgbox "No se dispone de chequeras para la operacion que desea realizar",OFB_OK,"Atención"
+       END IF
+   	   RETURN -1
+    END IF
+    RETURN RETVAL
+END SUB
+
+/*******/

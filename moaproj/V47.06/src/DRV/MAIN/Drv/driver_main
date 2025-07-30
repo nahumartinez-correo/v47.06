@@ -1,0 +1,183 @@
+/****o* Pendientes de agrupación/OFB:drv:driver_main
+* NOMBRE
+*   OFB:drv:driver_main
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv.h"
+
+// =============================================================
+//  This is the top-level routine which kicks off the so-called
+//  'DeskTop Transaction' stuff.  It is usually called from
+//  common:starting_point.  From this point on, the operation of
+//  the desktop TRANs is controlled by the compiled lists whose
+//  names begin with the 'TRAN' prefix, and which in turn point
+//  to another LST which points (usually) to drv:driver as the
+//  controlling OFB routine...
+// =============================================================
+SUB drv:driver_main
+	STARTTRAN
+	// --------------------------------------------------------------------
+	// If we are running this on KIOSK machine bring up Greeter workstation
+	// tran, else bring up the normal desktop transaction
+	// --------------------------------------------------------------------
+    IF (testflag(drv:mode_flags,kiosk_mode)) then
+#if BASE_CFIG_GWS == 1
+	    LET drv:INDcur_list = LST:gws:TRAN_Touch
+#endif
+    ELSE
+	    LET drv:INDcur_list = LST:drv:TRAN_desktop
+    END IF
+	IF (init_only == "N")
+		MOVE "R" TO init_only
+	ELSE
+		CALL  OFB:drv:files_cleanup
+		MOVE "Y" TO init_only
+		// ----------------------------------------------------
+		// Set the BASE transaction to the first transaction we
+		// are going to execute
+		// ----------------------------------------------------
+		CALL  CSR:dt_tran DT_TRAN_INIT drv:INDcur_list
+	END IF
+	// ------------------------------------------------------------
+	// We do not want the PullDown MENUs if we are running on KIOSK
+	// ------------------------------------------------------------
+    IF (!testflag(drv:mode_flags,kiosk_mode)) then
+	    pdm enableitem pdm:drv:menubar ALL MOA_ENABLED
+    END IF
+end_sess:
+	// -------------------------------------------------------------
+	// Clear the Entire Transaction stack and the maintenance fields
+	// -------------------------------------------------------------
+	CALL  OFB:drv:reset_all
+	LET drv:dt_app = APP_DESKTOP 		// Starting application
+	LET drv:funct_rest = 0
+	LET cnt_tmp = 0
+	CALL  OFB:clear_stack
+	LET stack_ptr[dt_app] = 0
+	LET drv:reload_screen = -1
+	/* EC inicilizo estructura de previas aplicaciones PILA */
+	call MISCinitpila_prevapp
+	/* */
+#if BASE_CFIG_HIST == 1
+	// -----------------------------------------------------------
+	// History Stuff that is used by CITIBANK implementation group
+	// Not Supported for NoteCards type trans
+	// -----------------------------------------------------------
+	LET hist_cur = 0
+	LET hist_start = -1
+#endif
+	LET lib:stat_message.HIGHLITE = 0
+	CLEARFIELD lib:stat_message
+	REFRESH STATUSLINE
+	LET common:trap_reset = ofb:drv:KEYSreset_esc
+	KEYDEF CLEAR
+	CALL  OFB:drv:KEYSnavigation
+    IF (!TESTFLAG(drv:mode_flags,kiosk_mode)) THEN
+	    LET drv:INDrun_funct = LST:drv:TRAN_desktop
+    ELSE
+#if BASE_CFIG_GWS == 1
+	    LET drv:INDrun_funct = LST:gws:TRAN_Touch
+#endif
+    END IF
+#if BASE_CFIG_HIST == 1
+	LET INDstack_funct[APP_HISTORY][hist_cur] = drv:INDrun_funct
+#endif
+
+	// ----------------------------------------------------
+	// Loop here forever. Execute different transactions if
+	// the INDrun_funct field points to different TRANS
+	// ----------------------------------------------------
+	DO
+		RESETFLAG mode_flags,exit_app
+		RESETFLAG mode_flags,no_stack_list
+		// ------------------------------------------------
+		// Reset the flags that were used in drv:save_stack
+		// ------------------------------------------------
+		IF (new_app == dt_app)
+			LET new_app = -1
+		END IF
+		// -------------------------------------------------------------
+		// If We are going to a new desktop transaction save the sidebar
+		// status, the current stack level and save the application from
+		// where we are exiting and run the exit proc for the old
+		// application and run the startup routine for the new
+		// application
+		// -------------------------------------------------------------
+		IF (new_app != -1)
+			IF (new_app == APP_ENDSESS_RESET)
+				LET new_app = -1
+				GOTO end_sess
+			END IF
+			IF (stack_cnt > 0)
+				LET stack_cnt = stack_cnt - 1
+			END IF
+			LET stack_ptr[dt_app] = stack_cnt
+			CALL  OFB:drv:save_scr_side
+			CALL  OFB:drv:reset_dt_key
+			/* EC PILA */
+			call MISCsavepila_prevapp
+			/* */
+			LET prev_app = dt_app
+			LET dt_app = new_app
+			LET new_app = -1
+			LET stack_cnt = stack_ptr[dt_app]
+			IF (drv:INDstack_funct[dt_app][stack_cnt] != 0)
+				LET drv:funct_rest = 1
+				LET drv:INDrun_funct = drv:INDstack_funct[dt_app][stack_cnt]
+			END IF
+			CALL CSR:proc_list F_CLEAR LST:LISTmenu_title
+			CALL  OFB:drv:app_startup
+		END IF
+		LET drv:INDstack_funct[dt_app][stack_cnt] = drv:INDrun_funct
+		LET drv:INDcur_list = LST:drv:TRAN_desktop
+		IF (drv:INDcur_list != drv:INDrun_funct)
+			CALL  OFB:drv:nav_buts_on
+		END IF
+		LET drv:INDcur_list = drv:INDrun_funct
+		// ----------------------------------------------------
+		// Initialize the Visitor Queue Data to be displayed on
+		// the top of the screen
+		// ----------------------------------------------------
+		if (drv:dt_app != APP_LOAN)
+#if BASE_CFIG_QUE == 1
+		    CALL  OFB:que:que_info
+#endif
+		end if
+		// -------------------------------------------------
+		// If the INDrun_funct is a desktop transaction list
+		// then run it, else execute the OFB proc
+		// -------------------------------------------------
+		LET lib:ind_type = (INDrun_funct >> 24) & 0xff
+		SELECT (lib:ind_type)
+			CASE OFB_OBJ
+				CALL  FLD:INDrun_funct
+			BREAK
+			CASE LST_OBJ
+				CALL  CSR:listexec INDrun_funct
+				IF (RETVAL != 0)
+					LET lib:INDhome_menu = ofb:drv:driver_main
+					RESET
+				END IF
+			BREAK
+			CASE ELSE
+				ERRMSG common:errmsg_list DSC:lib:ERRbad_tran_name
+				LET lib:INDhome_menu = ofb:drv:driver_main
+				RESET
+		END SELECT
+	LOOP
+END SUB
+
+
+/*******/

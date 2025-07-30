@@ -1,0 +1,146 @@
+/****o* Pago en Destino/OFB:post:MISCvalidaRelVolPED
+* NOMBRE
+*   MISCvalidaRelVolPED
+* DESCRIPCION
+*   Validacion Relacion Volumetrica/Aforo
+* ENTRADAS
+*   P_aforo1 = aforo 1
+*		P_aforo2 = aforo 2
+*		P_aforo3 = aforo 3
+* SALIDAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:MISCvalReg2PED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCvalidaRelVolPED(P_aforo1,P_aforo2,P_aforo3)
+	LOCAL L_aforo1 LIKE post:aforo1
+	LOCAL L_aforo2 LIKE post:aforo2
+	LOCAL L_aforo3 LIKE post:aforo3
+	LOCAL rel_vol_aux LIKE siaf:importe
+	LOCAL lados_resto LIKE aforo1
+
+	LET L_aforo1 = P_aforo1
+	LET L_aforo2 = P_aforo2
+	LET L_aforo3 = P_aforo3
+
+	LET post:aforo1 = L_aforo1
+	LET post:aforo1 = post:aforo1 * 1
+	IF (post:aforo1 == 0 || post:aforo1.NUMCHARS == 0) THEN
+		CLEARFIELD post:aforo1
+	END IF	
+	
+	LET post:aforo2 = L_aforo2
+	LET post:aforo2 = post:aforo2 * 1
+	IF (post:aforo2 == 0 || post:aforo2.NUMCHARS == 0) THEN
+		CLEARFIELD post:aforo2
+	END IF
+	
+	LET post:aforo3 = L_aforo3
+	LET post:aforo3 = post:aforo3 * 1
+	IF (post:aforo3 == 0 || post:aforo3.NUMCHARS == 3) THEN
+		CLEARFIELD post:aforo3
+	END IF
+	
+	IF (post:adt_servcaja_caja == "CAJA PROPIA") THEN
+		IF (post:adt_serv_calc_rv == "N") THEN
+			IF (post:aforo1 == 0 || post:aforo2 == 0 || post:aforo3 == 0) THEN
+				FPRINT post:msje_err_log_PED  "Se requieren las medidas aforo1[%s] aforo2[%s] aforo3[%s], para el servicio [%s]" post:aforo1 post:aforo2 post:aforo3 post:adt_serv_serv
+				RETURN -2				
+			END IF
+			//Tarifa por aforo
+			post:aforo = post:aforo1 + post:aforo2 + post:aforo3
+		ELSE	
+			//Tarifa por relacion volumetrica
+			IF (post:aforo1 > post:adt_servcaja_med || post:aforo2 > post:adt_servcaja_med || post:aforo3 > post:adt_servcaja_med) THEN
+				FPRINT post:msje_err_log_PED  "Las medidas ingresadas aforo1[%s] aforo2[%s] aforo3[%s], superan el maximo permitido [%s] para el servicio [%s]" post:aforo1 post:aforo2 post:aforo3 post:adt_servcaja_med post:adt_serv_serv
+				RETURN -2	
+			END IF
+			//Express Mail Service Paqueteria
+			IF (post:adt_serv_serv == 21401) THEN
+				IF (post:aforo1 != 0 && post:aforo2 != 0 && post:aforo3 != 0) THEN
+					IF ((post:aforo1 > post:aforo2) && (post:aforo1 > post:aforo3)) THEN
+						post:lado_mayor = post:aforo1
+					ELSE	
+						IF ((post:aforo2 > post:aforo1) && (post:aforo2 > post:aforo3)) THEN
+							post:lado_mayor = post:aforo2
+						ELSE
+							post:lado_mayor = post:aforo3
+						END IF
+					END IF
+					lados_resto = (post:aforo1 + post:aforo2 + post:aforo3) - lado_mayor
+					IF (lado_mayor + (2 * lados_resto) > 200) THEN
+						FPRINT post:msje_err_log_PED  "La Medida obtenida no se correponde con las especificaciones preestablecidas, aforo1[%s] aforo2[%s] aforo3[%s], para el servicio [%s]" post:aforo1 post:aforo2 post:aforo3 post:adt_serv_serv
+						RETURN -2	
+					END IF
+					CLEARFIELD post:lado_mayor
+				END IF
+			END IF
+			//Calculo relacion volumetrica
+			post:rel_vol_l1 = post:aforo1
+			post:rel_vol_l2 = post:aforo2
+			post:rel_vol_l3 = post:aforo3
+			IF (post:adt_serv_coef_rv == 0) THEN	
+				FPRINT post:msje_err_log_PED  "Falta cargar parametria del servicio [%s] (COEF),para calcular la relacion volumetrica" post:adt_serv_serv 
+				RETURN -2						
+			END IF
+			IF (post:rel_vol_l1 != 0 && post:rel_vol_l2 != 0 && post:rel_vol_l3 != 0) THEN
+				rel_vol_aux = post:rel_vol_l1 * post:rel_vol_l2 * post:rel_vol_l3
+				rel_vol_aux = rel_vol_aux / adt_serv_coef_rv		
+				IF (post:adt_servcaja_caja == "CAJA PROPIA" && (rel_vol_aux > post:adt_servcaja_relac)) THEN
+					FPRINT post:msje_err_log_PED "La relacion volumetrica obtenida [%s] es superior a la permitida [%s] para el servicio [%s]" rel_vol_aux post:adt_servcaja_relac post:adt_serv_serv
+					RETURN -2					
+				END IF
+				post:rel_vol = rel_vol_aux
+			END IF	
+		END IF
+	ELSE 
+		IF (post:aforo1 > 0 || post:aforo2 > 0 || post:aforo3 > 0) THEN
+			FPRINT post:msje_err_log_PED  "El servicio [%s] no admite aforo, aforo1[%s] aforo2[%s] aforo3[%s]" post:adt_serv_serv post:aforo1 post:aforo2 post:aforo3
+			RETURN -2				
+		END IF
+		//si calcula relacion volumetrica
+		IF (post:adt_serv_calc_rv == "S") THEN
+			//extraigo las medidas de la caja normalizada
+			post:adt_tipocaja_caja = post:adt_servcaja_caja
+			CLEARFIELD post:adt_tipocaja_L1
+			CLEARFIELD post:adt_tipocaja_L2
+			CLEARFIELD post:adt_tipocaja_L3
+			CALL CDSadt_tipocaja_load
+			IF (adt_tipocaja_L1.NUMCHARS == 0 || adt_tipocaja_L2.NUMCHARS == 0 || adt_tipocaja_L3.NUMCHARS == 0) THEN
+				FPRINT post:msje_err_log_PED  "Falta cargar parametria del servicio caja para calcular la relacion volumetrica, para el servicio [%s]" post:adt_serv_serv 
+				RETURN -2				
+			END IF
+			CLEARFIELD post:rel_vol
+			post:rel_vol_l1 = post:adt_tipocaja_L1
+			post:rel_vol_l2 = post:adt_tipocaja_L2
+			post:rel_vol_l3 = post:adt_tipocaja_L3		
+			//Calculo Relacion Volumetrica de la caja normalizada si la tiene
+			IF (post:adt_serv_coef_rv == 0) THEN
+				FPRINT post:msje_err_log_PED  "Falta cargar parametria del servicio [%s] (COEF),para calcular la relacion volumetrica" post:adt_serv_serv 
+				RETURN -2			
+			END IF
+			IF (post:rel_vol_l1 != 0 && post:rel_vol_l2 != 0 && post:rel_vol_l3 != 0) THEN
+				rel_vol_aux = post:rel_vol_l1 * post:rel_vol_l2 * post:rel_vol_l3
+				rel_vol_aux = rel_vol_aux / post:adt_serv_coef_rv		
+				IF (post:adt_servcaja_caja == "CAJA PROPIA" && (rel_vol_aux > post:adt_servcaja_relac)) THEN
+					FPRINT post:msje_err_log_PED "La relacion volumetrica obtenida [%s] es superior a la permitida [%s] para el servicio [%s]" rel_vol_aux post:adt_servcaja_relac post:adt_serv_serv
+					RETURN -2
+				END IF
+				post:rel_vol = rel_vol_aux
+			END IF
+		END IF
+	END IF
+	RETURN 0
+		
+END SUB
+
+/*******/

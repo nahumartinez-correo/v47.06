@@ -1,0 +1,236 @@
+/****o* Pendientes de agrupación/OFB:post:SENDservicio
+* NOMBRE
+*   OFB:post:SENDservicio
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:TRANabm_servicio
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDservicio
+	local l_ReqActDone	like siaf:i
+	LOCAL l_tabla LIKE admin:tabla 
+	LOCAL l_INDCamposTablas LIKE post:INDCamposTablas 
+
+
+	clearfield l_ReqActDone 
+	/*CSZ - Verifico que si el campo Simple Especial tiene una S, el corte operativo de 
+	la transaccion debe ser de modalidad simple y debe ser pieza de control*/
+	//Se comenta para la V0814
+	/*IF (TESTFLAG(admin:mode_flags,update)) THEN
+		CALL FVALsimp_esp
+		IF (RETVAL < 0)
+			RESETFLAG admin:mode_flags,update
+			RETURN (-2)
+		END IF
+	END IF*/    
+	;SMC Autorizo Modificaciones
+    
+	if ((siaf:adt_tran_fliatran == "CSP" || siaf:adt_tran_fliatran == "CSE" || \
+		siaf:adt_tran_fliatran == "CMB") && (post:adt_serv_tipo != "PO" && \
+		post:adt_serv_tipo != "EN" && post:adt_serv_tipo != "CB")) then
+		
+		ERRMSG lst:common:errmsg_list, \
+		"EL SERVICIO A MODIFICAR TIENE UNA FAMILIA DE TRANSACCION QUE NO SE CORRESPONDE CON EL TIPO DE SERVICIO"
+		return (-1)
+	end if    
+    
+	// Controles para tx postales, combos y encomiendas
+	IF (adt_serv_tipo == "PO" || adt_serv_tipo == "EN" || adt_serv_tipo == "CB")
+		if (drv:last_button == 27 || drv:last_button == 25)
+			if ((siaf:adt_tran_codigo.numchars == 0) || \
+					(siaf:adt_tran_jer_vtaPost.numchars == 0)) then
+				ERRMSG lst:common:errmsg_list, \
+				"FALTAN INGRESAR CAMPOS DE LA TABLA DE TRANSACCIONES"
+				RESETFLAG admin:mode_flags,update
+				return -1
+			end if
+			
+			//NI50569 - agrego validacion de los campos post:adt_serv_es_RPP
+			if (post:adt_serv_es_RPP.numchars == 0) then
+				ERRMSG lst:common:errmsg_list, \
+				"FALTA INGRESAR VALOR\n EN CAMPO: ES RPP"
+				RESETFLAG admin:mode_flags,update
+				return -1
+			end if
+			
+			//gpb:NI50437
+			//agrego validacion de los campos post:adt_serv_rpp y post:adt_serv_nis_orig
+			if (post:adt_serv_rpp.numchars == 0) then
+				ERRMSG lst:common:errmsg_list, \
+				"FALTA INGRESAR VALOR\n EN CAMPO: ES VAP"
+				RESETFLAG admin:mode_flags,update
+				return -1
+			end if
+			
+			//gpb:NI50437
+			if (post:adt_serv_nis_orig.numchars == 0) then
+				ERRMSG lst:common:errmsg_list, \
+				"FALTA INGRESAR VALOR\n EN CAMPO: COLECTA NIS ORIGEN"
+				RESETFLAG admin:mode_flags,update
+				return -1
+			end if
+
+			if (post:adt_serv_calc_rv.numchars == 0) then
+				ERRMSG lst:common:errmsg_list, \
+				"FALTA INGRESAR VALOR\n EN CAMPO: CALC. RELAC. VOL"
+				RESETFLAG admin:mode_flags,update
+				return -1
+			end if			
+			
+		end if
+	else // si no es postal y/o encomienda...
+		if (drv:screen_active == 3) then
+			// si no se presiono ninguno de los botones del sidebar
+			if (admin:mode_flags == 0x0) then
+				// salteo la ultima pantalla, y vuelvo a la primera
+				l_ReqActDone = 1
+				goto SALIDA
+			endif
+		endif
+	END IF
+	
+	call post:MISCAutorizoModif("Servicio")
+	if (retval < 0) then
+		return (-2)
+	endif
+
+	drv:save_button = drv:last_button
+	IF (TESTFLAG(admin:mode_flags,update)) THEN
+		RESETFLAG admin:mode_flags,update
+		// sba - Si es postal o encomienda tiene que darse de alta en la transac
+		IF (adt_serv_tipo == "PO" || adt_serv_tipo == "EN" || adt_serv_tipo == "CB")
+			CALL CDSserv_tran_save
+			IF (RETVAL == -2)
+				RETURN (-2)
+			END IF			
+		END IF      
+
+		CALL CDSadt_serv_save
+		
+		CALL drv:side_bar_disable
+		;SMC journalizo Modificacion
+		call post:MISCJournalTablas
+		// FGB: Alta y/o Modificada
+		l_ReqActDone = 1
+  ELSE
+		IF (TESTFLAG(admin:mode_flags,delete)) THEN
+			RESETFLAG admin:mode_flags,delete
+			CALL MISCind_servicios
+			;SMC Modificacion para Testear por impactos antes de Borrar.
+			;    Si se detecta impacto, se pregunta si se desea imprimir el reporte
+			call lib:MISCchk_impacto
+			if (retval < 0) then
+				return (retval)
+			endif
+			CALL lib:adt_delete_verify
+			IF (RETVAL == 0) THEN
+				CALL drv:side_bar_disable
+				CALL CDSadt_serv_del
+				IF (RETVAL != 0) THEN
+					drv:button = drv:save_button
+					CALL drv:but_up_enable
+					IF (drv:screen_active == 1) THEN
+						RETURN (-1)
+					END IF
+				ELSE
+					// Borro OK en la tabla de Servicios, hay que borrar el registro en la transac
+					// si es postal o encomiendas
+					IF (adt_serv_tipo == "PO" || adt_serv_tipo == "EN" || adt_serv_tipo == "CB")
+					CALL CDSserv_tran_del
+					IF (RETVAL != 0) THEN
+						drv:button = drv:save_button
+						CALL drv:but_up_enable
+						IF (drv:screen_active == 1) THEN
+							RETURN (-1)
+						END IF
+					ELSE
+						// Borro el registro en la tabla browser
+						CALL CDSserv_browser_del
+						IF (RETVAL != 0) THEN
+							drv:button = drv:save_button
+							CALL drv:but_up_enable
+							IF (drv:screen_active == 1) THEN
+								RETURN (-1)
+							END IF
+						END IF
+					END IF
+				END IF      
+               		
+				;SMC journalizo Modificacion
+				call post:MISCJournalTablas
+				CALL CSR:proc_list(170,LST:LISTserv_tran_flds)
+				CALL CSR:proc_list(190,LST:LISTserv_tran_flds)
+				IF (drv:screen_active == 1) THEN
+					RETURN (-1)
+				END IF
+				// FGB  borradas
+				l_ReqActDone = 1
+			END IF
+		END IF
+	ELSE
+		IF (TESTFLAG(admin:mode_flags,imprimir)) THEN
+			RESETFLAG admin:mode_flags,imprimir
+			
+			/****Listado por Codigo****/
+			/*   siaf:INDselect_tabla   = OFB:CDSadt_serv_select
+			siaf:INDencab_lis      = OFB:MISCencab1_servi
+			siaf:INDpaso_str_tabla = OFB:MISClinea1_servi
+			CALL siaf:TRANprt_drv_apai */
+			/**************************/
+			
+			//Inicio gpb:AUT-2415 
+			/*CALL MISCdumptable 
+			CALL CDSdumptable*/  
+			//resguardo los valores originales
+			LET l_tabla = admin:tabla 
+			LET l_INDCamposTablas = post:INDCamposTablas                  
+			CALL MISCdumptableNew 
+			admin:tabla = "Servicio"
+			post:INDCamposTablas = LST:post:LISTserv_flds
+			CALL CDSdumptableNew  
+			//recupero los valores originales
+			LET admin:tabla = l_tabla
+			LET post:INDCamposTablas = l_INDCamposTablas
+			//Fin gpb:AUT-2415 
+			
+			CALL CSR:proc_list(170,LST:LISTserv_flds)
+			CALL CSR:proc_list(190,LST:LISTserv_flds)
+			IF (drv:screen_active == 1) THEN
+				RETURN (-1)
+			END IF
+			// FGB  impreso 
+			l_ReqActDone = 1
+		END IF
+	END IF
+	goto SALIDA
+	;RETURN (0)
+	END IF
+	CALL CSR:proc_list(170,LST:LISTserv_tran_flds)
+	CALL CSR:proc_list(190,LST:LISTserv_tran_flds)
+	IF (drv:screen_active == 1) THEN
+		RETURN (-1)
+	END IF
+
+// FGB: si realizo la operacion solicitada, vuelve a la 1er. pantalla y con los datos
+//      en blanco...
+SALIDA:
+	if (l_ReqActDone) then
+		drv:next_screen = 1
+		drv:next_tab = 0
+		drv:index = 1
+		drv:skip_seq_scr = 1
+	endif
+END SUB
+
+/*******/

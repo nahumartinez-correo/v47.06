@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:MISCrest_teso
+* NOMBRE
+*   OFB:post:MISCrest_teso
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+//Ejecuta todas las Restricciones y me devuelve un picklist
+//con los Medios de Pago habilidatos 
+// Parametros de Entrada
+// CodigoTransaccion
+// Nombre del picklist
+// Ver_Cliente --> si tiene un "S" revisa las rest por tipo de cli
+// Ver_Motivo ---> si tiene una "S" revisa las rest por motivos.
+// Comprobante = 0 No Me interesa el comprobante o es un comprobante fiscal
+// 1 No es comprobante fiscal. Por lo tanto, si tiene restricciones por comp fiscal
+// y tiene un 0 en ese parametro, lo permite.
+Sub post:MISCrest_teso(Suc,CodigoTransaccion,NombPickList,Ver_Cliente,Ver_Motivo,Comprobante)
+    Local Error like lib:err_retval
+    
+    post:SupMedPago = "N"
+    
+    //Borro y Creo el PickList y el Auxiliar
+    call csr:f_sadroppl FLD:NombPickList
+    call csr:f_sadroppl PIC:PICmedios
+    call csr:f_sadroppl Pic:PICaux_medios
+    call csr:f_sanewpl dsc:pic_medios,PIC:PICmedios
+    call csr:f_sanewpl dsc:aux_pic_medios  ,PIC:PICaux_medios
+    
+    //Buscar todos los Medios de Pago  que no tienen restricciones
+    Cds Select from MEDIOS_TAB becomes MEDIOS_CTX where post:adt_mp_rest == "N"
+    Cds Findfirst MEDIOS_CTX nolock
+    While (CDSRETVAL != -801)
+        Cds Extract MEDIOS_CTX all
+        /* No requiere supervision */
+        Call MISCadd_line_rtes("N")
+ 	    CDS FindNext MEDIOS_CTX nolock
+    End While
+    Cds EndSelect MEDIOS_CTX
+    // Paso a Un Picklist la Tabla para que sea mas rapido dada la cantidad 
+    // de veces que se va acceder
+    // Busco todas las Restricciones
+    Cds Join from MEDIOS_TAB as "Medios" , RMEDIOS_TAB as "Restricciones"   \
+    becomes RMEDIOS_CTX  where ("Medios".post:adt_mp_cod == "Restricciones".post:adt_medpag_cod )
+    
+    //( "Medios".post:adt_mp_rest == "S"  && 
+    Cds Findfirst RMEDIOS_CTX nolock
+    While (cdsretval == 0)
+        Error = 0
+	    Cds Extract RMEDIOS_CTX  All 
+        If ( post:adt_mp_rest == "S"  && post:adt_rmedpag_bloq != "S")
+            /* Si el Medio de Pago Requiere supervision, directamente
+            seteo el flag */
+            Call MISCcheck_SupMedPago(post:adt_rmedpag_sup)
+	        // Tiene restriccion por provincia
+	        if ( post:adt_rmedpag_prov == "S" ) 
+		        Call MISCrestriccion_prov(Suc,adt_medpag_cod)
+    	        Error = Retval
+	        End If
+	        if ( post:adt_rmedpag_mod == "S" && Error == 0 ) 
+	            if (Ver_Cliente == "S")
+	                Call MISCrestriccion_mod(post:cli_tipo,adt_medpag_cod)
+	                Error = Retval
+	            end if
+	        End if
+            // Tiene Restricciones por Comprobante Fiscal
+	        if ( post:adt_rmedpag_cfiscal == "S" && Error == 0 )  
+		        Call MISCres_compfis(Comprobante)
+	            Error = Retval
+	        End if
+	        If ( post:adt_rmedpag_tran == "S" && Error == 0 )  
+		        Call MISCrest_tx_teso(post:adt_medpag_cod,post:adt_rmedpag_ttipo,CodigoTransaccion)
+		        Error = retval
+	        End if
+	        
+	        // Unicamente para las tx de tesoreria que usan motivos
+            if (Ver_Motivo == "S")
+	            If ( post:adt_rmedpag_mot == "S" && Error == 0 ) 
+	                call post:MISCrest_mot_teso(post:adt_medpag_cod,siaf:adt_mot_codigo,siaf:adt_mot_submodulo,post:adt_rmedpag_tmot)
+		            //Call MISCrestr_mot_teso(post:adt_medpag_cod,post:adt_rmedpag_tmot)
+		            /*CSZ - Comente esta linea y la cambie por la de arriba para que
+		            pueda ser usada en Templates */
+		            //call post:MISCrest_mot_teso(post:adt_medpag_cod,siaf:motivo,siaf:codigo_siaf,post:adt_rmedpag_tmot)
+		            Error = Retval
+		        End if
+	        end if
+	        If ( Error == 0) 
+		        Call MISCadd_line_rtes(SupMedPago)
+	        Endif 
+            SupMedPago = "N"
+        End If
+        Cds findnext RMEDIOS_CTX nolock
+    End While
+    Cds EndSelect RMEDIOS_CTX
+    call csr:PickOp 4 dsc:pic_medios "0,2"
+End Sub
+
+/*******/

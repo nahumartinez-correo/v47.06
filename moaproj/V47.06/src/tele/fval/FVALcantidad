@@ -1,0 +1,88 @@
+/****o* Servicios Telegráficos/OFB:tele:FVALcantidad
+* NOMBRE
+*   OFB:tele:FVALcantidad
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telefval.h"
+
+SUB tele:FVALcantidad 
+LOCAL desc_temp LIKE post:adt_opc_desc 
+LOCAL idx LIKE siaf:i 
+LOCAL idx2 LIKE siaf:i 
+LOCAL l_costo_opc LIKE post:costo_opc 
+LOCAL l_preCantidad LIKE post:cantidad 
+
+    if (currentfield.numchars == 0 || currentfield == 0 ) then 
+        NEXTFIELD post:cantidad
+        msgbox "DEBE INGRESAR LA CANTIDAD",0x00000000,"Error" 
+        return -2 
+            ELSE 
+        IF (tele:tele_tipo_serv.numchars == 0) THEN 
+            NEXTFIELD tele:tele_tipo_serv 
+            msgbox "INGRESE CATEGORIA",0x00000000,"Error"
+		END IF
+	END IF
+    
+    IF (currentfield <= 0) THEN 
+        MSGBOX "LA CANTIDAD DEBE SER MAYOR A CERO",0x00,"ERROR" 
+        RETURN (-2) 
+    END IF 
+    //Veo el costo de cada opcional marcado, lo multiplico por la cantidad y los sumo. 
+    //Recorro el picklist con los opcionales marcados 
+    post:costo_opc = 0 
+    call post:MISCLimpioPromo("OPC") 
+    clearfield post:promo_imp_tot_opc 
+    idx = 0x8000 
+    DO 
+        CALL CSR:myPickcontrol(DSC:OpcInd_sel,common:csr_string,idx) 
+          IF (RETVAL < 0) THEN 
+            BREAK 
+        END IF 
+        desc_temp = SUBSTR(common:csr_string,0,4) 
+        ;PS 9490 
+        l_preCantidad = post:cantidad 
+        CALL post:MISCopcCantPart(desc_temp, post:tipo_produc, post:cantidad) 
+        CDS SELECT FROM post:OPC_SERV_TAB BECOMES post:OPC_SERV_CTX WHERE \
+        post:adt_opcserv_serv == post:tipo_produc2 && \
+        post:adt_opcserv_opci == desc_temp 
+        CDS FINDFIRST post:OPC_SERV_CTX NOLOCK 
+        CDS EXTRACT post:OPC_SERV_CTX \
+        post:adt_opcserv_valor 
+        CDS ENDSELECT post:OPC_SERV_CTX 
+        l_costo_opc = post:adt_opcserv_valor * post:cantidad 
+        post:costo_opc = post:costo_opc + l_costo_opc 
+        ;recalculo bonificaciones de opcionales *** MDG 
+        idx2 = 0 
+        WHILE (idx2 < post:cant_opc_bonif) 
+            if (desc_temp == post:cod_opc_tele[idx2]) 
+                post:promo_imp_opc_tot[idx2] = post:promo_imp_opc_ind[idx2] * post:cantidad 
+                post:promo_imp_tot_opc = post:promo_imp_tot_opc + post:promo_imp_opc_tot[idx2] 
+                IF (post:promoOpcTipoBon[idx2] == TIPO_BONIF_VALOR) 
+                    CALL post:MISCdetalleBonifGral(post:promo_desc,l_costo_opc,"----",post:promo_imp_opc_tot[idx2],TIPO_OPCIONAL,desc_temp) 
+                ELSE 
+                    CALL post:MISCdetalleBonifGral(post:promo_desc,l_costo_opc,post:promo_opc_bon[idx2],post:promo_imp_opc_tot[idx2],TIPO_OPCIONAL,desc_temp) 
+                END IF 
+            end if 
+            idx2 = idx2 + 1 
+        END WHILE 
+           idx = idx + 1 
+           post:cantidad = l_preCantidad 
+    LOOP 
+    post:fld_promo_imp = post:promo_imp_blq_tot + post:promo_imp_tot_opc + post:promo_imp_srv_tot 
+    refresh post:fld_promo_imp 
+    refresh post:costo_opc 
+    Call MISCrecalc_importe 
+END SUB
+/*******/

@@ -1,0 +1,223 @@
+/****o* Pendientes de agrupación/OFB:tlr:jnl_cust_chk_snddwn
+* NOMBRE
+*   OFB:tlr:jnl_cust_chk_snddwn
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "custjnl.h"
+
+SUB tlr:jnl_cust_chk_snddwn
+    //////////////////////////////////////////////////////////////////////
+    // Esta rutina verifica si dentro del grupo de trx's cuya secuencia //
+    // es mayor a la ultima registrada en la tabla de totales hay trx's //
+    // con caidas en vuelo para fijar los datos (tanto para el operador //
+    // como en la tabla jnl_caidas, para que dicha trx se trate de      //
+    // recuperar.                                                       //
+    //                                                                  //
+    // NOTA: Las sentencias fueron tomadas de la modificacion que hizo  //
+    // JLA en ofb:tlr:jnl_cust_resync (ya no se hace mas en esa rutina) //
+    //////////////////////////////////////////// FGB 7.2.2001 ////////////
+
+    //Vble local para almacenar el codigo_siaf de la tx que se está generando
+    // en la jnl_caidas
+    //LOCAL codigo_tx LIKE siaf:codigo_siaf
+
+    local esPFconViaje 		like siaf:i
+
+    CLEARFIELD giros:status_aux
+    CLEARFIELD giros:PreDForFis_aux
+
+    cds extract DSC:CONjnl_write ALL
+
+    // fgb 22.03.05
+    call post:CDSchk_trxsf1_viaja(post:adt_tran_sf1_codigo)
+    if (retval == 1) then
+       // FGB 22.03.2005: controlo que sean transacciones de hoy...
+       //                 si se ejecuta en el cierre forzado o apertura, y la última trx de ayer fue un PFacil, 
+       //                 trae problemas porque cambia el plataf:current_state (y eso es grave).
+       if (tlr:jnl_date == common:system_date) then
+	   esPFconViaje =  1
+       end if
+    end if
+
+    if (hcomm:INDhost_sndrt == 0)
+        return (1) /* else backout totals */
+    end if
+
+    select (jnl_status)
+        case HOST_ACCEPTED
+	        /*27.03.01 Se comento para que no queden como MEMO las tx's de giros que se journalizan
+	        en primera instancia pero se cae el sistema antes de tener una respuesta del switch*/
+	        //case MEMO
+
+    	        /*Guardo en este campo el status con el que queda la tx en el journal para saber si
+    	        tiene que journalizar la captura de datos o no en el caso de producirse una caida del
+    	        sistema antes de finalizar la sesión por teclas rápidas*/
+    	        giros:status_aux = tlr:jnl_status
+    	        giros:PreDForFis_aux = post:PreDForFis
+
+                // si la transaccion tiene un estado definitivo no hago nada
+    	        return (1) /* else backout totals */
+    	        break
+    	
+	case HOST_REJECTED
+
+		/*Guardo en este campo el status con el que queda la tx en el journal para saber si
+		tiene que journalizar la captura de datos o no en el caso de producirse una caida del
+		sistema antes de finalizar la sesión por teclas rápidas*/
+		giros:status_aux = tlr:jnl_status
+		giros:PreDForFis_aux = post:PreDForFis
+
+		if (esPFconViaje && tlr:jnl_sequence_corr == "")
+		    ; pongo siaf_status en la presudet y pasadaMP en correccion
+		    post:PreDNroTrn = post:adt_PreDNroTrn
+		    post:fecha = tlr:jnl_date
+		    post:op_operator_id = op:op_operator_id
+		    siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+		    call post:CDSupdSiafStatus
+		    call plataf:CDSset_pasadaMP(op:op_operator_id,CORRECCION)
+		    plataf:verify_session = "C"
+		    call plataf:curstate_conf_drv
+		endif
+
+	        // si la transaccion tiene un estado definitivo no hago nada
+    	        return (1) /* else backout totals */
+    	        break
+	case else		// caidas en vuelo
+		//Para Ventas UP diferida
+		//Actualiza tabla local CheqRech de acuerdo al estado de la tx
+		IF (siaf:codigo_siaf == 99190 || siaf:codigo_siaf == 99195 || \
+		    siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99205 || \
+		    siaf:codigo_siaf == 99240 || siaf:codigo_siaf == 99242 || \
+		    siaf:codigo_siaf == 99245 || siaf:codigo_siaf == 99099 || \
+		    siaf:codigo_siaf == 99097)
+		    //99190 - Recepcion de Cheque Rechazado
+		    //99195 - Cancelacion Recepcion
+		    //99200 - Reemplazo Cheque Rech
+		    //99205 - Cancelacion Reemplazo
+		    //99097 - Captura medio de pago del tipo cheque para cliente cuentacorrentista.
+		    CALL post:MISCcaida_sist_up  // Esta rutina actualiza la CheqRech !!
+		END IF
+
+		/* SEGUN PROCESO DE RECUPERACION CAIDAS RT PARA REEMPLAZO
+		IF (siaf:codigo_siaf == 99200 || siaf:codigo_siaf == 99240 || \
+		    siaf:codigo_siaf == 99242)
+		    CALL post:CDSupd_stat_pres
+		    post:estado_presu = 4
+		    post:PreDNroTrn = post:adt_PreDNroTrn
+		    post:fecha = tlr:jnl_date
+		    post:op_operator_id = op:op_operator_id
+		    CALL post:MISCanulo_reemp
+		    //post:PresNroTrn
+		END IF
+		*/
+
+		// sba - Para Poliza tengo que volver el campo  PreDEst a 1 (trx a confirmar) si se cae el sistema,
+		// para que en la confirmacion de la sesion me vuelva a mandar la transaccion que quedó incompleta.
+		if (siaf:codigo_siaf == 99124)
+		    call post:CDSupd_PD_99124
+		end if
+
+		if (esPFconViaje && tlr:jnl_sequence_corr == "")
+		    ; pongo siaf_status en la presudet y pasadaMP en correccion
+		    post:PreDNroTrn = post:adt_PreDNroTrn
+		    post:fecha = tlr:jnl_date
+		    post:op_operator_id = op:op_operator_id
+		    siaf:adt_tran_afec_efvo = siaf:afecta_efectivo
+		    call post:CDSupdSiafStatus
+		    call plataf:CDSset_pasadaMP(op:op_operator_id,CORRECCION)
+		    plataf:verify_session = "C"
+		    call plataf:curstate_conf_drv
+		endif
+
+		cds select from dsc:giros:jnl_caidas becomes dsc:giros:jnl_caidas_ctx \
+		    where tlr:jnl_branch   == tlr:jnl_branch && \
+			  tlr:jnl_operator == tlr:jnl_operator && \
+			  tlr:jnl_date     == tlr:jnl_date && \
+			  tlr:jnl_time     == tlr:jnl_time && \
+			  tlr:jnl_bus_date == tlr:jnl_bus_date && \
+			  tlr:jnl_sequence == tlr:jnl_sequence
+		cds findfirst DSC:giros:jnl_caidas_ctx nolock
+		if (cdsretval == 0) then
+		    cds extract DSC:giros:jnl_caidas_ctx \
+	                tlr:jnl_status into hcomm:tran_status
+		    cds endselect DSC:giros:jnl_caidas_ctx
+
+		    if (hcomm:tran_status == 99) then
+			// FGB: si el registro esta lockeado (lo esta recuperando el batch)  no actualizo
+			let hcomm:tran_status = SESSION_LOST
+			let siaf:mensaje = "TRANSACCION INCOMPLETA"
+			let giros:status_aux = tlr:jnl_status
+			let giros:PreDForFis_aux = post:PreDForFis
+		    else
+			let siaf:mensaje = "TRAN_CAIDA_VUELO"
+			let tlr:jnl_status = hcomm:tran_status
+		    endif
+		else
+		    cds endselect DSC:giros:jnl_caidas_ctx
+		    let hcomm:tran_status = SESSION_LOST
+		    let siaf:mensaje = "TRANSACCION INCOMPLETA"
+		    let aux_sequence = jnl_sequence
+
+		    CALL op:CDSop_marca_cien
+		end if
+
+		/*Guardo en este campo el status con el que queda la tx en el journal para saber si
+		tiene que journalizar la captura de datos o no en el caso de producirse una caida del
+		sistema antes de finalizar la sesión por teclas rápidas*/
+		giros:status_aux = tlr:jnl_status
+		giros:PreDForFis_aux = post:PreDForFis
+
+    end select
+
+    // Preparo los datos para actualizar la trx. en el journal
+    IF (testflag(tlr:jnl_tran_flags,correction))
+	setflag tran_flags,correction
+    END IF
+    /* recover business day flags for update in journal */
+    IF (testflag(tlr:jnl_state_flags,next_day))
+	setflag state_flags,next_day
+    END IF
+    /* recover tran related flags for update in journal */
+    IF (testflag(tlr:jnl_tran_flags,dup_tran))
+	setflag tran_flags,dup_tran
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,oprovr_request))
+	setflag tran_flags,oprovr_request
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,oprovr_granted))
+	setflag tran_flags,oprovr_granted
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,supovr_request))
+	setflag tran_flags,supovr_request
+    END IF
+    IF (testflag(tlr:jnl_tran_flags,supovr_granted))
+	setflag tran_flags,supovr_granted
+    END IF
+
+    // actualiza el registro del journal
+    call jnl_update_tran
+
+    // hago el commit
+#if TLR_JNL_WAIT == 0
+    cds wait DSC:tlr:CONjnl_write
+#endif
+
+    cds commitwork
+
+END SUB
+
+
+
+/*******/

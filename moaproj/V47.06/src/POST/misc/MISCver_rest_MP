@@ -1,0 +1,133 @@
+/****o* Pendientes de agrupación/OFB:post:MISCver_rest_MP
+* NOMBRE
+*   OFB:post:MISCver_rest_MP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+//Ejecuta todas las Restricciones y me devuelve un picklist
+//con los Medios de Pago habilidatos 
+// Parametros de Entrada
+// CodigoTransaccion
+// Nombre del picklist
+// Ver_Cliente --> si tiene un "S" revisa las rest por tipo de cli
+// Ver_Motivo ---> si tiene una "S" revisa las rest por motivos.
+// Comprobante = 0 No Me interesa el comprobante o es un comprobante fiscal
+// 1 No es comprobante fiscal. Por lo tanto, si tiene restricciones por comp fiscal
+// y tiene un 0 en ese parametro, lo permite.
+// MP = Código de Medio de Pago a buscar
+Sub post:MISCver_rest_MP(Suc,CodigoTransaccion,Ver_Cliente,Ver_Motivo,Comprobante,MP)
+    Local Error like lib:err_retval
+    Local CFiscal like lib:err_retval
+    Local LocalError like lib:err_retval
+    
+    
+    /*Borro y Creo el PickList y el Auxiliar
+    call csr:f_sadroppl FLD:NombPickList
+    call csr:f_sadroppl PIC:PICmedios
+    call csr:f_sadroppl Pic:PICaux_medios
+    call csr:f_sanewpl dsc:pic_medios,PIC:PICmedios
+    call csr:f_sanewpl dsc:aux_pic_medios  ,PIC:PICaux_medios
+    */
+    
+
+    ;post:adt_mp_cod = MP
+    //Buscar todos los Medios de Pago  que no tienen restricciones
+    Cds Select from MEDIOS_TAB becomes MEDIOS_CTX where post:adt_mp_rest == "N" && \
+    post:adt_mp_cod == MP
+    Cds Findfirst MEDIOS_CTX nolock
+    lib:err_retval = cdsretval
+	Cds EndSelect MEDIOS_CTX
+	if (lib:err_retval == 0) then
+		/* No Tiene restricciones */
+		return (0)
+    else
+    	CDS select from RMEDIOS_TAB becomes RMEDIOS_CTX \
+	    where post:adt_medpag_cod == MP
+	    //( "Medios".post:adt_mp_rest == "S"  && 
+	    Cds Findfirst RMEDIOS_CTX nolock
+		if (cdsretval == 0)
+	        Error = 0
+		    Cds Extract RMEDIOS_CTX  All 
+	        If (post:adt_rmedpag_bloq != "S")
+	            /* Si el Medio de Pago Requiere supervision, directamente
+	            seteo el flag */
+	            Call MISCcheck_SupMedPago(post:adt_rmedpag_sup)
+		        // Tiene restriccion por provincia
+		        if ( post:adt_rmedpag_prov == "S" ) 
+			        Call MISCrestriccion_prov(Suc,adt_medpag_cod)
+	    	        Error = Retval
+		        End If
+		        if ( post:adt_rmedpag_mod == "S" && Error == 0 ) 
+		            if (Ver_Cliente == "S")
+		                Call MISCrestriccion_mod(post:cli_tipo,adt_medpag_cod)
+		                Error = Retval
+		            end if
+		        End if		        
+	            // Tiene Restricciones por Comprobante Fiscal
+		        if ( post:adt_rmedpag_cfiscal == "S" && Error == 0 )  
+			        Call MISCres_compfis(Comprobante)
+		            CFiscal = retval
+
+					/* Si no tiene restricciones por transacciones ni por motivos */
+					if (((Ver_Motivo == "N" || (Ver_Motivo == "S" && post:adt_rmedpag_mot == "N")) \
+					&& post:adt_rmedpag_tran == "N")) then
+						Error = CFiscal
+					end if 										
+		        End if		      
+
+		        If ( post:adt_rmedpag_tran == "S" && Error == 0 )  
+			        Call MISCrest_tx_teso(post:adt_medpag_cod,post:adt_rmedpag_ttipo,CodigoTransaccion)
+			        LocalError = retval
+		        	if (Ver_Motivo == "S") then
+		        		/* Si tengo que ver las restricciones de motivos, el CF está relacionado
+		        		con el motivo, no con la transaccion */
+		        		Error = LocalError
+		        	else
+		        		cant_barras = Comprobante
+		        		call MISCSumaRest(post:adt_rmedpag_ttipo,cant_barras,LocalError)
+		        		Error = retval
+		        	end if
+				end if		
+				
+		        // Unicamente para las tx de tesoreria que usan motivos
+	            if (Ver_Motivo == "S")
+	            	
+		            If ( post:adt_rmedpag_mot == "S" && Error == 0 ) 
+		                call post:MISCrest_mot_teso(post:adt_medpag_cod,siaf:adt_mot_codigo,siaf:adt_mot_submodulo,post:adt_rmedpag_tmot)
+			            //Call MISCrestr_mot_teso(post:adt_medpag_cod,post:adt_rmedpag_tmot)
+			            /*CSZ - Comente esta linea y la cambie por la de arriba para que
+			            pueda ser usada en Templates */
+			            //call post:MISCrest_mot_teso(post:adt_medpag_cod,siaf:motivo,siaf:codigo_siaf,post:adt_rmedpag_tmot)
+			            LocalError = retval
+						cant_barras = Comprobante
+			        	call MISCSumaRest(post:adt_rmedpag_tmot,cant_barras,LocalError)
+			        	Error = retval
+			        end if			        
+				end if
+				return (Error)
+			else
+				/* Si está Bloquedo no admite */
+				Return (-1)
+			end if
+		else
+			/* Si dice que tiene restricciones, pero no está en la tabla de restricciones
+			no lo admite */
+			Return (-1)
+		end if
+	end if
+End Sub
+
+/*******/

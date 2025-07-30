@@ -1,0 +1,215 @@
+/****o* Pago por Cuenta de Terceros/OFB:post:FVALpct_cod_barras
+* NOMBRE
+*   OFB:post:FVALpct_cod_barras
+* DESCRIPCION
+*   FVAL del campo post:codigo_barras
+* REFERENCIADO POR
+*   post:SCRNpago_cta_terc
+* DOCUMENTACION
+*  |html <a href="http://livelink/livelink/livelink.exe?func=doc.ViewDoc&nodeId=560131&">Pedido de Soporte</a>
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALpct_cod_barras
+    local codigo like post:codigo_barras
+    local cod_vec[52]        like siaf:i
+    local vec_loc[52]        like siaf:i
+    local value_ascii        like siaf:i
+    local i                  like siaf:i
+    local j                  like siaf:i
+    local k                  like siaf:i
+    local total              like siaf:i
+    local digito_verificador like siaf:i
+    local dig_verif          like siaf:i
+    local verificador        like siaf:i
+    local l_caract           like siaf:i
+    local l_caract_sin_verif like siaf:i
+    local l_importe          like common:csr_string
+    local l_primero			 like tiene_ar
+    
+     call csr:fld_to_upper(post:codigo_barras)
+
+    CLEARFIELD post:cod_barras_anses //indica si es un codigo de barra Anses.
+
+
+	IF (post:ctas_terceros == "AFJP") THEN
+		l_primero = substr(codigo_barras,0,1)
+		IF (l_primero != "O")
+			MSGBOX "El Codigo de Barras debe comenzar con la letra O",0x00,"Error"
+			return -2
+		END IF
+	END IF
+
+    //cgw:topes caracteres segun sea AFJP o ANSES.
+    IF (post:ctas_terceros == "AFJP") THEN
+    	l_caract = 25 //total caracteres.
+    	l_caract_sin_verif = 24 //total caracteres sin digito verificador.
+    END IF
+    IF (post:ctas_terceros == "ANSES") THEN
+    	l_caract = 27 //total caracteres.
+    	l_caract_sin_verif = 26 //total caracteres sin digito verificador.
+    END IF
+    
+    
+    IF ((post:ctas_terceros != "AFJP" && post:ctas_terceros != "ANSES") || \
+        (post:ctas_terceros == "ANSES" && post:codigo_barras.NUMCHARS < l_caract)) THEN
+        //cgw:esta validación es solo para CAPRECOM y ANSES con codigo de barra (27 caracteres).
+        UNPROTFIELD siaf:importe //cgw:desproteje importe.
+        CALL post:FVALcta_terceros
+        IF (RETVAL < 0) THEN 
+            RETURN (-2)     
+        END IF
+        RETURN (0)
+    END IF
+
+    /* ACP,esta rutina calcula el digito verificador para el código de barras
+    ingresado, y lo compara con el digito verificador ingresado */
+
+    total = 0
+    k = 0
+    i = 0
+    IF (post:ctas_terceros == "AFJP" && post:codigo_barras.NUMCHARS < l_caract) THEN
+         errmsg common:errmsg_list,"CODIGO DE BARRA INCOMPLETO"
+         UNPROTFIELD siaf:importe //cgw:desproteje importe.
+	 RETURN (-2)
+    END IF
+
+    IF (post:ctas_terceros == "AFJP" && post:codigo_barras.NUMCHARS > l_caract) THEN
+        errmsg common:errmsg_list,"CODIGO DE BARRA SUPERA LA CANTIDAD DE CARACTERES"
+        UNPROTFIELD siaf:importe //cgw:desproteje importe.
+	RETURN (-2)
+    END IF
+
+    DO
+       IF (i == l_caract_sin_verif) THEN
+           BREAK
+       ELSE
+           codigo = SUBSTR(codigo_barras,i,1)
+           call  csr:rangechk(codigo,"0-9","n")
+           //si es numérico
+           IF (RETVAL == 0) THEN
+  	       //guardar en vector
+  	       cod_vec[k] = codigo
+  	       k = k + 1
+  	       i = i + 1
+           ELSE //si es caracter
+               call csr:fld_to_upper(codigo)//transformo a mayúscula
+               call  csr:rangechk(codigo,"A-Z","n")
+               IF (RETVAL == 0 || codigo == " ") THEN //cgw: puede venir un caracter en blanco.
+                   call csr:Ascii codigo //transformo a su ascii corresp.
+	           value_ascii = retval
+	           j = 0
+                   /*cgw: Si es AFJP cada digito del valor ascii lo carga en un elemento distinto del vector.
+                          Si es ANSES con codigo de barra el valor ascii lo asiga a un solo elemento del vector.
+                   */      
+                   IF (post:ctas_terceros == "AFJP") THEN
+	               DO //guardo en vector
+	                  codigo = SUBSTR(value_ascii,j,1)
+	                  IF (codigo != "") THEN
+	                      cod_vec[k] = codigo
+	                      j = j + 1
+	                      k = k + 1
+	                  ELSE
+	                      i = i + 1
+	                      BREAK
+	                  END IF
+	               LOOP
+	           ELSE
+	               //cgw:ANSES con codigo de barras.
+	               cod_vec[k] = value_ascii
+	               k = k + 1
+	               i = i + 1
+	           END IF
+               ELSE
+                   //No es un caracter permitido.
+                   errmsg common:errmsg_list,"EL CODIGO DE BARRA TIENE UN CARACTER NO PERMITIDO"
+                   UNPROTFIELD siaf:importe //cgw:desproteje importe.
+	           RETURN (-2)
+	       END IF
+           END IF
+       END IF
+    LOOP
+
+    /*Armo un vector local, con la secuencia 3579*/
+    k = 1
+    i = 1
+    vec_loc[0] = 1
+
+    DO
+       //cgw:el tope fue cambiado de 47 a 52 para que contemple
+       //    tambien los casos de ANSES con codigo de barra.
+       IF (i == 52) THEN
+           BREAK
+       ELSE
+           vec_loc[i] = 3
+           i = i + 1
+           k = k + 1
+       END IF
+       IF (i == 52) THEN
+           BREAK
+       ELSE
+           vec_loc[i] = 5
+           i = i + 1
+           k = k + 1
+       END IF
+       IF (i == 52) THEN
+           BREAK
+       ELSE
+           vec_loc[i] = 7
+           i = i + 1
+           k = k + 1
+       END IF
+       IF (i == 52) THEN
+           BREAK
+       ELSE
+           vec_loc[i] = 9
+           i = i + 1
+           k = k + 1
+       END IF
+    LOOP
+
+    /*Realizo el producto de los elementos de los dos vectores*/
+    i = 0
+    DO
+       IF (i == 52) THEN
+           BREAK
+       ELSE
+           cod_vec[i] = cod_vec[i] * vec_loc[i]
+           total = total + cod_vec[i]
+           i = i + 1
+       END IF
+    LOOP
+
+    i = 0
+    /*tomo la parte entera del resultado de la división*/
+    INIT 22,0
+    digito_verificador = total / 2
+    INIT 22,1
+
+    i = (digito_verificador.NUMCHARS - 1)
+
+    /*tomo la unidad del entero*/
+    dig_verif = SUBSTR(digito_verificador,i,1)
+
+    codigo = SUBSTR(codigo_barras,l_caract_sin_verif,1) //obtiene el digito verif.
+
+    IF (dig_verif != codigo) THEN //comparo el dígito calculado con el del código ingresado
+        //cgw:personalizo desscripcion.
+  	ERRMSG LST:common:errmsg_list, "(L) DIGITO VERIFICADOR DEL CODIGO DE BARRA INVALIDO"
+  	UNPROTFIELD siaf:importe //cgw:desproteje importe.
+        RETURN (-2)
+    END IF
+
+    IF (post:ctas_terceros == "ANSES") THEN
+    	//cgw: obtengo importe y protejo.
+    	l_importe = SUBSTR(codigo_barras,18,8)
+    	siaf:importe = l_importe / 100
+    	REFRESH siaf:importe
+    	PROTFIELD siaf:importe
+    	post:cod_barras_anses = "S"
+    END IF
+
+END SUB
+
+/*******/

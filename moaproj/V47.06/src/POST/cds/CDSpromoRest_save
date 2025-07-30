@@ -1,0 +1,79 @@
+/****o* Pendientes de agrupación/OFB:post:CDSpromoRest_save
+* NOMBRE
+*   OFB:post:CDSpromoRest_save
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpromoRest_save(listaDeRestricciones, cantRestSel, l_promo_tipo)
+	LOCAL indice LIKE post:Tarif_idx
+	local varl_picstr like common:csr_string
+
+    CDS SELECT FROM DSC:promoRest_tlb BECOMES DSC:promoRest_ctx \
+    			WHERE adt_promo_desc == FLD:adt_promo_desc && \
+	          		  adt_promo_desde == FLD:adt_promo_desde && \
+	          		  adt_promo_hasta == FLD:adt_promo_hasta && \
+	          		  adt_promo_tipo == l_promo_tipo
+
+    CDS FINDFIRST DSC:promoRest_ctx LOCK
+    LET lib:err_retval = CDSRETVAL
+    WHILE (lib:err_retval == 0)
+	    CDS DELETE DSC:promoRest_ctx
+	    CDS FINDNEXT DSC:promoRest_ctx LOCK
+	    LET lib:err_retval = CDSRETVAL
+	END WHILE
+
+	IF (!TESTFLAG(admin:mode_flags,delete)) THEN
+		indice = PL_GETITEM
+		if (cantRestSel > 0)
+			call csr:myPickcontrol(listaDeRestricciones,common:csr_string,indice)
+		endif
+		WHILE ((indice - PL_GETITEM) < cantRestSel )
+
+			select (l_promo_tipo)
+				case TIPO_DETALLE_BONIF_PRODVS
+					post:adt_promo_clavProd = substr(common:csr_string,0,10)
+					post:adt_promo_tipoRest = substr(common:csr_string,11,3)
+					post:adt_promo_clavRest = substr(common:csr_string,15,5)
+			    	post:adt_promo_tipo = l_promo_tipo
+					break
+				case TIPO_DETALLE_BONIF_ESPECIE
+					post:adt_promo_clavProd = substr(common:csr_string,0,41)
+					post:adt_promo_tipoRest = substr(common:csr_string,42,3)
+					post:adt_promo_clavRest = substr(common:csr_string,46,5)
+			    	post:adt_promo_tipo = l_promo_tipo
+					break
+			end select
+			; Barra de progreso.
+			call post:MISCactProgressBar("GRABANDO DETALLE    - ", 1, BARRAPORCENT, 1)
+		    CDS CLEARBUFFER DSC:promoRest_ctx
+			CDS APPEND DSC:promoRest_ctx adt_promo_desc, 	\
+		    							 adt_promo_desde,	\
+		    							 adt_promo_hasta,	\
+										 adt_promo_tipo,	\
+										 adt_promo_clavProd,\
+										 adt_promo_tipoRest,\
+										 adt_promo_clavRest
+
+		    CDS INSERT DSC:promoRest_ctx LOCK
+	    	indice = indice + 1
+			call csr:myPickcontrol(listaDeRestricciones,common:csr_string,indice)
+		END WHILE
+	 ENDIF
+	CDS UNLOCK DSC:promoRest_ctx
+    CDS ENDSELECT DSC:promoRest_ctx
+END SUB
+
+/*******/

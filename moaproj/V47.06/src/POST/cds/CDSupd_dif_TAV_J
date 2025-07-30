@@ -1,0 +1,125 @@
+/****o* Facturación/OFB:post:CDSupd_dif_TAV_J
+* NOMBRE
+*   OFB:post:CDSupd_dif_TAV_J
+* DESCRIPCION
+*   Actualiza la diferencia por redondeo en el registro del 
+*   JOURNAL (para las Polizas y TX de Entrega de Piezas)
+*   correspondiente al registro de la DifFact
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:CDSupd_dif_journal
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postcds.h"
+
+SUB post:CDSupd_dif_TAV_J
+local l_dif like post:dif_calculada	
+	
+	//IF (adt_diffact_codigo == 99124) //Polizas
+	IF (adt_diffact_codigo == "GEST" || adt_diffact_codigo == "PRES")
+		CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjscn \
+		WHERE  tlr:jnl_branch == common:sucursal_activa && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == common:system_date && \
+		post:PresNro == post:adt_diffact_presn && \
+		post:adt_PreDNroTrn == post:adt_diffact_trann
+		
+		/*CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta2 WHERE \
+			post:fecha == post:adt_diffact_fecha && \
+		    post:op_operator_id == adt_diffact_op && \
+		    post:PresNro == post:adt_diffact_presn && \
+		    post:PreDNroTrn == post:adt_diffact_trann			    */
+		CDS FINDFIRST DSC:tlr:CONjscn LOCK
+		IF (CDSRETVAL == 0)
+			//controlo si ya se hizo la actualizacion de la diferencia porque pudo
+			//haber habido una caida
+			CDS EXTRACT DSC:tlr:CONjscn post:dif_calculada into l_dif
+			if (l_dif > 0) then
+				CDS UNLOCK DSC:tlr:CONjscn
+				CDS ENDSELECT DSC:tlr:CONjscn
+				return
+			endif
+			IF (adt_diffact_codigo == "GEST")
+				CDS EXTRACT DSC:tlr:CONjscn GestSinIva EnPol_IvaGestEn
+				GestSinIva = GestSinIva - adt_diffact_dif_calc 
+				EnPol_IvaGestEn = EnPol_IvaGestEn + adt_diffact_dif_calc
+				cod_dif_aplicada = "GEST"
+				post:adt_dump_siniva = post:GestSinIva
+				CDS CLEARBUFFER DSC:tlr:CONjscn
+				CDS APPEND DSC:tlr:CONjscn \
+					GestSinIva \
+					EnPol_IvaGestEn \
+					adt_diffact_dif_calc as dif_calculada \
+					cod_dif_aplicada \
+					post:adt_dump_siniva
+			ELSE
+				CDS EXTRACT DSC:tlr:CONjscn PresSinIva EnPol_IvaPresAd
+				PresSinIva = PresSinIva - adt_diffact_dif_calc
+				EnPol_IvaPresAd = EnPol_IvaPresAd + adt_diffact_dif_calc
+				cod_dif_aplicada = "PRES"
+				post:adt_dump_siniva = post:PresSinIva
+				CDS CLEARBUFFER DSC:tlr:CONjscn
+				CDS APPEND DSC:tlr:CONjscn \
+					PresSinIva \
+					EnPol_IvaPresAd \
+					adt_diffact_dif_calc as dif_calculada \
+					cod_dif_aplicada \
+					post:adt_dump_siniva	
+				
+			END IF
+			CDS UPDATE DSC:tlr:CONjscn LOCK
+		END IF
+		CDS UNLOCK DSC:tlr:CONjscn
+		CDS ENDSELECT DSC:tlr:CONjscn					
+		
+	ELSE
+		//Entrega de Piezas
+	    CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:CONjscn \
+		WHERE  tlr:jnl_branch == common:sucursal_activa && \
+		tlr:jnl_operator == op:op_operator_id && \
+		tlr:jnl_date == common:system_date && \
+		post:PresNro == post:adt_diffact_presn && \
+		post:adt_PreDNroTrn == post:adt_diffact_trann && \
+		siaf:codigo_siaf == adt_diffact_codigo
+	    /*CDS SELECT FROM DSC:EntrPieza_tbl BECOMES DSC:EntrPieza_ctx WHERE \
+	    	fecha_EP == post:adt_diffact_fecha && \
+	        operador_EP == adt_diffact_op && \
+	        PresNro_EP == post:adt_diffact_presn && \
+	        cod_agrupacion == post:adt_diffact_codagr && \
+	        cod_EP == adt_diffact_codigo*/
+	    CDS FINDFIRST DSC:tlr:CONjscn LOCK
+	    IF (CDSRETVAL == 0)
+	    	//controlo si ya se hizo la actualizacion de la diferencia porque pudo
+		//haber habido una caida
+		CDS EXTRACT DSC:tlr:CONjscn post:dif_calculada into l_dif
+		if (l_dif > 0) then
+			CDS UNLOCK DSC:tlr:CONjscn
+			CDS ENDSELECT DSC:tlr:CONjscn
+			return
+		endif
+	    	CDS EXTRACT DSC:tlr:CONjscn ImporteSinIva ImporteIva
+	    	ImporteSinIva = ImporteSinIva - adt_diffact_dif_calc
+	    	ImporteIva = ImporteIva + adt_diffact_dif_calc
+	    	post:adt_dump_siniva = post:ImporteSinIva
+	    	CDS CLEARBUFFER DSC:tlr:CONjscn
+	    	CDS APPEND DSC:tlr:CONjscn \
+	    		ImporteSinIva \
+	    		ImporteIva \
+	    		adt_diffact_dif_calc as dif_calculada \
+	    		post:adt_dump_siniva
+	    	CDS UPDATE DSC:tlr:CONjscn LOCK
+		END IF
+		CDS UNLOCK DSC:tlr:CONjscn
+		CDS ENDSELECT DSC:tlr:CONjscn														
+	END IF
+END SUB
+
+/*******/

@@ -1,0 +1,192 @@
+/****o* Notas de Credito CM/OFB:post:CDSCalcIndServ
+* NOMBRE
+*   OFB:post:CDSCalcIndServ
+* DESCRIPCION
+*   Calcula el importe de 99511,su importe surge del precio de los productos incumplidos ("*") segun tarifario minorista:
+*   campo post:item_importe + item_opc_importe[] + (post:cant_bloq * post:adt_bloque_precio)  de la tabla Prod_Incumplido.
+*   Entonces, se debera recorrer la tabla Prod_Incumplido de aquellos productos marcados con "*" 
+*   e ir acumulando	en los vectores post:docfis_tasa_por, post:docfis_importe, post:docfis_imp_siva
+*   en la tabla Prod_Incumplido deberan estar grabadas las alicuotas y los importes con/sin iva del
+*   producto, opcionales y bloques.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*    OFB:post:MISCemision_nc_cm
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSCalcIndServ
+local ind like post:cantidad
+local entro like  common:csr_string
+local loc_retval like lib:err_retval
+
+	CDS SELECT FROM DSC:Prod_Incumplido_tbl BECOMES DSC:Prod_Incumplido_ctx WHERE \
+	post:op_operator_id == op:op_operator_id && \
+	post:marca_remito == "*"
+
+    CDS FINDFIRST DSC:Prod_Incumplido_ctx  LOCK
+    let lib:err_retval = cdsretval
+    
+    //borro verctores
+    call csr:cleararray(post:docfis_tasa_por)
+    call csr:cleararray(post:docfis_importe)
+    call csr:cleararray(post:docfis_imp_siva)
+    call csr:cleararray(docfis_imp_siva4) 
+    //call csr:cleararray(docfis_imp_siva_tx) 
+    clearfield siaf:importe
+    
+    WHILE (lib:err_retval == 0)
+    	
+    	//clearfield post:item_flia ??
+    	clearfield post:item_importe
+    	clearfield post:item_cantidad
+    	clearfield post:item_cant_pal
+    	clearfield post:item_cant_opci
+    	call csr:cleararray(post:item_opc_importe)
+    	clearfield post:cant_bloq
+    	clearfield post:adt_bloque_precio
+    	clearfield post:item_iva
+    	call csr:cleararray(post:item_opc_iva)
+    	clearfield post:item_sin_iva
+    	call csr:cleararray(post:siniva_opc)
+    	clearfield item_impaux
+    	clearfield post:imp_bloques_siva
+    	
+    	CDS EXTRACT DSC:Prod_Incumplido_ctx \
+		post:item_importe \
+		post:item_cantidad \
+		post:item_cant_pal \
+		post:item_cant_opci \
+		array post:item_opc_importe \
+		post:cant_bloq \
+		post:adt_bloque_precio \
+		post:item_iva \
+		array post:item_opc_iva \
+		post:item_sin_iva \
+		array FLD:post:siniva_opc \
+		post:item_impaux \
+		post:imp_bloques_siva
+		
+		//cargo el importe de la TX
+		siaf:importe = siaf:importe + post:item_impaux
+		//cargo en los vectores el importe del producto
+		ind = 0
+		entro = "N"
+		while (ind < 20 && post:docfis_tasa_por[ind].NUMCHARS != 0)
+			if (post:docfis_tasa_por[ind] == post:item_iva) then
+			  	post:docfis_importe[ind] = post:docfis_importe[ind] + post:item_importe
+    			post:docfis_imp_siva[ind] = post:docfis_imp_siva[ind] + post:item_sin_iva
+				call MISCdesglosaIva(post:item_importe,post:item_iva,1,0)
+				docfis_imp_siva4[ind] = docfis_imp_siva4[ind] + ImporteSinIva_bis
+				post:AliTrnCM = post:item_iva
+				call MISCgenerarIva
+				//docfis_imp_siva_tx[ind] = docfis_imp_siva_tx[ind] + l_sin_iva
+    			entro = "S"
+				break
+			end if
+			ind = ind + 1
+		end while
+		if (entro == "N")
+			docfis_tasa_por[ind] = post:item_iva
+			docfis_importe[ind] = post:item_importe
+			docfis_imp_siva[ind] =  post:item_sin_iva
+			call MISCdesglosaIva(post:item_importe,post:item_iva,1,0)
+			post:docfis_imp_siva4[ind] = post:ImporteSinIva_bis
+			post:AliTrnCM = post:item_iva
+			call MISCgenerarIva
+			//docfis_imp_siva_tx[ind] = l_sin_iva
+		end if
+		
+		//cargo en los vectores los importes de los opcionales
+		opc = 0
+		while (post:item_cant_opci > 0 && opc < 6) then
+			entro = "N"
+			ind = 0
+			while (ind < 20 && post:docfis_tasa_por[ind].NUMCHARS != 0)
+				if (post:docfis_tasa_por[ind] == post:item_opc_iva[opc]) then
+			  		post:docfis_importe[ind] = post:docfis_importe[ind] + post:item_opc_importe[opc]
+    				post:docfis_imp_siva[ind] = post:docfis_imp_siva[ind] + post:siniva_opc[opc]
+					call MISCdesglosaIva(post:item_opc_importe[opc],post:item_opc_iva[opc],1,0)
+					post:docfis_imp_siva4[ind] = post:docfis_imp_siva4[ind] + post:ImporteSinIva_bis 
+					post:AliTrnCM = post:item_opc_iva[opc]
+					call MISCgenerarIva
+					//docfis_imp_siva_tx[ind] = docfis_imp_siva_tx[ind] + l_sin_iva
+    				entro = "S"
+					break
+				end if
+				ind = ind + 1
+			end while
+			if (entro == "N")
+				docfis_tasa_por[ind] = post:item_opc_iva[opc]
+				docfis_importe[ind] = post:docfis_importe[ind] + post:item_opc_importe[opc]
+				docfis_imp_siva[ind] =  docfis_imp_siva[ind] + post:siniva_opc[opc]
+				call MISCdesglosaIva(post:item_opc_importe[opc],post:item_opc_iva[opc],1,0)
+				post:docfis_imp_siva4[ind] = post:docfis_imp_siva4[ind] + post:ImporteSinIva_bis
+				post:AliTrnCM = post:item_opc_iva[opc]
+				call MISCgenerarIva
+				//docfis_imp_siva_tx[ind] = l_sin_iva
+			end if   
+			opc = opc + 1
+		end while
+		//cargo en los vectores los importes de los bloques adicionales
+		if (post:cant_bloq > 0) then
+			ind = 0
+			entro = "N"
+			while (ind < 20 && post:docfis_tasa_por[ind].NUMCHARS != 0)
+				if (post:docfis_tasa_por[ind] == post:item_iva) then
+			  		post:docfis_importe[ind] = post:docfis_importe[ind] + ((post:cant_bloq  * post:adt_bloque_precio) * post:item_cantidad)
+					//OBS 10068
+					post:docfis_imp_siva[ind] = post:docfis_imp_siva[ind] + (post:imp_bloques_siva * post:item_cantidad)
+					call MISCdesglosaIva(post:adt_bloque_precio,post:item_iva,1,0)
+					post:docfis_imp_siva4[ind] = post:docfis_imp_siva4[ind] + ((post:ImporteSinIva_bis * post:cant_bloq) * post:item_cantidad)
+					post:AliTrnCM = post:item_iva
+					post:ImporteSinIva_bis = ((post:ImporteSinIva_bis * post:cant_bloq) * post:item_cantidad)
+					post:ImporteIva_bis = ((post:ImporteIva_bis * post:cant_bloq) * post:item_cantidad)
+					call MISCgenerarIva
+					//docfis_imp_siva_tx[ind] = docfis_imp_siva_tx[ind] + l_sin_iva
+    				entro = "S"
+					break
+				end if
+				ind = ind + 1
+			end while
+			if (entro == "N")
+				docfis_tasa_por[ind] = post:item_iva
+				docfis_importe[ind] =  docfis_importe[ind] + ((post:cant_bloq  * post:adt_bloque_precio) * post:item_cantidad)
+				//OBS 10068
+				docfis_imp_siva[ind] =  docfis_imp_siva[ind] + (post:imp_bloques_siva * post:item_cantidad)
+				call MISCdesglosaIva(post:adt_bloque_precio,post:item_iva,1,0)
+				post:docfis_imp_siva4[ind] = post:docfis_imp_siva4[ind] + ((post:ImporteSinIva_bis * post:cant_bloq) * post:item_cantidad)
+				post:AliTrnCM = post:item_iva
+				post:ImporteSinIva_bis = ((post:ImporteSinIva_bis * post:cant_bloq) * post:item_cantidad)
+				post:ImporteIva_bis = ((post:ImporteIva_bis * post:cant_bloq) * post:item_cantidad)
+				call MISCgenerarIva
+				//docfis_imp_siva_tx[ind] = l_sin_iva
+			end if  
+		endif
+			
+		CDS FINDNEXT DSC:Prod_Incumplido_ctx  LOCK
+		let lib:err_retval = cdsretval
+		
+ 	END WHILE
+ 	
+   	cds unlock DSC:Prod_Incumplido_ctx
+   	cds endselect DSC:Prod_Incumplido_ctx
+	
+	/*ind = 0
+	while (ind < 20 && post:docfis_importe[ind].NUMCHARS != 0)
+		siaf:importe = siaf:importe + post:docfis_importe[ind]
+		ind	 = ind + 1
+	end while*/
+	
+	return loc_retval
+
+END SUB
+
+/*******/

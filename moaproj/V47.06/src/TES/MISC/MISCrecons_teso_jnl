@@ -1,0 +1,211 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCrecons_teso_jnl
+* NOMBRE
+*   OFB:tes:MISCrecons_teso_jnl
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCrecons_teso_jnl(prm_moneda,prm_dia) //tes:MISCupdt_imp_con_jnl(prm_moneda,prm_dia)
+    local i like siaf:i
+
+    //call csr:cleararray tes:importes
+     clearfield siaf:importe
+
+    /* selecciono los registros que involucren al tesoro (a traves del cod.
+    siaf) y que sean no reversados y del dia requerido */
+    /* Para el listado voy a tener que dejar las reversas porque  sino
+    no coinciden las entradas con las salidas. Solo coincide el total.
+    IMPORTANTE = Las reversas deben totalizar al reves */
+    CDS SELECT FROM "journal" BECOMES "journal_ctx2" \
+    WHERE tlr:jnl_branch == FLD:op:op_branch_id && \
+	tlr:jnl_bus_date == prm_dia           && \
+	tlr:jnl_status < 100                  && \
+	siaf:moneda == prm_moneda             && \
+	(((siaf:codigo_siaf >= 8630) && (siaf:codigo_siaf <= 9970)) || \
+	((siaf:codigo_siaf >= 7520)  && (siaf:codigo_siaf <= 7560)))
+	/*
+	(siaf:codigo_siaf == 8830 || siaf:codigo_siaf == 8840 || \
+	siaf:codigo_siaf == 8630 || siaf:codigo_siaf == 8640 || \
+	siaf:codigo_siaf == 8940)
+	*/
+	IF (CDSRETVAL != 0) THEN
+		ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+		return (-2)
+	END IF
+
+    CDS FINDFIRST "journal_ctx2" NOLOCK
+    do
+	IF (cdsretval < 0)
+		break
+	end if
+	
+	/* extraigo el registro y lo guardo en el buffer */
+	CDS EXTRACT "journal_ctx2" ALL
+	let i = 0
+	select (siaf:codigo_siaf)
+		case 8830 // entrada de excedentes a tesoro (suma)
+			if (tes:es_reenvio != "S")
+				/* No totaliza el reenvio */
+				if (!testflag(tlr:jnl_tran_flags,correction))
+		           /*
+			        do
+			           if (i > 13) then
+				       break
+			           end if
+			           let tes_importes[i] = tes_importes[i] + importes[i]
+			           let tes_entrada[i] = tes_entrada[i] + importes[i]
+			           let i = i + 1
+			        loop
+			        */
+					tes_total = tes_total + siaf:importe
+					tes_tot_entrada = tes_tot_entrada + siaf:importe
+				else
+					/*
+					do
+					   if (i > 13) then
+					  	 break
+					   end if
+					   let tes_importes[i] = tes_importes[i] - importes[i]
+					   let tes_salida[i] = tes_salida [i] + importes[i]
+					   let i = i + 1
+					loop
+					*/
+					tes_total = tes_total - siaf:importe
+					tes_tot_salida = tes_tot_salida + siaf:importe
+	            end if
+			end if
+		break
+		case 8840 // entrada efec tes emp recaud (suma)
+		case 9200 // entrada efvo a tes de tes pcial
+		case 9210 // entrada efvo a tes de otra suc
+		case 7540 // extracc efvo cta tesoro (suma)
+			if (!testflag(tlr:jnl_tran_flags,correction)) then
+				/*
+				do
+					if (i > 13) then
+						break
+					end if
+					let tes_importes[i] = tes_importes[i] + importes[i]
+					let tes_entrada[i] = tes_entrada[i] + importes[i]
+					let i = i + 1
+				loop
+				*/
+				tes_total = tes_total + siaf:importe
+				tes_tot_entrada = tes_tot_entrada + siaf:importe
+           else
+           		/*
+				do
+					if (i > 13) then
+						break
+					end if
+					let tes_importes[i] = tes_importes[i] - importes[i]
+					let tes_salida[i] = tes_salida[i] + importes[i]
+					let i = i + 1
+				loop
+				*/
+				tes_total = tes_total - siaf:importe
+				tes_tot_salida = tes_tot_salida + siaf:importe
+			end if
+			break
+			case 8630 // salida de efectivo de tesoro (resta)
+			case 8640 // salida de efec tes emp recaud (resta)
+			case 8700 // salida de efvo de tes a tes pcial (resta)
+			case 8710 // salida de efvo de tes a otra suc (resta)
+			case 8940 // deposito de efvo de tesoro en caja buzon (resta)
+			case 7520 // dep efvo cta suc (resta)
+			case 7550 // dep efvo cta tp (resta)
+				if (!testflag(tlr:jnl_tran_flags,correction)) then
+					/*
+					do
+						if (i > 13) then
+							break
+						end if
+						let tes_importes[i] = tes_importes[i] - importes[i]
+						let tes_salida[i] = tes_salida[i] + importes[i]
+						let i = i + 1
+					loop
+					*/
+					tes_total = tes_total - siaf:importe
+					tes_tot_salida = tes_tot_salida + siaf:importe
+				ELSE
+					/*
+					do
+						if (i > 13) then
+							break
+						end if
+						let tes_importes[i] = tes_importes[i] + importes[i]
+						let tes_entrada[i] = tes_entrada[i] + importes[i]
+						let i = i + 1
+					loop
+					*/
+					tes_total = tes_total +  siaf:importe
+					tes_tot_entrada = tes_tot_entrada + siaf:importe
+				END IF
+			break
+			case 8970 // deposito de cheques de tesoro en caja buzon
+			case 8726 // Salida de cheques a tes.prov
+			case 7536 // dep cheques tes cta suc
+			case 7566 // dep cheques cta tp
+				if (!testflag(tlr:jnl_tran_flags,correction)) then
+					tes_total = tes_total - siaf:importe
+					tes_tot_salida = tes_tot_salida + siaf:importe
+				else
+					tes_total = tes_total + siaf:importe
+					tes_tot_entrada = tes_tot_entrada + siaf:importe
+				end if
+			break
+			case 8906 // entrada de cheques a tesoro
+           /* si es reenvio no totaliza */
+				if  (tes:es_reenvio != "S") then
+					if (!testflag(tlr:jnl_tran_flags,correction)) then
+						tes_total = tes_total + siaf:importe
+						tes_tot_entrada = tes_tot_entrada + siaf:importe
+					else
+						tes_total = tes_total - siaf:importe
+						tes_tot_salida = tes_tot_salida + siaf:importe
+					end if
+				end if
+			break
+	    	case 8910 // entrada efec a subtesoro (suma)
+				if (!testflag(tlr:jnl_tran_flags,correction)) then
+		    		subtes_total = subtes_total + post:importe_origen
+                    subtes_tot_entrada = subtes_tot_entrada + post:importe_origen
+             	else
+		     		subtes_total = subtes_total - post:importe_origen
+                    subtes_tot_salida = subtes_tot_salida + post:importe_origen
+          		end if
+            break
+			case 8990 // salida de efectivo de subtesoro (resta)
+	        	if (!testflag(tlr:jnl_tran_flags,correction)) then
+	                subtes_total = subtes_total - post:importe_origen
+	                subtes_tot_salida = subtes_tot_salida + post:importe_origen
+                else
+                   	subtes_total = subtes_total +  post:importe_origen
+                   	subtes_tot_entrada = subtes_tot_entrada + post:importe_origen
+				end if
+			break	
+			
+        end select
+
+		/* limpio el vector para que no deje basura en la proxima vuelta */
+		call csr:cleararray tes:importes
+		clearfield siaf:importe
+		clearfield post:importe_origen
+		
+		CDS FINDNEXT "journal_ctx2" NOLOCK
+    loop
+END SUB
+
+/*******/

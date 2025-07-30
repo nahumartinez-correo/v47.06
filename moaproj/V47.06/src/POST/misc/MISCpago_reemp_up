@@ -1,0 +1,179 @@
+/****o* Tratamiento de Cheques/OFB:post:MISCpago_reemp_up
+* NOMBRE
+*   OFB:post:MISCpago_reemp_up
+* DESCRIPCION
+*   Esta rutina carga en los vectores correspondientes los medios de pago por los cuales se reemplaza a un 
+*	cheque rechazado/observado.
+*	Tambien calcula el importe del adelanto monetario a consumir/acreditar segun los medios de pago 
+*	utilizados para el reemplazo de cada tipo de cheque.
+* ENTRADAS
+*  cheq_plazo =  "S" - Indica si el cheque que se está reemplazando es un cheque certificado en plazo.
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALcanc_reemp,post:SVALcancReempRob,post:SVALreemp_chqrech_up,OFB:post:SVALreemp_chqrob 
+* DOCUMENTACION
+*    http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCpago_reemp_up(cheq_plazo)
+	LOCAL imp2    LIKE siaf:importe
+    local varl_idx		like siaf:idx
+    local varl_idx2		like siaf:idx
+    local varl_item		like siaf:idx
+    local varl_picstr	like common:csr_string
+    local loc_fecha     like post:fec_d
+   
+	
+	;Local Total99210    like siaf:importe
+	;Local Total99200    like siaf:importe
+	;Local Uso 			like siaf:importe    
+	;Local Resto			like siaf:importe 
+		
+	;Total99200 = post:imp_aux
+	;Total99210 = post:comision_rechazo
+	
+	
+	cant_valores = 0
+	
+    let varl_idx = 0
+    
+    let varl_item = PL_GETITEM 
+    
+    call csr:cleararray(post:Cod_Interno)
+    call csr:cleararray(post:ValorPago)
+    call csr:cleararray(post:BancoPago)
+    call csr:cleararray(post:Bco_Cuenta)
+    call csr:cleararray(post:NumCuenta)
+    call csr:cleararray(post:ImporteBanco)
+    call csr:cleararray(post:ImporteBase)
+    call csr:cleararray(post:chq_clearing)
+    
+    ;CALL csr:PickOp 4 "medios_pagos" "81,82"
+	//50295
+	post:imp_adel_mon = 0
+	
+    call csr:myPickcontrol "mediospagos" varl_picstr varl_item
+    while (retval == 0) 
+        let ValorPago[varl_idx]     = substr(varl_picstr,0,2)
+        let BancoPago[varl_idx]     = substr(varl_picstr,3,3)
+        let Bco_Cuenta[varl_idx]    = substr(varl_picstr,7,20)
+        let NumCuenta[varl_idx]     = substr(varl_picstr,28,12)
+        let ImporteBanco[varl_idx]  = substr(varl_picstr,41,16)
+        let Emision_Fecha[varl_idx] = substr(varl_picstr,59,2) +  substr(varl_picstr,62,2) * 100 \
+        + substr(varl_picstr,65,4) * 10000
+		    
+    	
+        
+        loc_fecha = substr(varl_picstr,70,2) + substr(varl_picstr,73,2) * 100 \
+        + substr(varl_picstr,76,4) * 10000     
+        if (loc_fecha.numchars > 0 && loc_fecha != 0)
+            let Valor_Fecha[varl_idx]   = loc_fecha
+        else
+            Valor_Fecha[varl_idx] = ""
+        end if
+
+        let chq_clearing[varl_idx] = substr(varl_picstr,80,4) // TRAT CHQ
+
+        /*
+        let Valor_Fecha[varl_idx]   = substr(varl_picstr,70,2) + substr(varl_picstr,73,2) * 100 \
+        + substr(varl_picstr,76,4) * 10000                
+        */
+        
+        let post:adt_mp_cod = ValorPago[varl_idx]
+        call CDSadt_MedPago_load
+        if (post:adt_mp_int == "S")
+            post:Cod_Interno[varl_idx] = "S"
+        else
+            post:Cod_Interno[varl_idx] = "N"
+        end if
+		
+			;totalComision = 
+		/*
+		Uso = 0
+		if (Total99210 > 0) then
+			if (txtotal2_vec[varl_idx] > 0) then
+				if (ImporteBanco[varl_idx] > txtotal2_vec[varl_idx])
+					Uso = txtotal2_vec[varl_idx]
+				else
+					Uso = ImporteBanco[varl_idx]
+				end if
+				if (Uso > Total99210) then
+					Total99210 = 0
+					Uso = Total99210
+				else
+					Total99210 =  Total99210 - Uso
+				end if
+			end if
+		end if
+		Resto = ImporteBanco[varl_idx] - Uso
+		
+		Uso = 0	
+		if (Total99200 > 0) then
+			if (txtotal1_vec[varl_idx] > 0) then
+				if (ImporteBanco[varl_idx] > txtotal1_vec[varl_idx])
+					Uso = txtotal1_vec[varl_idx]
+				else
+					Uso = ImporteBanco[varl_idx]
+				end if
+				if (Uso > Total99210) then
+					Total99210 = 0
+					Uso = Total99210
+				else
+					Total99210 =  Total99210 - Uso
+				end if
+			end if
+		end if
+		Resto = Resto - Uso    				
+
+		if (Resto > 0) then
+			fprint common:csr_string,"Medio de Pago %-s Supera Total", post:adt_mp_desc
+			errmsg lst:common:errmsg_list fld:common:csr_string
+			return (-2)
+		end if   				
+		*/
+
+
+        // Convierto a Moneda Base.
+        call MISCconvierto_coti2(ImporteBanco[varl_idx],imp2)
+        let ImporteBase[varl_idx] = imp2
+
+         //50295 - Calculo el importe de adelanto 
+        select (siaf:codigo_siaf)
+        	case "99200"
+        		CALL MISCcalc_adel_lg(post:cheq_lg,cheq_plazo,varl_idx)
+        		break
+        	case "99205"
+	        	CALL MISCcalc_adel_lg(post:cheq_lista_giro,cheq_plazo,varl_idx)
+    	    	break
+        	case else
+               	CALL MISCcalc_adel_lg(tes:teso_cheq_lista_giro,cheq_plazo,varl_idx)
+               	break
+        end select
+ 
+	  // paso al proximo valor
+        let varl_item = varl_item + 1
+        let varl_idx  = varl_idx  + 1
+                
+        call csr:myPickcontrol "mediospagos" varl_picstr varl_item
+    end while
+   	if (post:imp_adel_mon > 0)
+   	//siempre se debe quitar la comisión al importe de adelanto que se acredita por automatizadas.
+   		post:imp_adel_mon = post:imp_adel_mon - comision_rechazo 
+   	endif
+    //50295 - Se debe grabar el campo post:imp_adel_mon en la Presu para tenerlo en el momento del RCVE
+    // para grabar la tabla jnl_AdelantoChq, salvo en las cancelaciones de reemplazos donde no hay presupuesto.
+    if (siaf:codigo_siaf != "99205" && siaf:codigo_siaf != "99245")
+    	CALL CDSsave_imp_adel_mon
+    endif
+    
+    let cant_valores = varl_idx
+	return (0)
+
+END SUB
+
+/*******/

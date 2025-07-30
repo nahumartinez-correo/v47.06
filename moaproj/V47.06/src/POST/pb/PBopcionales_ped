@@ -1,0 +1,176 @@
+/****o* Pago en Destino/OFB:post:PBopcionales_ped
+* NOMBRE
+*   OFB:post:PBopcionales_ped
+* DESCRIPCION
+* 	Este OFB selecciona de la Tabla de Opcionales, aquellos disponibles para un determinado Servicio y 
+*   los displaya en un Picklist. Además maneja todo lo referido a los Opcionales (Lista de Envio con Pago en Destino).  
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta  
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales  
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual  
+* REFERENCIADO POR
+*		post:BUTPostalManualPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPB.h"
+
+SUB post:PBopcionales_ped
+	LOCAL cont LIKE post:cant_opc
+	LOCAL indice LIKE post:cant_opc
+	LOCAL ya_esta LIKE post:sel_opc
+	LOCAL opc_temp LIKE post:adt_opcserv_opci
+	LOCAL desc_temp LIKE post:adt_opc_desc
+	LOCAL desc_corta_temp LIKE post:adt_opc_opci
+	LOCAL pick_titulo LIKE post:adt_opc_desc
+	LOCAL valor_temp LIKE post:valor_dec
+	/* giros */
+	LOCAL l_importe LIKE common:local_int
+	;/* fin giros */
+	LOCAL l_last_button LIKE drv:last_button
+	
+	l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	
+;	//gpb:AUT-2051
+;	//porque post:adt_itemlg_rdesde esta definido con una longitud de 9
+;	IF (giros:ImporteNeto.NUMCHARS > 9) THEN
+;	MSGBOX "NO SE PUEDE CARGAR LA TARIFA DEL OPCIONAL SEGUN EL IMPORTE INGRESADO",0x00,"Error"
+;	NEXTFIELD giros:ImporteNeto
+;	
+;	CALL drv:back_but_status
+;	drv:button = l_last_button
+;	CALL drv:but_up_enable
+;	
+;	RETURN (-2)
+;	END IF
+	
+	
+	;/**************************************************/
+	;/* En modo Confirmación no se deben abrir los Combos 	*/
+	;/**************************************************/
+	IF (post:estado_presu == 4) THEN
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+		RETURN (0)
+	END IF
+	
+	/**************************************************/
+	/* De aqui en mas esta todo el codigo referido a   		*/
+	/* buscar en las Tablas de Opcionales aquellos que 		*/
+	/* corresponden a un determinado Servicio y luego  		*/
+	/* displayarlos en un combo.		       				*/
+	/**************************************************/
+	pick_titulo = "opcionales"
+	
+	
+	SETFLAG drv:mode_flags,picklist_mode
+	/************************************************/
+	/* Busco los opcionales correspondientes a este */
+	/* Servicio y desplego un picklist con ellos.   */
+	/************************************************/
+	
+	CDS SELECT FROM DSC:post:OPC_SERV_TAB BECOMES DSC:post:OPC_SERV_CTX WHERE \
+		post:adt_opcserv_serv == post:adt_serv_serv && \
+		post:adt_opcserv_habil == "T"
+	CDS FINDFIRST DSC:post:OPC_SERV_CTX NOLOCK
+	IF (CDSRETVAL == -801) THEN
+		MSGBOX "NO EXISTEN OPCIONALES PARA ESTE SERVICIO",0x00,"SERVICIO SIN OPCIONALES"
+		CLEARFIELD post:sel_opc
+		REFRESH post:sel_opc
+		CDS ENDSELECT DSC:post:OPC_SERV_CTX
+		INIT 33,0
+	
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+	
+		NEXTFIELD post:sel_opc
+		RETURN (0)
+	END IF
+	CALL CSR:f_sanewpl pick_titulo PIC:post:PICKH_opc 380,150
+	
+	DO
+		CDS EXTRACT DSC:post:OPC_SERV_CTX post:adt_opcserv_opci INTO opc_temp
+		CDS SELECT FROM DSC:post:OPC_TAB BECOMES DSC:post:OPC_CTX WHERE \
+			post:adt_opc_opci == opc_temp
+		CDS FINDFIRST DSC:post:OPC_CTX NOLOCK
+		IF (CDSRETVAL != 0) THEN
+			BREAK
+		END IF
+		CDS EXTRACT DSC:post:OPC_CTX \
+			FLD:post:adt_opc_desc INTO desc_temp  \
+			FLD:post:adt_opc_opci INTO desc_corta_temp \
+			FLD:post:adt_opc_canal
+			
+		; Comparo los canales de los opcionales con el canal del servicio
+		; si difieren no son insertados en el picklist, Mariano Gecik.-
+		IF (post:adt_opc_canal == "MINORISTA" || post:adt_opc_canal == "AMBOS") THEN
+			FPRINT common:csr_string,"%s - %s",desc_corta_temp,desc_temp
+			CALL CSR:f_saaddpl(pick_titulo,common:csr_string)
+		END IF
+		; fin de modificación de canales, Mariano Gecik.-
+		CDS FINDNEXT DSC:post:OPC_SERV_CTX NOLOCK
+		IF (CDSRETVAL == -801) THEN
+			BREAK
+		END IF
+	LOOP
+	CDS ENDSELECT DSC:post:OPC_SERV_CTX
+	
+	SETFLAG drv:mode_flags, picklist_mode
+	CALL CSR:f_sadopl pick_titulo post:sel_opc
+	IF (RETVAL < 0) THEN
+		CLEARFIELD post:sel_opc
+		REFRESH post:sel_opc
+	ELSE
+		//Al seleccionar el opcional del combo, obtiene el codigo mas la descripcion instanciando post:sel_opc.
+		//Obtengo el codigo y vuelvo a instanciar post:sel_opc, para poder obtener los importes correspondientes.
+		post:sel_opc = SUBSTR(post:sel_opc,0,4)
+	END IF
+	
+	CALL drv:back_but_status
+	drv:button = l_last_button
+	CALL drv:but_up_enable
+	
+	CALL CSR:trimfield(post:sel_opc)
+	
+	IF (post:sel_opc == "") THEN
+		RETURN (0)
+	END IF
+	
+	//Obtiene datos unidad de negocio de tabla OpcServ.
+	CDS SELECT FROM DSC:post:OPC_SERV_TAB BECOMES DSC:post:OPC_SERV_CTX WHERE \
+		post:adt_opcserv_serv == post:adt_serv_serv && \
+		post:adt_opcserv_habil == "T" && \
+		post:adt_opcserv_opci == post:sel_opc
+	CDS FINDFIRST DSC:post:OPC_SERV_CTX NOLOCK
+	IF (CDSRETVAL == -801) THEN
+		CDS ENDSELECT DSC:post:OPC_SERV_CTX
+	
+		CALL drv:back_but_status
+		drv:button = l_last_button
+		CALL drv:but_up_enable
+	
+		NEXTFIELD post:sel_opc
+		RETURN (0)
+	ELSE   	
+		CDS EXTRACT post:OPC_SERV_CTX \
+			post:adt_opcserv_uneg
+	END IF
+	CDS ENDSELECT DSC:post:OPC_SERV_CTX
+	
+	//Tratamiento de carga del opcional a partir del codigo opcional instanciado en post:sel_opc
+	CALL giros:MISCsel_opc_lg
+	
+	IF (post:sel_opc == "") THEN
+		NEXTFIELD post:sel_opc
+	END IF
+END SUB
+
+/*******/

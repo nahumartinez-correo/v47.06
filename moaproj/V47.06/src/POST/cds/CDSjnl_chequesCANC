@@ -1,0 +1,104 @@
+/****o* Tratamiento de Cheques/OFB:post:CDSjnl_chequesCANC
+* NOMBRE
+*   OFB:post:CDSjnl_chequesCANC
+* DESCRIPCION
+*   Los cheques diferidos de CM y UP seguiran cancelandose ON LINE.Para el resto de los cheques se grabará en la jnl_cheques un
+*   registro de cancelación para ser tratado por el proceso de SE, o
+*  bien, si el estado es UNPOSTED el registro será borrado.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:CDSctrl_trx_giros,OFB:post:MISCrevTrans
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postCDS.h"
+
+SUB post:CDSjnl_chequesCANC
+/*MFM - Tratamiento de Cheques - 2004/03/08 - */
+/*Los cheques diferidos de CM y UP seguiran cancelandose ON LINE.
+Para el resto de los cheques se grabará en la jnl_cheques un
+registro de cancelación para ser tratado por el proceso de SE, o
+bien, si el estado es UNPOSTED el registro será borrado.*/
+
+local l_branch    like tlr:jnl_branch
+local l_op 	  like tlr:jnl_operator
+local l_date      like tlr:jnl_date
+local l_time      like tlr:jnl_time
+local l_bus_date  like tlr:jnl_bus_date
+local l_sequence  like tlr:jnl_sequence
+local l_status    like tlr:jnl_status
+local l_mpago     like post:codigo_medio_pago
+local l_moneda    like siaf:moneda
+local l_importe   like siaf:importe
+
+
+	CDS SELECT FROM DSC:jnl_cheques BECOMES DSC:jnl_cheques_ctx \
+	WHERE tlr:jnl_branch == common:sucursal_activa && \
+	tlr:jnl_operator == op:op_operator_id && \
+	tlr:jnl_date == common:system_date && \
+	tlr:jnl_sequence == post:sequence_aux
+	
+	CDS FINDFIRST DSC:jnl_cheques_ctx LOCK
+	
+	IF (CDSRETVAL == 0) THEN
+		//resguardo algunos campos antes de hacer el extract
+		l_branch = tlr:jnl_branch
+		l_op 	 = tlr:jnl_operator
+		l_date   = tlr:jnl_date
+		l_time   = tlr:jnl_time
+		l_bus_date = tlr:jnl_bus_date
+		l_sequence = tlr:jnl_sequence
+		l_status   = tlr:jnl_status
+		l_mpago    = post:codigo_medio_pago
+		l_moneda    = siaf:moneda
+		l_importe  = siaf:importe
+		
+		CDS EXTRACT DSC:jnl_cheques_ctx ALL
+		if (tlr:jnl_status == UNPOSTED) then
+			//borro el registro
+			CDS DELETE DSC:jnl_cheques_ctx
+			CDS UNLOCK DSC:jnl_cheques_ctx
+			CDS ENDSELECT DSC:jnl_cheques_ctx
+		else
+			CDS UNLOCK DSC:jnl_cheques_ctx
+			CDS ENDSELECT DSC:jnl_cheques_ctx
+			//estos valores los restauro antes de grabar la cancelacion
+			tlr:jnl_branch = l_branch 
+			tlr:jnl_operator = l_op 	 
+			tlr:jnl_date = l_date
+			tlr:jnl_time = l_time   
+			tlr:jnl_bus_date = l_bus_date 
+			tlr:jnl_sequence = l_sequence
+			tlr:jnl_status = l_status
+			//BUG AUT-230 (JIRA) V31.03
+			siaf:moneda = post:codigo_medio_pago
+			//grabo un registro para la Cancelacion
+			CALL CDSjnl_cheques_save(UNPOSTED , "C")
+			//restauro los campos
+			tlr:jnl_branch = l_branch 
+			tlr:jnl_operator = l_op 	 
+			tlr:jnl_date = l_date
+			tlr:jnl_time = l_time   
+			tlr:jnl_bus_date = l_bus_date 
+			tlr:jnl_sequence = l_sequence
+			tlr:jnl_status = l_status
+			post:codigo_medio_pago = l_mpago
+			siaf:moneda = l_moneda
+			siaf:importe = l_importe
+		endif
+	ELSE
+		CDS UNLOCK DSC:jnl_cheques_ctx
+		CDS ENDSELECT DSC:jnl_cheques_ctx
+		RETURN -2
+	ENDIF
+
+	
+END SUB
+
+/*******/

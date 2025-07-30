@@ -1,0 +1,185 @@
+/****o* Pendientes de agrupación/OFB:odbc:ODBC11111
+* NOMBRE
+*   OFB:odbc:ODBC11111
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "odbcodbc.h"
+
+SUB odbc:ODBC11111
+
+// (AUTOMATIZADAS)
+
+	LOCAL estado_chequera LIKE giros:asciide2_fld
+	LOCAL estado_chequera_0 LIKE giros:asciide2_fld
+	LOCAL estado_chequera_1 LIKE giros:asciide2_fld
+	LOCAL estado_cheque LIKE giros:asciide2_fld
+	LOCAL estado_chequera_3 LIKE giros:asciide2_fld
+	LOCAL serie LIKE giros:Serie_fld
+	LOCAL nro_cheque_desde LIKE giros:NroGiro_fld
+	LOCAL nro_cheque_hasta LIKE giros:NroGiro_fld
+	LOCAL cant_cheques LIKE common:local_int
+	LOCAL cant_cheques_disp LIKE common:local_int
+	LOCAL suc_remitente LIKE giros:CodSucPag_fld
+	LOCAL remito_nro LIKE giros:remito_fld
+	LOCAL fecha_recep LIKE giros:FechaValor_fld
+	LOCAL fecha_distrib LIKE giros:FechaValor_fld
+	LOCAL nro_cheque LIKE giros:NroGiro_fld
+	LOCAL serie_ant LIKE giros:Serie_fld
+	LOCAL nro_cheque_desde_ant LIKE giros:NroGiro_fld
+	LOCAL nro_cheque_hasta_ant LIKE giros:NroGiro_fld
+	LOCAL retval_query LIKE lib:err_retval
+	LOCAL retval_fetch LIKE lib:err_retval
+	LOCAL cant_items_pick LIKE giros:gir_cantidad
+        LOCAL gir_cantidad_dis  LIKE giros:gir_cantidad
+        LOCAL gir_cantidad_rec  LIKE giros:gir_cantidad
+	LET FLD:giros:INDrutina = OFB:siaf:MISCencab_11111
+	
+	fyimsg common:fyimsg_list,DSC:odbc:MSGbuscando
+
+// De todos los estados posibles de los cheques, busco s¢lo los disponibles, que
+// ser¡an los RS, Recibidos en la Sucursal.	
+	estado_chequera_0 = "RB"	// "Recibida en Sucursal dependiente"
+	estado_chequera_1 = "DB"        // "Distribución Backoffice"
+	estado_cheque = "HA"	// "Cheque Habilitado"
+	
+									
+   // armo la linea de query
+	fprint odbc:ODBCwhere "%s" DSC:odbc:query_11111
+
+   // ejecuta el query y arma el Dynaset
+	DLL  DBdefineQuery(db_dynaset, db_handle_giros, DSC:ODBCdynaset_name,1, \
+		ODBCwhere, estado_chequera_0,estado_chequera_1, \
+		estado_cheque,common:sucursal_activa, giros:gir_fec_desde, giros:gir_fec_hasta, \
+		0, estado_chequera,nro_cheque_desde, nro_cheque_hasta, serie, \
+		 fecha_recep,remito_nro, fecha_distrib,0)
+		
+// si me devuelve retval = -1, quiere decir que es un error de odbc/sql, no de mosaic. 
+//(los de mosaic tienen errores con valores de 5600 para arriba. hay que averiguar que es.
+
+
+retval_query = retval
+
+if (retval_query >= 0 )
+   /* creo el picklist */
+   	clearfield cant_items_pick
+	giros:gir_cantidad2 = 0
+	gir_cantidad_dis = 0
+	gir_cantidad_rec = 0
+   	call csr:f_sadroppl DSC:pick
+   	call csr:f_sanewpl DSC:pick,PIC:giros:giros
+   if (retval < 0) then
+		msgbox "ERROR AL CREAR PICKLIST",OFB_OK,"Error"
+		return -2
+   end if
+      /* armo las lineas del picklist 	     */
+
+	init 23,46
+	DLL DBfetch(db_dynaset) // obtiene fila del dynaset
+	init 23,44
+	retval_fetch = retval
+	WHILE (retval != DB_NO_DATA)
+		//Tomo solamente el primer cheque de la chequera:
+		IF (!(serie_ant == serie && nro_cheque_desde_ant == nro_cheque_desde \
+				&& nro_cheque_hasta_ant == nro_cheque_hasta))
+
+			cant_cheques = nro_cheque_hasta - nro_cheque_desde + 1
+			IF (nro_cheque == "")	// En este caso, es una chequera que no tiene cheques disponibles
+				cant_cheques_disp = 0
+				giros:gir_cantidad2 = giros:gir_cantidad2 + 1
+				
+			ELSE
+				cant_cheques_disp = nro_cheque_hasta - nro_cheque + 1
+			END IF
+			if (siaf:pantalla_impreso == "I" )
+            	  // IMPRESION
+ 	    		fprint siaf:nota_1,"   " 
+				CALL siaf:MISCwrite_consultas
+ 	    		fprint siaf:nota_1 \
+					"        %6s       %6s         %1s     %12e  %10s    %12e  " \
+					  nro_cheque_desde, nro_cheque_hasta, serie, fecha_distrib  \
+					remito_nro, fecha_recep
+				CALL siaf:MISCwrite_consultas
+			else  // LISTADO POR PANTALLA
+ 	    		fprint siaf:nota_1 \
+					"        %6s       %6s        %1s    %12e %10s      %12e  " \
+					  nro_cheque_desde, nro_cheque_hasta, serie, fecha_distrib  \
+					remito_nro, fecha_recep
+				call csr:f_saaddpl DSC:pick siaf:nota_1
+			endif
+			if (estado_chequera == "DB") then
+				gir_cantidad_dis = gir_cantidad_dis + 1
+			else
+			        gir_cantidad_rec = gir_cantidad_rec +1
+			end if       	
+			let cant_items_pick = cant_items_pick + 1
+			serie_ant = serie
+			nro_cheque_desde_ant = nro_cheque_desde
+			nro_cheque_hasta_ant = nro_cheque_hasta
+		END IF
+		init 23,46
+		DLL DBfetch(db_dynaset) // obtiene fila del dynaset
+		init 23,44
+	END WHILE
+	if (siaf:pantalla_impreso == "I" )
+            	  // IMPRESION
+ 	    		fprint siaf:nota_1, "  -------------------------------------------- " 
+ 	    		CALL siaf:MISCwrite_consultas
+ 	    		fprint siaf:nota_1 \
+					" TOTAL DE CHEQUESRAS RECIBIDAS:%-12e  " \
+					  gir_cantidad_rec
+				CALL siaf:MISCwrite_consultas
+                        fprint siaf:nota_1 \
+					" TOTAL DE CHEQUESRAS DISTRIBUIDAS:%-12e  " \
+					  gir_cantidad_dis
+				CALL siaf:MISCwrite_consultas
+			else  // LISTADO POR PANTALLA
+ 	    		fprint siaf:nota_1, "  -------------------------------------------- " 
+				call csr:f_saaddpl DSC:pick siaf:nota_1
+ 	    		fprint siaf:nota_1 \
+					"  TOTAL DE CHEQUERAS RECIBIDAS:%-12e  " \
+					  gir_cantidad_rec
+				call csr:f_saaddpl DSC:pick siaf:nota_1
+				fprint siaf:nota_1 \
+					"  TOTAL DE CHEQUERAS DISTRIBUIDAS:%-12e  " \
+					  gir_cantidad_dis
+				call csr:f_saaddpl DSC:pick siaf:nota_1
+			endif
+	IF (retval_fetch != DB_NO_DATA)
+    	clearfield lib:stat_msg_line
+    	refresh lib:stat_msg_line
+   		let giros:gir_cantidad = cant_items_pick 
+   		refresh giros:gir_cantidad
+   		refresh giros:gir_cantidad2
+	END IF
+END IF
+
+DLL DBqclose(db_dynaset)
+IF (retval_query != 0)
+	CALL odbc:MISCconexion_ora
+    if (retval <= -2)
+      	return -2
+	end if
+ELSE
+	IF (retval_fetch == DB_NO_DATA || cant_items_pick == 0)
+		msgbox "NO HAY CHEQUERAS RECIBIDAS",OFB_OK,"Error"
+		CALL siaf:MISCclose_lis
+		return -2
+	END IF
+endif
+
+return (0)
+END SUB
+
+/*******/

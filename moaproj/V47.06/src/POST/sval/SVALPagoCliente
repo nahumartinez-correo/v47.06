@@ -1,0 +1,509 @@
+/****o* Pendientes de agrupación/OFB:post:SVALPagoCliente
+* NOMBRE
+*   OFB:post:SVALPagoCliente
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALPagoCliente
+    local varl_idx	like siaf:idx
+    local varl_idx2	like siaf:idx
+    local varl_item	like siaf:idx
+    local varl_picstr	like common:csr_string
+    local varl_marca	like post:nro_factura
+    local varl_aca_coma	like lib:err_retval
+    local varl_1encada1	like lib:err_retval
+    local imp2          like siaf:importe
+    local Ltab_active   like drv:tab_active
+    local loc_fecha     like post:fec_d
+    local paga_cheque   like post:pago_diferido
+    local l_signo       like siaf:signo
+    local l_retval 	like lib:err_retval
+    local l_cuit        like post:CliCuit
+    local l_cuenta      like post:CliCod
+    
+    // si es reversa, solo controlo los montos del operador
+    if (testflag(tlr:tran_flags,correction)) then
+        // controlo el estado de los cheques antes de reversar...
+        fyimsg common:fyimsg_list,"Controlando estado de los cheques..."
+        let varl_idx = 0
+        
+        while (varl_idx < SAP_CANT_MAX_MPAG) 
+            let post:adt_mp_cod = post:ValorPago[varl_idx]
+            call post:CDSadt_MedPago_load
+            if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")
+                tes:teso_cheq_moneda = post:ValorPago[varl_idx]
+                tes:teso_cheq_banco  = post:BancoPago[varl_idx]
+	        tes:teso_cheq_nro    = post:NumCuenta[varl_idx]
+	        tes:teso_cheq_cuenta = post:Bco_Cuenta[varl_idx]
+                call tes:MISCbusco_cheque_rev
+                if (retval < 0) then
+                    fyimsg clear
+                    return (-2)
+                end if
+            end if
+            let varl_idx = varl_idx + 1  // paso al prox. Medio de Pago
+        end while
+        
+        fyimsg clear
+              
+        CALL siaf:SVALnivel_sup
+        IF (RETVAL < 0) THEN
+            RETURN (-2)
+        END IF
+           
+        // para los totales...
+        call MISCcalc_Tot_PagCli
+        
+        if (hcomm:INDhost_sndrt != 0 && hcomm:INDhost_rcvrt != 0)
+	    CALL post:OFBcanc_cheq_ccte
+	else
+	    clearfield drv:INDhcomm_rtn
+	    clearfield drv:INDspc_rtn[1]
+	end if
+	  
+        return
+    end if
+	
+    paga_cheque = "N"
+ 	
+    // estamos en una directa, segun la pantalla realizo las validaciones
+    select (drv:screen_active)
+        case 0  /////////// JOURNAL /////////////
+            return (0)
+            
+        case 1  //////// DATOS CLIENTE //////////
+    	      	   
+    	   /*********ENVIA EL VIAJE DE CONSULTA DE SOLICITANTE*********************/
+    	   /*********Input  Solicitante: post:CliCod, Cuit: post:CliCuit***********/
+    	   /*********Output Solicitante: post:CliCod, Cuit: post:CliCuit***********/
+    	   /*********Output Razon Social 1 y 2: post:CliRaz************************/
+    	   /*********Output Direccion: post:CliDom, Localidad: post:CliLoc*********/
+    	   /*********Output Provincia:post:CliProvDsc, CP: post:CliCP**************/
+    	   /*Output Categoria Fiscal: post:IvaCod, Texto Fiscal: post:CliCatFisDsc*/
+    	   /*Output Codigo de Error: sap_error_cod,Tipo de Error: sap_error_type***/
+    	   /*********Output Texto de Error: sap_error_desc*************************/
+                                
+    // enviar el mensaje, solo si el campo post:CLiRaz no está cargado, ya que si tiene valor
+    //esto significa que los datos ya fueron consultado o bien cargados a mano por el operador.
+    //se elimina enviar el viaje cuando esta activado el flag de pago cheque ya que si no llega a
+    // haber conexion con el host se borran los datos traidos por el host y obliga al operador a 
+    //volver a cargarlos en forma manual
+     //Validar que los campos estan completos
+    
+    if (post:CliRaz.numchars == 0) // || (post:CliRaz.numchars != 0 && TESTFLAG(MPcheque,MPpago_cheque))) then
+    	//resguardo el cuit y la cuenta porque se borran en el rcve si viene un error de sap
+    	l_cuit = post:CliCuit
+    	l_cuenta = post:CliCod
+    	call post:OFBsolic_cobranza
+	l_retval = retval
+	//MFM - Por default se setea que hay conexion
+	post:estado_conexion_sap = SAP_ON
+	if (retval < 0) then
+    		//MFM - Si entró por acá quiere decir que no hay conexión o que
+    		//hubo un error de sap y los datos deben ser cargados manualmente
+    		post:estado_conexion_sap = SAP_OFF
+       		CALL csr:proc_list(F_CLEAR,LST:LISTPagoCliente)
+    		//seteo por default RI en categoria de IVA
+    		let IvaCod = "RI"
+    		let CliCatFisDsc = "RESPONSABLE INSCRIPTO"
+    		//restauro el cuit y la cuenta ingresada por el cliente
+    		post:CliCuit = l_cuit
+    		refresh post:CliCuit
+    		post:CliCod = l_cuenta
+    		refresh post:CliCod
+    		
+    		CALL csr:proc_list(F_REFRESH,LST:LISTPagoCliente)
+    		IF (giros:CodigoError_comm == 01) //error sap- no dejo continuar
+			CALL csr:proc_list(F_PROTECT,LST:LISTPagoCliente)
+			return -2
+		ELSE //dejo continuar
+    		    if (giros:CodigoError_comm == 02) then
+    			MSGBOX "NO HAY CONEXION CON SAP.", OFB_OK, "ERROR"
+    		    endif
+    		    CALL csr:proc_list(F_UNPROTECT,LST:LISTPagoCliente)
+    		    protfield post:CliCatFisDsc
+    			
+    		ENDIF
+    		
+    	endif
+    	   
+    	CALL csr:proc_list(F_REFRESH,LST:LISTPagoCliente)
+    	   
+    	   
+    	   IF (post:CliRaz.numchars == 0) THEN
+    	   	CALL csr:proc_list(F_UNPROTECT,LST:LISTPagoCliente)
+    	   	protfield post:CliCatFisDsc
+    	   	MSGBOX "DEBE CARGAR LOS DATOS DEL CLIENTE EN FORMA MANUAL.", OFB_OK, "ERROR"
+    	   	RETURN -2
+    	   ENDIF
+    	  
+    	  //esto lo hago porque antes de confirmar se puede cambiar el cuit y el nro de la cuenta
+    	  //y quedarian journalizados con otro dato....
+    	  if (l_retval == 0) then
+    	    if (post:CliCuit.numchars == 11) then
+    	   	protfield post:CliCuit
+    	    endif
+    	    if (post:CliCod.numchars != 0) then
+    	   	protfield post:CliCod
+    	    endif
+    	  endif
+    	
+    	   
+    endif       	      	   
+	   //A veces el nro de cuenta queda vacío, por lo tanto hay que asegurarse que no pueda
+	   //avanzar a la siguiente pantalla si el nro de cuenta está vacío.
+    	    if (post:CliCod.numchars == 0) then
+    	    	MSGBOX "DEBE CARGAR EL NRO DE CUENTA.", OFB_OK, "ERROR"
+    	    	return -2
+    	    endif
+    	  
+    	    // FGB 19.9.00: Req 1654 (quito la "," de la Razon Social)
+    	    call csr:str_search(CliRaz,",",varl_aca_coma)
+    	
+    	    while (varl_aca_coma > 0 ) 
+    	        move " " to substr(CliRaz,varl_aca_coma,1)
+    	        call csr:str_search(CliRaz,",",varl_aca_coma)
+    	    end while
+        
+            // de aca siempre quiro pasar a la proxima pantalla
+            let varl_idx = PL_GETITEM
+            call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+            if (retval == 0) then
+                call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+                if (retval == 0) then
+                    //quizas esta en condiciones de terminar...
+                    break 
+                end if
+            end if
+            let drv:next_screen = drv:screen_active + 1
+            return
+            break
+            
+        case 2 ///////// COMPROBANTES //////////
+    
+            let varl_idx = PL_GETITEM
+            call csr:myPickcontrol "comprobantes" varl_picstr varl_idx
+            if (siaf:importe2 == 0 && retval < 0) then
+                msgbox "NO SE INGRESARON COMPROBANTES EN LA LISTA",OFB_OK,"Aviso"
+                return (-2)
+            end if
+           	   
+            break
+            
+        case 3 ///////// MEDIOS DE PAGO ////////
+            let varl_idx = PL_GETITEM
+            call csr:myPickcontrol "mediospagos" varl_picstr varl_idx
+            if (siaf:importe == 0 && retval < 0) then
+                msgbox "NO SE INGRESARON VALORES A LA LISTA",OFB_OK,"Aviso"
+                return (-2)
+            end if
+            // msgbox "Cargo valores en las retenciones?",OFB_YESNO,"Aviso"
+    		// if (retval == OFB_IDNO) then
+    		// 	return (-2)
+    		// end if
+    		
+    end select
+
+    // verifico que al menos debe haber un medio de pago y un comprobante
+    call csr:myPickcontrol "mediospagos" varl_picstr PL_NUMITEMS
+    let varl_1encada1 = retval
+    call csr:myPickcontrol "comprobantes" varl_picstr PL_NUMITEMS
+    let varl_1encada1 = varl_1encada1 * retval
+    
+    //MFM - Tanto el Cuit como el Nro de Cuenta deben estar cargados al momento de confirmar la TX
+    if (post:CliCuit.numchars == 0 || post:CliCod.numchars == 0) then
+    	msgbox "El nro de CUIT y el nro Cuenta deben estar cargados",OFB_OK,"ERROR"
+    	RETURN -2
+    endif
+     
+    // si los importes de los comprobantes y los medios de pagos coincide,
+    // entonces quizas se pueda terminar la transaccion
+    if ((siaf:importe == siaf:importe2) && (varl_1encada1)) then
+    	
+    	//if (drv:screen_active != 3) then
+    		msgbox "RECUERDE CARGAR LAS RETENCIONES COMO MEDIO DE PAGO",OFB_OK,"Aviso"
+    		//if (retval == OFB_IDNO) then
+    		//	return (-2)
+    		//end if
+    	//end if	
+    	
+        msgbox "Desea confirmar la transaccion?",OFB_YESNO,"Fin Cobranza"
+        
+        if (retval == OFB_IDYES) then
+            // Como las retenciones luego pasaran a estar dentro de los medios
+            // de pago, tengo que asegurarme que queden suficientes elementos
+            // libres en los en los vectores que describen a un medio, para 
+            // albergar a las retenciones...
+            let varl_item = PL_GETITEM 
+            let varl_idx  = 0
+            call csr:myPickcontrol "comprobantes" varl_picstr varl_item
+            
+            while (retval == 0)
+                if (substr(varl_picstr,0,3) == "RIB" || \
+                    substr(varl_picstr,0,3) == "IVA" || \
+                    substr(varl_picstr,0,3) == "RGA") then
+                    let varl_idx = varl_idx + 1
+                end if
+            
+                let varl_item = varl_item + 1
+                call csr:myPickcontrol "comprobantes" varl_picstr varl_item
+            end while
+            
+            let varl_item = (varl_item - PL_GETITEM) - varl_idx
+            if (varl_item == 0) then
+                // debe haber al menos un comprobantes que no sea retencion!
+                errmsg common:errmsg_list,"LAS RETENCIONES NO ES UN COMPROBANTE IMPUTABLE"
+                return (-2)
+            end if
+            
+            call csr:myPickcontrol "mediospagos" varl_picstr PL_NUMITEMS
+            // hago la cuenta...
+            if ((retval + varl_idx) > SAP_CANT_MAX_MPAG) then
+                errmsg common:errmsg_list,"NO SE PUEDE REALIZAR TRASPASO DE RETENCIONES COMO MEDIOS DE PAGO."
+                msgbox \
+                "La cantidad de Medios de Pago no permite incluir a las retenciones",\
+                OFB_OK,"Aviso"
+                return (-2)
+            end if
+
+            // paso los valores de los picklist a los campos a journalizar
+            // para los comprobantes...
+            let varl_item = PL_GETITEM 
+            let varl_idx  = 0
+            call csr:myPickcontrol "comprobantes" varl_picstr varl_item
+            
+            while (retval == 0) 
+                let TipoComprobante[varl_idx] = substr(varl_picstr,0,3)
+                // busco descripcion del comprobante
+                clearfield common:csr_string
+            
+                pickverify TipoComprobante[varl_idx],PIC:post:TipoComprobante
+                if (retval >= 0) then
+                    fprint ComprobanteDsc[varl_idx] "%-18s %1s" \
+                    substr(common:csr_string,4,18),substr(varl_picstr,4,1)
+                    let SignoComprob[varl_idx] = substr(common:csr_string,32,1)	
+                else
+                    let ComprobanteDsc[varl_idx] = " "
+                end if
+            
+                if (TipoComprobante[varl_idx] == "ADE") then
+                    let NumComprobante[varl_idx] = nro_recibo
+                else
+                    fprint NumComprobante[varl_idx] "%4.4d%8.8d" \
+                    substr(varl_picstr,6,4),substr(varl_picstr,11,8)
+                end if
+            
+                let ImpComprobante[varl_idx] = substr(varl_picstr,20,16)
+                // paso al proximo comprobante...
+                let varl_item = varl_item + 1
+                let varl_idx  = varl_idx  + 1
+                call csr:myPickcontrol "comprobantes" varl_picstr varl_item
+            end while
+            
+            let cant_comprob = varl_idx
+            // paso los valores de los picklist a los campos a journalizar
+            // para los medios de pago
+            let varl_item = PL_GETITEM 
+            let varl_idx  = 0
+            
+            call csr:cleararray(post:Cod_Interno)
+            call csr:cleararray(post:ValorPago)
+            call csr:cleararray(post:BancoPago)
+            call csr:cleararray(post:Bco_Cuenta)
+            call csr:cleararray(post:NumCuenta)
+            call csr:cleararray(post:ImporteBanco)
+            call csr:cleararray(post:ImporteBase)
+            call csr:cleararray(post:chq_clearing)
+            
+            call csr:myPickcontrol "mediospagos" varl_picstr varl_item
+            while (retval == 0) 
+                let ValorPago[varl_idx]     = substr(varl_picstr,0,2)
+                let BancoPago[varl_idx]     = substr(varl_picstr,3,3)
+                let Bco_Cuenta[varl_idx]    = substr(varl_picstr,7,20)
+                let NumCuenta[varl_idx]     = substr(varl_picstr,28,12)
+                let ImporteBanco[varl_idx]  = substr(varl_picstr,41,16)
+                let Emision_Fecha[varl_idx] = substr(varl_picstr,59,2) +  substr(varl_picstr,62,2) * 100 \
+                + substr(varl_picstr,65,4) * 10000
+                let chq_clearing[varl_idx] = substr(varl_picstr,88,3)
+                
+                loc_fecha = substr(varl_picstr,70,2) + substr(varl_picstr,73,2) * 100 \
+                + substr(varl_picstr,76,4) * 10000     
+                if (loc_fecha.numchars > 0 && loc_fecha != 0)
+                    let Valor_Fecha[varl_idx]   = loc_fecha
+                else
+                    Valor_Fecha[varl_idx] = ""
+                end if
+                /*
+                let Valor_Fecha[varl_idx]   = substr(varl_picstr,70,2) + substr(varl_picstr,73,2) * 100 \
+                + substr(varl_picstr,76,4) * 10000                
+                */
+                
+                let post:adt_mp_cod = ValorPago[varl_idx]
+                call CDSadt_MedPago_load
+                if (post:adt_mp_int == "S")
+                    post:Cod_Interno[varl_idx] = "S"
+                else
+                    post:Cod_Interno[varl_idx] = "N"
+                end if
+                
+                //MFM - Tratamiento de Cheques:Seteo en "S" solo cuando paga con cheque
+		   if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S" && \
+		       post:adt_mp_viaje == "S")
+                       paga_cheque = "S"
+                   endif
+
+                // Convierto a Moneda Base.
+                call MISCconvierto_coti2(ImporteBanco[varl_idx],imp2)
+                let ImporteBase[varl_idx] = imp2
+
+                // paso al proximo valor
+                let varl_item = varl_item + 1
+                let varl_idx  = varl_idx  + 1
+                
+                call csr:myPickcontrol "mediospagos" varl_picstr varl_item
+            end while
+            let cant_valores = varl_idx
+
+            // para los totales...
+            call MISCcalc_Tot_PagCli
+            
+            // Controlo los montos minimos y maximos por medio de pago
+            call MISCmin_maxMP
+            if (retval < 0)
+                return (-2)
+            end if
+
+            // Me fijo si alguno de los medios de pago involucrados requiere sup
+            post:SupMedPago = "N"
+            call post:MISCSeteoSupCC
+            if (retval < 0)
+                post:SupMedPago = "S"
+            end if
+          
+            let siaf:moneda = 99
+            CALL siaf:SVALnivel_sup
+            IF (RETVAL < 0) THEN
+                clearfield siaf:moneda
+                clearfield siaf:desc_moneda //cgw:limpia descripcion moneda.
+                RETURN (-2)
+            END IF
+            
+            clearfield siaf:moneda
+	    clearfield siaf:desc_moneda //cgw:limpia descripcion moneda.
+            /*MFM - Si no se ingresa nro recibo manual entonces se genera el nro de recibo en forma automatica*/
+            IF (post:nro_recibo_manual.numchars == 0) THEN
+            	// Obtengo el numero de recibo...
+            	clearfield nro_recibo
+            	call CDSccseq_get_num("REC",nro_recibo)
+            	if (retval < 0) then
+                    errmsg common:errmsg_list,"ERROR EN NUMERACION DE RECIBO.\nIMPOSIBLE CONTINUAR"
+                    Call ESCPagoCliente
+                    return (-3) // Sale de la Trx!!
+            	end if
+            
+            	;let nro_recibo = common:br_CEC * 100000000 + nro_recibo
+            	fprint nro_recibo "%4.4d%8.8d" common:br_CEC,nro_recibo
+            	// obtengo la firma para el recibo
+            	fprint common:csr_string "%e%e%5.5d%5.5s%8.8d%12.12e" siaf:fecha,\
+            	siaf:hora,op:op_operator_id,common:br_CEC,nro_recibo,siaf:importe
+            
+            	call csr:MD5checksum(common:csr_string,0,ctacte_recibo_id,1)
+            	if (retval != 0) then
+                    // si no anduvo el MD5 aunque sea sumo los valores y uso eso 
+                    // de marca
+                    let varl_marca = siaf:hora  + siaf:fecha + op:op_operator_id
+                    let varl_marca = varl_marca + substr(common:br_CEC,1,4) + nro_recibo
+                    let varl_marca = varl_marca + (siaf:importe * 100)
+                    // pongo un par de caracteres mas... (naf=no anduvo firma:) 
+                    fprint ctacte_recibo_id "naf%14.14d%1" varl_marca,substr(tlr:jnl_branch,0,1)
+            	end if
+		//PARA QUE IMPRIMA EL COMPROBANTE
+                siaf:imprime_comprobante = "D"
+            ELSE
+      	        post:nro_recibo = post:nro_recibo_manual
+      	        clearfield siaf:imprime_comprobante
+            ENDIF     
+            giros:codigo_procesamiento = 998000
+	    giros:hora_viaje = common:time_of_day
+            giros:dia_viaje  = common:system_date
+	    post:NisIngresoChq_comm = common:sucursal_activa
+	    call post:CDSobtiene_secuen("STAN")
+	    call post:MISCarmar_cheq_ccte
+	    if (post:BulkFldCant == 0)
+	        clearfield drv:INDhcomm_rtn
+	        clearfield drv:INDspc_rtn[1]
+	    end if
+	    call hcomm:COMM_stat_init
+	    //MFM - Tratamiento de Cheque:Grabo los datos del cliente en CliCC solo si paga con cheque
+	    if (paga_cheque == "S") then
+		CALL post:CDScliCC_save
+	    endif
+
+            // termina la transaccion
+            let drv:next_screen = -1
+            let drv:next_tab = -1
+            let tlr:INDdcol_scrn[0] = SCR:post:SCRNctacte_cobza_jnl
+            select (drv:screen_active)
+                case 1
+                    clearfield drv:INDscreen[2]
+                    clearfield drv:INDscreen[3]
+                    break
+                case 2
+                    clearfield drv:INDscreen[1]
+                    clearfield drv:INDscreen[3]
+                    break
+                case 3
+                    clearfield drv:INDscreen[1]
+                    clearfield drv:INDscreen[2]
+                    break
+                case else
+               	    ungetkey RT_ESC
+               	    return (-2)
+            end select
+	    move "T" to SUBSTR(drv:header,5,1) // para que entre en la JNLtran
+
+            // destruyo los picklists utilizados...
+            call csr:f_sadroppl "comprobantes"
+            call csr:f_sadroppl "mediospagos"
+
+            // deshabilito el boton para desplegar el picklist... 
+            altercontrol TAG:post:PBitem_1,-1,-1,-1,-1,-1,-1,-1,1
+
+            // deshabilito las solapitas de la trx.
+            let Ltab_active = drv:tab_active
+            let drv:tab_active = 0
+            call drv:disable_tab
+            let drv:tab_active = 1
+            call drv:disable_tab
+            let drv:tab_active = 2
+            call drv:disable_tab
+            let drv:tab_active = 3
+            call drv:disable_tab
+            let drv:tab_active = Ltab_active
+            return (0)
+        end if
+    end if
+    
+    // no se finaliza la transaccion... 'tonces solo paso a la siguiente scr.
+    // para esto salteo la JNLtran porque cuando estoy en la ultima SCR me 
+    // hace la journalizacion... 
+    move "N" to SUBSTR(drv:header,5,1) 
+    if (drv:screen_active == 3) then
+        let drv:next_tab = 0
+    end if
+END SUB
+
+/*******/

@@ -1,0 +1,193 @@
+/****o* Pago en Destino/OFB:post:MISCparse_pzas_ped
+* NOMBRE
+*   OFB:post:MISCparse_pzas_ped
+* DESCRIPCION
+*   Parseo los datos seleccionados del picklist para mostrar en pantalla 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*		post:FVALtt_pieza_ped,post:PBpiezaPED,post:PBFactpiezaPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCparse_pzas_ped(p_cadena)
+	LOCAL l_cadena LIKE common:csr_string
+	LOCAL l_estado LIKE post:stockp_ped_estAct
+	LOCAL l_origen_pza LIKE common:csr_string
+	LOCAL l_retval LIKE lib:err_retval
+	LOCAL l_operador LIKE op:op_login_id
+	LOCAL l_msje LIKE common:csr_string
+	LOCAL l_compara_estado LIKE post:stockp_ped_estAct
+	
+	l_retval = 0
+	l_msje = ""
+	l_cadena = p_cadena
+	
+	//generacion de NC ped
+	IF (siaf:codigo_siaf == 30030) THEN
+		//ej 30030
+		//"CP000000028AR 00000043 B0016 B 245000000001          108,97 ROB"
+		
+		post:track_trace = SUBSTR(l_cadena,0,13)
+		post:id_pieza_ped = SUBSTR(l_cadena,14,8)
+		post:NisDestino_ped	= SUBSTR(l_cadena,23,5)
+		post:letra_comp_ped	= SUBSTR(l_cadena,29,1)
+		post:nro_comp_ped = SUBSTR(l_cadena,31,15)
+		post:imp_cobro_ped = SUBSTR(l_cadena,44,15)
+		post:tipo_pieza_NC = SUBSTR(l_cadena,60,3)
+		
+		post:pieza_ped = post:track_trace
+		
+		REFRESH post:track_trace
+		REFRESH post:id_pieza_ped
+		REFRESH post:NisDestino_ped	
+		REFRESH post:letra_comp_ped	
+		REFRESH post:nro_comp_ped
+		REFRESH post:imp_cobro_ped
+		REFRESH post:tipo_pieza_NC		
+		
+		//post:tipo_pieza_NC = DEV => consulta stockp
+		//post:tipo_pieza_NC = ROB => consulta PEDpend
+		
+		//verifico que la pieza no este tomada por otro operador
+		IF (post:tipo_pieza_NC == "DEV") THEN
+			CDS SELECT FROM DSC:stockp_tbl BECOMES "stockp_ctx1" WHERE \
+				adt_stockp_pieza == post:track_trace && \
+				adt_stockp_destino == DSC:PED_desc 
+			CDS FINDFIRST "stockp_ctx1" NOLOCK
+			CDS EXTRACT "stockp_ctx1" \
+				post:stockp_ped_estAct INTO l_estado \
+				op:op_login_id INTO l_operador
+			CDS ENDSELECT "stockp_ctx1"
+		ELSE
+			CDS SELECT FROM DSC:PEDpend_tbl BECOMES DSC:PEDpend_ctx WHERE \
+				post:pieza_ped == post:track_trace 		
+			CDS FINDFIRST DSC:PEDpend_ctx NOLOCK
+		
+			CDS EXTRACT DSC:PEDpend_ctx \
+				post:estado_local INTO l_estado \
+				op:op_login_id INTO l_operador
+			CDS ENDSELECT DSC:PEDpend_ctx	
+		END IF
+	ELSE
+		//Refacturacion ped
+		
+		//ej 30040
+		//"CP000000028AR 00000043 TRANSPORTE AUTOMOTOR SRL                           EXE 80 30681283621 64354636431"		
+
+		post:track_trace = SUBSTR(l_cadena,0,13)
+		post:id_pieza_ped = SUBSTR(l_cadena,14,8)
+		post:CliRazonPED = SUBSTR(l_cadena,23,50)
+		post:IvaCodEmisPed = SUBSTR(l_cadena,74,3)
+		post:TipoDocEmisPED = SUBSTR(l_cadena,78,2)	
+		post:CuitEmisPED = SUBSTR(l_cadena,81,11)
+		post:cliente_numero_ped = SUBSTR(l_cadena,93,11)
+		
+		post:adt_TipoDoc_tipo = post:TipoDocEmisPED
+		post:IvaCod = post:IvaCodEmisPed
+		CALL post:CDSadtivaTipDoc_load
+		
+		post:pieza_ped = post:track_trace
+		
+		REFRESH post:track_trace
+		REFRESH post:id_pieza_ped
+		REFRESH post:CliRazonPED	
+		REFRESH post:IvaCodEmisPed
+		REFRESH post:TipoDocEmisPED
+		REFRESH post:adt_TipoDoc_desc	
+		REFRESH post:CuitEmisPED	
+
+		//verifico que la pieza no este tomada por otro operador
+		CDS SELECT FROM DSC:post:NCpedEnOrigen_tbl BECOMES DSC:post:NCpedEnOrigen_ctx \
+			WHERE post:pieza_ped == post:track_trace
+		CDS FINDFIRST DSC:post:NCpedEnOrigen_ctx NOLOCK
+		
+		CDS EXTRACT DSC:NCpedEnOrigen_ctx \
+			post:NC_estAct INTO l_estado \
+			op:op_login_id INTO l_operador
+		CDS ENDSELECT DSC:NCpedEnOrigen_ctx	
+	END IF
+
+	//valido el estado de la pieza
+	//"PRNC" - Pieza en proceso de nota de credito
+	//"NTCR" - Pieza con Nota de Credito generada
+	//"PRFA" - Pieza en proceso de refacturacion
+	//"FACT" - Pieza con Nueva Factura generada
+	//"ENTR" - Pieza Entregada
+	
+	IF (siaf:codigo_siaf == 30030) THEN
+		//NC ped
+		l_compara_estado = "PEND"
+	ELSE
+		//ReFacturacion ped
+		l_compara_estado = "NTCR"
+	END IF
+	
+	IF (l_estado != l_compara_estado) THEN
+		SELECT (l_estado)
+			CASE "PRNC"
+				FPRINT l_msje,"Pieza en proceso de generacion de NC por el operdor %s",l_operador
+				l_retval = -2
+			BREAK
+			CASE "NTCR"
+				FPRINT l_msje,"Ya fue generada al NC por el operdor %s",l_operador
+				l_retval = -2
+			BREAK
+			CASE "PRFA"
+				FPRINT l_msje,"Pieza en proceso de Refacturacion por el operdor %s",l_operador
+				l_retval = -2			
+			BREAK
+			CASE "FACT"
+				FPRINT l_msje,"Ya fue generada la Factura por el operdor %s",l_operador
+				l_retval = -2				
+			BREAK
+			CASE "ENTR"
+				FPRINT l_msje,"Ya fue entregada la pieza por el operdor %s",l_operador
+				l_retval = -2	
+			BREAK
+		END SELECT	
+	END IF
+	
+	//Evaluo respuesta
+	IF (l_retval < 0) THEN
+		MSGBOX l_msje,OFB_OK,"Atencion"	
+		CLEARFIELD post:track_trace
+		//generacion de NC ped
+		IF (siaf:codigo_siaf == 30030) THEN
+			CALL post:PBlimpia30030
+		ELSE
+			CALL post:PBlimpia30040
+		END IF
+	ELSE
+		PROTFIELD post:track_trace
+		DISABLECONTROL drv:PBcb0
+	
+		//generacion de NC ped
+		IF (siaf:codigo_siaf == 30030) THEN		
+			//reservo la pieza para que no pueda ser usada por otro operador
+			l_estado = "PRNC"
+			//Si existe en la stockp,actualiza estado
+			CALL post:CDSstockp_upd_estAct(l_estado,post:track_trace)
+			IF (RETVAL < 0) THEN
+				post:Pieza = post:track_trace
+				//Si existe en la PEDpend,actualiza estado
+				CALL post:CDSupd_PEDpend(l_estado)
+				CLEARFIELD post:Pieza
+			END IF	
+		ELSE
+			//reservo la pieza para que no pueda ser usada por otro operador
+			l_estado = "PRFA"
+			CALL post:CDSupd_est_NCped(l_estado)
+		END IF
+	END IF
+	
+END SUB
+
+/*******/

@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCgrabo_espv_rech
+* NOMBRE
+*   OFB:tes:MISCgrabo_espv_rech
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCgrabo_espv_rech
+local lstring like common:csr_string
+local idx like siaf:i
+				
+	es_reenvio = "S"
+	clearfield aux_sequence_pase //La uso para guardar la misma secuencia a todos los pases NO aceptados
+	clearfield espv_cod  //Lo limpio para hacer el corte de control
+	clearfield aux_sequence_mov //Lo uso para controlar cuando termina de grabar los movimientos correspondientes a una cabecera
+    PaseAnulado = "N"
+    idx = PL_GETITEM   
+	//Recorro el picklist y grabo primero todo lo que sea NO aceptado
+	do
+    	call csr:myPickcontrol(dsc:PICPasesDisp,lstring,idx)
+		if (retval < 0 || PasesRech_cant == 0)
+		    //Actualizo  la  marca de completo. Controlo por medio de aux_sequence_mov, si tiene valor es porque
+		    //ya grabo la cabecera con sus pases
+		    if (aux_sequence_mov.numchars != 0 && PaseAnulado == "N")
+	            Call MISCact_cabe_espv
+	            /* enviar un mensaje al operador origen */
+				call MISCsend_msg_dest(tes:adt_espv_orig,"RECHAZO SU PASE DE ESPECIES VALORIZADAS")
+		    end if
+
+    		break
+    	end if
+		//Busco este pase en el picklist de rechazados
+		sequence_val[0] = substr(lstring,77,4)
+		Call MISCverif_rechazo(0)
+		if (retval == 0) //Lo encontre !
+		
+			siaf:continua_transaccion = "N"
+								
+			if (espv_cod != substr(lstring,56,20))
+			    //Actualizo  la  marca de completo. Controlo por medio de aux_sequence_mov, si tiene valor es porque
+			    //ya grabo la cabecera con sus pases
+			    if (aux_sequence_mov.numchars != 0  && PaseAnulado == "N")
+		            Call MISCact_cabe_espv
+		            /* enviar un mensaje al operador origen */
+	    	    	call MISCsend_msg_dest(tes:adt_espv_orig,"RECHAZO SU PASE DE ESPECIES VALORIZADAS")
+			    end if
+
+				adt_espv_cod = substr(lstring,56,20)
+				adt_espv_seq_pase  = substr(lstring,82,4)
+			
+		    	if (rend_sup == "S") then  /* si la primera fue supervisada , marco todas */
+			        setflag tlr:tran_flags,supovr_granted
+			    end if
+	    	    Call tes:MISCcabe_ent_espv
+	    	    let siaf:codigo_siaf = siaf:codigo_siaf + 6	
+			end if					
+			
+			if (PaseAnulado == "N")
+				//Actualizo el movimiento NO aceptado
+				adt_espv_subcod = substr(lstring,0,20)
+				espv_valor = substr(lstring,21,13)
+				adt_espv_cantidad = substr(lstring,35,6)
+				adt_espv_importe = substr(lstring,42,13)
+				adt_espv_cod = substr(lstring,56,20)
+				adt_espv_seq = substr(lstring,77,4)
+		        adt_espv_seq_pase = substr(lstring,82,4)
+		        
+		        /* Grabo el pase */
+			    if (rend_sup == "S") then  /* si la primera fue supervisada , marco todas */
+			        setflag tlr:tran_flags,supovr_granted
+			    end if
+		        Call tes:MISCjour_ent_espv				
+			end if
+			
+			espv_cod = substr(lstring,56,20)											
+			//Elimino del picklist que contiene los pases disponibles para que despues me queden solo los aceptados
+            siaf:i = idx - PL_GETITEM
+            CALL CSR:myPickdelete(dsc:PICPasesDisp,lstring,siaf:i)
+			idx = idx - 1
+					
+			PasesRech_cant = PasesRech_cant - 1 //Descuento la cantidad de pases que me quedan NO aceptados
+		end if
+
+		idx = idx + 1
+	loop
+END SUB
+
+/*******/

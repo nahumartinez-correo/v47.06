@@ -1,0 +1,308 @@
+/****o* Anulación de Documentos/OFB:post:SVALanulacion
+* NOMBRE
+*   OFB:post:SVALanulacion
+* DESCRIPCION
+*  Esta rutina se ejecuta al confirmar la Anulación de Documentos (TX 7100)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANanulacion
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALanulacion
+	LOCAL idx LIKE siaf:i
+	LOCAL IdxAnul LIKE post:TranAnul_idx
+	LOCAL cont LIKE post:cantidad
+	LOCAL cant LIKE post:cantidad	
+	LOCAL guia_cont LIKE post:jnl_guia_cont
+	LOCAL guia_op LIKE post:op_operator_id
+	LOCAL l_pago_tarjeta LIKE common:csr_string
+	LOCAL l_cierre_lote LIKE common:csr_string
+	LOCAL l_PresNro LIKE post:PresNro
+	LOCAL l_opvpi_jnlOK LIKE common:csr_string
+	LOCAL l_opmp_jnlOK LIKE common:csr_string
+
+	IF (sesion_anul_string.NUMCHARS == 0) THEN
+		MSGBOX "Debe seleccionar una Sesión" OFB_OK "Error"
+		RETURN (-2)
+	END IF
+	
+	idx = PL_GETITEM
+	/*Antes de pedir la confirmacion chequeo que se haya seleccionado por lo menos
+	una transaccion - Gabriel Falciola*/
+	CALL csr:myPickcontrol(DSC:PICtran_sel,common:csr_string,idx)
+	IF (RETVAL < 0)
+		IF (!TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+			MSGBOX "No se han seleccionado Transacciones para Anular" OFB_OK "Error"
+			RETURN (-2)
+		ELSE
+			// En transaccion de giros masivos, se genera la
+			// nota de credito y la factura por el lote.
+			// Solo se permite modificar el medio de pago.
+			// No se permite seleccionar transacciones, solo
+			// se visualiza la caratula de lote.
+		END IF
+	END IF
+
+	/*Valido que el importe de la Sesión no quede negativa*/
+	IF (ImporteRestoNC < 0) THEN
+		MSGBOX "La Sesión no puede quedar con Importe negativo" OFB_OK "Error"
+		RETURN (-2)
+	END IF
+	
+	//gpb:NI50525 POS Integrado
+	//Si el medio de pago es tarjeta, no se permite la anulacion parcial
+	CALL post:CDSanul_parcial_tarj
+	IF (RETVAL == 0) THEN
+		IF (common:adt_vpi_termi_integ != "S" && common:adt_mp_termi_integ != "S") THEN
+				MSGBOX "LA TERMINAL NO TIENE DISPOSITIVO POS ASOCIADO",0x00,"ATENCION"
+				RETURN -2
+		END IF
+		l_pago_tarjeta = "S"		
+		//Valido si se efectuo el Cierre de Lote
+		
+		/* Se elimina la validacion del Cierre de Lote desde MOSAIC. LO hara el POS directamente
+		CALL post:CDScierre_lote
+		IF (RETVAL == 0) THEN 
+			IF (common:adt_vpi_Devolucion == "N") THEN
+				MSGBOX "La Sesión no puede ser anulada.\Ya se ha realizado Cierre de Lote" OFB_OK "Error"
+				RETURN (-2)
+			ELSE
+				l_cierre_lote = "S"
+			END IF
+		ELSE
+			l_cierre_lote = "N"
+		END IF
+		*/
+
+		IF (post:codigo_interno == 130410) THEN
+			//gpb:NI50546 Mercado Pago
+			LET l_opmp_jnlOK = "N"
+			
+			CALL post:CDSopmp_verif_jnlOK("DEV")
+			IF (RETVAL == 0) THEN
+				l_opmp_jnlOK = "S"
+			END IF
+		ELSE
+			//gpb:NI50525 POS Integrado
+			l_cierre_lote = "N"
+			LET l_opvpi_jnlOK = "N"
+		
+			//Verifica la marca post:opvpi_jnlOK = "S"
+			IF (l_cierre_lote == "N") THEN
+				CALL post:CDSopvpi_verif_jnlOK("ANV")
+				IF (RETVAL == 0) THEN
+					l_opvpi_jnlOK = "S"
+				END IF
+			ELSE
+				CALL post:CDSopvpi_verif_jnlOK("DEV")
+				IF (RETVAL == 0) THEN
+					l_opvpi_jnlOK = "S"
+				END IF
+			END IF
+		END IF
+	ELSE
+		l_pago_tarjeta = "N"	
+	END IF
+	
+	/*Se valida que si la factura debe reversarse totalmente todas las TX esten seleccionadas*/
+	IF  (post:VentaUP_Diferida == "S") || (post:ConvenioSesion) || \
+		(post:ExcepSesion) || (post:ExcepProducto) || (post:ModalidadCC) || \
+		(post:ModalidadCD) || (post:ConsumoAnticipo) || (post:OperacionCob) || \
+		(post:OperacionAut) || (l_pago_tarjeta == "S") THEN
+		idx = PL_GETITEM
+		cont = 0
+		DO
+			CALL CSR:myPickcontrol(DSC:post:PICanulacion_tran,common:csr_string,idx)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+			cont = cont + 1
+			idx = idx + 1
+		LOOP
+		idx = PL_GETITEM
+		cant = 0
+		DO
+			CALL csr:myPickcontrol(dsc:PICtran_sel,common:csr_string,idx)
+			IF (RETVAL < 0) THEN
+				BREAK
+			END IF
+			cant = cant + 1
+			idx = idx + 1
+		LOOP
+		IF (cont != cant) THEN
+			MSGBOX "La Sesión no puede ser anulada en forma parcial." OFB_OK "Error"
+			RETURN (-2)
+		END IF
+	END IF
+	
+	/*Se valida que si existe alguna postal expedida no se pueda anular la factura*/
+	//ya que esto trae problemas cuando se reversa el contenedor/saca.
+	idx = PL_GETITEM
+	DO
+		CALL CSR:myPickcontrol(DSC:post:PICanulacion_tran,common:csr_string,idx)
+		IF (RETVAL < 0) THEN
+			BREAK
+		END IF
+		guia_cont = SUBSTR(common:csr_string,80,8)
+		guia_op = SUBSTR(common:csr_string,89,5)
+		CALL post:MISCverifContened(guia_cont,guia_op,"X") //(nro_guia_cont,operador_transf,marca_todas)
+		IF (RETVAL < 0) THEN
+			MSGBOX "Existen Transacciones ya Expedidas o Transferidas. No se podrá anular la sesión." OFB_OK "Error"
+			RETURN -2
+		END IF
+		idx = idx + 1
+	LOOP
+	
+	//gpb:NI50364 - Control que no se pueda reversar una sesion de Caja Unificada.
+	//IF (post:es_WEB == "X") THEN
+		//MSGBOX "Esta Transaccion NO Admite Reversa.",OFB_OK,"ERROR"
+		//RETURN (-2)
+	//END IF	
+
+	IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+		MSGBOX "Esta Transaccion NO Admite Reversa. Solo Reimpresión de Documento y Modificación del Medio de Pago.",OFB_OK ,"Aviso"
+		MSGBOX "Confirma la Reimpresión del Documento?",OFB_YESNO ,"Aviso"
+		IF (RETVAL == 7) THEN
+			RETURN (-2)
+		END IF
+	ELSE
+		MSGBOX "Confirma la Anulación de las Transacciones seleccionadas?",0x01,"Confirmación"
+	END IF
+	IF (RETVAL == 2) THEN
+		RETURN (-2)
+	END IF
+
+	/*Seteo este campo que cuando es una Transacción de Teclas Rápidas queda vacio, pero, como
+	diría mi Maestro Pablo Massera, "Más vale prevenir que curar" - Gabriel Falciola*/
+	post:fecha = common:system_date
+	post:op_operator_id = op:op_operator_id
+
+    /*Pido Supervision antes de continuar*/
+	CLEARFIELD siaf:cartel
+	SETFLAG tlr:tran_flags, supovr_request
+	SETFLAG siaf:siaf_flags, req_tes
+	SETFLAG siaf:siaf_flags, req_sup1
+	CALL siaf:OVRsupovr_request
+	LET lib:err_retval = RETVAL
+	RESETFLAG siaf:siaf_flags, req_tes
+	RESETFLAG tlr:tran_flags, supovr_request
+	RESETFLAG siaf:siaf_flags, req_sup1
+	IF (lib:err_retval < 0)THEN
+		CLEARFIELD giros:op_sup_id
+		RETURN (-2)
+	ELSE
+		giros:op_sup_id = ovr:ovr_sup_id
+		SETFLAG tlr:tran_flags,supovr_granted
+	END IF
+	
+	//Resguardo valor 
+	LET l_PresNro = post:PresNro
+	
+	//El presupuesto contiene medio de pago 06 - Tarjeta
+	IF (l_pago_tarjeta == "S") THEN 
+		
+		IF (post:codigo_interno == 130410) THEN
+	 		//gpb:NI50546 Mercado Pago 
+	 		CALL post:MISCflow_anula_mp(l_PresNro,l_opmp_jnlOK)
+			IF (RETVAL < 0) THEN
+				RETURN RETVAL
+			END IF
+		ELSE
+			//gpb:NI50525 POS Integrado
+			CALL post:MISCflow_anula_lapos(l_cierre_lote,l_PresNro,l_opvpi_jnlOK)
+			IF (RETVAL < 0) THEN
+				RETURN RETVAL
+			END IF
+		END IF
+		
+;;		//No se realizo Cierre de Lote
+;;		IF (l_cierre_lote == "N") THEN
+;;			//Si no se produjo una caida
+;;			IF (l_opvpi_jnlOK == "N") THEN	
+;;				CALL drv:MISCpopup(SCR:post:SCRN99600,OFB:post:PRES99600,OFB:PREC99600,OFB:post:SVAL99600,LST:post:BUT99600)
+;;				IF (LASTKEY == RT_ESC) THEN
+;;					//Recupero valor
+;;					LET post:PresNro = l_PresNro
+;;					RETURN -1
+;;				END IF
+;;			
+;;				//No posee mensaje al HOST
+;;				RESETFLAG post:journal_flags,enviar_mensaje_host
+;;			
+;;				//Journalizo la transaccion de anulacion de tarjeta
+;;				CALL post:OFBjnl_anula_tarjeta	
+;;			END IF
+;;		ELSE
+;;			//Se realizo Cierre de Lote y permite Devolucion
+;;			IF (common:adt_vpi_Devolucion == "S") THEN
+;;				//Si no se produjo una caida
+;;				IF (l_opvpi_jnlOK == "N") THEN	
+;;					CALL drv:MISCpopup(SCR:post:SCRN99605,OFB:post:PRES99605,OFB:PREC99605,OFB:post:SVAL99605,LST:post:BUT99605)
+;;					IF (LASTKEY == RT_ESC) THEN
+;;						//Recupero valor
+;;						LET post:PresNro = l_PresNro
+;;						RETURN -1
+;;					END IF
+;;					
+;;					//No posee mensaje al HOST
+;;					RESETFLAG post:journal_flags,enviar_mensaje_host
+;;	  	
+;;					//Journalizo la transaccion de devolucion de tarjeta
+;;					CALL post:OFBjnl_devol_tarjeta	
+;;				END IF	
+;;			ELSE
+;;				MSGBOX "La Sesión no puede ser anulada.\Ya se ha realizado Cierre de Lote" OFB_OK "Error"
+;;				RETURN (-1)
+;;			END IF
+;;		END IF
+		//Recupero el nro de presupuesto
+		LET post:PresNro = giros:PresNro_canc
+		
+	END IF
+	
+	/*CSZ - Llamo a la rutina que limpia la NovTTtmp*/
+	CALL CDSdel_NovTTtmp
+
+	//NI 50412 - Eliminar la operacion web de la tabla de reportes web
+	CALL post:CDSborra_web_rep
+	
+	IdxAnul = post:TranAnul_idx
+	/*Si confirma la anulacion, paso a la tabla NCtable todas las transacciones de la Sesion
+	agregandole los datos necesarios para saber que proceso en necesario para cada transaccion
+	Gabriel Falciola*/
+	CALL CDSPasoAnulNC
+	IF (RETVAL != 0) THEN
+		/*hubo un error con el disponible en caja*/
+		/*Restaruro el indice post:TranAnul_idx porque se pisaba */
+		post:TranAnul_idx = IdxAnul
+		RETURN (-2)
+	END IF
+
+	/*Anulación Parcial*/
+	CALL MISCanulParcial
+
+	/*CSZ*/
+	CALL CDSdel_NovTTtmp
+
+	/*Una vez que termina el proceso, se libera la memoria de los picklist y se borra la
+	tabla auxiliar se que utiliza para las sesiones - Gabriel Falciola*/
+	CALL ESCanulacion
+
+	CLEARFIELD drv:INDjnl_rtn
+	
+	IF (TESTFLAG(giros:giros_masivos,proc_anul_masivos)) THEN
+		RESETFLAG giros:giros_masivos,proc_anul_masivos
+	END IF
+	
+END SUB
+
+/*******/

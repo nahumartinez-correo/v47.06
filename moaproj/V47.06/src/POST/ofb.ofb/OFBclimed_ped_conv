@@ -1,0 +1,87 @@
+/****o* Pago en Destino/OFB:post:OFBclimed_ped_conv
+* NOMBRE
+*   OFB:post:OFBclimed_ped_conv
+* DESCRIPCION
+*
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*
+* DOCUMENTACION
+*		NI50479
+* SOURCE
+*/
+#include "postofb.ofb.h"
+
+SUB post:OFBclimed_ped_conv
+
+	CLEARFIELD post:climed_more_data
+Inicio:
+	IF (post:climed_ult_item.NUMCHARS == 0) THEN
+		CALL post:CDSborrar_conv_prod
+		IF (RETVAL < 0) THEN
+			MSGBOX "IMPOSIBLE CONTINUAR, ERROR AL ELIMINAR LAS TABLAS TEMPORALES DE CONVENIO.",OFB_OK,"Atencion"
+			RETURN -2
+		END IF
+	END IF
+
+	CALL hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line)) THEN
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA.",OFB_OK,"Atencion"
+		RETURN -2
+	END IF
+	SETFLAG giros:tran_send_mode,consulta_simple
+	//giros:codigo_procesamiento = 997022
+	giros:codigo_procesamiento = 997028 // nuevo codigo de procesamiento
+	giros:hora_viaje = common:time_of_day
+	giros:dia_viaje  = common:system_date
+	CALL post:CDSobtiene_secuen("STAN")
+
+	hcomm:INDhost_sndrt = OFB:post:SENDclimed_convenio
+	hcomm:INDhost_rcvrt = OFB:post:RCVEclimed_conv_ped
+
+	CALL hcomm:COMM_stat_init
+	CALL siaf:CDSchk_trxs_caidas
+	IF (RETVAL == 0 && TESTFLAG(hcomm:state_flags,on_line)) THEN
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		CALL siaf:CDSjnl_mayor_cien	
+		IF (RETVAL == TRAN_CAIDA_VUELO) THEN
+			CLEARFIELD hcomm:INDhost_sndrt 
+			CLEARFIELD hcomm:INDhost_rcvrt 
+		END IF
+		FYIMSG CLEAR
+	ELSEIF (RETVAL == -5) THEN
+		//quedaron trx's pendientes de recuperacion por el proc. batch...
+		CLEARFIELD hcomm:INDhost_sndrt
+		CLEARFIELD hcomm:INDhost_rcvrt
+	END IF
+
+	CALL giros:OFBdisable_bt_msg
+	CALL hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	CALL giros:OFBenable_bt_msg
+	CLEARFIELD lib:stat_message
+	REFRESH lib:stat_message
+	REFRESH statusline
+
+	IF (hcomm:tran_status != HOST_ACCEPTED) THEN
+		IF (hcomm:tran_status == HOST_REJECTED) THEN
+			post:estado_consulta = RECH_CONS_CLIMED
+			MOVE siaf:mensaje TO post:motivo_rechazo
+			RETURN -2
+		END IF
+	ELSE
+		IF (giros:CodRespuesta_comm == "70" ) THEN
+			post:climed_more_data = 1
+			GOTO Inicio
+		END IF	
+	END IF
+
+	RETURN 0
+END SUB
+
+/*******/

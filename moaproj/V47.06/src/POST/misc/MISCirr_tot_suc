@@ -1,0 +1,143 @@
+/****o* Reportes/OFB:post:MISCirr_tot_suc
+* NOMBRE
+*   OFB:post:MISCirr_tot_suc
+* DESCRIPCION
+*   Agrega datos (APPEND) necesarios del journal en la tabla auxiliar Journal_aux3, utilizada para opción todas las irregularidades.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): No existen registros en la tabla den_mon.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCirre_todos_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCirr_tot_suc  /*Busca en el journal e imprime las lineas*/
+    LOCAL cant_monedas LIKE siaf:importe
+    LOCAL cant_billetes LIKE siaf:importe
+    LOCAL i LIKE tes:tes_moneda
+
+	CALL OFB:MISCjscn_cvt_flag
+	CALL OFB:tlr:jscn_cvt_status
+	CALL OFB:JSCNcustom_format
+    cant_monedas = 0
+    cant_billetes = 0
+
+    cds extract DSC:tlr:CONjscn siaf:jnl_codigo_siaf
+
+    IF (siaf:jnl_codigo_siaf == "8640") THEN
+        /*se agrega la linea 3 para diferenciar la cantidad de importe
+        transferido el Billetes y transferido en monedas 06/08/1999 Daniel*/
+        cant_monedas = 0
+        cant_billetes = 0
+        i = -1
+
+        cds extract DSC:tlr:CONjscn  tes:importes[0] \
+        tes:importes[1] tes:importes[2] tes:importes[3] tes:importes[4] \
+        tes:importes[5] tes:importes[6] tes:importes[7] tes:importes[8] \
+        tes:importes[9] tes:importes[10] tes:importes[11] tes:importes[12]
+
+
+
+        /*Seleccion para conocer de que tipo es el medio de pago moneda o billete*/
+
+        CDS SELECT FROM DSC:tes:den_mon_table BECOMES DSC:tes:den_mon_context \
+        WHERE tes:den_moneda == tes:den_moneda
+        
+        CDS FINDFIRST DSC:tes:den_mon_context LOCK
+        LET lib:err_retval = CDSRETVAL
+        IF (lib:err_retval == -801) THEN
+            RETURN (-2)
+        END IF
+        CDS EXTRACT tes:den_mon_context \
+        tes:den_billete_moneda[0] tes:den_billete_moneda[1]  tes:den_billete_moneda[2] \
+        tes:den_billete_moneda[3] tes:den_billete_moneda[4]  tes:den_billete_moneda[5] \
+        tes:den_billete_moneda[6] tes:den_billete_moneda[7]  tes:den_billete_moneda[8] \
+        tes:den_billete_moneda[9] tes:den_billete_moneda[10] tes:den_billete_moneda[11] \
+        tes:den_billete_moneda[12]
+        CDS UNLOCK DSC:tes:den_mon_context
+
+        /*calculo del importe en Billetes y monedas c/u por separado*/
+        DO
+            i = i + 1
+            if ( tes:den_billete_moneda[i] == "B" )
+                cant_billetes = cant_billetes + tes:importes[i]
+            else
+                cant_monedas = cant_monedas + tes:importes[i]
+            end if
+
+            if (i >12)
+                BREAK
+            end if
+        LOOP
+
+        fprint tlr:jscn_ds_line3, \
+	    "%-30.30s" substr(tlr:jscn_ds_line1,22,52)
+	    fprint tlr:jscn_ds_line6, \
+	    "%-3.3s" substr(tlr:jscn_ds_line1,62,65)
+	    fprint tlr:jscn_ds_line4, \
+	    "%-4.4s" substr(tlr:jscn_ds_line1,17,21)
+	    fprint tlr:jscn_ds_line5, \
+	    "%-10.10s" substr(tlr:jscn_ds_line1,0,10)
+	    fprint tlr:jscn_ds_line7, \
+        "Importe Transferido en Monedas: %10.10s",cant_monedas
+        fprint tlr:jscn_ds_line8, \
+        "Importe Transferido en Billetes: %10.10s",cant_billetes
+
+    ELSE
+	    IF (siaf:jnl_codigo_siaf == "8620") THEN
+		    cds extract DSC:tlr:CONjscn siaf:importe_dif
+		end if
+        fprint tlr:jscn_ds_line3, \
+	    "%-30.30s" substr(tlr:jscn_ds_line1,22,52)
+	    fprint tlr:jscn_ds_line6, \
+	    "%-3.3s" substr(tlr:jscn_ds_line1,62,65)
+	    fprint tlr:jscn_ds_line4, \
+	    "%-4.4s" substr(tlr:jscn_ds_line1,17,21)
+	    fprint tlr:jscn_ds_line5, \
+	    "%-10.10s" substr(tlr:jscn_ds_line1,0,10)
+	    fprint tlr:jscn_ds_line7, \
+        "Importe Transferido en Monedas: %10.10s",cant_monedas
+        fprint tlr:jscn_ds_line8, \
+        "Importe Transferido en Billetes: %10.10s %10.10s",cant_billetes,siaf:importe_dif
+        /* Para la salida de caja final incorrecta pego el campo con lo que declaró*/
+    END IF    
+    CDS SELECT FROM DSC:Journal_aux3 BECOMES Journal_aux_3_ctx
+    ;CDS FINDFIRST DSC:Journal_aux_3_ctx LOCK
+    ;lib:err_retval = CDSRETVAL
+    
+    CDS CLEARBUFFER DSC:Journal_aux_3_ctx
+
+    //cgw: NI50276 - En la tabla auxiliar con datos del journal, utilizada para opción todas las irregularidades,
+    //se agrega los campos correspondientes a: el operator, fecha, hora y secuencia del journal.
+    //De esta manera sera utilizadas como ordenamiento de busqueda para el reporte.
+	CDS APPEND DSC:Journal_aux_3_ctx \
+	     FLD:tlr:jnl_operator \
+	     FLD:tlr:jnl_date \
+	     FLD:tlr:jnl_time \
+         FLD:tlr:jnl_sequence \
+    	 FLD:tlr:jscn_ds_line1 \
+         FLD:tlr:jscn_ds_line2 \
+         FLD:tlr:jscn_ds_line3 \
+         FLD:tlr:jscn_ds_line4 \
+         FLD:tlr:jscn_ds_line5 \
+         FLD:tlr:jscn_ds_line6 \
+         FLD:tlr:jscn_ds_line7 \
+         FLD:tlr:jscn_ds_line8
+
+	;IF (lib:err_retval == -801) THEN
+         CDS INSERT DSC:Journal_aux_3_ctx LOCK
+    ;ELSE
+    	 ;CDS REPLACE DSC:Journal_aux_3_ctx LOCK
+    ;END IF
+
+    CDS UNLOCK DSC:Journal_aux_3_ctx
+    CDS ENDSELECT  DSC:Journal_aux_3_ctx
+END SUB
+
+/*******/

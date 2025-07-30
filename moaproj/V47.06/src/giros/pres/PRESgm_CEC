@@ -1,0 +1,145 @@
+/****o* Giros Masivos/OFB:giros:PRESgm_CEC
+* NOMBRE
+*   OFB:giros:PRESgm_CEC
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girospres.h"
+
+sub giros:PRESgm_CEC
+	
+	call giros:MISCgmleotransac(70035)
+	/*ver con susana
+	// siaf:codigo_proc = 992001
+   
+    /*********************************************************/
+    /* Por default asigno como Medio de Pago, Efectivo Pesos */
+    /* Despues se puede modificar, pero conviene asignarle   */
+    /* ese valor para agilizar ya que en el 95% de los casos */
+    /* se paga mediante ese Medio de Pago.		     */
+    /*********************************************************/
+    siaf:moneda = "00"
+    post:medio_pago_desc = "PESOS"
+    post:cantidad = 1
+
+    /* Inicio de Agregado para manejo de IVAS en Productos Telegraficos */
+    if (post:PresGrupoIva == "G2" && post:tipo_produc2.NUMCHARS != 0) then
+		post:tipo_produc = post:tipo_produc2
+    else
+		post:tipo_produc2 = post:tipo_produc
+    endif
+
+    /*********************************************************/
+    /* Accedo a la Tabla de Servicios Postales para obtener  */
+    /* la parametr¡a del producto.  		             */
+    /*********************************************************/
+    CALL giros:PRESserv_gral_giro
+    IF (RETVAL < 0) THEN
+		msgbox "SERVICIO NO EXISTE EN TABLAS",OFB_OK,"Error"
+		RETURN (-2)
+    END IF
+
+    /*Comienzo de Control de cliente con el canal*/
+    /*Agrego modificacion para que cuando controle el canal de la transaccion, al
+    no dejar realizarla por distinto tipo de cliente, cierre la sesion. Diego Priore 16/5/2000*/
+
+	if (post:cli_tipo != 0)
+		if (post:cli_tipo == 1)
+			msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",OFB_OK,"Error"
+			return (-2)
+		else
+			/* CLIENTE ES MINORISTA */
+			if (post:adt_serv_canal == "MAYORISTA") THEN
+				msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",OFB_OK,"Error"
+				return (-2)
+			endif
+		endif
+	endif
+
+    /*Fin de Control de cliente con el canal*/
+
+      
+	/***************************/
+	call giros:MISCbuscar_oblig
+	IF (RETVAL < 0) THEN
+		  RETURN (-1)
+	END IF
+	call MISCBusca_flia(siaf:codigo_siaf)
+	IF (RETVAL < 0) THEN
+		  RETURN (-1)
+	END IF
+	
+	es_emision_postal = "N"
+	es_envio_WU = "N"
+    	resetflag flags_back,no_habilitado
+	resetflag flags_back,enviado
+	es_emision_tele = "N"
+	es_envio_WU = "N"
+	resetflag flags_back,consultado
+	es_emision_correohoy = "S"
+	
+	resetflag flags_back,ya_pasado
+	resetflag flags_back,manual
+	resetflag flags_back,rechazado
+	resetflag flags_back,vencido
+	
+	call drv:but_number(OFB:giros:PBModificar_GM)
+	if (retval != drv:button)
+		resetflag camara_flags,clear1
+		resetflag camara_flags,clear2
+		resetflag camara_flags,emis1
+		resetflag camara_flags,emis2
+
+		resetflag env_post_flag,envia_postal
+		//resetflag pers_jur_flag,persona_juridica
+		resetflag pers_jur_flag,nocuit_emis
+		resetflag pjurid_benef_flag,persona_juridica
+		resetflag pjurid_benef_flag,nocuit_benef
+		
+	endif
+/********************************************************************/
+	
+     if (!testflag(camara_flags,clear2)) then
+		CALL CDSbusca_primer_pais(CodPaisResidBenef,PaisResidBenef)
+		setflag camara_flags,clear2
+     else	    
+	    if (CodProvBenef_fld.NUMCHARS > 0) THEN
+		  CALL CDSpongo_provincia(CodProvBenef_fld,ProvSucBenef_fld )
+		else		  
+		  CLEARFIELD ProvSucBenef_fld
+	    end if
+
+	    if (CodPaisResidBenef.NUMCHARS > 0)
+	        CALL FVALpais(CodPaisResidBenef,LST:LISTfldPaisResidB)
+	    end if
+    end if
+    
+    if (testflag(camara_flags,emis2) && post:estado_presu == 4) then
+	CALL csr:proc_list(F_PROTECT,LST:LISTbenef_flds)
+	CALL csr:proc_list(F_SETVALDONE,LST:LISTbenef_flds)
+    else
+	CALL csr:proc_list(F_UNPROTECT,LST:LISTbenef_flds)
+    end if
+	
+    CALL csr:proc_list(F_REFRESH,LST:LISTbenef_flds)
+        
+    giros:FechaEmision_fld = common:system_date
+    PROTFIELD ProvSucBenef_fld
+    PROTFIELD PaisResidBenef
+    /*ACP-Limpio campos que quedaban sucios luego del ingreso de un CEC*/
+    clearfield adt_param_cant_min
+    clearfield adt_param_cant_max
+end sub
+
+/*******/

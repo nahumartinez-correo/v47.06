@@ -1,0 +1,186 @@
+/****o* Registro RPP/OFB:post:JNLregistroSRPP
+* NOMBRE
+*   OFB:post:JNLregistroSRPP
+* DESCRIPCION
+*   Rutina de Journalizacion de campos de registro piezas simples RPP
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRANregistroSRPP
+* DOCUMENTACION
+* NI 50569-RPP
+* SOURCE
+*/
+#include "postjnl.h"
+
+SUB post:JNLregistroSRPP
+	        LOCAL siniva_rep like post:ImpSinIva_serv
+
+        CDS APPEND  DSC:tlr:CONjnl_write \
+                    FLD:post:tarifa \
+                    FLD:siaf:importe \
+                    FLD:post:adt_serv_umstd \
+                    FLD:post:adt_serv_nemonico \
+                    FLD:post:Pieza \
+                    FLD:post:destino \
+                    FLD:adt_serv_serv 
+         
+    /* Campos Necesarios Para el reverso de operaciones */
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:post:ImporteConIvaNeto \
+                FLD:post:ImporteSinIvaNeto
+
+	//para que no journalice el peso en gramos y en kg cuando es KGS. se setea el peso en grs por la tolerancia
+	// y me parece que al dope
+	IF (post:adt_serv_umstd == "KGS") THEN
+	    clearfield post:peso_en_grs
+	ELSEIF (post:adt_serv_umstd == "GMS")
+ 	    clearfield post:peso_en_kgs
+	END IF	
+
+    /* Journalizo los campos del Peso. */
+        CDS APPEND  DSC:tlr:CONjnl_write \
+                    FLD:post:adt_serv_pesable
+        CDS APPEND  DSC:tlr:CONjnl_write \
+                    FLD:post:peso_en_kgs
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:Pieza  AS  FLD:post:track_trace \
+                FLD:post:cantidad 
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:post:adt_serv_medidas
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:post:aforo1 \
+                FLD:post:aforo2 \
+                FLD:post:aforo3 \
+                FLD:post:aforo \
+                FLD:post:PreDForFis
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:NroCompPago
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:post:adt_tarif_desde \
+                FLD:post:adt_tarif_hasta
+
+    /*Agrego el campo indirecto con rutina de impresión de ticket para Nota de Crédito
+    Gabriel Falciola*/
+    CDS APPEND DSC:tlr:CONjnl_write FLD:INDticket_laser
+
+    // PJM 10-08-1999 agregado para que no quede diferente el journal de una transaccion del journal que se hace en la anulacion
+    Call post:JNLcamp_nota_credito
+
+    /*Se agregan campos para el cálculo de Ingresos Brutos - Gabriel Falciola*/
+     CDS APPEND DSC:tlr:CONjnl_write \
+                ImporteConIva  \
+                ImporteSinIva \
+        FLD:ImporteIva \
+        FLD:adt_serv_aliciva \
+        FLD:post:jnl_flia_tran
+
+
+    /*Se incorpora el campo que resguarda la medida usada para calcular la tarifa
+     del producto*/
+     CDS APPEND DSC:tlr:CONjnl_write \
+                FLD:post:adt_tarif_um
+
+   /*Se agregan 2 campos equivalentes para el ambiente SAP, Mariano Gecik.- */
+     CDS APPEND DSC:tlr:CONjnl_write \
+                FLD:post:adt_tarif_hasta_eq \
+                FLD:post:adt_tarif_um_eq
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:post:modelo_suc
+
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:AliServUP
+
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                FLD:siaf:importe_tot_serv
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:adt_serv_desc_corta \
+                post:adt_tarif_imp_nemo \
+                post:adt_tarif_imp_dest \
+                post:adt_tarif_imp_peso
+
+    /*MFM - Descuento Cliente Medio*/
+    //PS 6218 - Grabar el descuento por sesion en cada transaccion involucrada en el mismo
+    if (ConvenioSesionV && bonificaCM == "S") then
+        //recupero el descuento para grabarselo a NINA
+        CALL CDSLoadDctoSesion
+    end if
+
+    if ((post:OperacionCob || post:OperacionAut) && post:Dcto_CMPres.numchars != 0 && \
+    post:bonificaCM == "S") then
+        CDS APPEND  DSC:tlr:CONjnl_write \
+                    post:Dcto_CMPres as post:Dcto_CliMed
+    else
+        CDS APPEND  DSC:tlr:CONjnl_write \
+                    post:Dcto_CliMed 
+    end if
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:bonificaCM 
+
+    if (ConvenioSesionV) then
+        //lo borro para que no se me grabe luego el campo PreDNroTrn!
+        clearfield post:Dcto_CliMed
+    endif
+//NI 50324
+    if (post:Dcto_CliMed > 0 || post:DctoCM_bc > 0) then
+        CDS APPEND DSC:tlr:CONjnl_write \
+        post:PreDNroTrn AS post:PreDNroTrnAsoc	 //me sirve para la anulación
+    else
+        clearfield post:PreDNroTrnAsoc
+        CDS APPEND DSC:tlr:CONjnl_write \
+        post:PreDNroTrnAsoc
+    end if
+
+
+    //Reingenieria
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:adt_serv_tipo \
+                post:adt_serv_alcance \
+                post:adt_serv_tt
+
+    CDS APPEND  DSC:tlr:CONjnl_write \
+    			post:ImpSinIva_serv \
+                post:remito_nro 
+                
+//SC 50170
+    IF (post:cod_dif_aplicada == "SERV")
+        siniva_rep = post:ImpSinIva_serv - post:dif_calculada
+    ELSE
+        siniva_rep = post:ImpSinIva_serv
+    END IF	
+    
+    call post:MISCcampos_reporte(post:ImpSinIva_serv,post:cantidad,siniva_rep,post:adt_tarif_modo)
+    CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreporte,0)
+
+    //Estos campos se resguardan para reimpresion de labels en CLientes Medios con Facturacion Diferida
+    CALL csr:proc_list(F_APPEND,DSC:tlr:CONjnl_write,LST:LISTreimpreLabelCM,0)
+    
+    
+    ; SC50170 - Propuesta superadora
+    CDS APPEND  DSC:tlr:CONjnl_write \
+                post:dif_calculada \
+                post:cod_dif_aplicada \
+                post:jnl_dif_serv 
+                
+	CDS APPEND  DSC:tlr:CONjnl_write \
+    	tes:es_tesoro \
+    	post:ver_anulacion \
+    	post:cod_agrupacion \
+    	tipo_caja \
+    	peso_en_grs
+END SUB
+
+/*******/

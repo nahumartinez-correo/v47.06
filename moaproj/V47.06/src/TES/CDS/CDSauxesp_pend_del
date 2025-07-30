@@ -1,0 +1,88 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSauxesp_pend_del
+* NOMBRE
+*   OFB:tes:CDSauxesp_pend_del
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSauxesp_pend_del(NroTran)
+local NroTransaccion like tes:adt_evaux_prestran
+
+	let NroTransaccion = NroTran
+	/* Esta CDS borra todos los registros pendientes para un nro de transaccione
+	dentro de una sesion*/
+	/*Modifico para que vaya borrando los registros de auno, ya que debo restar los
+	importes acumulados para el Cálculo de Ventas UP - Gabriel Falciola*/
+	cds select from DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx \
+	where tes:adt_evaux_suc == fld:op:op_branch_id && \
+	tes:adt_evaux_tesoro == "N" && \
+	tes:adt_evaux_op == fld:op:op_operator_id && \
+	tes:adt_evaux_prestran == NroTransaccion
+	cds findfirst dsc:AuxEspV_ctx LOCK
+    //El campo PreDNroTrnAsoc es el mismo para todas las 99300
+    post:PreDNroTrnAsoc = post:PreDNroTrn
+    	
+	while (cdsretval == 0) then
+		//Descuento Cliente Medio		
+		clearfield tes:adt_evaux_descCM
+		cds extract dsc:AuxEspV_ctx post:ImpServUP post:AliServUP adt_espv_formfiscal \
+		tes:adt_evaux_descCM 
+		post:PreDForFis = adt_espv_formfiscal
+		if (post:PreDForFis.numchars == 0)
+			post:EstadoFormu = SIN_FORM
+		else
+			post:EstadoFormu = CON_FORM
+		end if		
+   		/*Actualizo importes para Ventas UP - Gabriel Falciola*/
+		call post:CDSAcumImpUP(post:ImpServUP,0,siaf:adt_tran_fliatran,post:AliServUP,siaf:adt_tran_afec_efvo,post:PresNro)
+		//Tratamiento Cliente Medio		
+		If (post:cli_tipo == CLIMED && tes:adt_evaux_descCM > 0 && NroTransaccion != 0) Then
+			//recupero el nro de transacción de la 99300
+			clearfield post:PreDNroTrnCM
+			cds extract dsc:AuxEspV_ctx post:PreDNroTrnCM
+			post:Dcto_CliMed = 0
+			siaf:importe = 0
+			CALL post:MISCagregTrnDctoCM(siaf:adt_tran_fliatran,tes:adt_espv_aliciva,siaf:importe)
+		End if
+		cds delete dsc:AuxEspV_ctx
+		cds findnext dsc:AuxEspV_ctx LOCK
+	end while
+	cds unlock DSC:AuxEspV_ctx
+    cds endselect DSC:AuxEspV_ctx
+	
+
+	
+ /*  cds select FROM DSC:AuxEspV_tbl becomes DSC:AuxEspV_ctx \
+        where tes:adt_evaux_suc == op:op_branch_id && \
+              adt_evaux_op == op:op_operator_id && \
+              adt_evaux_tesoro == "N" && \
+              adt_evaux_prestran == 0
+
+    cds findfirst dsc:AuxEspV_ctx lock
+    lib:err_retval = cdsretval
+
+    DO
+        if (lib:err_retval == -801) then
+	    break
+	end if
+	cds delete DSC:AuxEspV_ctx
+	cds findnext DSC:AuxEspV_ctx lock
+	lib:err_retval = cdsretval
+    LOOP
+    cds unlock DSC:AuxEspV_ctx
+    cds endselect DSC:AuxEspV_ctx   */
+END SUB
+
+/*******/

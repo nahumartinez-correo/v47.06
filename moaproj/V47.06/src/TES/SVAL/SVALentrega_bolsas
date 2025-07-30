@@ -1,0 +1,219 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALentrega_bolsas
+* NOMBRE
+*   OFB:tes:SVALentrega_bolsas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALentrega_bolsas
+    local mone_ant like siaf:moneda
+    local imprimo_comp like tes:rend_marca_cierre 
+    local idx   like post:indice_pos
+    local l_medio_pago_desc like post:adt_mp_desc
+    
+    //MFM - JULIO 2006 - Iniciativa 50088 - Evento 5
+    //Hacer la entrega de bolsas y verificar diferencias.
+    /* Llamo a este OFB que se encarga de controlar que el importe 
+       declarado coincida con el importe registrado en la bolsa */
+    call MISCcontrola_bolsa
+    if (retval < 0) then
+        return (-1)
+    end if
+
+    let imprimo_comp = "N"
+    let mone_ant = 99
+    cds select from dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx where \
+        tes:adt_depbuzon_suc == common:sucursal_activa && \
+        tes:adt_depbuzon_caja == buzon && \
+        tes:adt_depbuzon_status == " "
+    cds findfirst dsc:DepBuzon_ctx lock
+    if (cdsretval == 0) then
+        errmsg common:errmsg_list,\
+        "Hay Bolsas sin declarar"
+        cds unlock dsc:DepBuzon_ctx
+        cds endselect dsc:DepBuzon_ctx
+        return (-2)
+    end if
+    popup tes:SCRNconfirma
+    if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+        return (-2)
+    end if
+
+    call csr:f_sadroppl dsc:Cheque
+    call csr:f_sanewpl dsc:Cheque pic:Cheque
+    cds unlock dsc:DepBuzon_ctx
+    cds endselect dsc:DepBuzon_ctx
+    cds select from dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx where \
+        tes:adt_depbuzon_suc == common:sucursal_activa && \
+        tes:adt_depbuzon_caja == buzon && \
+        tes:adt_depbuzon_status == "S"
+    ; ascending sort "DepB_ord"
+    cds findfirst dsc:DepBuzon_ctx lock
+    let lib:err_retval = cdsretval
+    if (lib:err_retval == 0) then
+        let imprimo_comp = "S"
+        unprotfield siaf:comprobante
+        popup siaf:SCRNrecibo
+        protfield siaf:comprobante
+        if (lastkey == RT_ESC) then
+            cds unlock dsc:DepBuzon_ctx
+            cds endselect dsc:DepBuzon_ctx
+            return (-2)
+        end if
+    end if
+    ; Importe utilizado como total del listado. Lo inicializo *** MDG
+    clearfield imp_totales
+    do
+        if (lib:err_retval < 0) then
+            break
+        end if
+        cds extract dsc:DepBuzon_ctx \
+        adt_depbuzon_bolsa into bolsa \
+        adt_depbuzon_importe into siaf:importe \
+        adt_depbuzon_imp_dec into siaf:importe2 \
+        adt_depbuzon_moneda into siaf:moneda \
+        adt_depbuzon_cod into espv_cod \
+        adt_depbuzon_subcod into espv_subcod \
+        adt_depbuzon_tipo \
+        adt_depbuzon_impori into post:importe_origen
+
+        clearfield tes:bolsa_vec[0]
+        clearfield tes:val_importes[0]
+        clearfield tes:bolsa_desc[0] 
+        tes:bolsa_vec[0] = bolsa
+        tes:val_importes[0] = siaf:importe2
+        
+        if (adt_depbuzon_tipo == "T")
+            let post:adt_mp_cod = siaf:moneda
+            call post:CDSadt_MedPago_load
+            let post:medio_pago_desc = post:adt_mp_desc
+            l_medio_pago_desc = post:adt_mp_desc
+            tes:bolsa_desc[0] = post:adt_mp_desc
+            else
+            clearfield siaf:moneda
+            clearfield post:medio_pago_desc
+            clearfield l_medio_pago_desc
+            FPRINT tes:bolsa_desc[0],"%s %s", espv_cod,espv_subcod
+        end if
+            
+        // FGB 06.10.2006 inicializo los campos para que no se arrastren los valores de bolsa en bolsa
+        clearfield post:RegularizaContingen
+        clearfield tes:fecha_valor
+
+        ;UNGETKEY 0x190
+        CALL siaf:MISClleno_modalidad
+        ;PS9934 El envío debe hacerse cuando se trata de un cheque. *** MDG 
+        if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") then
+            call post:CDSobtiene_secuen("STAN")
+            giros:codigo_procesamiento = 998020
+            giros:hora_viaje = common:time_of_day
+            giros:dia_viaje  = common:system_date
+            ;Tener en cuenta que la mensajería solo envía un total de 45 cheques
+            ;más abajo se están borrando todos los cheques de la TesoCheq sin importar
+            ;si se registraron o no en el host. *** MDG
+            call post:MISCarmar_cheq_entr(bolsa,buzon)        
+        else
+            post:BulkFldCant = 0
+        end if      
+        //cgw: Actualiza en DepBuzon la bola a entregar con la hora de entrega.
+        tes:adt_depbuzon_entrega = siaf:hora
+        cds append dsc:DepBuzon_ctx tes:adt_depbuzon_entrega
+        cds update dsc:DepBuzon_ctx lock          
+              
+        drv:INDhcomm_rtn  = OFB:post:SENDentrega_bolsas
+        drv:INDspc_rtn[1] = OFB:post:RCVEentrega_bolsas
+        
+        if (post:BulkFldCant == 0)
+            clearfield drv:INDhcomm_rtn
+            clearfield drv:INDspc_rtn[1]
+        else
+            setflag giros:tran_send_mode,trat_cheques
+        end if
+        
+        call hcomm:COMM_stat_init
+
+        CALL tlr:JNLtran
+
+        if (hcomm:tran_status == HOST_ACCEPTED || hcomm:tran_status == MEMO  )   
+            select (adt_depbuzon_tipo)
+                case "T"
+                    fprint common:csr_string "%8s  %-20.20s                      %13.13e \n", \
+                    bolsa,l_medio_pago_desc,post:importe_origen
+                    imp_totales = imp_totales + post:importe_origen
+                    break
+                case "E"
+                    fprint common:csr_string "%8s  %-20.20s %-20.20s %13.13e \n", \
+                    bolsa,espv_cod,espv_subcod,siaf:importe
+                    imp_totales = imp_totales + siaf:importe
+                    break
+            end select
+
+            call csr:f_saaddpl dsc:Cheque common:csr_string
+            cds delete dsc:DepBuzon_ctx
+            /* Si el tipo de moneda es cheques borro 
+               todos los cheques porque salen de la sucursal */
+            /* Es un cheque */
+            if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") then
+                call CDSborro_cheq_id(siaf:moneda,"B",tes:buzon,tes:bolsa)
+            end if
+        else
+            if (hcomm:tran_status > HOST_REJECTED )
+            break
+            end if
+        end if
+
+        clearfield hcomm:INDhost_sndrt
+        clearfield hcomm:INDhost_rcvrt
+
+        cds findnext dsc:DepBuzon_ctx lock
+        let lib:err_retval = cdsretval 
+    loop
+    cds unlock dsc:DepBuzon_ctx
+    cds endselect dsc:DepBuzon_ctx
+    clearfield drv:INDjnl_rtn
+    clearfield drv:INDhcomm_rtn
+    clearfield drv:INDspc_rtn[1]
+
+    if (imprimo_comp == "S")
+        /* Si hubo alguna bolsa para entregar */
+        let drv:INDspc_rtn[2] = ofb:TRANprt_bolsas
+    end if
+        
+    /* Busco las bolsas  a reingresar por diferencia */
+    cds select from dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx where \
+        tes:adt_depbuzon_suc == common:sucursal_activa && \
+        tes:adt_depbuzon_caja == buzon && \
+        (tes:adt_depbuzon_status == "X" || tes:adt_depbuzon_status == "N")
+    cds findfirst dsc:DepBuzon_ctx nolock
+    if (cdsretval == 0) then
+        /* Hay Bolsas para reingresar */
+        let drv:INDspc_rtn[3] = ofb:siaf:dummy
+        let drv:INDspc_rtn[4] = ofb:TRANreingreso_bolsa
+    else
+        CDS UNLOCK DSC:DepBuzon_ctx
+    end if
+    cds endselect dsc:DepBuzon_ctx
+    
+    //gpb:PS10734
+  	if (flag_buzon ==  "X") then
+        CDS UNLOCK dsc:CajaBuzon_ctx
+        CDS endselect dsc:CajaBuzon_ctx
+		end if
+   
+    call post:MISCactivar_buts
+    call post:MISCflecha_restore
+END SUB
+
+/*******/

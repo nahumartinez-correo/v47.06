@@ -1,0 +1,193 @@
+/****o* Pendientes de agrupación/OFB:post:PDOCanses_con_codbar
+* NOMBRE
+*   OFB:post:PDOCanses_con_codbar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpdoc.h"
+
+SUB post:PDOCanses_con_codbar
+    local clie_post like codigo_barras
+    local nro_comprob like codigo_barras
+    local total_importe like siaf:importe
+    local cant_cupon like siaf:i
+    local total_cupon like siaf:i
+    local total_general like siaf:importe
+    local idx like siaf:i
+    local i_idx like siaf:i
+    local importe like siaf:importe
+    local clie_oper like codigo_barras
+    local nro_oper like tlr:jnl_operator
+    local l_post_horiz LIKE post:etiq_ref_horiz
+    local desc_cupon like common:csr_string
+
+    /*cgw-Impresion del listado Totales de pagos por cuenta de ANSES con Codigo de Barras*/
+    LET siaf:indica_calcu = 0 // inicializa cant. de hojas
+
+    FYIMSG LST:common:fyimsg_list, "Imprimiendo Documento, un momento por favor..." 
+    call post:PDOCencab_tot_anses
+
+    clearfield codigo_operativo
+    clearfield nro_comprob
+    clearfield total_general
+    clearfield clie_post
+    clearfield total_importe
+    clearfield l_tot_importe
+    clearfield cant_cupon
+    clearfield l_cant_cupon
+    clearfield total_cupon
+
+    l_post_horiz = 11
+    idx = 0x8000
+    i_idx = 0
+    do
+
+        clearfield nro_oper
+        clearfield clie_oper
+        clearfield nro_comprob
+        clearfield importe
+        clearfield clie_post
+        call csr:myPickcontrol("anses_codbar",common:csr_string,idx)
+        IF (RETVAL < 0) THEN
+	    BREAK
+    	END IF 
+
+    	/*Extraigo campos del picklist y los coloco en variables*/
+        let nro_oper = substr(common:csr_string,0,5)
+        let codigo_operativo = SUBSTR(common:csr_string,6,7)
+        let clie_oper = substr(common:csr_string,6,7)
+        let nro_comprob = SUBSTR(common:csr_string,13,11)
+        let importe = SUBSTR(common:csr_string,34,16)
+
+        l_post_horiz = l_post_horiz + 1  
+        post:etiq_ref_horiz = l_post_horiz 
+        CALL post:PDOChojas_tot_anses
+        l_post_horiz = post:etiq_ref_horiz
+        PRT  STYLE 0
+        PRT  TEXTFONT 8
+        PRT  TEXTFONTNAME "Courier New"
+        PRT  TEXTSIZE *95
+        prt positionabs l_post_horiz,7
+        fprint common:csr_string "%-5s          %7s                                              %11s    %16.16e", \
+        nro_oper,codigo_operativo,nro_comprob,importe
+        PRT PRINT edit common:csr_string
+	prt carriagereturn
+
+        let total_importe = total_importe + importe
+
+        let cant_cupon = cant_cupon + 1
+        let l_cant_cupon = l_cant_cupon + 1
+        let total_cupon = total_cupon + 1
+        clearfield common:csr_string
+
+        i_idx = idx + 1
+        call csr:myPickcontrol("anses_codbar",common:csr_string,i_idx)
+        IF (RETVAL < 0) THEN //no hay otro registro siguiente.
+            clearfield  clie_post //para que realice el corte
+        ELSE
+            let clie_post = substr(common:csr_string,6,7)
+    	END IF
+
+        IF (clie_oper != clie_post) THEN /*Si el prox. es distinto*/
+            clearfield desc_cupon
+
+            l_post_horiz = l_post_horiz + 2                        
+            post:etiq_ref_horiz = l_post_horiz
+            CALL post:PDOChojas_tot_anses
+            l_post_horiz = post:etiq_ref_horiz
+            IF (l_post_horiz != 12) THEN //cgw:no hubo un salto de hoja.
+                PRT NEWLINE
+	        prt carriagereturn
+            END IF
+            //cgw:la impresion de la linea esta seteado a partir del ultimo PRT TEXTSIZE.
+            prt positionabs l_post_horiz,7
+            PRT  STYLE 1
+            PRT  TEXTFONT 8
+            PRT  TEXTFONTNAME "Courier New"
+            PRT  TEXTSIZE *100
+            if (cant_cupon == 1) then
+                desc_cupon = "CUPON"
+            else
+                desc_cupon = "CUPONES"
+            end if
+            fprint common:csr_string \
+            "TOTAL         %7s                                     %-5.5e %-7.7s       %16.16e", \
+            codigo_operativo,cant_cupon,desc_cupon,total_importe
+            PRT PRINT edit common:csr_string
+            prt carriagereturn
+
+            let total_general = total_general + total_importe //se va calculando el total general
+            total_importe = total_importe * 100
+            let l_tot_importe = total_importe
+
+            //cgw:recupero seteos.
+            PRT  STYLE 0
+            PRT  TEXTFONT 8
+            PRT  TEXTFONTNAME "Courier New"
+            PRT  TEXTSIZE *95
+
+            post:etiq_ref_horiz = l_post_horiz    
+            call post:PDOCpct_cbarra_anses //llamo a la rutina que imprime cod. barras
+            l_post_horiz = post:etiq_ref_horiz 
+            
+            clearfield cant_cupon
+            clearfield l_cant_cupon
+            clearfield total_importe
+            clearfield l_tot_importe
+        END IF
+
+        idx = idx + 1         
+    loop
+
+    l_post_horiz = l_post_horiz + 1
+    post:etiq_ref_horiz = l_post_horiz
+    CALL post:PDOChojas_tot_anses
+    l_post_horiz = post:etiq_ref_horiz
+    
+    PRT  STYLE 0
+    PRT  TEXTFONT 8
+    PRT  TEXTFONTNAME "Courier New"
+    PRT  TEXTSIZE *95
+    prt positionabs l_post_horiz,7
+    fprint common:csr_string "-------------------------------------------------------------------------------------------------"
+    PRT PRINT edit common:csr_string
+    prt carriagereturn
+
+    if (total_cupon == 1) then
+        desc_cupon = "CUPON"
+    else
+        desc_cupon = "CUPONES"
+    end if
+    l_post_horiz = l_post_horiz + 2
+    post:etiq_ref_horiz = l_post_horiz
+    CALL post:PDOChojas_tot_anses
+    l_post_horiz = post:etiq_ref_horiz
+    IF (l_post_horiz != 12) THEN //cgw:no hubo un salto de hoja.
+        PRT NEWLINE
+	prt carriagereturn
+    END IF
+    PRT  STYLE 0
+    PRT  TEXTFONT 8
+    PRT  TEXTFONTNAME "Courier New"
+    PRT  TEXTSIZE *95
+    prt positionabs l_post_horiz,7
+    fprint common:csr_string,"TOTAL GENERAL ABONADO POR LA SUCURSAL                         %-5.5e %-7.7s        %16.16e", \
+    total_cupon,desc_cupon,total_general
+    PRT PRINT edit common:csr_string
+    prt carriagereturn
+    PRT FLUSH
+
+END SUB
+
+/*******/

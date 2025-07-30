@@ -1,0 +1,120 @@
+/****o* Pendientes de agrupación/OFB:post:MISCjnl_DetCteL
+* NOMBRE
+*   OFB:post:MISCjnl_DetCteL
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*  post:SVALcorteLinea
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCjnl_DetCteL
+    /* Fuerzo la journalizacion del detalle       */
+    /* Mzo. 2000 - B. Petrella -                    */
+	LOCAL mi_pieza_id LIKE post:Pieza_id
+
+    UNGETKEY 0x0191 /* RT_SEND */
+    drv:INDscr = SCR:post:SCRNcteLineaHdr
+    CALL tlr:JNLtran /* Journaliza el Header */
+    init 33,0
+
+    siaf:codigo_siaf = 99056
+    /* MFM - Octubre 2000 */
+    siaf:tiene_reverso = "N"
+    siaf:imprime_comprobante = "N"
+    siaf:posible_off = "S"
+    siaf:afecta_efectivo = " "
+    tlr:tran_mnemonic = "SVDCOR"
+    siaf:nombre_transac = "DETALLE CORTE DE LINEA"
+
+    drv:INDcur_tran = LST:post:TRANcontCteLin
+    drv:INDscreen[0] = SCR:post:SCRNcteLineaDet
+    drv:INDscr = SCR:post:SCRNcteLineaDet
+    drv:flags = "00000000000000000000000000C00000000000000000000000000"
+    drv:INDpre_col_rtn = OFB:post:PRECtranContSaca
+    drv:INDsend_rtn = OFB:post:SVALcontXcte
+    drv:INDjnl_rtn = OFB:post:JNLcteLineaHdr
+    if (!testflag(tlr:tran_flags,correction))
+        move "0000000000000" to drv:data_collect
+    end if
+
+    CLEARFIELD drv:INDspc_rtn[2]
+    CLEARFIELD drv:INDspc_rtn[3]
+    CLEARFIELD drv:INDspc_rtn[4]
+    CLEARFIELD drv:INDspc_rtn[5]
+    CLEARFIELD drv:INDbut_list[0]
+    CLEARFIELD drv:INDpre_col_rtn
+
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx WHERE \
+        (op:op_operator_id == op:op_operator_id && \
+         post:MarcaBorrado == " ")
+    CDS FINDFIRST DSC:post:DetTmp_ctx LOCK
+
+    DO
+
+	    IF (CDSRETVAL != 0)
+			BREAK
+        END IF
+    	/*MFM (14.11.2001)Se borran los campos de la pieza para que no se generen scaneos multiples*/
+    	CLEARFIELD post:track_trace
+    	CLEARFIELD post:Pieza_id
+    	CLEARFIELD post:jnl_guia_cont //nuevo
+    	CDS EXTRACT DSC:post:DetTmp_ctx ALL
+
+	    clearfield DetalleContenidoGC
+	    fprint post:DetalleContenidoGC, "%-32.32s %-10.10e %-2.2s", \
+			post:Pieza_id, \
+			post:FechaCteLinMDisp, \
+			post:GruCorteCodRecSaca
+
+        clearfield DetalleContenido
+        fprint post:DetalleContenido, "%-13.13s %-10.10e " , \
+                post:Pieza_id,\
+                post:FechaCteLinMDisp
+
+        CALL MISCrefCteLinea
+
+	    CALL CDSmodifJNLlinea /* Modifica el journal de la Tx. original */
+	    UNGETKEY 0x0191 /* RT_SEND */
+	    CALL tlr:JNLtran /* Journaliza el detalle */
+    	init 33,0
+		
+		
+		//Inicio actualizo tabla Rep_Exp - German
+		mi_pieza_id = Pieza_id
+		IF (post:TipoContenido == "C" ) THEN
+			CALL CSR:trimfield (mi_pieza_id)
+			FPRINT mi_pieza_id "% 13.13s" mi_pieza_id
+		END IF
+		
+		CALL post:CDSGrabaRepExp("CORTELINEA", mi_pieza_id,tlr:jnl_sequence,tlr:jnl_date)
+		//Fin actualizotabla Rep_Exp - German
+		
+        CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+
+    LOOP
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+
+    /* Impresion de Guia de Despacho */
+    call MISCimpDespacho
+    
+    //Aca tengo que llamar al reporte de la tabla Rep_Exp
+
+    drv:INDpre_col_rtn = OFB:post:PRECcorteLinea
+    CLEARFIELD drv:INDsend_rtn
+    CLEARFIELD drv:INDjnl_rtn
+    drv:INDscreen[0] = SCR:post:SCRNcorteLinea
+
+END SUB
+
+/*******/

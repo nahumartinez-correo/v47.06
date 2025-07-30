@@ -1,0 +1,89 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSinit_rend_cajero
+* NOMBRE
+*   OFB:tes:CDSinit_rend_cajero
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSinit_rend_cajero
+
+    CDS SELECT FROM DSC:rend_caj_table BECOMES DSC:rend_caj_context WHERE  \
+    rend_suc_id == FLD:op:op_branch_id && \
+    rend_op_id  == FLD:op:op_operator_id
+
+    CDS FINDFIRST DSC:rend_caj_context LOCK
+    lib:err_retval = CDSRETVAL
+    IF (lib:err_retval == -801) THEN
+       common:csr_string = "Op. sin Reg. de Rendicion a inicializar"
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+
+    CDS EXTRACT DSC:rend_caj_context ALL
+    CLEARFIELD rend_fecha
+    call csr:cleararray(rend_marca_vec)
+    call csr:cleararray(rend_importe_vec)
+
+    /* Se agrega un cleararray para un nuevo vector de marcas de rendicion */
+    call csr:cleararray(rend_marca_rend)
+    /* Se agrega un campo a la tabla rend_caj que guarda la hora de rendicion */
+    
+    CLEARFIELD rend_marca_cierre
+    CLEARFIELD rend_tipo_cierre
+    CLEARFIELD rend_sup /* marca que no se borra con la reversa */
+    
+    /* Limpio la marca de pasos del Cierre */
+    clearfield rend_inicio_cierre
+    clearfield rend_paso_cierre
+    
+    if (post:sucu_virtual == "S") then
+    	rend_fecha = post:fecha_virtual
+    	rend_hora_aper_caj = post:hora_virtual
+    else
+    	rend_fecha = common:system_date
+    	rend_hora_aper_caj = common:time_of_day
+    end if
+    
+    CDS CLEARBUFFER DSC:rend_caj_context
+
+    CDS APPEND DSC:rend_caj_context \
+    FLD:rend_suc_id FLD:rend_op_id  \
+    FLD:rend_fecha                  \
+    array rend_marca_vec            \
+    array rend_importe_vec          \
+    FLD:rend_marca_cierre           \
+    array rend_marca_rend           \
+    FLD:rend_hora_aper_caj          \
+    FLD:rend_tipo_cierre            \
+	FLD:rend_sup					\
+	FLD:rend_inicio_cierre			\
+	FLD:rend_paso_cierre			\
+	FLD:rend_marca_fallo
+
+    CDS REPLACE DSC:rend_caj_context NOLOCK
+    IF (CDSRETVAL < 0) THEN
+       common:csr_string = "Error inicializando registro rendicion"
+       ERRMSG LST:common:errmsg_list,FLD:common:csr_string
+       RETURN (-2)
+    END IF
+    /* Actualizo las dos marcas en el mismo lugar, para evitar problemas
+    si se cae en el medio */
+    move "O" to tlr:tots_status
+    cds append DSC:tlr:CONtots_write tlr:tots_status
+    cds update dsc:tlr:CONtots_write lock
+
+END SUB
+
+/*******/

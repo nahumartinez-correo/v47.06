@@ -1,0 +1,135 @@
+/****o* International Postal Services/OFB:post:MISCbuscoCont_ips
+* NOMBRE
+*   OFB:post:MISCbuscoCont_ips
+* DESCRIPCION
+*   Busca coincidencia segun caracteres de Contenido IPS
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): Descripcion no encontrada.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCbuscarCont_ips
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2033
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCbuscoCont_ips
+	LOCAL Lcont         LIKE post:adt_ips_contenido
+	LOCAL Lbusco        LIKE post:adt_ips_contenido
+	LOCAL Lcod          LIKE post:adt_ips_cont_cod
+	LOCAL Ldesc         LIKE post:adt_ips_contenido
+    LOCAL ret           LIKE lib:err_retval
+    LOCAL cant_ch       LIKE siaf:cant
+    LOCAL cant_ch2      LIKE siaf:cant
+    LOCAL encontro      LIKE siaf:idx
+    LOCAL item          LIKE siaf:idx
+    LOCAL cont          LIKE siaf:idx
+    LOCAL l_last_button LIKE drv:last_button
+    LOCAL Lmensaje      LIKE common:csr_string
+    LOCAL Lcsr_string_150 LIKE common:csr_string
+        
+    Lcont = ips_contenido[siaf:i]
+    
+    let encontro = 0
+    
+    CALL CSR:f_sadroppl("BuscoContenido_ips")
+    //CALL CSR:f_sanewpl("BuscoContenido_ips",PIC:BuscoContenido_ips)
+    CALL csr:f_sanewpl "BuscoContenido_ips" PIC:BuscoContenido_ips,435,320
+
+    LET cont = 0
+    LET item = PL_GETITEM + 0
+	CLEARFIELD common:csr_string
+	CLEARFIELD common:csr_string_130
+    
+    DO
+        /*Tengo que recorrer el picklist que tiene todos los pais segun destino IPS*/
+        //CALL csr:myPickcontrol "CONTENIDOS_IPS" common:csr_string_130 item
+        CALL csr:myPickcontrol "CONTENIDOS_IPS" Lcsr_string_150 item
+        IF (RETVAL < 0) THEN
+            BREAK
+        END IF
+        /*
+        Lcod = substr(common:csr_string_130,0,2)
+        Ldesc = substr(common:csr_string_130,3,50)
+        */
+        Lcod = substr(Lcsr_string_150,0,2)
+        Ldesc = substr(Lcsr_string_150,3,50)
+        Lbusco = substr(Lcont,0,3)
+        
+        /*Se pidio buscar por los 3 primeros caracteres como maximo*/
+        if (Lbusco.numchars == 1)
+            let cant_ch = 1
+        else
+        	if (Lbusco.numchars == 2)
+        		let cant_ch = 2
+        	else
+        		let cant_ch = 3
+        	end if
+        end if
+
+        let cant_ch2 = Ldesc.numchars
+        CALL siaf:busca_chars(Lbusco,Ldesc,cant_ch,cant_ch2)
+        IF (RETVAL == 0) THEN            
+            //CALL CSR:f_saaddpl("BuscoContenido_ips",common:csr_string_130)
+            CALL CSR:f_saaddpl("BuscoContenido_ips",Lcsr_string_150)
+            let encontro = 1
+        END IF
+        LET cont = cont + 1
+        LET item = PL_GETITEM + cont      
+    LOOP
+    
+    IF (encontro == 0) THEN
+	    errmsg lst:common:errmsg_list, "Descripción no encontrada"
+        RETURN (-2)
+    END IF
+    
+    l_last_button = drv:last_button 
+	drv:button = drv:last_button    
+	CALL drv:but_down_disable
+	CALL drv:all_but_disable
+	DISABLECONTROL drv:TB1
+	DISABLECONTROL drv:TB2
+
+    CALL CSR:f_sadopl("BuscoContenido_ips",common:csr_string)
+    ret = RETVAL
+
+    CALL drv:back_but_status
+	drv:button = l_last_button
+	CALL drv:but_up_enable	
+	IF (post:adt_serv_ips_Rpais == "S" && \
+	   (pag_act == 0 || pag_act.numchars == 0) && post:cantidad > 1) THEN
+		ENABLECONTROL drv:TB1
+	ELSE
+		DISABLECONTROL drv:TB1
+	END IF
+	IF (post:adt_serv_ips_cont == "M" && \
+	   (pag_act == 0 || pag_act.numchars == 0) && post:cantidad > 1) THEN
+		ENABLECONTROL drv:TB2
+	ELSE
+		DISABLECONTROL drv:TB2
+	END IF
+    
+    CALL CSR:f_sadroppl("BuscoContenido_ips")
+    IF (ret >= 0) THEN
+    	post:ips_contenido[siaf:i] = substr(common:csr_string,3,50)
+    	post:ips_contenido_cod[siaf:i] = substr(common:csr_string,0,2)
+    	REFRESH post:ips_contenido[siaf:i]
+    	//cgw: obtiene mensaje de la tabla ipsContenido cargado en el picklist.
+    	CLEARFIELD post:adt_ips_cont_msg
+    	post:adt_ips_cont_msg = substr(common:csr_string,54,95)
+    	//cgw:el sistema emite un mensaje si existe en la tabla ipsContenido.
+    	call csr:trimfield(post:adt_ips_cont_msg)
+    	IF (post:adt_ips_cont_msg.numchars > 0) THEN
+    	    FPRINT Lmensaje "%s", post:adt_ips_cont_msg 
+    	    MSGBOX Lmensaje,0x00,"AVISO"
+    	END IF
+    END IF
+    RETURN (ret)
+
+END SUB
+
+/*******/

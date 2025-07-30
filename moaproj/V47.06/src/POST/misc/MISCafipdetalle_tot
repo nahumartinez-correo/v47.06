@@ -1,0 +1,192 @@
+/****o* Pendientes de agrupación/OFB:post:MISCafipdetalle_tot
+* NOMBRE
+*   OFB:post:MISCafipdetalle_tot
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCafipdetalle_tot(Operador,Fecha)
+    LOCAL OPERADOR_ID  like op:op_operator_id
+    LOCAL OPERADOR     like op:op_login_id
+    LOCAL LINEAS       like cantidad
+    LOCAL TOTAL        like siaf:importe
+    LOCAL TOTAL_all    like siaf:importe
+    LOCAL TOT_CANTIDAD like cantidad
+    LOCAL TOT_CANT_all like cantidad
+    
+    //Correccion AUT-1386 - NAM
+    LOCAL OPERADOR_ANT like op:op_login_id 
+    LET OPERADOR_ANT = op:op_login_id    
+    
+    FYIMSG LST:common:fyimsg_list,"GENERANDO LISTADO DE TOTALES DE AFIP ..."
+    TOTAL          = 0
+    TOTAL_all      = 0
+    TOT_CANTIDAD   = 0
+    TOT_CANT_all   = 0
+    siaf:cta_hojas = 0
+    siaf:i = 1 // Para la Rutina de Impresion
+    // PJM 5-4-1999
+    jnl_fecha_llencont = sf1_fec_vto
+
+    siaf:INDencab_lis = OFB:post:MISChdr_detalle_afip
+    IF (siaf:pantalla_impreso != "P") THEN
+       /*Se modifica esta línea para que el archivo lo cree en el temp del disco de donde
+       se haya levantado la aplicación, antes, estaba fijo como c:\ y si estaba en un
+       servidor caja, traia problemas - Gabriel Falciola*/
+       ;LMB - PS 9780 - 17.06.2008
+       ;Call tes:MISCopen_file( "\\te mp\\totalutility.list",1)
+       fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "totalutility.list"
+       Call tes:MISCopen_file( common:tmpDirTemporal, 1)
+       
+       If (Retval < 0)
+	  Return -2
+       Endif
+    Endif
+    
+    if (Operador == "")
+       CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+       WHERE tlr:jnl_bus_date == Fecha                         && \
+       siaf:jnl_codigo_siaf == 6840
+    else
+       /*Necesito nro codigo del operador*/
+       CDS SELECT FROM DSC:op:adt_op_table BECOMES DSC:op:adt_op_context \
+       WHERE op:op_login_id == Operador
+
+       CDS FINDFIRST DSC:op:adt_op_context LOCK
+       if (cdsretval < 0)
+	  	   cds unlock DSC:op:adt_op_context
+	  	   cds endselect DSC:op:adt_op_context
+	  	   Call csr:file_close(1)
+
+           IF (siaf:pantalla_impreso != "P") THEN
+               fprint post:linea_spvCM "cmd /c del %s" common:tmpDirTemporal
+               CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+               exec post:linea_spvCM                  
+           ENDIF	  	
+	       return (-2)
+       end if
+
+       CDS EXTRACT DSC:op:adt_op_context \
+       op:op_operator_id into OPERADOR_ID  \
+       op:op_login_id into OPERADOR
+
+
+       CDS ENDSELECT DSC:op:adt_op_context
+
+
+       CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+       WHERE tlr:jnl_bus_date == Fecha                         && \
+       tlr:jnl_operator == OPERADOR_ID                         && \
+       siaf:jnl_codigo_siaf == 6840
+    end if
+
+    CDS FINDFIRST DSC:tlr:jnl_context LOCK
+    lib:err_retval = cdsretval
+
+	IF (lib:err_retval == -801 && siaf:modo == "CLOSESUC" )
+		//listados al cierre de la sucursal
+		cds unlock DSC:tlr:jnl_context
+		cds endselect DSC:tlr:jnl_context
+		Call csr:file_close(1)
+	    //Correccion AUT-1386 - NAM
+        LET op:op_login_id = OPERADOR_ANT    	
+		return -8
+	END IF
+
+
+    If (lib:err_retval >= 0)
+       CDS EXTRACT DSC:tlr:jnl_context ALL
+       OPERADOR = tlr:jnl_operator
+    Endif
+
+    ;SMC cambio de lugar la impresion de la  primera cabecera
+    Call FLD:siaf:INDencab_lis
+    While (lib:err_retval >= 0)
+	  // Corte por Operador no????
+       IF (tlr:jnl_sequence_corr.NUMCHARS == 0)
+	  If  ( OPERADOR != tlr:jnl_operator)
+          Fprint common:csr_string "%1.1s" , " "
+          Call post:MISCimprime_linea(common:csr_string)
+          Fprint common:csr_string "%17.17s CANTIDAD TOTAL : %6.6e         IMPORTE TOTAL: %12.12e" ,\
+          " ",TOT_CANTIDAD,TOTAL
+	      TOTAL_all = TOTAL_all + TOTAL
+          TOT_CANT_all = TOT_CANT_all + TOT_CANTIDAD
+    	  Call post:MISCimprime_linea(common:csr_string)
+	      OPERADOR = tlr:jnl_operator
+	      If (siaf:pantalla_impreso == "P")
+    		 common:csr_string = " "
+	    	 Call post:MISCimprime_linea(common:csr_string)
+		     common:csr_string = " "
+    		 Call post:MISCimprime_linea(common:csr_string)
+	      Else
+	    	LINEAS = 62 - siaf:i
+		    Call post:MISCavanz_line_laser(LINEAS)
+	      Endif
+	      siaf:i = 2
+	      Call FLD:siaf:INDencab_lis
+	      TOTAL = 0
+	      TOT_CANTIDAD = 0
+	  Endif
+
+
+	  TOTAL = TOTAL + siaf:importe
+	  TOT_CANTIDAD = TOT_CANTIDAD +  1
+
+	  Fprint common:csr_string " %-5e  %-40.40s            %14.14e" ,\
+	  siaf:adt_formulario,post:sf1_serv_desc,siaf:importe
+	  Call post:MISCimprime_linea(common:csr_string)
+
+       ENDIF
+       CDS FINDNEXT DSC:tlr:jnl_context LOCK
+       if (cdsretval < 0)
+          break
+       end if
+       CDS EXTRACT DSC:tlr:jnl_context ALL
+       lib:err_retval = cdsretval
+    End While
+
+    Fprint common:csr_string "%1.1s" , " "
+    Call post:MISCimprime_linea(common:csr_string)
+    Fprint common:csr_string "%17.17s CANTIDAD TOTAL : %6.6e         IMPORTE TOTAL: %12.12e" ,\
+    " ",TOT_CANTIDAD,TOTAL
+    Call post:MISCimprime_linea(common:csr_string)
+
+    TOTAL_all    = TOTAL_all + TOTAL
+    TOT_CANT_all = TOT_CANT_all + TOT_CANTIDAD
+
+    Fprint common:csr_string "%1.1s" , " "
+    Call post:MISCimprime_linea(common:csr_string)
+    Fprint common:csr_string "%17.17s TOTAL GENERAL :  %6.6e         IMPORTE TOTAL: %12.12e" ,\
+    " ",TOT_CANT_all,TOTAL_all
+
+
+    IF (siaf:pantalla_impreso == "P") THEN
+       CALL CSR:f_saaddpl siaf:pick_titulo common:csr_string
+    Else
+       Call siaf:MISCwrite_lis
+       Call csr:file_close(1)
+       FYIMSG LST:common:fyimsg_list,"(L) SE ESTAN IMPRIMIENDO LOS TOTALES DE AFIP"
+       ;LMB - PS 9780 - 17.06.2008
+       ;CALL siaf:MISCfile_print("\\te mp\\totalutility.list","predeterminada")
+       fprint common:tmpDirTemporal, "%s%s", common:dirTemporal, "totalutility.list"
+       CALL siaf:MISCfile_print( common:tmpDirTemporal, "predeterminada")
+       EXEC common:csr_string
+    Endif
+    Call post:CDSfin_total_sf1
+    //Correccion AUT-1386 - NAM
+    LET op:op_login_id = OPERADOR_ANT 
+END SUB
+
+/*******/

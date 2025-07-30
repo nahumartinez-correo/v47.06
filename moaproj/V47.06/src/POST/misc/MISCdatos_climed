@@ -1,0 +1,333 @@
+/****o* Mensajería/OFB:post:MISCdatos_climed
+* NOMBRE
+*   OFB:post:MISCdatos_climed
+* DESCRIPCION
+*  Se obtiene los campos BULK's y se van guardando los datos del cliente
+*  La consulta del cliente retorna:
+* CONV.- PAGO DIF.-DIAS FINANC.-CATIVA-INS.IB-CAT.IB.-NUM IB.-CAT.G-CAT.E.
+* NIS DEPENDIENTE-SUBCUENTA-MODALIDAD DE COBRO-DIAS DE PAGO-INCIO DE FACTURACION
+* LIMITE DE CREDITO-SALDO DE CREDITO-CLIENTE BLOQUEADO-DATOS DE ADELANTO-DATOS DE 
+* TRANSFERENCIAS BANCARIAS
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:OFBclimedio_simple
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-350
+*	http://jira.sibs.net/jira/browse/AUT-520
+*   http://jira.sibs.net/jira/browse/AUT-1226
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2398
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdatos_climed(datos,long)
+	LOCAL posicion LIKE post:cantidad
+	LOCAL longitud LIKE post:Longitud_108
+	LOCAL varl_CatGCod LIKE post:CatGCod
+	LOCAL varl_CatECod LIKE post:CatECod
+	LOCAL varl_importe LIKE common:csr_string
+	LOCAL varl_fecha LIKE common:csr_string
+	LOCAL varl_inhib LIKE common:csr_string
+	LOCAL l_adelanto LIKE post:AdelMon_CM
+		
+	FPRINT longitud,"%s",long
+	posicion = 0
+
+	/*Se elimina este control ya que esto impide que, al agregar mas datos en este bit, funcionen dos versiones mosaic
+	en paralelo con un mismo autorizador.Ademas esta validacion le quita la flexibilidad inherente al bit
+	IF (longitud != LONG_CONS_111) THEN
+		MSGBOX "ERROR AL OBTENER LOS DATOS DEL CLIENTE DE LA CONSULTA DE CLIENTE MEDIO.",OFB_OK,"Atencion"
+		RETURN -2
+	END IF*/
+
+	post:convenio = SUBSTR(datos,posicion,9)
+	posicion = posicion + 9
+	
+	post:climed_pagodiferido = SUBSTR(datos,posicion,1)
+	post:cliente_pagodiferido = SUBSTR(datos,posicion,1) //cgw:se utiliza esta variable luego de una Consulta de Excepcion CM.
+	
+	IF (post:climed_pagodiferido == "N" && (siaf:codigo_siaf == 99021 || siaf:codigo_siaf == 99400)) THEN
+		//cgw:muestro mensaje solo en el inicio de sesion y en la consulta excepciones de CM.
+		//MFM el mensaje se emite solo si el flag de cheque diferido está prendido
+		IF (TESTFLAG(cheque_dif,UPpago_dif)) THEN
+			MSGBOX "No admite Pago Diferido.",0x00,"Aviso"
+		END IF
+	END IF
+
+	posicion = posicion + 1
+	
+	post:climed_financiacion = SUBSTR(datos,posicion,3)
+	posicion = posicion + 3
+	//50244
+	//PS 10046 - No está seteado el post:cli_tipo para la consulta de orden CM y la venta excpecion CM, 
+	//por eso se pregunta tambien por el post:climed_tipo
+	IF (post:cli_tipo == CLIMED || post:climed_tipo == CLIMED) THEN
+		post:IvaCod = SUBSTR(datos,posicion,3)
+	END IF
+	posicion = posicion + 3
+
+	post:CloInscripto = SUBSTR(datos,posicion,1)
+	posicion = posicion + 1
+	
+	post:CloCatCodIB = SUBSTR(datos,posicion,3)
+	posicion = posicion + 3
+
+	post:CloNroInb = SUBSTR(datos,posicion,11)
+	posicion = posicion + 11
+	
+	varl_CatGCod = SUBSTR(datos,posicion,1)
+	posicion = posicion + 1
+	
+	varl_CatECod = SUBSTR(datos,posicion,1)
+	posicion = posicion + 1
+	
+	CALL csr:trimfield varl_CatGCod
+	CALL csr:trimfield varl_CatECod
+
+	IF (varl_CatGCod == "S") THEN
+		SETFLAG categ_cli_flags,categ_gan
+		post:CatGCod = "X"
+	ELSE
+		RESETFLAG categ_cli_flags,categ_gan
+		CLEARFIELD post:CatGCod
+	END IF
+
+	IF (varl_CatECod == "S") THEN
+		SETFLAG categ_cli_flags,categ_emp
+		post:CatECod = "X"
+	ELSE
+		RESETFLAG categ_cli_flags,categ_emp
+		CLEARFIELD post:CatECod
+	END IF
+
+  post:nisDep_CM = SUBSTR(datos,posicion,5)
+  posicion = posicion + 5
+
+  post:subcuenta_CM = SUBSTR(datos,posicion,3)
+  posicion = posicion + 3
+
+  post:modalidad_CM = SUBSTR(datos,posicion,1)
+  posicion = posicion + 1
+
+  post:facturacion_CM = SUBSTR(datos,posicion,2)
+  posicion = posicion + 2
+
+	IF (post:modalidad_CM == "D") THEN
+		post:diasPago_CM = SUBSTR(datos,posicion,3)
+	END IF
+	
+	IF (post:modalidad_CM == "C") THEN
+		post:inicio_facturacion = SUBSTR(datos,posicion,3)
+	END IF
+	posicion = posicion + 3
+
+	varl_importe = SUBSTR(datos,posicion,12)
+	posicion = posicion + 12
+	IF (varl_importe == "000000000000") THEN
+		post:limite_CM = 0.00
+	ELSE
+		post:limite_CM = (varl_importe / 100)
+	END IF
+
+	varl_importe = substr(datos,posicion,12)
+	posicion = posicion + 12
+	IF (varl_importe == "000000000000") THEN
+		post:saldo_CM = 0.00
+	ELSE
+		post:saldo_CM = (varl_importe / 100)
+	END IF
+
+	post:bloqueo_CM = SUBSTR(datos,posicion,1)
+	posicion = posicion + 1
+	
+	varl_importe = SUBSTR(datos,posicion,12)
+	posicion = posicion + 12
+	
+	IF (varl_importe == "000000000000") THEN
+		post:saldoAnticipo_CM = 0.00
+	ELSE
+		post:saldoAnticipo_CM = (varl_importe / 100)
+	END IF
+
+	post:convenioAnticipo = SUBSTR(datos,posicion,9)
+	posicion = posicion + 9
+	
+	varl_fecha = SUBSTR(datos,posicion,8)
+	posicion = posicion + 8
+	MOVE varl_fecha TO post:fecha_vencimiento
+
+	//Se agrega el dato si está inhibido o no el cliente para pago diferido
+	varl_inhib = SUBSTR(datos,posicion,1)
+	post:climed_inhibido = SUBSTR(datos,posicion,1) //cgw:reserva si el cliente esta inhibido.
+	post:cliente_inhibido = SUBSTR(datos,posicion,1) //cgw:se utiliza esta variable luego de una Consulta de Excepcion CM.
+	posicion = posicion + 1
+	IF (varl_inhib == "S") THEN
+		//el cliente no podrá pagar con cheque diferido
+		post:climed_pagodiferido = "N"
+		post:cliente_pagodiferido = "N" //cgw:se utiliza esta variable luego de una Consulta de Excepcion CM.
+		//seteo esta variable en cero para que no me haga la pregunta 
+		//ni en el adelanto ni en la cobranza.
+		post:climed_financiacion = 0
+		IF (siaf:codigo_siaf == 99021 || siaf:codigo_siaf == 99400) THEN
+			//cgw:muestro mensaje solo en el inicio de sesion y en la consulta excepciones de CM.
+			MSGBOX "Cliente Inhibido.",0x00,"Aviso"
+		END IF
+	END IF
+
+	//RG3337
+	esExentoRG3337 = SUBSTR(datos,posicion,1)
+	posicion = posicion + 1
+	
+	varl_importe = SUBSTR(datos,posicion,5)
+	posicion = posicion + 5
+	IF (varl_importe == "00000") THEN
+		porcExentoRG3337 = 0.00
+	ELSE
+		porcExentoRG3337 = (varl_importe / 100 )
+	END IF
+
+	//V18.00 ModalidadCC tambien envia el dato de cantidad de dias de pago
+	IF (post:modalidad_CM == "C") THEN
+		post:diasPago_CM = SUBSTR(datos,posicion,3)
+	END IF
+	posicion = posicion + 3
+
+	//NI 50295 - Lista de Giros
+	//convenio de lista de giros
+	post:convenio_lg = SUBSTR(datos,posicion,9)
+  posicion = posicion + 9
+
+	//saldo de adelanto monetario
+	varl_importe = SUBSTR(datos,posicion,12)
+	posicion = posicion + 12
+	IF (varl_importe == "000000000000") THEN
+		post:AdelMon_CM = 0.00
+	ELSE
+		post:AdelMon_CM = (varl_importe / 100)
+	END IF
+ 
+	/*//saldo de transferencia bancarias
+	varl_importe = substr(datos,posicion,12)
+	posicion = posicion + 12
+	IF (varl_importe == "000000000000") THEN
+		post:monto_TB = 0.00
+	ELSE
+		post:monto_TB = (varl_importe / 100)
+	END IF*/
+   posicion = posicion + 12
+   post:CliMed_Ped = SUBSTR(datos,posicion,1)
+   posicion = posicion + 1  
+    
+	CALL csr:trimfield post:climed_pagodiferido
+	CALL csr:trimfield post:IvaCod
+	CALL csr:trimfield post:CloInscripto
+	CALL csr:trimfield post:CloCatCodIB
+	
+	//cgw:variables utilizadas en Tratamiento de Cheques. 
+	CALL csr:trimfield post:climed_inhibido
+	CALL csr:trimfield post:cliente_inhibido
+	CALL csr:trimfield post:cliente_pagodiferido
+	
+	//50244
+	IF (post:cli_tipo == CLIMED && post:IvaCod.NUMCHARS == 0) THEN
+		MSGBOX "IMPOSIBLE CONTINUAR, EXISTEN DATOS NULOS DE LA CATEG.IVA DEL CLIENTE.",OFB_OK,"Atencion"
+		RETURN -2
+	END IF
+
+	//si es cliente medio o si estoy en orden de compra o en venta por excepcion
+	//o en salida de productos varios CM
+	; Cuando es una sesión de reemplazo de cheques no es necesario más información en 
+	; la identificación del cliente *** MDG
+	IF ((post:cli_tipo == CLIMED || siaf:codigo_siaf == 99505 || \
+		siaf:codigo_siaf == 99400 || siaf:codigo_siaf == 40005) && post:esSesionReempChq != "S") THEN
+		CALL post:MISCSeteoModOpCM
+		IF (RETVAL < 0) THEN
+			RETURN -2
+		END IF
+	 
+		//50295 - FER - consulta de consumo de saldo de adelanto monetario
+		IF (siaf:codigo_siaf != 40005 && post:consulta_ordenCM != "S" && post:consulta_excepcionCM != "S" \
+			&& post:nisDep_CM == common:sucursal_activa) THEN
+			IF (post:AdelMon_CM > 0) THEN
+				//50295 - AUT-1226(MEJORA)
+				IF (giros:AdelMon_Pend == TRUE) THEN
+					post:ConsumoAnticipoMon = FALSE
+					post:AdelMon_CM = 0
+					//post:convenio_lg = ""
+					//guardarlo en la PRESU
+					CALL post:CDSConsumoMon_Presu
+					MSGBOX "EXISTEN ADELANTOS MONETARIOS RECHAZADOS/PENDIENTES DE ACTUALIZACION.\nNO PODRA EMITIR LISTAS DE GIROS POR EL MOMENTO.",0x00,"AVISO"
+				ELSE
+					l_adelanto = post:AdelMon_CM
+					CALL post:MISCFtrim(l_adelanto) 
+					FPRINT common:csr_string "Ud. Tiene un Adelanto Monetario de $ %e. ¿Desea consumirlo?" l_adelanto
+					MSGBOX common:csr_string,OFB_YESNO,"Atención"
+					IF (RETVAL == OFB_IDYES) THEN
+						post:ConsumoAnticipoMon = TRUE
+					ELSE
+						post:ConsumoAnticipoMon = FALSE
+					END IF
+				END IF
+			ELSE
+				post:ConsumoAnticipoMon = FALSE
+			END IF
+		END IF
+
+		IF (!ConsumoAnticipoMon && siaf:codigo_siaf != 40005) THEN
+			//NI 50244
+			CALL post:MISCconsultaTB
+			IF (!post:ModalidadTB) THEN
+				CALL post:MISCconsultaAdelanto
+				CALL post:MISCconsultaVtoMod
+				IF (RETVAL < 0) THEN
+					RETURN -2
+				END IF
+				
+				/*MFM - Por ahora....si no estoy en una venta excepcional  => \
+				seteo variables globales de modalidad y operacion*/
+				IF (post:consulta_excepcionCM != "S") THEN
+					IF (post:bloqueo_CM == "N") THEN
+						//CALL post:MISCSeteoModOpCM
+					ELSE
+						IF (!ModalidadAT) THEN
+							MSGBOX "EL CLIENTE SE ENCUENTRA BLOQUEADO. NO PODRA COMPRAR CON LA MODALIDAD ASIGNADA. NI USAR CONVENIOS NI ORDENES DE COMPRA.",OFB_OK,"Atencion"
+							IF (consulta_ordenCM == "S") THEN
+								RETURN -2
+							END IF
+							post:modalidad_CM = "S"
+							post:PagoContado = TRUE
+						END IF
+					END IF
+				END IF	
+				
+	 	    CALL post:MISCSaldos_CM
+		    IF (RETVAL < 0) THEN
+		    	RETURN -2
+		    END IF
+	        
+				//Venta por Orden de Compra solo con FD
+				IF (post:consulta_ordenCM == "S" && !ModalidadCC) THEN
+					MSGBOX "Ud. no es un cliente con Facturacion Diferida.\nNo podrá utilizar la Orden de Compra.",0X00,"ERROR"
+					RETURN -2
+				END IF
+				CALL post:MISCconsulta_pagodif
+			END IF //transferencias bancarias
+		END IF //adelantos monetario
+	END IF
+    
+	//NI 50244
+	IF (post:cli_tipo == CLIUP)THEN
+		CALL post:MISCconsultaTB
+		IF (!post:ModalidadTB) THEN
+			CALL post:MISCconsultaAdelUP
+		END IF
+	END IF
+
+END SUB
+
+/*******/

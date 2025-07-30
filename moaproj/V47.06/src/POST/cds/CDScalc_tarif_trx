@@ -1,0 +1,161 @@
+/****o* Clientes Medios/OFB:post:CDScalc_tarif_trx
+* NOMBRE
+*   OFB:post:CDScalc_tarif_trx
+* DESCRIPCION
+*   Realiza el calculo de la tarifa en una facturacion/cobranza de cliente medio.  
+*   Idem post:FVALpn_peso
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   post:FVALpn_peso
+* REFERENCIADO POR
+*   OFB:post:MISCCampos_Flia
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScalc_tarif_trx
+    LOCAL lservicio LIKE post:adt_serv_serv
+    LOCAL peso_limi LIKE peso_en_grs
+    LOCAL peso_hasta LIKE post:adt_tarif_hasta
+    LOCAL peso_desde LIKE post:adt_tarif_desde
+
+	//Paso los campos necesarios para calcular la tarifa
+	if (item_codigo_trx == 13100) //Transaccion de Telegrafia
+ 		post:tipo_produc = item_servicio
+ 		post:tipo_produc2 = item_servicio
+	else
+ 		post:tipo_produc = item_codigo_trx
+ 		post:tipo_produc2 = item_codigo_trx
+	end if		 			
+	lservicio = item_codigo_trx
+	post:cantidad = item_cantidad
+	post:cantidad2 = post:cantidad
+	post:destino = item_destino
+	
+	//PS 10748 - Error en la Facturación de Comprobantes Pendientes con Productos Volumétricos
+	if (post:adt_serv_calc_rv == "N")
+		post:aforo = item_aforo1 + item_aforo2 + item_aforo3
+	else
+		clearfield post:aforo
+	end if
+	
+	tele:tele_cant_palabras = item_cant_pal
+	post:aforo1 = item_aforo1
+	post:aforo2 = item_aforo2
+	post:aforo3 = item_aforo3
+	post:adt_tarif_dest = post:destino
+	post:tipo_caja = item_tipo_caja
+	
+	/* MLD Se multiplica porque en la base se almacena dividido por 1000 */
+	if (post:adt_serv_umstd == "GMS") then
+		post:peso_en_grs = post:item_peso * 1000
+	else 
+		IF ((adt_serv_tipo == "PO" && adt_serv_umstd == "KGS") || \
+			adt_serv_tipo == "EN" && (adt_serv_umstd == "KGS" || \
+			adt_serv_umstd == "CSM" || adt_serv_umstd == "UNI")) THEN			
+			
+			post:peso_en_kgs = post:item_peso		
+		end if
+	end if
+	
+	if (post:adt_serv_umstd == "GMS") || (((adt_serv_tipo == "PO" && adt_serv_umstd == "KGS") || \
+			adt_serv_tipo == "EN" && (adt_serv_umstd == "KGS" || \
+			adt_serv_umstd == "CSM" || adt_serv_umstd == "UNI"))) THEN			
+			
+	
+		/*Antes de entrar a buscar el precio por el peso, controlo la tolerancia que
+		tiene el servicio para descontarla del peso y obtener la tarifa adecuada.
+		Solamente esto es valido para aquellos productos ENCOMIENDAS que tienen como unidad de
+		medida KGS, por eso utilizo el campo peso_en_kgs y no en grs. Diego Priore 25/02/2000*/
+
+		LET peso_desde = 0.001
+		
+		;LET peso_temp = peso_en_kgs //Para no perder el valor del peso y muestre el desc. de la tolerancia en pantalla
+		LET post:adt_serv_tole = 0
+		
+		CDS SELECT FROM DSC:Servicio_tbl BECOMES DSC:Servicio_ctx WHERE \
+        	post:adt_serv_serv == adt_serv_serv
+        	CDS FINDFIRST DSC:Servicio_ctx NOLOCK
+        	LET lib:err_retval = CDSRETVAL
+        	IF (CDSRETVAL == 0)
+            		CDS EXTRACT DSC:Servicio_ctx post:adt_serv_tole
+        	END IF
+		
+		IF (adt_serv_req_ad == "S" && common:br_aduana == "N") THEN
+		     peso_limi = post:adt_serv_max_serv * 1000
+		ELSE
+		     peso_limi = post:adt_serv_limite * 1000     
+		ENDIF
+	             	        
+		/* Lo anterior se elimina para no atarnos al codigo de servicio, ya que si el servicio no
+		tiene cargada la tolerancia la multimplicacion dará 0 y entonces peso_limi = peso_limi 
+		Maricel 6/7/2000 */ 
+		peso_limi = peso_limi + ((peso_limi * adt_serv_tole) / 100)
+	        
+		IF (post:adt_serv_umstd == "KGS" || post:adt_serv_umstd == "CMS" || \
+		    post:adt_serv_umstd == "UNI") THEN
+		    /*****************************************************/
+		    /* Si la Unidad de Medida del Servicio es Kilos     */
+		    /* paso el peso de la pieza a Gramos.           */
+		    /*****************************************************/
+		    post:peso_en_grs = post:peso_en_kgs * 1000
+		END IF
+
+		//Esto se comenta porque, si existe un cambio en la parametria,
+		//operativamente la sucursal debe efectuar la facturacion/cobranza
+		//antes de que se realicen las actualizaciones de tablas.
+		//determino peso máximo permitido para estos productos
+		/*********************50076************************************
+		IF ((siaf:codigo_siaf == 21401 || siaf:codigo_siaf == 21501 || \
+			siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801) && \
+			adt_servcaja_peso > 0)
+			CALL post:MISCrest_peso_cprop(peso_en_kgs)
+			if (retval < 0)
+	            		CLEARFIELD peso_en_grs
+    	        		CLEARFIELD peso_en_kgs
+        	    		REFRESH peso_en_grs
+            			REFRESH peso_en_kgs
+				return -2
+			end if
+		ELSE
+		        IF (post:peso_en_grs > peso_limi) THEN
+		            MSGBOX "EL PESO ES MAYOR AL PERMITIDO",0x00,"ERROR"
+	        	    // Si no se pudo calcular la tarifa debido al peso, lo blanquea - Carina 24/7/2009
+	            	    CLEARFIELD peso_en_grs
+    		            CLEARFIELD peso_en_kgs
+        	            REFRESH peso_en_grs
+            		    REFRESH peso_en_kgs	            
+	            	    RETURN (-2)
+	        	END IF
+		END IF
+		*******fin 50076 *************************************/
+
+	end if			
+	//Calculo el monto basico de la trx
+	if (item_codigo_trx == 13100) //Transaccion de Telegrafia
+		Call tele:MISCrecalc_importe 		
+	else
+	    call post:MISCactualizo_tarifa
+	    if (retval < 0) then
+	    	return -2
+	    end if
+    end if
+
+	//Calcula, suma, los opcionales y los carga en los vectores correspondientes
+	Call post:CDSbasico_Opc 		
+
+    //cgw:agrega el costo de opcionales para el total de los servicios telegraficos.
+    if (item_codigo_trx == 13100) //Transaccion de Telegrafia
+        tele:importe_tot_serv_tel = tele:importe_tot_serv_tel + post:costo_opc
+    end if
+
+
+ 		
+END SUB
+
+/*******/

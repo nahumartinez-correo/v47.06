@@ -1,0 +1,239 @@
+/****o* Tratamiento de Cheques/OFB:tes:CDSpaso_TesoCheq
+* NOMBRE
+*   OFB:tes:CDSpaso_TesoCheq
+* DESCRIPCION
+*   Rutina que inserta un cheque en la tabla TesoCheq.
+* ENTRADAS
+* 	Recibo lo datos del comprobante
+* 	suc = Sucursal
+* 	mone = Medio de Pago
+* 	Cta = Cuenta del cheque
+* 	codint = Codigo interno. Las tarjetas capturan codigo interno
+* 	nro = nro de comprobante
+* 	nro2 tiene el nro de tarjeta.
+* 	es re nro de cheque.
+* 	imp = importe
+* 	vto = Fecha de vto del cheque
+* 	stat = Estado (caja, tesoro, etc)
+* 	ident = nro de operador
+* 	sub_id = datos de la cuenta en caso de que haya sido depositado
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*  tes:CDSins_replTesoCheq
+* REFERENCIADO POR
+*   tes:MISCmulti_cheques,tes:MISCcheque_UP,tes:MISCcapturo_cheque,siaf:MISCent_falla_caj
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "tesCDS.h"
+SUB tes:CDSpaso_TesoCheq(suc,mone,banco,cta,codint,nro,nro2,imp,vto,emi,stat,ident,sub_id,clrg)
+	LOCAL l_nro_recibo LIKE post:adt_adelcm_id
+	LOCAL TERMI_TESOCHEQ LIKE common:window_node
+                      
+	LET TERMI_TESOCHEQ = "TERMI_GENERIC"
+	
+	LET teso_cheq_suc = suc
+	LET teso_cheq_moneda = mone
+	
+	/*
+	IF (cta == 0) THEN
+		teso_cheq_cuenta = codint
+		teso_cheq_nro = nro2
+		let teso_cheq_banco = 0
+	ELSE
+		teso_cheq_cuenta = cta
+		teso_cheq_nro = nro
+		let teso_cheq_banco = banco
+	END IF
+	*/
+	
+	CALL post:MISCcargo_valor(mone,banco,cta,nro,codint,nro2)
+	
+	LET teso_cheq_importe = imp
+	LET teso_cheq_estado = stat
+	LET teso_cheq_id = ident
+	LET teso_cheq_sub_id = sub_id
+    
+	/* Datos para cuentas bancarias */        
+	LET teso_cheq_tipocta = 0
+	LET teso_cheq_nrocta = 0
+	LET teso_cheq_acred = "N"
+    
+	/* Este campo guarda la fecha de captura del cheque, que puede ser distinta de la 
+	de emision si viene de otra sucursal por ejemplo */
+	LET teso_cheq_fcaptura = common:system_date
+	LET teso_cheq_fdep = 0
+	LET teso_cheq_facred = 0
+    
+	/* Campos Clave del movimiento */
+	LET teso_cheq_movfvalor = 0
+	LET teso_cheq_movfreg = 0
+	LET teso_cheq_movtime = 0
+	LET teso_cheq_movop = 0
+	LET teso_cheq_movseq = 0
+	LET teso_cheq_boleta = 0
+	LET teso_cheq_freg = 0
+	LET teso_cheq_fvto = vto
+	
+	/*PS 9809*/
+	LET teso_cheq_presnro   = 0
+
+	CLEARFIELD teso_cheq_NisUP 
+
+	/* En teso_cheq_fcap ahora guardo la fecha de emision */
+	LET teso_cheq_fcap = emi // common:system_date
+	LET teso_cheq_clearing = clrg
+	
+	//gpb:NI50525
+	IF (tes:teso_cheq_moneda == "06") THEN
+		LET TERMI_TESOCHEQ = common:window_node
+	END IF
+        
+	CDS SELECT FROM DSC:TesoCheq_tbl BECOMES DSC:TesoCheq_ctx \
+		WHERE teso_cheq_suc == FLD:teso_cheq_suc \
+		&& teso_cheq_moneda == FLD:teso_cheq_moneda \
+		&& teso_cheq_banco == FLD:teso_cheq_banco \
+		&& teso_cheq_cuenta == FLD:teso_cheq_cuenta \
+		&& teso_cheq_nro == FLD:teso_cheq_nro \
+		&& teso_cheq_termi_win == TERMI_TESOCHEQ
+	
+	CDS FINDFIRST DSC:TesoCheq_ctx LOCK
+	LET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == 0) THEN
+		CDS UNLOCK DSC:TesoCheq_ctx
+		CDS ENDSELECT DSC:TesoCheq_ctx
+		RETURN (-1) 
+	END IF
+	
+	// El Estado donde se graba el cheque es en tesoro
+	;LET teso_cheq_estado = "T"
+	
+	teso_cheq_rsoc = post:CliRaz
+	teso_cheq_tipo = post:cli_tipo
+	
+	SELECT (post:cli_tipo)
+		CASE 1
+			teso_cheq_tipo_doc = 80
+			IF (post:CliCuit.NUMCHARS != 0) THEN
+				teso_cheq_Cuit = post:CliCuit
+			ELSE
+				IF (post:CloCuit.NUMCHARS != 0) THEN
+					teso_cheq_Cuit = post:CloCuit
+				END IF
+			END IF
+		BREAK
+		CASE 4
+			tes:teso_cheq_NisUP = post:NisUP
+			teso_cheq_Cuit = post:CloCuit
+			teso_cheq_tipo_doc = post:CloTipDoc
+			BREAK			
+		CASE 5
+			teso_cheq_clinro = post:climed_numero
+			teso_cheq_Cuit = post:CloCuit
+			teso_cheq_tipo_doc = post:CloTipDoc
+			teso_cheq_presnro =  post:PresNro
+			IF (post:ModalidadAT) THEN
+				IF (siaf:motivo == "ADEMO") THEN
+					teso_cheq_lista_giro = "S"
+				ELSE
+					teso_cheq_lista_giro = "N"
+				END IF
+			ELSE
+				//BUG AUT-1028
+				IF (post:cheq_lista_giro == "G" || post:cheq_lg == "G") THEN
+					teso_cheq_lista_giro = "S"
+				ELSE
+					teso_cheq_lista_giro = "N"
+				END IF
+			END IF
+		BREAK						
+		CASE ELSE
+			teso_cheq_Cuit = post:CloCuit
+			teso_cheq_tipo_doc = post:CloTipDoc
+		BREAK			
+	END SELECT
+
+	//gpb:PS10911 Prisma-Visa
+	//CLEARFIELD teso_cheq_comercio
+	LET teso_cheq_comercio = 0
+	IF (tes:teso_cheq_moneda == "06") THEN
+		//gpb:NI50546 Mercado Pago 
+		IF (post:codigo_interno == 130410) THEN
+			//asigno el external reference
+			teso_cheq_comercio = post:jnl_opmp_ext_ref
+		ELSE
+			//asigno el codigo de comercio para Tarjeta
+			teso_cheq_comercio = post:jnl_opvpi_merchaCode
+		END IF
+	END IF
+	
+	CDS CLEARBUFFER DSC:TesoCheq_ctx
+	CDS APPEND DSC:TesoCheq_ctx \
+		FLD:tes:teso_cheq_suc \
+		FLD:tes:teso_cheq_moneda \
+		FLD:tes:teso_cheq_banco \
+		FLD:tes:teso_cheq_cuenta \
+		FLD:tes:teso_cheq_nro \
+		FLD:tes:teso_cheq_importe \
+		FLD:tes:teso_cheq_estado \
+		FLD:tes:teso_cheq_id \
+		FLD:tes:teso_cheq_tipocta \
+		FLD:tes:teso_cheq_nrocta \
+		FLD:tes:teso_cheq_fdep
+	
+	CDS APPEND DSC:TesoCheq_ctx \
+		FLD:tes:teso_cheq_sub_id \
+		FLD:tes:teso_cheq_clearing \
+		FLD:tes:teso_cheq_acred \
+		FLD:tes:teso_cheq_fcap \
+		FLD:tes:teso_cheq_facred \
+		FLD:tes:teso_cheq_movfvalor \
+		FLD:tes:teso_cheq_movfreg \
+		FLD:tes:teso_cheq_movop \
+		FLD:tes:teso_cheq_movtime \
+		FLD:tes:teso_cheq_movseq \
+		FLD:tes:teso_cheq_boleta \
+		FLD:tes:teso_cheq_freg \
+		FLD:tes:teso_cheq_comercio
+
+	//50295	
+	FPRINT l_nro_recibo "%015.15s", post:nro_recibo
+	//para reemplazo de cheque robado
+	IF (l_nro_recibo == 0) THEN
+		l_nro_recibo = post:cheq_adel_nro
+	END IF
+
+	CDS APPEND DSC:TesoCheq_ctx \
+		FLD:tes:teso_cheq_auto \
+		FLD:tes:teso_cheq_fvto \
+		FLD:tes:teso_cheq_recep \
+		FLD:tes:teso_cheq_rsoc \
+		FLD:tes:teso_cheq_tipo \
+		FLD:tes:teso_cheq_Cuit \
+		FLD:tes:teso_cheq_NisUP \
+		FLD:tes:teso_cheq_clinro \
+		FLD:tes:teso_cheq_tipo_doc \
+		FLD:tes:teso_cheq_fcaptura \
+		FLD:tes:teso_cheq_presnro \
+		FLD:tes:teso_cheq_lista_giro \
+		l_nro_recibo AS tes:teso_cheq_adel_nro
+			
+	//gpb:NI50525
+	CDS APPEND DSC:TesoCheq_ctx \
+		TERMI_TESOCHEQ AS tes:teso_cheq_termi_win	
+	
+	IF (lib:err_retval == -801) THEN
+		CDS INSERT DSC:TesoCheq_ctx LOCK
+	END IF
+	
+	CDS UNLOCK DSC:tes:TesoCheq_ctx
+	CDS ENDSELECT DSC:tes:TesoCheq_ctx
+	RETURN (0)
+	
+END SUB
+
+
+
+/*******/

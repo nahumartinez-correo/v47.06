@@ -1,0 +1,221 @@
+/****o* Pendientes de agrupación/OFB:post:MISCArmo_RepComer
+* NOMBRE
+*   OFB:post:MISCArmo_RepComer
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCArmo_RepComer
+	/* Si seteo el flag de todos */
+	local Encontro like tes:es_tesoro
+	local rango_aux like post:adt_tarif_hasta
+	local um_aux like post:adt_tarif_um
+	local serv_aux like post:adt_serv_serv
+	local dest_aux like post:destino
+	local HayRegistros like tes:es_tesoro
+	local idx_aux like siaf:idx
+    local cant_ch like siaf:cant
+    local cant_ch2 like siaf:cant
+    	 
+	if (testflag(Rep_Comercial,RPtransac_todos)) then
+		rep_transac_desde = 0
+		rep_transac_hasta = 99999
+	end if
+
+	HayRegistros = "N" 
+	if (testflag(Rep_Comercial,RPflia_rep_todas)) then
+		
+		/* Armo el picklist dinamico de flias */
+		call post:MISCArmo_GruFlia
+		CDS SELECT FROM DSC:DumpRep_tbl becomes dsc:DumpRep_ctx where \
+		(post:adt_dump_fecha >= post:reporte_fec_desde && \
+		post:adt_dump_fecha <= post:reporte_fec_hasta ) && \
+		(post:adt_dump_tx >= post:rep_transac_desde && \
+		post:adt_dump_tx <= post:rep_transac_hasta)
+	else
+		CDS SELECT FROM DSC:DumpRep_tbl becomes dsc:DumpRep_ctx where \
+		(post:adt_dump_fecha >= post:reporte_fec_desde && \
+		post:adt_dump_fecha <= post:reporte_fec_hasta ) && \
+		post:adt_dump_flia == rep_flia && \
+		(post:adt_dump_tx >= post:rep_transac_desde && \
+		post:adt_dump_tx <= post:rep_transac_hasta)
+	end if		
+	
+	cds findfirst dsc:DumpRep_ctx nolock 
+	let lib:err_retval = cdsretval
+	do 
+		if (lib:err_retval == -801)
+			break
+		end if
+		Encontro = "S"
+		;singlestep on
+		cds extract dsc:DumpRep_ctx all	
+	
+		/* MLD Tengo que hacer esto porque el join entre tablas de distintos
+		servicios no funca */	
+		if (testflag(Rep_Comercial,RPflia_rep_todas)) then
+
+			call post:MISCVerif_FliaRep
+			if (retval != 0) then
+				Encontro = "N"
+			end if
+		end if
+
+		if (Encontro == "S") then
+			/* Todas estas condiciones tienen que darse juntas */
+			if (!testflag(Rep_Comercial,RPcliente_todos)) then
+				if (jnl_cli_tipo != cli_tipo) then
+					Encontro = "N"
+				end if
+			end if		
+		end if
+				
+		call post:MISCtipo_impre
+		adt_raux_impre = retval 
+		
+
+		if (Encontro == "S") then
+			select (adt_raux_impre)
+				case IMPRE_RANGO
+				//case IMPRE_GIROS		
+
+				
+					if (Encontro == "S") then
+						if (!testflag(Rep_Comercial,RPdestino_todos) && rep_destino.numchars != 0) then
+							if (post:destino != rep_destino) then
+								Encontro = "N"
+							end if			
+						end if
+					end if
+				
+					if (Encontro == "S") then
+						if (!testflag(Rep_Comercial,RPrango_todos) && rep_rango.numchars != 0) then
+							rango_aux = substr(rep_rango,0,12)
+							um_aux = substr(rep_rango,14,3)
+							if (post:adt_tarif_hasta != rango_aux || post:adt_tarif_um != um_aux) then
+								Encontro = "N"
+							end if			
+						end if
+					end if				
+				
+					if (Encontro == "S") then
+						idx_aux = 0
+						if (!testflag(Rep_Comercial,RPopc_todos) && rep_opc.numchars != 0) then
+							if (post:cant_opc == 0) then
+								Encontro = "N"
+							else
+								do
+									if (idx_aux >= cant_opc) then
+										break
+									end if
+									if (cod_opc[idx_aux] == rep_opc) then	
+										Encontro = "S"
+										break
+									else 
+										Encontro = "N"
+									end if
+									idx_aux = idx_aux + 1
+								loop
+							end if
+						end if
+					end if	
+		
+					if (Encontro == "S") then
+						if (!testflag(Rep_Comercial,RPdcto_todos) && rep_dcto.numchars != 0) then
+							if (post:tipo_descto != rep_dcto) then	
+								Encontro = "N"
+								break
+							end if
+						end if
+					end if				
+					;singlestep on
+					if (Encontro == "S") then
+						/* Si elige TODO la incluyo tenga o no bloques */
+						if (!testflag(Rep_Comercial,RPbloque_todos)) then 
+							/* Si me pide con bloques me fijo que tenga valor, 
+							sino no la incluyo */
+							if (BloqueSinIva_serv == 0 && rep_bloques == "S") then
+								Encontro = "N"
+							else
+								/* Si me pide sin bloques solo pongo las que no tengan bloques */
+								if (BloqueSinIva_serv != 0  && rep_bloques == "N")
+									Encontro = "N"
+								end if
+							end if
+						end if
+					end if		
+					if  (Encontro == "S") then
+						/* Me fijo si tiene filtro por descripcion */
+						if (rep_transac_desc.numchars > 0) then
+							call csr:trimfield(adt_raux_tx)
+							cant_ch = rep_transac_desc.numchars
+							cant_ch2 = post:jnl_unicod_desc.numchars
+							call siaf:busca_chars(rep_transac_desc,post:jnl_unicod_desc,cant_ch,cant_ch2)
+							if (retval != 0) then
+								Encontro = "N"
+							end if
+						end if
+					end if
+					/* Fin de las condiciones */
+					break
+				case IMPRE_MOTIVOS
+	
+					if (!testflag(Rep_Comercial,RPmotivo_todos)) then
+						if (rep_motivos_cod.numchars != 0 ) then
+							if (rep_motivos_cod != siaf:motivo) then	
+								Encontro = "N"
+								break
+							end if
+						else
+							Encontro = "N"
+						end if
+					end if
+					break
+				case else
+						/* Me fijo si tiene filtro por descripcion */
+					if (rep_transac_desc.numchars > 0) then
+						call csr:trimfield(adt_raux_tx)
+						cant_ch = rep_transac_desc.numchars
+						cant_ch2 = post:jnl_unicod_desc.numchars
+						call siaf:busca_chars(rep_transac_desc,jnl_unicod_desc,cant_ch,cant_ch2)
+						if (retval != 0) then
+							Encontro = "N"
+						end if
+					end if
+					break
+			end select 
+
+			if (Encontro == "S") then
+				HayRegistros = "S"
+				call post:MISCacum_RepAux
+			end if
+		end if
+		
+		cds findnext dsc:DumpRep_ctx nolock
+		lib:err_retval = cdsretval
+	loop
+	cds endselect dsc:DumpRep_ctx
+			
+	/* Si la modalidad es batch borro el pick de destinos donde cree las flias */
+	if (post:rep_modalidad == "B") then
+		call csr:f_sadroppl dsc:pic_destinos
+	end if
+	if (HayRegistros == "N") then
+		return (-2)
+	end if	
+	
+END SUB
+
+/*******/

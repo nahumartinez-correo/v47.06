@@ -1,0 +1,159 @@
+/****o* Pendientes de agrupación/OFB:post:PRES_99242
+* NOMBRE
+*   OFB:post:PRES_99242
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postPRES.h"
+
+SUB post:PRES_99242
+    LOCAL loc_medpago LIKE moneda_dsc
+    LOCAL loc_string  LIKE common:csr_string
+    Local lidx like siaf:cantidad
+    local varl_picstr like common:csr_string
+
+    clearfield loc_string
+
+    siaf:codigo_siaf = 99242
+    //call siaf:CDSadt_tran_load
+    ;IF (post:estado_presu != 2 && post:estado_presu != 3 && post:estado_presu != 4)
+	;errmsg common:errmsg_list,"Inicie una Sesión con Cliente UP/Medio para El Reemplazo de Cheque"
+	;errmsg common:errmsg_list,"Inicie una Sesión con un cliente para El Reemplazo de Cheque"
+	;return (-2)
+    ;END IF
+    ;Indico que la sesión es de reemplazo de cheques *** MDG
+    post:esSesionReempChq = "S"
+    CALL siaf:PRESfecha_hora
+    if (retval < 0) then
+    	return (-1)
+    end if
+   
+    //cgw:Controla que no se realice Reemplazo para el cliente generico.
+    IF (post:cli_tipo == 2 && (post:CloCuit == 99999999999 || post:CloCuit == 99999999995)) THEN
+        MSGBOX "No puede realizar Reemplazos para un cliente generico",OFB_OK,"AVISO"
+	RETURN (-2)
+    END IF
+
+    protfield desc_moneda
+    protfield medio_pago_desc
+    /* Se debe permitir cualquier tipo de cliente */
+    /*
+    if (post:cli_tipo != CLIUP && post:cli_tipo != CLIMED ) then
+	errmsg common:errmsg_list,"Solo admite Sesión UP o Cliente Medio"
+	return (-2)
+    end if    	
+    */
+    if (consulta_excepcion == "S" || consulta_excepcionCM == "S")
+	MSGBOX "La transaccion de Reemplazo no se puede realizar en una Venta por Excepcion",0x00,"Error"
+	return (-2)
+    end if
+
+    if (post:estado_presu == 2) then
+	CALL CDSBusca_TxPresuDet
+	if (retval < 0) then
+	    errmsg common:errmsg_list,"La transacción de Reemplazo debe ser la única del Presupuesto"
+	    return -2
+	end if
+    end if	
+
+
+    ;cli_tipo = CLIUP
+    IF (RETVAL < 0) THEN
+        RETURN (-1)
+    END IF
+    tes:es_tesoro = "S"   
+
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+        clearfield giros:PresNro_canc //cgw:al no ser autoclear, se limpia para que no arrastre valor.
+
+        post:tipo_rest = TODOS
+        //call tes:PREStes_gral  
+
+        clearfield siaf:importe
+        ;clearfield siaf:importe_chq
+        clearfield post:importe_origen
+        /* flag que indica si se requiere supervision */
+        clearfield post:SupMedPago
+        post:captura_mp = "S"
+        //No usa motivos ni me interesa el tipo de cliente. 
+        //No tengo restricciones por comprobante fiscal
+        ;Call post:MISCrest_teso(common:sucursal_activa,siaf:codigo_siaf,"pic:PICmedios","N","N",0)        
+
+	protfield post:PicDescrip2
+	clearfield siaf:importe
+	protfield siaf:importe
+
+	call csr:f_sanewpl "mediospagos" PIC:post:ctacte_mpag
+	if (retval < 0) then
+	    errmsg common:errmsg_list,"Error de Ejecucion"
+	    return (-2)
+	end if
+
+	lidx = 0
+	/* Lleno el picklist*/
+	if (post:estado_presu == 3) then
+	    do 
+		if (lidx == cant_valores ) then
+		    break
+		end if
+
+                //cgw:limpio las variables en fecha si estan en 0.
+                if (Emision_Fecha[lidx] == 0) then
+                    clearfield Emision_Fecha[lidx]
+                end if
+                if (Valor_Fecha[lidx] == 0) then
+                    clearfield Valor_Fecha[lidx]
+                end if
+
+		fprint varl_picstr "%2.2s %3.3s %20.20s %12.12s %16.16e  %10.10e %10.10e %3.3s" \
+		ValorPago[lidx],BancoPago[lidx],Bco_Cuenta[lidx],NumCuenta[lidx],\
+		ImporteBanco[lidx],Emision_Fecha[lidx],Valor_Fecha[lidx],chq_clearing[lidx]
+
+		call csr:f_saaddpl "mediospagos" varl_picstr
+		lidx = lidx + 1 
+	    loop		    			
+	end if
+
+	/* Busco la parametria de la comision */
+	cds select from dsc:adt_serv_table becomes dsc:adt_serv_context \
+	    where adt_serv_serv == "99250"
+	cds findfirst dsc:adt_serv_context NOLOCK
+	if (cdsretval == 0)
+	    cds extract dsc:adt_serv_context ALL
+	end if
+	cds endselect dsc:adt_serv_context
+	post:PreDForFis = post:adt_serv_formfiscal
+
+	post:operator_aux = op:op_operator_id
+
+	post:INDPresuD_Dat = OFB:CDSTRAN99240_append
+	CALL post:MISCLeo_PresDet
+	CALL post:MISCprotege(LST:fld99240protege,LST:fld99240desprotege)
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+	    siaf:moneda = 99
+	end if
+
+       	/*if (!testflag(tlr:tran_flags,correction)) THEN
+	      post:tipo_rest = ITEMIZADO_BANCARIO
+       	      call tes:PREStes_gral
+    	  end if*/    
+    end if
+
+    protfield cheqrech_moneda
+    protfield imp_aux
+
+    RETURN (RETVAL)      
+END SUB
+
+/*******/

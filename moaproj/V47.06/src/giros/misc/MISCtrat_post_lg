@@ -1,0 +1,73 @@
+/****o* Lista de Giros/OFB:giros:MISCtrat_post_lg
+* NOMBRE
+*   OFB:giros:MISCtrat_post_lg
+* DESCRIPCION
+*   Tratamiento previo al envio de giros postales de la TX de Emision de lista de giros.
+*	1-Se valida que se hayan seleccionado giros para emitir.
+*	2-Se validar que los giros no superen el limite diario de emision correspondiente.
+*	3-Si el Giro es Postal se valida que existan chequeras de lista de giros habilitadas y que la cantidad de cheques alcance para realizar el envio de los giros seleccionados.
+*	4-Si el Giro es Postal el sistema despliega una pantalla donde muestra el primer número de cheque a imprimir,e informa la cantidad de planchas necesarias y el número de último cheque. 
+*	El operador indica la cantidad de hojas para pausar la impresión. Si sale con ESC se pierden los datos ingresados. Se graban dichos datos en la Presu para tenerlos
+*	en memoria durante la emisión.  
+*   5-Se realiza tratamiento de impresion de cheques. 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:OFBproceso_lg
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosmisc.h"
+
+SUB giros:MISCtrat_post_lg(tipo_giro)
+
+    LOCAL varl_tipo_giro LIKE giros:tipo_giro_fld
+
+	FPRINT varl_tipo_giro,"%s",tipo_giro
+
+    IF (varl_tipo_giro == "P" ) THEN
+      
+        //Verificar si hay que borrar la tabla CaidasChq
+        CALL MISCprocesoCaidasChq
+        IF (retval < 0) THEN //No encontró registros en la CaidasChq para la sesion actual.
+        	//Verifico si hay giros postales sin enviar pero que fueron bien impresos.(en ese caso asumo que hubo
+        	//una caida y que se deben realizar los envios y luego el operador debera continuar con la operatoria
+        	//de impresion volviendo a presionar el boton de envio)
+			CALL CDSPost_sinEnvio_LG
+			IF (RETVAL == 0) THEN
+				//es caida rt y hay registros I y a emitir con nro de giro asociado (retorna 0) entonces realiza envios en ofbproceso_lg
+        	ELSE 
+        		//Sigue el comportamiento normal y pide el prox cheque.    	
+            	/*El sistema desplegara una pantalla donde mostrará el primer número de cheque
+            	a imprimir,e informará la cantidad de planchas necesarias y el número de último cheque. 
+            	El operador indicará la cantidad de hojas para pausar la impresión. */
+            	POPUP giros:POPImp_Postales_LG,-,PCOLImp_Postales_LG,SVALImp_Postales_LG
+        
+            	IF (LASTKEY == RT_ESC) THEN
+                //se pierden los datos ingresados
+                CALL csr:proc_list(F_CLEAR,LST:giros:LISTimp_post_clear)
+                CALL csr:proc_list(F_REFRESH,LST:giros:LISTimp_post_clear)
+                CALL CDSsave_imp_post_lg
+                RETURN -2
+            	END IF
+        
+            	//TRATAMIENTO DE IMPRESION DE CHEQUES
+            	CALL giros:MISCImpLG_Emitidos
+            
+            ENDIF
+        ELSE
+            //hay registros en CaidasChq ==> desplegar la grilla de German		
+            CALL giros:MISCImpLG_Caidas
+            RETURN RETVAL
+        END IF	
+    END IF
+	
+	RETURN 0
+END SUB
+
+/*******/

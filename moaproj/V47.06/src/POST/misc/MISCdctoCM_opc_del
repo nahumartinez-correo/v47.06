@@ -1,0 +1,197 @@
+/****o* Pendientes de agrupación/OFB:post:MISCdctoCM_opc_del
+* NOMBRE
+*   OFB:post:MISCdctoCM_opc_del
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdctoCM_opc_del 
+	
+LOCAL lcantopc LIKE post:cant_opc
+LOCAL limporte LIKE siaf:importe
+LOCAL lafectaefectivo LIKE siaf:afecta_efectivo
+LOCAL ladttranafecefvo LIKE siaf:adt_tran_afec_efvo
+LOCAL lpimportesiniva LIKE post:ImporteSinIva
+LOCAL lsimportesiniva LIKE siaf:ImporteSinIva
+LOCAL limporteconiva LIKE siaf:ImporteConIva
+LOCAL lcodigosiaf LIKE siaf:codigo_siaf
+LOCAL ladttranfliatran LIKE siaf:adt_tran_fliatran
+LOCAL ldctoclimed LIKE post:Dcto_CliMed
+LOCAL ldcto_aux LIKE post:Dcto_CliMed
+LOCAL cod_opc_aux[6] LIKE common:csr_string
+LOCAL ali_opc_aux[6] LIKE post:AliTrnCM
+LOCAL bonifCM_opc_aux[6] LIKE post:bonificaCM
+LOCAL flia_opc_aux[6] LIKE siaf:adt_tran_fliatran
+LOCAL cos_opc_aux[6] LIKE siaf:importe
+LOCAL cant_aux LIKE post:cantidad
+
+		
+	//Levanto de la PresuDet la tx postal para recuperar los opcionales originales
+	Cds SELECT FROM DSC:TABPresuDeta BECOMES DSC:PresuDet_ctx   \
+	WHERE (FLD:post:fecha == FLD:post:fecha ) &&  \
+    (Fld:post:op_operator_id == fld:post:op_operator_id) && \
+    (fld:post:PresNro == fld:post:PresNro) && \
+    (fld:PreDNroTrn == fld:PreDNroTrn) && \
+    (fld:siaf:codigo_siaf == siaf:codigo_siaf)
+	
+	CDS FINDFIRST DSC:PresuDet_ctx NOLOCK
+	
+	IF (CDSRETVAL == 0) THEN
+		
+		//Resguardo campos de memoria
+		ldctoclimed = post:Dcto_CliMed
+		clearfield post:Dcto_CliMed
+		
+		CDS EXTRACT DSC:PresuDet_ctx post:Dcto_CliMed
+		
+		//si hubo bonificación.....
+		
+		if (post:Dcto_CliMed > 0) then
+	
+			//Resguardo campos de memoria
+			
+			lcantopc = post:cant_opc
+			
+			cant_aux = 0
+			while (cant_aux < 6)
+				cod_opc_aux[cant_aux] = post:cod_opc[cant_aux]
+				ali_opc_aux[cant_aux] = post:ali_opc[cant_aux]
+				flia_opc_aux[cant_aux] = post:flia_opc[cant_aux]
+				bonifCM_opc_aux[cant_aux] = post:bonifCM_opc[cant_aux]
+				cos_opc_aux[cant_aux] = post:cos_opc[cant_aux]
+				cant_aux = cant_aux + 1
+			end while
+			
+			//Borro los vectores de los cuales hago el extract
+			call csr:cleararray(post:cod_opc)
+			call csr:cleararray(post:bonifCM_opc)
+			call csr:cleararray(post:ali_opc)
+			call csr:cleararray(post:flia_opc)
+			call csr:cleararray(post:cos_opc)
+		
+			
+			CDS EXTRACT DSC:PresuDet_ctx post:cant_opc 
+			
+			cant_aux = 0	
+			while (cant_opc > cant_aux)
+			
+				CDS EXTRACT DSC:PresuDet_ctx post:cod_opc[cant_aux] post:bonifCM_opc[cant_aux] post:ali_opc[cant_aux] \
+				post:flia_opc[cant_aux] post:cos_opc[cant_aux]
+				cant_aux = cant_aux + 1
+								
+			end while
+			
+			CDS ENDSELECT DSC:PresuDet_ctx
+			
+			cant_aux = 0
+			post:PreDNroTrnAsoc = post:PreDNroTrn
+		
+			while (post:cant_opc > cant_aux)
+			
+				if (bonifCM_opc[cant_aux] == "S") then
+    	
+					//Resguardo campos
+					limporte = siaf:importe
+					lafectaefectivo = siaf:afecta_efectivo
+					ladttranafecefvo = siaf:adt_tran_afec_efvo
+					lpimportesiniva = post:ImporteSinIva
+					lsimportesiniva = siaf:ImporteSinIva
+					limporteconiva = siaf:ImporteConIva
+					lcodigosiaf = siaf:codigo_siaf
+					ladttranfliatran = siaf:adt_tran_fliatran
+					
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					post:AliTrnCM = ali_opc[cant_aux]
+		
+					INIT 22,1
+					Imp_DctoCliMed = (post:cos_opc[cant_aux] * post:Dcto_CliMed) / 100
+					INIT 22,0
+		
+					//si no tiene formulario fiscal asociado no desglosar
+					if (PreDForFis.numchars != 0)
+						/*Se calcula el importe con iva y sin que debo sumar para la transacción, ya que
+						se vuelve atrás el descuento por sesión*/
+						//SC 50170
+						CALL MISCdesglosaIva(Imp_DctoCliMed,ali_opc[cant_aux], 1,0)
+					end if
+		
+					/*Actualizo la PresuPag*/
+					CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,Imp_DctoCliMed,0)
+	
+					/*Actualizo la Tabla AuxIngBr - Gabriel Falciola*/
+					if (PreDForFis.numchars == 0)
+						EstadoFormu = SIN_FORM
+					else
+						EstadoFormu = CON_FORM
+					end if	
+					
+					//se actualiza la auxingbr
+					call CDSAcumImpSes(0,0,Imp_DctoCliMed,post:ImporteSinIva,flia_opc[cant_aux],siaf:adt_tran_afec_efvo,PresNro,siaf:moneda,siaf:moneda)
+					
+					/*Configuro los datos de la transacción de Descuento para que la actualización
+					de la AuxIva la haga en relación a esta transacción*/
+					siaf:codigo_siaf = 99300
+					siaf:adt_tran_fliatran = "PCL"
+					siaf:adt_tran_afec_efvo = "-"
+					siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+					siaf:ImporteConIva = Imp_DctoCliMed
+					siaf:ImporteSinIva = post:ImporteSinIva
+					//no es necesario actualizar el iva porque se hace al entrar a modificar la tx.
+					//call MISCborrarIva
+				
+					ldcto_aux = post:Dcto_CliMed
+					post:Dcto_CliMed = 0
+					//Borro la tx de Descuento
+					call post:CDSagregTrnDctoOpcCM(cant_aux)
+					post:Dcto_CliMed = ldcto_aux 
+				
+					//Recupero campos resguardados
+					siaf:importe = limporte
+					siaf:afecta_efectivo = lafectaefectivo
+					siaf:adt_tran_afec_efvo = ladttranafecefvo
+					post:ImporteSinIva = lpimportesiniva
+					siaf:ImporteSinIva = lsimportesiniva
+					siaf:ImporteConIva = limporteconiva
+					siaf:codigo_siaf = lcodigosiaf
+					siaf:adt_tran_fliatran = ladttranfliatran
+					clearfield post:Imp_DctoCliMed
+					clearfield post:AliTrnCM
+		
+				end if
+			
+				cant_aux = cant_aux + 1
+			
+			end while
+			
+			//restauro el valor de los campos de memoria
+			post:cant_opc = lcantopc
+			post:Dcto_CliMed = ldctoclimed
+			cant_aux = 0
+			while (cant_aux < 6)
+				post:cod_opc[cant_aux] = cod_opc_aux[cant_aux]
+				post:ali_opc[cant_aux] = ali_opc_aux[cant_aux]
+				post:flia_opc[cant_aux] = flia_opc_aux[cant_aux]
+				post:bonifCM_opc[cant_aux] = bonifCM_opc_aux[cant_aux]
+				post:cos_opc[cant_aux] = cos_opc_aux[cant_aux]
+				cant_aux = cant_aux + 1
+			end while
+			
+		else
+			post:Dcto_CliMed = ldctoclimed
+		end if
+	END IF
+END SUB
+
+/*******/

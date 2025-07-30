@@ -1,0 +1,6 @@
+#include "descuento.h"
+#include "giros.h"
+#include "hcomm.h"
+#include "ofbdefs.h"
+#include "impresio.h"
+#include "csr.h"

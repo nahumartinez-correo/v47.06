@@ -1,0 +1,193 @@
+/****o* Pendientes de agrupación/OFB:tes:SVALent_cheque
+* NOMBRE
+*   OFB:tes:SVALent_cheque
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesSVAL.h"
+
+SUB tes:SVALent_cheque
+    local estado    like tes:chmov_marca_ing
+    local superviso like tes:rend_marca_cierre
+    local error     like lib:err_retval
+    local hora_aux  like tlr:jnl_time
+    local marca     like tes:rend_marca_cierre
+    local aux_seq   like tes:chmov_marca_ing
+    
+    if (testflag(tlr:tran_flags,correction))
+        call tes:CDSCheqMov_lock
+        /* Esta lockeado */
+        if (retval < 0)
+            return (-2)
+        end if
+    end if
+    
+    if (!(testflag(tlr:tran_flags,correction))) then
+       
+        let estado = "I"
+        
+        /*  Si no es reversa el importe es el del movimiento para supervisar */
+        let post:importe_origen = chmov_importe
+                
+        cds select from dsc:tes:CheqMov2_tbl becomes dsc:tes:CheqMov2_ctx where \
+        chmov_fecha      == chmov_fecha      && \
+	    chmov_moneda     == chmov_moneda     && \
+	    chmov_op_id_orig == chmov_op_id_orig && \
+	    chmov_login_dest == chmov_login_dest && \
+	    chmov_hora_orig  == chmov_hora_orig  && \
+	    chmov_banco      == 0                && \
+	    chmov_cuenta     == 0                && \
+	    chmov_nro_cheque == 0 
+	
+	    cds findfirst dsc:tes:CheqMov2_ctx nolock
+	    let lib:err_retval = cdsretval
+	    if (lib:err_retval < 0) then
+	        errmsg lst:common:errmsg_list,\
+	        "No hay ningún Cheque cargado"
+	        return (-2)
+	    end if
+	    cds extract dsc:CheqMov2_ctx all   
+        cds endselect dsc:CheqMov2_ctx
+                
+        
+        if (tes:chmov_es_rechazo == "S" )
+            /* el pase fue enviado nuevamente por el op. destino al op. origen */
+	        popup tes:SCRNconfirma  
+	        if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+	           return (-2)
+	        end if
+	    else
+	       
+	        select (chmov_marca_ing)       
+	            case  "I" /* Se debe continuar ingresando porque quedó cortado el pase */
+	                let siaf:continua_transaccion = "S"
+	                fyimsg drv:fyimsg_list,"Continuando con Ingreso"	  
+	                break
+	      
+	            case  "R" /* Se debe continuar rechazando porque quedó cortado el pase */
+	                let siaf:continua_transaccion = "N"
+	                fyimsg drv:fyimsg_list,"Continuando con Rechazo"
+	                break
+	      
+                case else
+	                popup tes:SCRNrechaza
+	                if (lastkey == RT_ESC) then
+	                    return (-2)
+	                end if
+                    break
+        
+            end select
+        end if
+    
+            
+        if (siaf:continua_transaccion == "N") then   /* pase rechazado */
+       
+            /* verifico que el operador origen del pase no haya cerrado su caja */
+	        call tes:CDSchk_open_caj(tes:chmov_suc_id,tes:chmov_op_id_orig)
+       
+            /* la caja esta cerrada o no se pudo leer el registro de rend.*/
+	        if (retval < 1 && \
+	            (tes:chmov_codtran == 8900||tes:chmov_codtran == 8580 )) then 	     
+	            let common:csr_string = \
+	            "(L) IMPOSIBLE RECHAZAR EL PASE. OPERADOR ORIGEN CERRO CAJA"
+	            errmsg common:errmsg_list,fld:common:csr_string
+	            return (-3)
+	        end if
+
+            /* enviar un mensaje al operador origen */
+	        call MISCsend_msg_dest(tes:chmov_login_orig,"RECHAZO SU PASE DE VALORES")
+
+	        tes:hora_aux = common:time_of_day
+            fprint siaf:nombre_transac, "RECH %-s",siaf:nombre_transac
+                             	  
+            /* Para que no totalice */
+	        clearfield tlr:INDtots_append
+	        clearfield drv:INDspc_rtn[0]
+
+	        /* FLOR (termina)*/
+        end if
+        
+    else /* reversa */
+        /* verificar que no fue rechazada, en ese caso no se puede reversar */
+           
+        call tes:MISCmsg_entrada(chmov_marca_ing,chmov_es_rechazo)
+        if (retval < 0)
+             return (-2)
+        end if
+    end if
+    
+    if ((siaf:continua_transaccion == "S") || \
+        testflag (tlr:tran_flags,correction)) then  /* Si la rechaza no pido supervision */
+        call siaf:SVALnivel_sup
+        if (retval < 0)
+            return (-2)
+        end if
+    end if
+    
+    /* Guardo si fue supervisada para marcar las otras */
+    if (testflag(tlr:tran_flags,supovr_granted)) then
+	    let superviso = "S"
+    else
+	    let superviso = "N"
+    end if
+    
+    call csr:f_sadroppl dsc:Cheque
+    call csr:f_sanewpl dsc:Cheque pic:Cheque
+
+    /* Restauro el lib:err_retval */
+    if (!(testflag(tlr:tran_flags,correction))) then
+        let drv:INDscr = SCR:tes:SCRNtotal_cheq_ent
+        /* Grabo el Encabezado del mov */
+        call tes:MISCjour_enc_cheq
+         
+        /* Guardo la secuencia del encabezado para actualizarlo al final */
+        aux_sequence_mov = chmov_sequence_orig
+         
+        /* Grabo el resto de los movimientos */
+        call tes:MISCmov_ent_cheque(superviso)
+        
+        /* Actualizo  la  marca de completo */
+        let chmov_sequence_orig = aux_sequence_mov
+        if (tlr:context_retval == 0)
+            call tes:CDScabe_CheqMovcomp("C")
+        end if
+        
+        let drv:INDspc_rtn[2] = ofb:TRANprint_cheques
+        clearfield drv:INDjnl_rtn
+        
+    else  /* (reversa) */
+        /* verifico que el operador origen del pase no haya cerrado su caja */
+	    call tes:CDSchk_open_caj(op:op_branch_id,tes:chmov_op_id_orig)
+	    if (retval < 1 && tes:chmov_codtran == 8580) then
+            /* la caja esta cerrada o no se pudo leer el registro de rend.*/
+	        let common:csr_string = \
+	        "(L) IMPOSIBLE REVERSAR. OPERADOR ORIGEN CERRO CAJA"
+	        errmsg common:errmsg_list,fld:common:csr_string
+	        return (-2)
+	    end if
+	
+	    call MISCreverso_sesion
+	    if (retval < 0) then
+	        return (-2)
+	    end if
+        call MISCsend_msg_dest(tes:tmov_login_orig,"REVERSO SU PASE DE VALORES")
+        /* Por último actualizo el encabezado */
+    end if
+    cds unlock dsc:CheqMov_ctx
+    cds endselect dsc:CheqMov_ctx
+    unprotfield siaf:moneda
+    unprotfield post:importe_origen
+END SUB
+
+/*******/

@@ -1,0 +1,258 @@
+/****o* Pendientes de agrupación/OFB:hcomm:RENmisc_reentry
+* NOMBRE
+*   OFB:hcomm:RENmisc_reentry
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "REENTRYMISC.OFB.h"
+
+/* This file contains miscellaneous PCL routines used by multiple types */
+/* of reentry.                                                          */
+        SUB hcomm:RENmisc_reentry
+        cds findfirst DSC:hcomm:CONreentry lock
+        SELECT (cdsretval)
+                case 0
+                        goto send_reentry
+                case -CDS_RECORD_NOT_FOUND
+                        move DSC:hcomm:ERRno_unposted to hcomm:reentry_error
+                        CALL  OFB:hcomm:RENmisc_error
+                        goto errexit
+                CASE ELSE
+                        move DSC:hcomm:ERRread_failed to hcomm:reentry_error
+                        CALL  OFB:hcomm:RENmisc_error
+                        goto errexit
+        END SELECT
+        tes:ent_sal_1 = 0
+send_reentry:
+        if (testflag(hcomm:state_flags,reentry_reset))
+                move dsc:hcomm:ERRreentry_inter to hcomm:reentry_error
+                CALL  OFB:hcomm:RENmisc_error
+                goto errexit
+        END IF
+        cds extract DSC:hcomm:CONreentry all
+
+        /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+        cds extract DSC:hcomm:CONreentry fld:tlr:jnl_tran_flags INTO \
+                                        fld:tlr:tran_flags
+        /**/
+
+        if (cdsretval != 0)
+                move DSC:hcomm:ERRupdate_error to hcomm:reentry_error
+                CALL  OFB:hcomm:RENmisc_error
+                goto errexit
+        END IF
+        
+
+
+        /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+        /*
+        CALL  OFB:hcomm:COMM_stat_init
+        CALL  OFB:hcomm:COMM_host_tran
+        */
+
+        if (testflag(common:rt_flags,reentry_fecha_valor))
+                let siaf:codigo_siaf = siaf:codigo_siaf + 4
+                let siaf:fecha = common:system_date
+                let hcomm:INDhost_sndrt = siaf:INDhost_snd_fv
+                let siaf:fecha_valor = tlr:jnl_bus_date
+        END IF
+
+        /*entrada caja  o  entrada tesoro*/
+        if (siaf:codigo_siaf == 8820 || siaf:codigo_siaf == 8830)
+           call tes:CDSent_status_teso
+           if (retval < 0)
+              /*no hay salida para la entrada*/
+              move "No existe la salida correspondiente" to hcomm:reentry_error
+              call ofb:hcomm:RENmisc_error
+              goto errexit
+           else
+              if (tes:tmov_hcomm_status == 1)        /*sin enviar*/
+                 tes:ent_sal_1 =  tes:ent_sal_1 + 1
+		/* se agrega el findnext para que cuando la trans. es una 
+		   entrada sin salida continue con la proxima tran, dejando 
+		   a este pendiente */
+		CDS FINDNEXT DSC:hcomm:CONreentry LOCK
+	        SELECT (cdsretval)
+       	         case 0
+       	                 goto send_reentry
+			 break
+       	         case else
+	                 goto leer_proximo
+			 break
+       		END SELECT
+              elseif (tes:tmov_hcomm_status >= 100)  /*rechazada*/
+                 hcomm:tran_status = 100
+                 siaf:mensaje = "SALIDA RECHAZADA"
+                 goto actualizo_journal
+              end if
+           end if
+        end if
+
+        if (siaf:multiple != "S")
+                call ofb:hcomm:COMM_stat_init
+                call ofb:hcomm:COMM_host_tran
+        else
+                /* Es una Transaccion Multiple, llama a otro manejador de
+                   envio de transacciones. Martin 06/05/96 */
+                call siaf:COMMenvio_transac
+        END IF
+        /**/
+        if (hcomm:tran_status == UNPOSTED)
+                move DSC:hcomm:ERRno_host to hcomm:reentry_error
+                CALL  OFB:hcomm:RENmisc_error
+                goto errexit
+        END IF
+
+        /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+        /*
+        let common:trap_reset = ofb:hcomm:RENtran_reset
+        */
+        /**/
+
+actualizo_journal:
+        CALL  OFB:hcomm:COMM_host_msg
+        cds clearbuffer DSC:hcomm:CONreentry
+        if (cdsretval != 0)
+                move DSC:hcomm:ERRupdate_error to hcomm:reentry_error
+                CALL  OFB:hcomm:RENmisc_error
+                goto errexit
+        END IF
+        CALL  FLD:hcomm:INDreentry_update
+        if (retval != 0)
+                move DSC:hcomm:ERRno_jnl_updt to hcomm:reentry_error
+                CALL  OFB:hcomm:RENmisc_error
+                goto errexit
+        END IF
+
+        /*salida caja  o  salida tesoro*/
+        if (siaf:codigo_siaf == 8620 || siaf:codigo_siaf == 8630)
+           call tes:CDSsal_status_teso
+        end if
+        /*entrada caja  o  entrada tesoro*/
+        if (siaf:codigo_siaf == 8820 || siaf:codigo_siaf == 8830)
+           if (hcomm:tran_status >= 100 && siaf:mensaje != "SALIDA RECHAZADA")
+              call tes:CDSstatus_teso_mov(" ")
+           end if
+        end if
+           
+
+        if (hcomm:tran_status >= HOST_REJECTED &&\
+                hcomm:tran_status < HC_ERR_END)
+                let hcomm:reentry_rejctd = hcomm:reentry_rejctd + 1
+                let hcomm:reentry_pending = hcomm:reentry_pending - 1
+        else
+                let hcomm:reentry_accptd = hcomm:reentry_accptd + 1
+                let hcomm:reentry_pending = hcomm:reentry_pending - 1
+        END IF
+leer_proximo:
+        let hcomm:reentry_total = hcomm:reentry_total + 1
+        refresh hcomm:reentry_pending
+        refresh hcomm:reentry_accptd
+        refresh hcomm:reentry_rejctd
+        refresh hcomm:reentry_total
+
+        /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+        /* Se comentan algunas lineas y se agregan a continuacion otras hasta
+        el rotulo 
+        cds findnext DSC:hcomm:CONreentry lock
+        SELECT (cdsretval)
+                case 0
+                        goto send_reentry
+                case -CDS_RECORD_NOT_FOUND
+                        if (!testflag(common:rt_flags,batch_mode))
+                                fyimsg common:fyimsg_list,2 DSC:hcomm:FYIreentry_compl
+                        END IF
+                        cds endselect dsc:hcomm:CONreentry
+                        return 0
+                CASE ELSE
+                        move DSC:hcomm:ERRread_failed to hcomm:reentry_error
+                        CALL  OFB:hcomm:RENmisc_error
+                        goto errexit
+        END SELECT
+        */
+
+        cds endselect dsc:hcomm:CONreentry
+        call FLD:INDreentry_select
+        cds wait dsc:hcomm:CONreentry
+        cds findfirst DSC:hcomm:CONreentry lock
+        if (CDSRETVAL == -CDS_RECORD_NOT_FOUND)
+                if (!testflag(common:rt_flags,batch_mode))
+                        fyimsg common:fyimsg_list,2 \
+                                DSC:hcomm:FYIreentry_compl
+                        /* Limpia marca de reentry automatico */
+                        call siaf:MISCunset_reentryaut  
+                END IF
+                goto errexit
+        endif
+        if (CDSRETVAL == 0)
+                if (tes:ent_sal_1 == 0) then
+                   goto send_reentry
+                else
+                   cds aggregate dsc:hcomm:CONreentry count \
+                   fld:tlr:jnl_branch as fld:siaf:cantidad_registros
+                   if (cdsretval != 0) then
+                      goto errexit
+                   else
+                      cds extract DSC:hcomm:CONreentry fld:siaf:cantidad_registros
+                      if (siaf:cantidad_registros > tes:ent_sal_1) then
+                         /*debido al aggregate y al ultimo extract hay
+                         que volver a hacer el select*/
+                         cds endselect DSC:hcomm:CONreentry
+                         call FLD:INDreentry_select
+                         cds findfirst DSC:hcomm:CONreentry lock
+                         goto send_reentry
+                      else
+                         fyimsg common:fyimsg_list,2 \
+                         DSC:hcomm:FYIreentry_compl
+                         /* Limpia marca de reentry automatico */
+                         call siaf:MISCunset_reentryaut  
+                         goto errexit
+                      end if
+                   end if
+                end if
+        else
+                move DSC:hcomm:ERRread_failed to hcomm:reentry_error
+                call ofb:hcomm:RENmisc_error
+                goto errexit
+        endif
+errexit:
+        cds endselect dsc:hcomm:CONreentry
+        /* En el caso de que el reentry no hubiese terminado bien , 
+           checkea que realmente le hayan quedado pendiente alguna operacion
+           porqu pudiese ser que se corte la linea durante le envio de la 
+           ultima, en cuyo caso no hay ninguna UNPOSTED y no tiene sentido 
+           que quede la marca de reentry automatico seteada */
+        if (op:op_reentry_aut != "")
+                call FLD:INDreentry_select
+                cds wait dsc:hcomm:CONreentry
+                cds findfirst DSC:hcomm:CONreentry lock
+                if (CDSRETVAL == -CDS_RECORD_NOT_FOUND)
+                        /* Limpia marca de reentry automatico */
+                        call siaf:MISCunset_reentryaut  
+                        let reentry_pending = 0
+                END IF
+        end if
+
+        /* EC Integ.de cambios hechos anteriormente en Version 2.7 */
+        joinscreen tlr:teller_functions,NOCURSOR
+        resetflag common:rt_flags reentry_active
+        clearfield lib:stat_message
+        let lib:stat_message.highlite = 0
+        refresh lib:stat_message
+        /**/
+
+        return -1
+END SUB
+
+/*******/

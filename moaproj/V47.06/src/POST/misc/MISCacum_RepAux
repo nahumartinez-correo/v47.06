@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:MISCacum_RepAux
+* NOMBRE
+*   OFB:post:MISCacum_RepAux
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCacum_RepAux
+	local idx_aux like siaf:idx
+	local cod_aux like post:adt_opc_opci
+	local desc1 like post:jnl_unicod_desc
+	
+	/* Limpio los campos de la RepAux*/
+	CALL CSR:proc_list(F_CLEAR,lst:post:LISTRepAux_fld)
+
+	;clearfield post:adt_raux_impre
+	call csr:cleararray(post:adt_raux_imp)
+	call csr:cleararray(post:adt_raux_cant)
+		
+	post:adt_raux_tx = post:adt_dump_tx
+	post:adt_raux_op = op:op_operator_id
+	post:adt_raux_flia = post:adt_dump_flia
+
+
+	post:adt_raux_cod = 0
+	post:adt_raux_subcod = 0
+	post:adt_raux_hasta = 0
+	post:adt_raux_item = 0
+	
+	/* Si no tengo cliente asociado, lo pongo dentro de los eventuales */
+	if (post:jnl_cli_tipo == 0) then
+		post:jnl_cli_tipo = 2
+	end if
+	/* Cargo los datos particulares que me interesan */
+	select (post:adt_raux_impre)
+		case IMPRE_ESPV
+			post:adt_raux_cod = tes:espv_cod
+			post:adt_raux_subcod = tes:espv_subcod
+			post:adt_raux_hasta = 0
+			break
+		case IMPRE_PF
+			post:adt_raux_cod = post:sf1_id_paycode
+			;post:adt_raux_coddesc = post:sf1_serv_desc
+			fprint adt_raux_coddesc "%-s" post:sf1_serv_desc			
+			break
+		case IMPRE_MOTIVOS
+			post:adt_raux_cod = siaf:motivo
+			fprint adt_raux_coddesc "%-s" siaf:adt_mot_desc_tmp
+			break
+		//case IMPRE_GIROS
+		case IMPRE_RANGO
+			post:adt_raux_cod = post:destino
+			if (post:adt_tarif_um.numchars != 0) then
+				post:adt_raux_subcod = post:adt_tarif_um
+			end if
+			if (post:adt_tarif_hasta.numchars != 0) then
+				post:adt_raux_hasta = post:adt_tarif_hasta
+			end if
+			break
+	end select
+	/* Grabo en la RepAux */
+	/*
+	if (post:adt_dump_ImpNeto > 0) then
+		fprint desc1 "SERV %-s",jnl_unicod_desc
+	else
+		fprint desc1 "%-s",jnl_unicod_desc
+	end if
+	*/
+	call post:CDSRepAux_save(0,adt_dump_siniva,adt_dump_punit,post:jnl_unicod_desc)
+	
+		
+	
+	/* Si es de giros y desglosa grabo otro registro más */
+	if (post:adt_dump_ImpNeto > 0) then
+		/* Le quito la parte que dice SERV */
+		desc1 = substr(post:jnl_unicod_desc,5,15)
+		call post:CDSRepAux_save(1,post:adt_dump_ImpNeto,0,desc1)
+	end if
+	/* Si el tipo de impresion es de giros o por rangos grabo el detalle */
+	//if (post:adt_raux_impre == IMPRE_RANGO || post:adt_raux_impre == IMPRE_GIROS) then
+	if (post:adt_raux_impre == IMPRE_RANGO) then
+		/* Acumulo opcionales*/
+		idx_aux = 0
+		do
+			if (idx_aux >= post:cant_opc) then
+				break
+			end if
+			cod_aux = post:cod_opc[idx_aux]
+			imp_aux = post:siniva_opc[idx_aux]
+			
+			call post:MISCacum_DetRep(TIPO_OPC,cod_aux,imp_aux,0)
+			idx_aux = idx_aux + 1
+		loop		
+		
+		if (post:tipo_descto.numchars > 0) then
+			call post:MISCacum_DetRep(TIPO_DTO,post:tipo_descto,post:descuento,0)
+		end if
+		if (post:cant_bloq > 0) then
+			call post:MISCacum_DetRep(TIPO_BLOQ,"BLOQ",post:BloqueSinIva_serv,0)
+		end if
+	end if		
+END SUB
+
+/*******/

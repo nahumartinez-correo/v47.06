@@ -1,0 +1,116 @@
+/****o* Pendientes de agrupación/OFB:post:PBpmaux_agregar
+* NOMBRE
+*   OFB:post:PBpmaux_agregar
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpb.h"
+
+SUB post:PBpmaux_agregar  //tes:PBauxesp_agregar_vta
+    local nropresu        like post:PresNro
+    local loc_prodmay_aux like prodmay_aux
+    
+    /* Agrega registros a la tabla auxProdMay */
+    if (adt_pmaux_codmat.numchars == 0 || adt_pmaux_cant == 0 || \
+	    adt_pmaux_descmat.numchars == 0) then
+	    errmsg lst:common:errmsg_list,"Falta ingresar algún campo"
+	    drv:button = drv:last_button
+        call drv:but_up_enable
+	    return (-1)
+    endif 
+
+    Call csr:set_currentfield fld:post:adt_pmaux_codmat
+    call FVALpm_material
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)
+    end if
+
+    /*Ver en SAP si el cliente tiene permitido seleccionar ese producto*/
+    if (post:cli_tipo == 1)
+        //call post:sap_valida_pm
+        call post:MISCbuscar_prod_sap("PMAY")
+        if (retval < 0)
+            /*Segun SAP el cliente no puede seleccionar este producto*/
+            CALL CSR:proc_list(F_CLEAR,LST:LISTprodmay_flds)
+            CALL CSR:proc_list(F_REFRESH,LST:LISTprodmay_flds)
+            drv:button = drv:last_button
+            CALL drv:but_up_enable
+            CALL drv:but_redraw
+            nextfield adt_pm_material
+            return (0)
+        end if
+    end if
+
+    Call csr:set_currentfield fld:post:adt_pmaux_cant
+    call siaf:FVALcampo_no_cero
+    if (retval < 0) then
+        drv:button = drv:last_button
+        call drv:but_up_enable
+        return (-2)
+    end if
+
+         
+    // Por tesoro
+    if (drv:dt_app == 4) then     	
+        let adt_pmaux_op = op:op_tesoro_id
+    else        
+	    let adt_pmaux_op = op:op_operator_id
+    endif
+    let adt_pmaux_fecha = common:system_date
+    let adt_pmaux_suc = op:op_branch_id
+    if (post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) then
+       /* hasta no salir de este modo el PresNro se graba en cero en la auxProdMay */
+        nropresu = 0
+        CALL CDSpmaux_load(nropresu)
+    else
+        CALL CDSpmaux_load(post:PresNro)
+    end if
+   
+    if (retval == 0) then    
+	    errmsg lst:common:errmsg_list, "Producto Ya Ingresado"
+	    drv:button = drv:last_button
+        call drv:but_up_enable
+	    return (-2)
+    endif
+
+    if (post:estado_presu == 3) then
+        adt_pmaux_presu = 0
+        refresh adt_pmaux_presu
+    end if
+    
+    adt_pmaux_acepta = "N"    
+    call CDSpmaux_save //tes:CDSauxesp_save_vta
+    //let siaf:cantidad = siaf:cantidad + adt_pmaux_cant
+    
+    CALL MISCdisplay_prodmay //tes:MISCdisplay_especies
+    loc_prodmay_aux = prodmay_aux    
+    CALL CSR:proc_list(F_CLEAR,LST:LISTprodmay_flds)
+    prodmay_aux = loc_prodmay_aux
+    CALL CSR:proc_list(F_REFRESH,LST:LISTprodmay_flds)
+    
+    
+    ;NEXTFIELD adt_pmaux_codmat
+    NEXTFIELD prodmay_desc
+    drv:button = drv:last_button
+    call drv:but_up_enable
+    setvaldone adt_pmaux_codmat
+    setvaldone adt_pmaux_cant
+    siaf:cantidad = siaf:cantidad + 1  
+    clearfield post:flag_pm
+    resetvaldone post:adt_pmaux_codmat
+END SUB
+
+/*******/

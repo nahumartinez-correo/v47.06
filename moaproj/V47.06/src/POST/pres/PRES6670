@@ -1,0 +1,117 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:PRES6670
+* NOMBRE
+*   OFB:post:PRES6670
+* DESCRIPCION
+*   Rutina PRES de la transaccion de Cobro por Cuenta de Terceros
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN6670
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRES6670
+   LOCAL mensaje LIKE common:csr_string
+   LOCAL loc_cli_tipo LIKE lib:err_retval
+   local esSesion like siaf:i
+   local esTeclasR like siaf:i
+   local capturaMP like siaf:i
+   local l_cod_barra like post:cod_barra_CCT
+      
+   if (post:estado_presu == 2) then
+   	   //Mensaje de Consulta Maestro Clientes (CCT)
+   	   call giros:CDSconsulta_fec_CCT 
+   	   if (giros:adt_dgralsuc_fec_CCT == common:system_date) then 
+		   //no se debe realizar la consulta al host
+		   clearfield hcomm:INDhost_sndrt
+		   clearfield hcomm:INDhost_rcvrt
+	   else
+    	   call post:OFBconsulta_CCT_CREM
+    	   if (retval < 0)
+    		   resetflag giros:tran_send_mode,consulta_simple
+    		   resetflag giros:tran_send_mode,consulta_multiple
+    		   clearfield post:climed_ult_item
+    	   else
+    		   //Se graba la fecha del dia en la DGralSuc para que no se vuelva a realizar la consulta del maestro de clientes
+    		   call giros:CDSgrabo_fec_CCT 
+    	   endif
+       endif
+   endif
+ 
+   PROTFIELD post:comitente_CCT
+   PROTFIELD post:servicio_CCT
+   PROTFIELD post:cupones_CCT
+   PROTFIELD post:cant_cupon_CCT
+   PROTFIELD post:imp_total_CCT
+   
+   ClearField PreDForFis
+   
+   /*cgw: Obs 1 - AUT-1981
+   //Se comenta validación, para que vaya directamente a abrir la sesion.
+   //Esto lo realiza por la parametría de la transaccion - exclusivo modo presupuesto.
+   IF (post:estado_presu != 2 && post:estado_presu != 3 && post:estado_presu != 4) THEN
+       errmsg common:errmsg_list,"Inicie una Sesión con Cliente Minorista para poder ingresar a la transacción."
+       RETURN (-1)
+   END IF
+   */
+
+   //es importante setear en 99 sino totaliza mal la trx en la captura
+   siaf:moneda = 99
+   clearfield post:medio_pago_desc 
+
+   siaf:nombre_transac.HIGHLITE = 0
+   siaf:codigo_siaf = 06670
+   CALL siaf:PRESfecha_hora
+   IF (RETVAL < 0) THEN
+       RETURN (-1)
+   END IF
+   
+   CALL post:CDSobt_cli_tipo
+   loc_cli_tipo = retval
+   IF (loc_cli_tipo != 2) THEN
+       errmsg common:errmsg_list,"TRANSACCION SOLO DISPONIBLE PARA CLIENTE MINORISTA"
+       RETURN (-1)
+   END IF
+   
+   IF (estado_presu == 2) THEN
+   	   drv:INDscreen[0] = scr:post:SCRN6670
+   	
+   	   CALL post:CDSBusca_TxPresuDet
+   	   IF (RETVAL < 0) THEN
+   	   	   ERRMSG common:errmsg_list,"La transacción de Cobro por Cuenta de Terceros debe ser la única del Presupuesto."
+		   RETURN (-1)
+	   END IF
+
+	   //resguardo el valor del campo de codigo de barra por si viene ingresado uno desdel el buscador
+   	   l_cod_barra = post:cod_barra_CCT
+	   //Esta marca es utilizada para que no pueda ser reversada la sesion.
+	   //post:es_CCT no es autoclear y estara en memoria en toda la sesion.
+	   //Se grabara en la Presu en el momento de la journalización del primer cobro.
+   	   CLEARFIELD post:es_CCT
+   	
+   	   //Inicializo contadores de cupones en pantalla
+   	   CALL post:PBNuevo_cupon_CCT
+   	   //restauro el valor del codigo de barra por si viene informado desde el buscador
+   	   post:cod_barra_CCT = l_cod_barra
+   	   REFRESH post:cod_barra_CCT
+   	   post:cant_cupon_CCT = 0
+   	   post:imp_total_CCT = 0
+   	   REFRESH post:cant_cupon_CCT
+   	   REFRESH post:imp_total_CCT
+   END IF
+   
+   INDPresuD_Dat = OFB:CDS6670_append
+   CALL post:MISCLeo_PresDet
+
+   //Borro tabla temporal cupon_tmp
+   CALL post:CDScupon_tmp_DelAll  
+ END SUB
+
+/*******/

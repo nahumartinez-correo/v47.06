@@ -1,0 +1,93 @@
+/****o* Pendientes de agrupación/OFB:giros:SVALcons_EnvioInter
+* NOMBRE
+*   OFB:giros:SVALcons_EnvioInter
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+/* consulta multiple/simple Envio Hold */
+SUB giros:SVALcons_EnvioInter
+	
+	fprint giros:cons_inter_ctrol "%010s",giros:cons_inter_ctrol	
+	
+	call csr:f_sadroppl DSC:consulta_multiple
+	call csr:f_sanewpl  DSC:consulta_multiple,PIC:consulta_multiple
+	
+	clearfield giros:new_mtcn_WI_comm
+
+	call post:CDSobtiene_secuen("IDWUI")
+	fprint id_wui_comm "%5.5s%07.07e",common:sucursal_activa,post:adt_codseq_nro	
+	
+	hcomm:INDhost_sndrt = OFB:giros:SENDconsulta_multi
+	hcomm:INDhost_rcvrt = OFB:giros:RCVEconsulta_multi
+	CALL hcomm:COMM_stat_init
+	IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N")) THEN
+		MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+		RETURN (-2)
+	END IF 
+	/************************************************************************/
+	/*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+	/************************************************************************/
+	/* Si el flag de TRAN caidas en Vuelo esta ON,
+	Ejecuto proceso correspondiente,para su procesamiento 	            
+	Se ejecutara el proceso de recuperacion siempre y cuando la transaccion
+	en curso tenga rutina de send y  de rcve, es decir las que viajan a
+	HOST.  Se realizo el procedimiento anterior, para que no se modifique
+	el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+	call siaf:CDSchk_trxs_caidas
+	if (retval == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		call siaf:CDSjnl_mayor_cien	
+		if ( retval == TRAN_CAIDA_VUELO )
+			clearfield hcomm:INDhost_sndrt 
+			clearfield hcomm:INDhost_rcvrt 
+		end if
+		FYIMSG CLEAR
+	elseif (retval == -5) then // quedaron trx's pendientes de recuperacion por el proc. batch...
+		clearfield hcomm:INDhost_sndrt
+		clearfield hcomm:INDhost_rcvrt
+	end if    
+	/************************************************************************/
+	/*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+	/************************************************************************/
+
+	call giros:OFBdisable_bt_msg
+	CALL hcomm:COMM_host_tran
+	common:trap_reset = OFB:drv:KEYSreset_esc
+	call giros:OFBenable_bt_msg
+	CLEARFIELD lib:stat_message
+	REFRESH STATUSLINE
+	If (hcomm:tran_status != HOST_ACCEPTED) THEN
+		ResetFlag tran_send_mode,consulta_multiple
+		RETURN -2
+	END IF
+	//
+	
+	/*****despues sde SVALconculta_multi////////////***************/
+		
+	clearfield lib:stat_message 
+	refresh    lib:stat_message 
+
+	IF (testflag(giros:flag_viajes_giros,EnvioHOLD_Multiple))
+		SetFlag tran_send_mode,consulta_simple
+		POPUP SCRNpick_70388 PRESpick_multi,-,SENDpick_70388
+		If (lastkey == RT_ESC)
+			//Si pongo el return -2 vuelve a la pantalla de ingreso de telefono
+			//RETURN -2
+		end if
+	END IF
+END SUB
+
+/*******/

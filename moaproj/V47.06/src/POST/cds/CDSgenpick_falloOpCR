@@ -1,0 +1,67 @@
+/****o* Contra Reembolso/OFB:post:CDSgenpick_falloOpCR
+* NOMBRE
+*   OFB:post:CDSgenpick_falloOpCR
+* DESCRIPCION
+*   Genera el picklist para seleccionar el operador a asignar el Fallo CREM.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETVAL (-2): No existen operadores con perfil de Caja para asignarle el Fallo CREM.
+*   RETVAL (-2): No pudo mostrar el picklist de operadores para asignar el Fallo CREM.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCasign_falloOpCR
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSgenpick_falloOpCR
+	
+	LOCAL operator_tmp LIKE op:op_operator_id
+	LOCAL op_login_tmp LIKE op:op_login_id
+
+    //cgw: Genera el picklist para seleccionar el operador a asignar el Fallo CREM.
+
+	call csr:f_sadroppl "fallo_CREM_op"
+	CALL CSR:f_sanewpl "fallo_CREM_op" PIC:post:PICfallo_CREM_op
+	
+	CDS SELECT FROM DSC:profiles_tbl BECOMES DSC:profiles_ctx WHERE \
+		op:op_branch_id == common:sucursal_activa && \
+		op:op_tlr_auth == "X"
+	CDS FINDFIRST DSC:profiles_ctx NOLOCK
+	LET lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == -801)
+		MSGBOX "No existen operadores con perfil de Caja para asignarle el Fallo CREM",0x00,"Error"
+		RETURN (-2)	
+	END IF
+	WHILE (lib:err_retval != -801)
+		CDS EXTRACT DSC:profiles_ctx \
+			op:op_operator_id INTO operator_tmp \
+			op:op_login_id into op_login_tmp 
+		
+		//armo el picklist con los operadores habilitados		
+		FPRINT common:csr_string "%5.5e   %-14.14s",operator_tmp,op_login_tmp
+		CALL CSR:f_saaddpl "fallo_CREM_op" common:csr_string
+	
+		CDS FINDNEXT DSC:profiles_ctx NOLOCK
+		lib:err_retval = CDSRETVAL
+	END WHILE
+	
+	CLEARFIELD common:csr_string 
+	//CALL CSR:f_sadopl("fallo_CREM_op",common:csr_string) //se reemplaza por rutina de abajo.
+	//esta rutina alinea el picklist mostrado segumn al boton asociado al mismo.
+	CALL drv:MISCf_sacombopl ("fallo_CREM_op",common:csr_string,drv:button) 
+	IF (RETVAL < 0)
+		CALL csr:f_sadroppl "fallo_CREM_op"
+		RETURN (-2)
+	END IF
+	
+	post:asign_falloCR_opdes = SUBSTR(common:csr_string,0,5)
+
+    CALL csr:f_sadroppl "fallo_CREM_op"
+END SUB
+
+/*******/

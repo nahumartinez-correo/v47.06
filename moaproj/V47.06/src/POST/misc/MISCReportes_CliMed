@@ -1,0 +1,146 @@
+/****o* Reportes/OFB:post:MISCReportes_CliMed
+* NOMBRE
+*   OFB:post:MISCReportes_CliMed
+* DESCRIPCION
+*   Arma el listado de Ventas a Clientes Medios.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:MISClist_cieforsuc, OFB:tes:MISClist_cierre_suc
+* DOCUMENTACION
+*   NI50572 Digitalizacion de Reportes
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCReportes_CliMed
+	LOCAL copias_aux LIKE siaf:i //para cant. de copias del listado.
+	
+	IF (siaf:pantalla_impreso != "P") THEN
+		;LMB - PS 9780 - 17.06.2008
+		FPRINT siaf:dnix_cmd, "%s%s", common:dirTemporal, "climed.lis"
+		CALL CSR:file_open 1 siaf:dnix_cmd "w"
+		IF (RETVAL < 0) THEN
+			ERRMSG LST:common:errmsg_list,"Error al abrir el archivo climed.lis"
+			RETURN (-2)
+		END IF
+	END IF
+    
+  LET siaf:pick_titulo = "climed"
+  CALL CSR:f_sanewpl siaf:pick_titulo PIC:climed
+    
+	//Se asume que son las del dia
+	CantVtaCM = 0
+	TotVtaCM  = 0
+	TotVtaCM_Sdcto = 0
+	TotVtaCM_Cdcto = 0
+	TotDctoCM = 0
+	CantDctoCM = 0
+	PorcDctoCM = 0
+	siaf:i = 1
+	
+	//ventas del día
+	CDS SELECT FROM DSC:tlr:TABjnl BECOMES DSC:tlr:jnl_context \
+		WHERE tlr:jnl_branch == op:op_branch_id \
+		&& tlr:jnl_date == siaf:fecha_proceso \
+		&& tlr:jnl_sequence_corr == "" \
+		&& tlr:jnl_status < 100 \
+		&& siaf:codigo_siaf == 99023 \
+		&& post:VentaCliMed == "S"
+	
+	CDS FINDFIRST DSC:tlr:jnl_context NOLOCK
+	IF (CDSRETVAL == -801) THEN
+		CALL csr:file_close(1)
+		// NI50572 Digitalizacion de Reportes
+		IF (siaf:pantalla_impreso != "P") THEN        
+			FPRINT post:linea_spvCM "cmd /c del %s" siaf:dnix_cmd
+			CALL csr:create_process post:linea_spvCM,SW_HIDE,CSR_WAIT    
+			EXEC post:linea_spvCM		
+		END IF
+		CDS ENDSELECT DSC:tlr:jnl_context
+		RETURN -8
+	END IF
+	
+	DO
+		IF (CDSRETVAL == 0) THEN
+			CLEARFIELD post:importe_sesion
+			CLEARFIELD post:VentaCdcto_CM
+			//CLEARFIELD post:VentaSdcto_CM
+			CLEARFIELD post:PresNro
+		
+			CDS EXTRACT DSC:tlr:jnl_context \
+				post:importe_sesion \
+				post:VentaCdcto_CM \
+				post:PresNro //post:VentaSdcto_CM 
+		
+			;calculo la cantidad de ventas hecha a clientes medios
+			CantVtaCM = CantVtaCM + 1
+			
+			;calculo el total de ventas a clientes medios
+			TotVtaCM  = TotVtaCM + post:importe_sesion
+		
+			IF (post:VentaCdcto_CM == "S") THEN
+				;calculo el total de ventas con descuentos
+				TotVtaCM_Cdcto = TotVtaCM_Cdcto + post:importe_sesion
+				;calculo el importe total de los descuentos
+				CALL MISCTotDctoCM
+			END IF
+		
+			IF (post:VentaCdcto_CM == "N") THEN
+			//IF (post:VentaSdcto_CM == "S") THEN
+				;calculo el total de ventas sin descuentos
+				TotVtaCM_Sdcto = TotVtaCM_Sdcto + post:importe_sesion
+			END IF
+		ELSE
+			CDS ENDSELECT DSC:tlr:jnl_context
+			BREAK
+		END IF
+		CDS FINDNEXT DSC:tlr:jnl_context NOLOCK
+	LOOP
+	
+	//ARMAR EL LISTADO!!!
+	CALL MISCEncab_CM
+	
+	FYIMSG CLEAR
+
+  CLEARFIELD common:csr_string
+  CALL csr:file_close(1)
+  
+	IF (siaf:pantalla_impreso == "P") THEN
+		CLEARFIELD common:csr_string
+		;LMB - PS 9780 - 17.06.2008
+		FPRINT common:csr_string, "%s%s", common:dirTemporal, "climed.lis"
+		KEYDEF PUSH
+		CALL CSR:f_sadopl(siaf:pick_titulo,common:csr_string)
+		KEYDEF POP
+	ELSE 
+		//NI50572 Digitalizacion de Reportes
+		CALL tes:MISCflowPDF("climed.lis")
+		//Si es impresion o si fallo la creacion del PDF entonces fuerzo la impresion
+;;	IF (siaf:pantalla_impreso == "I" || RETVAL < 0) THEN
+		IF (siaf:pantalla_impreso == "I" && RETVAL == -5) THEN
+			//Genero el PDF y lo imprimo
+			CALL tes:MISCcrearPDF("climed.lis")		
+
+;;			FYIMSG LST:common:fyimsg_list, "(L) SE ESTA GENERANDO EL LISTADO DE VENTAS DE CLIENTES MEDIOS."
+;;			LET copias_aux = 1        
+;;			WHILE (copias_aux <= siaf:nro_copias) 	
+;;				;LMB - PS 9780 - 17.06.2008
+;;				FPRINT common:tmpDirTemporal, "%s%s", common:dirTemporal, "climed.lis"
+;;				CALL siaf:MISCfile_prt_cierre(common:tmpDirTemporal,"predeterminada","N")
+;;				LET copias_aux = copias_aux + 1 			
+;;			END WHILE
+		END IF
+		;LMB - PS 9780 - 17.06.2008
+		FPRINT common:csr_string "cmd /c del %-s%-s", common:dirTemporal, "climed.lis"
+		CALL csr:create_process common:csr_string,SW_HIDE ,CSR_WAIT    	            
+		EXEC common:csr_string
+	END IF
+    
+END SUB
+
+/*******/

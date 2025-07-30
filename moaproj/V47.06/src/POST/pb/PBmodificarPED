@@ -1,0 +1,98 @@
+/****o* Pago en Destino/OFB:post:PBmodificarPED
+* NOMBRE
+*   OFB:post:PBmodificarPED
+* DESCRIPCION
+*   Se encarga de llamar a la pantalla de carga manual de Envio con Pago en Destino
+*   para poder modificar los datos del envio.    
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta  
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales  
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual  
+* REFERENCIADO POR
+*		post:BUTCargaListaPED
+* DOCUMENTACION
+*   NI50479
+* SOURCE
+*/
+#include "postPB.h"
+
+SUB post:PBmodificarPED
+	LOCAL l_nombre_transac LIKE siaf:nombre_transac
+	LOCAL l_codigo_siaf LIKE siaf:codigo_siaf
+	LOCAL l_nro_trx_ped LIKE post:nro_trx_ped
+	
+	drv:button = drv:last_button
+	CALL drv:but_down_disable
+	
+	l_nombre_transac = siaf:nombre_transac //reservo el nombre de la trx original.
+	l_codigo_siaf = siaf:codigo_siaf       //reservo el codigo de la trx original.
+	l_nro_trx_ped = post:nro_trx_ped      //reservo el codigo de la trx de lista de envios original.
+	
+	IF (post:DetalleContenidoPED.NUMCHARS == 0) THEN
+		MSGBOX "Debe seleccionar un envio para modificar.",0x00,"ERROR"
+		drv:button = drv:last_button
+		CALL drv:but_up_enable
+		RETURN -2
+	END IF
+	//gpb:AUT-2052
+	MSGBOX "¿Está seguro que desea modificar el envio?",OFB_YESNO,"ATENCION"
+	
+	IF (RETVAL == 7) THEN //NO
+		drv:button = drv:last_button
+		CALL drv:but_up_enable
+		RETURN -2
+	END IF
+
+	//lo creo para que funcione post:PBopcionales_ped
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle	                           
+	CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	
+	
+	SETFLAG post:sesion_ped_flags,modif_import_ped
+	
+	INIT 71 1 //Para que no se pueda clickear otro objeto
+	CUTSCREEN SCR:post:SCRNCargaListaPED,NOCURSOR
+	
+	CALL drv:MISCpopup(SCR:post:SCRNpedPostal,OFB:post:PRESped_post,OFB:post:PCOLmodif_ing_pzaPED,OFB:post:SVALped_post,LST:post:BUTPostalManualPED)
+
+	JOINSCREEN SCR:post:SCRNCargaListaPED,NOCURSOR
+	INIT 71 0
+
+	//lo quito de memoria
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle	
+	
+	IF (LASTKEY != RT_ESC) THEN
+		CALL post:MISCFtrim(post:fecha_imp_ped)
+		IF (post:fecha_imp_ped.NUMCHARS == 0) THEN
+			LET post:fecha_imp_ped = common:system_date
+		END IF
+		
+		//Llamo a la rutina que modifica el registro en sesion_ped
+		CALL post:CDSgrabaSesionPED
+	END IF
+	
+	RESETFLAG post:sesion_ped_flags,modif_import_ped
+	
+	//Borro todos los campos que se graban en sesion_lg excepto los campos del emisor del giro,
+	//para que no queden sucios en las siguientes cargas.   
+	CALL csr:proc_list(F_CLEAR,LST:post:LISTlistaPedCLR)
+	CALL post:MISCclear_array_ped
+	
+	//Refresco en pantalla los campos de Totales
+	//Se invoca post:PRECCargaListaPED para refrescar la pantalla de Carga de Lista de Envios con Pago en Destino
+	CALL post:PRECCargaListaPED
+
+	siaf:nombre_transac = l_nombre_transac //recupero el nombre de la trx original.
+	siaf:codigo_siaf = l_codigo_siaf       //recupero el codigo de la trx original.
+	post:nro_trx_ped = l_nro_trx_ped        //recupero el codigo de la trx de lista de envios original.
+	REFRESH siaf:codigo_siaf
+	
+	drv:button = 2
+	CALL drv:but_enable
+	drv:button = drv:last_button
+	CALL drv:but_up_enable
+
+END SUB
+
+/*******/

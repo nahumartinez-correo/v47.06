@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:SVALmot_agrup
+* NOMBRE
+*   OFB:post:SVALmot_agrup
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALmot_agrup
+    LOCAL loc_cod_agrup LIKE cod_agrupacion
+    PresNro_tmpl = PresNro
+
+	//Se comenta a partir de la V26
+	/*************************************************************************/
+   /* // FGB: Si es cliente de Cuentas Corrientes, hay que validar si esta en
+    // condiciones para SAP de realizar esta transaccion.
+    if (estado_presu == 2 || estado_presu == 3) then
+        if (cli_tipo == 1 && !testflag(tlr:tran_flags,correction)) then 
+            call sap_valida_postal
+            if (retval < 0) then
+                return (-2)
+            end if
+        end if
+    end if*/
+    /**************************************************************************/
+
+    IF (estado_presu != 4 && estado_presu != 3 && en_tmpl == "S") THEN
+        CLEARFIELD nro_mot
+        CALL MISCingr_MotAgr
+        IF (RETVAL < 0)
+            RETURN (RETVAL)
+        END IF
+    END IF
+    /*pasar el campo de mi pantalla a siaf:importe como un valor positivo*/
+    IF (tmpl_importe < 0)
+        siaf:importe = tmpl_importe * (-1)
+        siaf:adt_tran_afec_efvo = "-"
+        siaf:afecta_efectivo = "-"
+    ELSE
+        siaf:importe = tmpl_importe
+        siaf:adt_tran_afec_efvo = "+"
+        siaf:afecta_efectivo = "+"
+    END IF
+    
+    /* cgw: Modifico para Reingenieria */
+	;if (post:estado_presu == 1 || post:estado_presu == 4) then
+    if (post:estado_presu != 4) then    	
+        call siaf:SVALnivel_sup
+        if (retval < 0) then
+            if (RETVAL == -3) then
+                call post:MISCrechazo_transac
+                return (-3)
+            else
+                return (retval)
+            endif
+        endif
+        
+        /*Se pide supervision en el caso de que exista un motivo del template que
+        la requiera*/
+        IF (tmpl_req_sup == "S")
+           IF (siaf:ovr_sup_siaf_id.NUMCHARS == 0)
+                CLEARFIELD siaf:cartel
+                SETFLAG  tlr:tran_flags, supovr_request
+                SETFLAG  siaf:siaf_flags, req_tes
+                SETFLAG  siaf:siaf_flags, req_sup1
+                CALL siaf:MISCovr_process
+                IF (RETVAL < 0)THEN
+                    RETURN (-2)
+                END IF
+               INIT 33,0
+            END IF
+        END IF                        
+    endif
+    
+    /*Paso el formulario de mayor jerarquia para impresion*/
+    CALL MISCformfisFact
+    IF (RETVAL < 0)
+        CALL MISCformfisTicket
+        IF (RETVAL < 0)
+            siaf:adt_mot_formfiscal = " "
+        END IF
+    END IF
+
+	/*Rescato la jerarquia de la tabla de transacciones dependiendo del signo
+	del importe del template*/
+	IF (estado_presu == 2)
+	    CALL MISCcalc_jer_tmpl
+	END IF
+
+	/*Se acumula el Importe Total con y sin IVA en la tabla AuxIngBr - Gabriel Falciola*/
+	call post:MISCAcumTotalesSes
+
+    /*Pedido por Pablo M. Para saber si existe un motivo un motivo del template que no
+    tenga formulario fiscal asociado*/
+    CALL post:MISCsinFormFisc
+    IF (RETVAL < 0)
+        exisMotSinForFis = "S"
+    ELSE
+        exisMotSinForFis = "N"
+    END IF
+
+	call post:MISCRestFlia
+    CALL post:MISCGrabaDetalleTrn
+
+    IF (estado_presu == 1 || estado_presu == 4)
+    
+       ;journalizar la transaccion de templates "Cabecera"
+        ver_anulacion = "S"
+        medio_pago_desc = tmpl_mon_desc
+        LET template_tmp = template
+        LET loc_cod_agrup = cod_agrupacion
+        LET NroTrn_tmpl = PreDNroTrn
+        LET moneda_tmp = siaf:moneda
+        drv:INDjnl_rtn = OFB:post:JNLtemplates
+        CLEARFIELD siaf:importe
+        CALL tlr:JNLtran
+        /*Fin journalizacion cabecera*/
+
+        /*Llama a una rutina que adapta los motivos del template y los journaliza
+         por separado*/
+        CALL MISCjnl_motagrup(loc_cod_agrup)
+    END IF
+    return (RETVAL)
+END SUB
+
+/*******/

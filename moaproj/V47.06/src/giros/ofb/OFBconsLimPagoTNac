@@ -1,0 +1,121 @@
+/****o* Giros/OFB:giros:OFBconsLimPagoTNac
+* NOMBRE
+*   OFB:giros:OFBconsLimPagoTNac
+* DESCRIPCION
+*   Rutina Principal para tratamiento de Consulta de Limites de Diarios de Emisión de Giros.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2): Operacion no permitida, fuera de linea.
+*   RETURN (-3): No pudo realizar la consulta - rechazo, caida en vuelo.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:SVAL70650
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-520
+* SOURCE
+*/
+#include "girosofb.h"
+
+SUB giros:OFBconsLimPagoTNac
+
+    RESETFLAG tran_send_mode,consulta_simple
+    SETFLAG tran_send_mode,consulta_multiple
+    
+    //Elimino la tabla temporal Giros Limites para que vuelva a ser generada con los limites de emision de giros nuevos.
+    //CALL giros:MISCelimina_GirosLim
+
+    call csr:f_sadroppl DSC:consulta_lim_emi
+	call csr:f_sanewpl DSC:consulta_lim_emi,PIC:consulta_lim_emi
+
+    //TodoGiros = 0
+    CALL post:CDSobtiene_secuen("STAN")
+
+    CLEARFIELD giros:flia_giro_fld
+    CALL giros:MISCclear_cons_multi
+
+    hcomm:INDhost_sndrt = OFB:giros:SENDconsulta_lim_Emi
+    hcomm:INDhost_rcvrt = OFB:giros:RCVEconsulta_lim_Emi
+
+    CALL hcomm:COMM_stat_init
+    IF (!TESTFLAG(hcomm:state_flags,on_line) && (siaf:posible_off == "N")) THEN
+        MSGBOX "OPERACION NO PERMITIDA FUERA DE LINEA",OFB_OK,"Atencion"
+        RESETFLAG tran_send_mode,consulta_multiple
+	    RESETFLAG tran_send_mode,consulta_simple
+	    CLEARFIELD giros:flia_giro_fld
+       CALL giros:MISCclear_cons_multi
+	    call csr:f_sadroppl DSC:consulta_lim_emi
+        RETURN (-2)
+    END IF
+
+
+    /************************************************************************/
+    /*           RECUPERACION TRAN CAIDAS EN VUELO                          */
+    /************************************************************************/
+    /* Si el flag de TRAN caidas en Vuelo esta ON,
+    Ejecuto proceso correspondiente,para su procesamiento 	            
+    Se ejecutara el proceso de recuperacion siempre y cuando la transaccion
+    en curso tenga rutina de send y  de rcve, es decir las que viajan a
+    HOST.  Se realizo el procedimiento anterior, para que no se modifique
+    el estado de la transaccion en TRAN tipo MEMO.(ej:en Reportes)	*/
+
+    // FGB 07.06.2001: reemplazo el control de la flag por la lectura de la jnl_caidas, por
+    // existir una secuencia donde la flag no queda seteada...
+    // if (testflag(tlr:controla_marca,mayor_cien) && \
+	//	testflag(hcomm:state_flags,on_line))
+	CALL siaf:CDSchk_trxs_caidas
+    IF (RETVAL == 0 && testflag(hcomm:state_flags,on_line))
+		FYIMSG drv:fyimsg_list,"Proceso de Recuperacion de Transacciones Caidas en Vuelo"
+		CALL siaf:CDSjnl_mayor_cien	
+		IF (RETVAL == TRAN_CAIDA_VUELO)
+    		CLEARFIELD hcomm:INDhost_sndrt 
+    		CLEARFIELD hcomm:INDhost_rcvrt 
+		END IF
+		FYIMSG CLEAR
+    ELSEIF (RETVAL == -5) then // quedaron trx's pendientes de recuperacion por el proc. batch...
+        	CLEARFIELD hcomm:INDhost_sndrt
+    	    CLEARFIELD hcomm:INDhost_rcvrt
+    END IF
+    /************************************************************************/
+    /*   FIN PROCESO RECUPERACION CAIDAS EN VUELO                           */
+    /************************************************************************/
+    
+    CALL giros:OFBdisable_bt_msg
+    CALL hcomm:COMM_host_tran
+    common:trap_reset = OFB:drv:KEYSreset_esc
+    CALL giros:OFBenable_bt_msg
+	CLEARFIELD lib:stat_message
+	CLEARFIELD lib:stat_msg_line
+	REFRESH lib:stat_message
+    REFRESH lib:stat_msg_line
+
+    // Reseteo flag de consulta.
+	RESETFLAG tran_send_mode,consulta_simple
+	RESETFLAG tran_send_mode,consulta_multiple
+	
+	CLEARFIELD giros:flia_giro_fld
+    CALL giros:MISCclear_cons_multi
+
+	IF (hcomm:tran_status != HOST_ACCEPTED) THEN
+		call csr:f_sadroppl DSC:consulta_lim_emi
+		//CALL giros:MISCelimina_GirosLim
+        CALL giros:MISCcl_lim_Emi_comm
+		RETURN -3
+	END IF
+
+    //Consulta OK - Genera tabla de Limites diarios de giros (Giros_Limites)
+  /*  CALL giros:MISCgenera_GirosLim
+    IF (RETVAL < 0) THEN
+        MSGBOX "ERROR EN GRABACION DE TABLA DE LIMITES DIARIOS DE GIROS",0x00,"Error"
+        call csr:f_sadroppl DSC:consulta_lim_emi
+        //Elimino la tabla temporal Giros Limites para que vuelva a ser generada con los limites de emision de giros nuevos.
+        //CALL giros:MISCelimina_GirosLim
+        CALL giros:MISCcl_lim_Emi_comm        
+        RETURN (-2)
+    END IF
+    call csr:f_sadroppl DSC:consulta_lim_emi*/
+    CALL giros:MISCcl_lim_Emi_comm
+END SUB
+
+/*******/

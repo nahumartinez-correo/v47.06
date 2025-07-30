@@ -1,0 +1,163 @@
+/****o* Clientes UP/OFB:post:CDSVenUP_Presu
+* NOMBRE
+*   OFB:post:CDSVenUP_Presu
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+/*Esta rutina genera, borra o actualiza el registro en la PresuDet correspondiente a la tran. auxiliar de Ventas UP
+Gabriel Falciola*/
+
+SUB post:CDSVenUP_Presu
+local tran_aux like siaf:codigo_siaf
+local existe like lib:err_retval
+local retorno like lib:err_retval
+local afec_aux like siaf:afecta_efectivo
+local flia_aux like siaf:adt_tran_fliatran
+
+	// MFM - FGB : refresco los valores de venta a UP de la Presu
+	call post:MISCRecup_DatosDif
+
+	tran_aux = siaf:codigo_siaf
+	flia_aux = siaf:adt_tran_fliatran
+	siaf:adt_tran_fliatran = "PCL"
+	siaf:codigo_siaf = 99019
+	afec_aux = siaf:afecta_efectivo
+	retorno = 0
+	/*Antes de Calcular, chequeo si ya existe el registro para borrar en la AuxIva*/
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+	WHERE post:fecha == FLD:post:fecha && \
+	post:op_operator_id == FLD:post:op_operator_id && \
+	post:PresNro == post:PresNro && siaf:codigo_siaf == 99019
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	existe = cdsretval
+	if (cdsretval == 0)
+		cds extract DSC:CONPresuDeta all
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+		call MISCborrarIva
+	end if
+	cds endselect DSC:CONPresuDeta
+	/*Calculo el importe de la tran.*/
+	call CDSCalcTotVentasUP
+	/*Proceso sobre la PresuDet si es necesario*/
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+	WHERE post:fecha == FLD:post:fecha && \
+	post:op_operator_id == FLD:post:op_operator_id && \
+	post:PresNro == post:PresNro && siaf:codigo_siaf == 99019
+	CDS FINDFIRST DSC:CONPresuDeta LOCK
+	select (cdsretval)
+	case 0
+		if (ImporteVenUP == 0)
+			cds extract DSC:CONPresuDeta siaf:moneda siaf:importe siaf:adt_tran_afec_efvo
+			/*Actualizo la Tabla PresuPag - Gabriel Falciola*/
+			//PJM un perlita para mi pichon
+			call post:CDSmedio_pago(siaf:moneda,siaf:codigo_siaf)
+			CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,0,siaf:importe)
+			cds delete DSC:CONPresuDeta
+		else
+			cds extract DSC:CONPresuDeta siaf:moneda siaf:importe into post:imp_d modif_operator \
+			siaf:adt_tran_afec_efvo PrePNroPag
+			if (modif_operator == 0)
+				monedaNC = siaf:moneda
+				siaf:moneda = 99
+				clearfield post:medio_pago_desc
+				clearfield post:MedPTipMon
+			else
+				cds extract DSC:CONPresuDeta monedaNC imp_d
+			end if
+			siaf:importe = ImporteVenUP
+			/*Actualizo la PresuPag*/
+			//PJM un perlita para mi pichon
+			call post:CDSmedio_pago(siaf:moneda,siaf:codigo_siaf)
+			call CDSadt_PresuPag_save(siaf:moneda,monedaNC,siaf:importe,imp_d)
+			if (modif_operator == 1)
+				cds append DSC:CONPresuDeta siaf:importe as imp_d \
+				siaf:moneda as monedaNC
+			end if
+			cds append DSC:CONPresuDeta siaf:importe siaf:moneda post:medio_pago_desc \
+			PrePNroPag ImporteVenUP ImporteVenUPDes array docfis_tasa_por \
+			array docfis_importe array docfis_imp_siva array docfis_imp_siva4
+			cds update DSC:CONPresuDeta lock
+		end if
+		siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+		call MISCgenerarIva		
+		break
+	case -801
+		if (ImporteVenUP == 0)
+			break
+		end if
+		/*Seteo este campo para saber en NOTA de CREDITO cuando debo journalizar la
+		Transaccion*/
+		retorno = 1
+		/*Si estoy en Nota de Crédito fuerzo el medio de pago a efectivo*/
+		siaf:moneda = 99
+		clearfield post:medio_pago_desc
+		clearfield post:MedPTipMon
+		call CDSIncSecSesion(post:PresNro,"TRN",1, enAnulacion)
+          	PreDNroTrn = retval
+          	siaf:importe = ImporteVenUP
+          	LET tlr:INDtran_name     = LST:post:TRANBonifUP
+          	PrePEst                  = 1
+          	PreDEst                  = 1
+          	post:NroCompPago         = 0
+          	post:modif_operator      = 0
+          	post:cantidad			 = 1
+          	let siaf:adt_tran_codigo = siaf:codigo_siaf
+          	call siaf:CDSadt_tran_load
+
+			/* MLD Busco las restricciones para Vta UP diferida */
+			call post:MISCRestFlia
+
+          	call post:CDSmedio_pago(siaf:moneda,siaf:codigo_siaf)
+          	CDS CLEARBUFFER DSC:CONPresuDeta
+			/*Actualizo la PresuPag*/
+			call post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,siaf:importe,0)
+          	 post:captura_mp = "N"
+          	CDS APPEND DSC:CONPresuDeta post:fecha post:op_operator_id \
+                     post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn \
+                     post:MedPAdmIte tlr:INDtran_name post:PreDEst \
+                     post:PrePNroPag siaf:codigo_siaf post:MedPMon post:MedPTipMon \
+                     post:PreDForFis siaf:importe
+			CDS APPEND DSC:CONPresuDeta siaf:adt_tran_afec_efvo \
+                     siaf:adt_tran_desc siaf:adt_tran_fliatran post:PrePEst siaf:moneda \
+                     post:medio_pago_desc post:NroCompPago \
+                     CliUP_Porcentaje CliUP_Importe CliUP_Nis \
+                     post:modif_operator post:cantidad \
+                     ImporteVenUP ImporteVenUPDes array docfis_tasa_por \
+                     array docfis_importe array docfis_imp_siva array docfis_imp_siva4 \
+                     post:AdmiteMP post:captura_mp
+
+			if (NotaCredito == "S" && siaf:moneda != 0)
+				post:monedaNC = siaf:moneda
+				clearfield post:NroCompPagoNC
+				jnl_nuevo_medpag = "S"
+				CDS APPEND DSC:CONPresuDeta monedaNC NroCompPagoNC jnl_nuevo_medpag
+			end if
+
+          	CDS INSERT DSC:CONPresuDeta LOCK
+			siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+			call MISCgenerarIva			
+			break
+	end select
+	cds unlock DSC:CONPresuDeta
+	cds endselect DSC:CONPresuDeta
+	siaf:codigo_siaf = tran_aux
+	siaf:adt_tran_fliatran = flia_aux
+	siaf:afecta_efectivo = afec_aux
+	call siaf:CDSadt_tran_load
+	return (retorno)
+END SUB
+
+/*******/

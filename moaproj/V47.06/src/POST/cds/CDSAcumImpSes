@@ -1,0 +1,145 @@
+/****o* Pendientes de agrupación/OFB:post:CDSAcumImpSes
+* NOMBRE
+*   OFB:post:CDSAcumImpSes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSAcumImpSes(ImpConIva_anterior,ImpSinIva_anterior,ImpConIva,ImpSinIva,fliatran,afecta_efectivo,Presupuesto,Moneda,Moneda_ant)
+/*Rutina que va acumulando por Operador y Familia el importe con y sin IVA
+  Gabriel Falciola*/
+/*Se agrega que acumule el total en Pesos que va al comprobante fiscal para controlar que
+  no sea negativo - Gabriel Falciola*/
+local Presu_aux like PresNro
+local Fliatran_aux like post:jnl_flia_tran
+
+	if (estado_presu == 2) then
+		if (post:enCombo == "S" && post:adt_concb_principal != "S") then
+			return
+		endif
+	endif
+
+  	Presu_aux = PresNro
+  	PresNro = Presupuesto
+  	Fliatran_aux = siaf:adt_tran_fliatran
+  	siaf:adt_tran_fliatran = fliatran
+
+	/*Sólo acumulo los importes si se cumple esta condición*/
+	/*PresIngTas > 0 --> Chequear si debe ir*/
+	/*MFM - Se pregunta por Cliente Medio*/
+	if ((afecta_efectivo == "+" || afecta_efectivo == "-") && \
+	(cli_tipo == 2 || cli_tipo == CLIUP || cli_tipo == CLIMED) && EstadoFormu != SIN_FORM && siaf:codigo_siaf != 6900)
+		CDS SELECT FROM DSC:AuxIngBr_tbl BECOMES DSC:AuxIngBr_ctx \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		PresNro == fld:PresNro && \
+		siaf:adt_tran_fliatran == fliatran
+		CDS FINDFIRST DSC:AuxIngBr_ctx LOCK
+		LET lib:err_retval = CDSRETVAL
+		CDS CLEARBUFFER DSC:AuxIngBr_ctx
+		IF (lib:err_retval == -801) THEN
+			if (EstadoFormu == CON_FORM || EstadoFormu == CON_FORM_DES)
+				siaf:ImporteConIva = ImpConIva
+				siaf:ImporteSinIva = ImpSinIva
+				if (afecta_efectivo == "-")
+					siaf:ImporteConIva = siaf:ImporteConIva * -1
+					siaf:ImporteSinIva = siaf:ImporteSinIva * -1
+				end if
+				if (Moneda == 00)
+					ImporteEfectivo = siaf:ImporteConIva
+				else
+					ImporteEfectivo = 0
+				end if
+				CDS APPEND DSC:AuxIngBr_ctx \
+					op:op_operator_id as post:op_operator_id \
+					PresNro \
+					siaf:adt_tran_fliatran \
+					siaf:ImporteConIva \
+					siaf:ImporteSinIva \
+					post:ImporteEfectivo
+				CDS INSERT DSC:AuxIngBr_ctx LOCK
+			end if
+		ELSE
+			CDS EXTRACT DSC:AuxIngBr_ctx siaf:ImporteConIva siaf:ImporteSinIva ImporteEfectivo
+			select (afecta_efectivo)
+			case "+"
+				if (EstadoFormu == CON_FORM)
+					siaf:ImporteConIva = siaf:ImporteConIva - ImpConIva_anterior + ImpConIva
+					siaf:ImporteSinIva = siaf:ImporteSinIva - ImpSinIva_anterior + ImpSinIva
+					if (Moneda == 00 && Moneda_ant == 00)
+						post:ImporteEfectivo = post:ImporteEfectivo - ImpConIva_anterior + ImpConIva
+					end if
+					if (Moneda == 00 && Moneda_ant != 00)
+						post:ImporteEfectivo = post:ImporteEfectivo + ImpConIva
+					end if
+					if (Moneda != 00 && Moneda_ant == 00)
+						post:ImporteEfectivo = post:ImporteEfectivo - ImpConIva_anterior
+					end if
+				else
+					if (EstadoFormu == CON_FORM_ANT)
+						siaf:ImporteConIva = siaf:ImporteConIva - ImpConIva_anterior
+						siaf:ImporteSinIva = siaf:ImporteSinIva - ImpSinIva_anterior
+						if (Moneda_ant == 00)
+							post:ImporteEfectivo = post:ImporteEfectivo - ImpConIva_anterior
+						end if
+					end if				
+					if (EstadoFormu == CON_FORM_DES)
+						siaf:ImporteConIva = siaf:ImporteConIva + ImpConIva
+						siaf:ImporteSinIva = siaf:ImporteSinIva + ImpSinIva
+						if (Moneda == 00)
+							post:ImporteEfectivo = post:ImporteEfectivo + ImpConIva
+						end if
+					end if							
+				end if
+				break
+			case "-"
+				if (EstadoFormu == CON_FORM)
+					siaf:ImporteConIva = siaf:ImporteConIva + ImpConIva_anterior - ImpConIva
+					siaf:ImporteSinIva = siaf:ImporteSinIva + ImpSinIva_anterior - ImpSinIva
+					if (Moneda == 00)
+						post:ImporteEfectivo = post:ImporteEfectivo + ImpConIva_anterior - ImpConIva
+					else
+						if (Moneda_ant == 00)
+							post:ImporteEfectivo = post:ImporteEfectivo + ImpConIva_anterior
+						end if
+					end if
+				else
+					if (EstadoFormu == CON_FORM_ANT)
+						siaf:ImporteConIva = siaf:ImporteConIva + ImpConIva_anterior
+						siaf:ImporteSinIva = siaf:ImporteSinIva + ImpSinIva_anterior
+						if (Moneda_ant == 00)
+							post:ImporteEfectivo = post:ImporteEfectivo + ImpConIva_anterior
+						end if
+					end if
+					if (EstadoFormu == CON_FORM_DES)
+						siaf:ImporteConIva = siaf:ImporteConIva - ImpConIva
+						siaf:ImporteSinIva = siaf:ImporteSinIva - ImpSinIva
+						if (Moneda == 00)
+							post:ImporteEfectivo = post:ImporteEfectivo - ImpConIva
+						end if
+					end if				
+				end if
+				break
+			end select
+			CDS APPEND DSC:AuxIngBr_ctx siaf:ImporteConIva siaf:ImporteSinIva ImporteEfectivo
+			CDS UPDATE DSC:AuxIngBr_ctx LOCK
+		END IF
+		CDS UNLOCK DSC:AuxIngBr_ctx
+		CDS ENDSELECT DSC:AuxIngBr_ctx
+	end if
+	PresNro = Presu_aux
+	siaf:adt_tran_fliatran = Fliatran_aux
+END SUB
+
+/*******/

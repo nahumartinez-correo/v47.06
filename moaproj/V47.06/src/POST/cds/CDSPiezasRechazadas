@@ -1,0 +1,129 @@
+/****o* Expedición/OFB:post:CDSPiezasRechazadas
+* NOMBRE
+*   OFB:post:CDSPiezasRechazadas
+* DESCRIPCION
+*   A partir de las piezas rechazadas actualiza la TranPend "emulando" un re-envio al operador origen
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   sale con un RETURN (-2) en caso que no encuentre piezas rechazadas.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:SVALRecepPzas_otroOp
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-351
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSPiezasRechazadas
+
+//    Local l_op_operator_id      LIKE op:op_operator_id
+//    Local l_op_login_id         LIKE op:op_login_id
+//    Local l_CodOperador         LIKE post:CodOperador
+//    Local l_Operador_id         LIKE post:Operador_id
+   
+    LOCAL l_indice_loop  LIKE post:indice_pos
+    LOCAL l_indice_op    LIKE post:indice_pos
+    LOCAL l_op_informado LIKE post:dettmpcargada
+
+    MOVE "" TO admin:msg_dest
+    l_indice_op = 0
+
+    CDS SELECT FROM DSC:post:DetTmp BECOMES DSC:post:DetTmp_ctx \
+        WHERE   op:op_operator_id  == op:op_operator_id      && \
+                post:MarcaBorrado == "*"
+
+    CDS FINDFIRST   DSC:post:DetTmp_ctx LOCK
+    lib:err_retval = CDSRETVAL
+    
+    IF (CDSRETVAL != 0) THEN
+       CDS UNLOCK DSC:post:DetTmp_ctx
+       CDS ENDSELECT DSC:post:DetTmp_ctx
+       RETURN (-2)
+    END IF
+    
+    CDS CLEARBUFFER DSC:post:DetTmp_ctx
+    call csr:cleararray(post:array_OP_Pzas_Rch)
+      
+    DO
+        IF (lib:err_retval != 0) THEN
+            BREAK
+        END IF
+
+        CDS EXTRACT DSC:post:DetTmp_ctx all
+
+//        MOVE post:CodOperador   TO l_op_operator_id
+//        MOVE post:Operador_id   TO l_op_login_id
+//        MOVE op:op_operator_id  TO l_CodOperador
+//        MOVE op:op_login_id     TO l_Operador_id
+
+
+        CDS SELECT FROM DSC:post:TranPend_tbl BECOMES DSC:post:TranPend_ctx  \
+            WHERE   post:jnl_branch_ori   == post:jnl_branch_ori          && \
+                    post:jnl_operator_ori == post:jnl_operator_ori        && \
+                    post:jnl_date_ori     == tlr:jnl_date                 && \
+                    post:jnl_time_ori     == post:jnl_time_ori            && \
+                    post:jnl_bus_date_ori == post:jnl_bus_date_ori        && \
+                    post:jnl_sequence_ori == tlr:jnl_sequence             && \
+                    post:NroTranf         == post:NroTranf
+
+        CDS FINDFIRST   DSC:post:TranPend_ctx LOCK
+        LET lib:err_retval = CDSRETVAL
+        CALL lib:MISCcds_find_err
+        IF (RETVAL == 0) THEN
+           CDS DELETE DSC:post:TranPend_ctx
+           CDS UNLOCK DSC:post:TranPend_ctx
+        END IF
+        CDS ENDSELECT   DSC:TranPend_ctx
+
+//        MOVE l_op_operator_id   TO   op:op_operator_id
+//        MOVE l_op_login_id      TO   op:op_login_id
+//        MOVE l_CodOperador      TO post:CodOperador
+//        MOVE l_Operador_id      TO post:Operador_id
+        MOVE "S"                TO post:es_transf_forzada
+        LET MarcaBorrado = "2"
+
+        CDS SELECT FROM DSC:TranPend_tbl BECOMES DSC:TranPend_ctx
+        CALL CDSgraboTranPend2
+
+        l_op_informado = FALSE
+        l_indice_loop = 0
+        WHILE (l_indice_loop < 30)
+            IF (array_OP_Pzas_Rch[l_indice_loop] == FLD:post:Operador_id) THEN
+                l_op_informado = TRUE
+            END IF
+            l_indice_loop = l_indice_loop + 1
+        END WHILE
+
+        IF (!(l_op_informado == TRUE)) THEN
+            move post:Operador_id to op:adt_login_id
+            CDS SELECT FROM DSC:op:adt_op_table  BECOMES  DSC:op:adt_op_context WHERE \
+                op:op_login_id == op:adt_login_id && op:op_borrado_logico != "S"
+
+            CDS FINDFIRST DSC:op:adt_op_context nolock
+            CDS EXTRACT DSC:op:adt_op_context \
+                op:op_node_id INTO FLD:admin:msg_node_id \
+                op:op_branch_id INTO FLD:admin:msg_branch_id \
+                op:op_operator_id INTO FLD:admin:msg_operator_id
+            CDS ENDSELECT DSC:op:adt_op_context
+        
+            MOVE FLD:post:Operador_id         TO array_OP_Pzas_Rch[l_indice_op]
+            MOVE FLD:post:Operador_id         TO FLD:admin:msg_dest
+            MOVE DSC:post:MsgPiezasRechazadas TO FLD:admin:message
+            //CALL admin:SENDmsg
+            CALL  OFB:hcomm:SRQ_msg_operator
+            l_indice_op = l_indice_op + 1
+        END IF
+
+
+        CDS FINDNEXT DSC:post:DetTmp_ctx LOCK
+        LET lib:err_retval = CDSRETVAL
+    
+    LOOP
+    CDS UNLOCK DSC:post:DetTmp_ctx
+
+END SUB
+
+/*******/

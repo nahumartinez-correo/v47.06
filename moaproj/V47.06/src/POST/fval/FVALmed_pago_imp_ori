@@ -1,0 +1,183 @@
+/****o* Pendientes de agrupación/OFB:post:FVALmed_pago_imp_ori
+* NOMBRE
+*   OFB:post:FVALmed_pago_imp_ori
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALmed_pago_imp_ori
+	LOCAL saldoCaja LIKE siaf:importe
+	LOCAL bExiste LIKE siaf:i
+	LOCAL decimales LIKE siaf:importe
+	LOCAL entero LIKE siaf:nro_comprobante
+	LOCAL l_msge LIKE common:csr_string
+
+	IF (rechazoDiferido) THEN
+		RETURN 0
+	END IF
+
+	CALL csr:getrowcol CotizacionMedioPago
+	col = RETVAL
+	siaf:moneda =  MonedaMedioPago[col]
+	CALL csr:trimfield(siaf:moneda)
+	IF (siaf:moneda.NUMCHARS == 0 && (CotizacionMedioPago[col] + 0) != 0) THEN
+   		MSGBOX "Debe seleccionar un medio de pago.",0x00,"ERROR"
+		RETURN -2
+	END IF
+	
+	IF ((CotizacionMedioPago[col] + 0) == 0) THEN
+		CLEARFIELD CotizacionMedioPago[col]
+		REFRESH CotizacionMedioPago[col]
+	END IF
+	CALL post:CDSmone_MedioPago
+	adt_coti_mone = adt_mp_mon
+
+	IF (adt_mp_mon != adt_emp_moneda) THEN
+		CALL post:CDSCoti_load
+	ELSE
+		adt_coti_compra = 1
+		adt_coti_venta = 1
+		RETVAL = 0
+	END IF
+
+	IF (RETVAL < 0) THEN
+		MSGBOX "Este medio de pago no puede ser utilizado porque no tiene una cotizacion",0x00,"ERROR"
+		RETURN -2
+	ELSE
+		INIT 22,1
+		; se usa compra o venta segun sea un pago o un cobro.
+		IF (post:importe >= 0) THEN
+			; cobro
+			ImporteMedioPago[col] = CotizacionMedioPago[col] * adt_coti_compra
+		ELSE
+			; pago
+			ImporteMedioPago[col] = CotizacionMedioPago[col] * adt_coti_venta
+		END IF
+		INIT 22,0
+	END IF
+
+	hayCotizacion = "S"
+	CALL post:FVALmed_pago_imp
+	hayCotizacion = "N"
+	IF (RETVAL < 0) THEN
+		CLEARFIELD ImporteMedioPago[col]
+		RETURN -2
+	END IF
+		
+	adt_mp_cod = MonedaMedioPago[col]
+	CALL post:CDSadt_MedPago_load
+
+	// PAW - Me fijo si permite ingresar decimales. (post:adt_mp_decimales esta en la MedPago)
+	IF (post:adt_mp_decimales != "S") THEN
+		// todo esto se hizo porque el operador / no funciona con negativos.
+		// y el operador % no funciona con numeros reales.
+		IF (CotizacionMedioPago[col] < 0) THEN
+			entero = (-1 * CotizacionMedioPago[col]) / 1
+			decimales = CotizacionMedioPago[col] + entero
+		ELSE
+			entero = CotizacionMedioPago[col] / 1
+			decimales = CotizacionMedioPago[col] - entero
+		END IF
+		IF (decimales != 0) THEN
+			MSGBOX "Este medio de pago no permite decimales" OFB_OK "ERROR"
+			RETURN -2
+		END IF
+	END IF
+
+	REFRESH ImporteMedioPago[col]
+
+	; por default el monto entregado es el monto a pagar/cobrar.
+	;MontoEntMedioPago[col] = CotizacionMedioPago[col]
+	VueltoMedioPago[col] = 0
+	REFRESH MontoEntMedioPago[col]
+	REFRESH VueltoMedioPago[col]
+
+;    adt_mp_cod = MonedaMedioPago[col]
+;    CALL post:CDSadt_MedPago_load
+	siaf:moneda = MonedaMedioPago[col]
+	CALL CDSmone_MedioPago
+	IF (adt_mp_adm == "G" && adt_mp_monet == "S") THEN
+		IF (adt_mp_mon != adt_emp_moneda)
+			VueltoMedioPago[col] = MontoEntMedioPago[col] -  CotizacionMedioPago[col]
+		ELSE
+			VueltoMedioPago[col] = MontoEntMedioPago[col] -  ImporteMedioPago[col]
+		END IF
+	END IF
+	
+	// Pedido por fede: si el vuelto es negativo en un cobro o positivo en un pago no mostrarlo.
+	IF (VueltoMedioPago[col] * CotizacionMedioPago[col] < 0) THEN
+		CLEARFIELD VueltoMedioPago[col]
+		REFRESH VueltoMedioPago[col]
+	END IF
+	REFRESH VueltoMedioPago[col]
+
+	siaf:moneda = MonedaMedioPago[0]
+	CALL CDSmone_MedioPago
+	IF (adt_mp_mon != adt_emp_moneda) THEN
+		VueltoMedioPago[0] = MontoEntMedioPago[0] -  CotizacionMedioPago[0]
+	ELSE
+		VueltoMedioPago[0] = MontoEntMedioPago[0] -  ImporteMedioPago[0]
+	END IF
+
+	// Pedido por fede: si el vuelto es negativo en un cobro o positivo en un pago no mostrarlo.
+	IF (VueltoMedioPago[0] * CotizacionMedioPago[0] < 0) THEN
+		CLEARFIELD VueltoMedioPago[0]
+		REFRESH VueltoMedioPago[0]
+	END IF
+
+	IF ((CotizacionMedioPago[0]+ 0) == 0) THEN
+		VueltoMedioPago[0] = 0
+		MontoEntMedioPago[0] = 0
+		REFRESH MontoEntMedioPago[0]
+	END IF
+	
+	IF ((VueltoMedioPago[0] + 0) != 0) THEN
+		VueltoMedioPago[0].HIGHLITE = 1
+	ELSE
+		VueltoMedioPago[0].HIGHLITE = 0
+	END IF
+	REFRESH VueltoMedioPago[0]
+
+	IF (adt_mp_adm == "G" && adt_mp_monet == "S") THEN
+		CALL post:MISCexisteDenom(MonedaMedioPago[col],VueltoMedioPago[col])
+		bExiste = RETVAL
+		IF (!bExiste) THEN
+			VueltoMedioPago[col].HIGHLITE = 0
+			REFRESH VueltoMedioPago[col]
+			MSGBOX "No existe denominacion para el vuelto",0x00,"ERROR"
+			RETURN -2
+		END IF
+
+		; Ultima validacion. Me fijo si el cajero dispone de saldo para el vuelto.
+		IF (VueltoMedioPago[col] > 0) THEN
+			siaf:moneda = MonedaMedioPago[col]
+			saldoCaja = siaf:tefec_inic_vec[siaf:moneda] + siaf:tefectivo_vec[siaf:moneda] - VueltoMedioPago[col]
+			IF (saldoCaja < 0) THEN
+				MSGBOX "No hay el efectivo en caja para este medio de pago. (vuelto)" OFB_OK "ERROR"
+				RETURN -2
+			END IF
+		END IF
+
+		IF ((VueltoMedioPago[col] + 0) != 0) THEN
+			VueltoMedioPago[col].HIGHLITE = 1
+		ELSE
+			VueltoMedioPago[col].HIGHLITE = 0
+		END IF
+		REFRESH VueltoMedioPago[col]
+	END IF
+
+END SUB
+
+/*******/

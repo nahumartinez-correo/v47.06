@@ -1,0 +1,125 @@
+/****o* Pendientes de agrupación/OFB:post:MISCver_envio
+* NOMBRE
+*   OFB:post:MISCver_envio
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCver_envio
+	local varl_dia_hoy like lib:err_retval
+	local varl_dia_ult like lib:err_retval
+	local dias_dif like lib:err_retval
+	local CambioDia like tes:es_tesoro
+	local Envio like tes:es_tesoro
+	local desde_aux like common:system_date
+	LOCAL hora LIKE post:hor_a
+	LOCAL l_dump_fecha LIKE post:adt_dump_fecha
+	Envio = "N"
+	CambioDia = "N"
+	hora = common:time_of_day
+
+	/*Busco en el DDproj.ini el path donde se graba el archivo*/
+	call csr:get_profile_string "REP_COMER" "REP_path" mdata_directorio
+	if (retval != 0) then
+		FPRINT common:csr_string_171,"\n\nNo se pudo obtener la Parametría de Reportes. Hora: %e ",hora
+		return (-1)
+	end if
+
+	hora = common:time_of_day
+	CALL giros:MISCobt_suc_act
+    IF (RETVAL < 0) THEN
+        FPRINT common:csr_string_171,"\n\nNo se pudo obtener la Sucursal Activa. Hora: %e ", hora
+        RETURN (-1)
+    end if
+
+    hora = common:time_of_day
+	call giros:CDSdatgralsuc_load
+	if (retval < 0) then
+        FPRINT common:csr_string_171,"\n\nNo se pudo obtener los datos de la DGralSuc. Hora: %e ",hora
+        RETURN (-1)
+	end if
+
+	/* Le incremento 1 porque MOSAIC cuenta al Domingo como día 1 */
+	giros:adt_dgralsuc_dia = giros:adt_dgralsuc_dia + 1
+	call  csr:day_of_week (common:system_date)
+	varl_dia_hoy = retval
+	call  csr:day_of_week (siaf:adt_sucur_rep_dia)
+	varl_dia_ult = retval
+
+	if (varl_dia_ult != giros:adt_dgralsuc_dia) then
+		CambioDia = "S"
+	end if
+
+	/*Calculo la diferencia entre el dia actual y el ultimo dia que se
+    genero el archivo*/
+    CALL  csr:date_subtract (common:system_date, siaf:adt_sucur_rep_dia)
+    dias_dif = retval
+    /* Si es día de envio */
+	/* Viene vacio cuando se instala la version, en ese caso mando el puchito
+	que pueda tener hasta el día de envio */
+	if (varl_dia_hoy == giros:adt_dgralsuc_dia && siaf:adt_sucur_rep_dia == "") then
+		Envio = "S"
+		;Aca hay que ver la minima fecha cargada *** MDG
+		CDS SELECT FROM DSC:DumpRep_tbl becomes dsc:DumpRep_ctx
+		cds findfirst dsc:DumpRep_ctx nolock
+		let lib:err_retval = cdsretval
+		l_dump_fecha = 0
+		WHILE (lib:err_retval == 0)
+			CDS EXTRACT dsc:DumpRep_ctx post:adt_dump_fecha
+			IF (l_dump_fecha > post:adt_dump_fecha || l_dump_fecha == 0) THEN
+				 l_dump_fecha = post:adt_dump_fecha
+			END IF
+			CDS FINDNEXT dsc:DumpRep_ctx nolock
+			let lib:err_retval = cdsretval
+		END WHILE
+		reporte_fec_desde = l_dump_fecha
+		reporte_fec_hasta = common:system_date
+	else
+		desde_aux = siaf:adt_sucur_rep_dia
+		if (siaf:adt_sucur_rep_dia != "") then
+			;reporte_fec_hasta = common:system_date
+			post:reporte_fec_desde = siaf:adt_sucur_rep_dia
+			if (CambioDia == "S") then
+				call post:MISCincr_fecha(reporte_fec_desde)
+				if (retval > 0) then
+					dias_dif = dias_dif - retval
+					Envio = "S"
+					desde_aux = reporte_fec_hasta
+				end if
+			end if
+			/* Verifico si los días de diferencia supera a la frecuencia de envio */
+			if (dias_dif >= giros:adt_dgralsuc_frec)
+
+				call post:MISCcalc_fechas(desde_aux)
+				Envio = "S"
+			end if
+		end if
+	end if
+	if (Envio == "S") then
+		/* El hasta es menor e igual al dia de hoy */
+		siaf:adt_sucur_rep_dia = reporte_fec_hasta
+		call csr:date_add(reporte_fec_hasta,-1,"d",reporte_fec_hasta)
+		;fprint common:csr_string "Fecha Desde: %d  Fecha hasta: %d  ",reporte_fec_desde,reporte_fec_hasta
+		;errmsg lst:common:errmsg_list fld:common:csr_string
+		return (0)
+	else
+		;fprint common:csr_string "No se envia"
+		hora = common:time_of_day
+		FPRINT common:csr_string_171,"\n\nNo corresponde generar el Reporte. Se verifica envio de reportes pendientes. Hora: %e ",hora
+		return (-2)
+	end if
+END SUB
+
+/*******/

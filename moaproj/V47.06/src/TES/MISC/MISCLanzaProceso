@@ -1,0 +1,241 @@
+/***o* Pendientes de agrupación/OFB:tes:MISCLanzaProceso
+* NOMBRE
+*   OFB:tes:MISCLanzaProceso
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCLanzaProceso
+//Esta rutina realiza el tratamiento para la ejecución del script TRASESPV.PL y CODBCAM.PL, 
+//verificando los parámetros configurados en la tabla sucur_act, los cuales indican si deben 
+//lanzarse.
+//Gabriel Falciola
+;LOCAL MosaicServer LIKE common:ExecString
+LOCAL Proyecto Like common:csr_string
+;LOCAL ServerIP LIKE common:ExecString
+;LOCAL Account LIKE common:csr_string
+;LOCAL Password LIKE common:csr_string
+;LOCAL Dominio LIKE common:ExecString
+;LOCAL DominioID LIKE common:ExecString
+;LOCAL ComandoTrasEspV LIKE common:ExecString
+;LOCAL ComandoCodBcam LIKE common:ExecString
+;LOCAL LineaComando LIKE common:ExecString
+	
+	clearfield sucur_fecha_proceso
+	clearfield status_proceso
+	clearfield sucur_fecha_proceso2
+	clearfield status_proceso2
+	//Extraigo los campos que contienen la fecha de ejecucion del proceso y el status
+	CDS SELECT FROM DSC:siaf:adt_sucur_table BECOMES DSC:siaf:adt_sucur_table WHERE \
+	siaf:adt_sucur_codigo == common:sucursal_activa
+	CDS FINDFIRST DSC:siaf:adt_sucur_table NOLOCK
+	IF (CDSRETVAL < 0)
+		msgbox "No se encuentra la Sucursal Activa",OFB_OK,"ERROR"
+		CDS ENDSELECT DSC:siaf:adt_sucur_table
+		RETURN (-3)
+	END IF
+	CDS EXTRACT DSC:siaf:adt_sucur_table sucur_fecha_proceso status_proceso sucur_fecha_proceso2 status_proceso2
+	CDS ENDSELECT DSC:siaf:adt_sucur_table
+
+	//PROCESO DE RECLASIFICACIONES DE ESPECIES
+	//Verifico la fecha de activación del proceso
+	if (sucur_fecha_proceso <= common:system_date && sucur_fecha_proceso.numchars != 0) then 
+		//Verifico si flag de ejecución, si es distinto de "T", tengo que lanzar el script
+		if (status_proceso != "T") then
+		    
+		    ;CALL csr:get_profile_string("project","description",Proyecto) //Nombre del Proyecto
+			CALL csr:moacurproj(Proyecto)
+    		/*
+		    
+		    ;Obtengo informacion del archivo DDPROJ.INI
+    		CALL csr:get_profile_string("project","description",Proyecto) //Nombre del Proyecto
+    		CALL csr:get_profile_string("cdsmain","CDS_PRIMARY_NP",MosaicServer) //Nombre del SERVIDOR
+    		CALL CSR:get_profile_string("cdsmain","SERVER_IP",ServerIP) //Direccion IP del Servidor
+    		CALL csr:get_profile_string("project","Dominio",Dominio) //Nombre del Dominio para la conexión rclient
+    		CALL csr:get_profile_string("project","Account",Account) //Cuenta para la conexión rclient
+    		CALL csr:get_profile_string("project","Password",Password) //Password para la conexión rclient
+    		CALL csr:get_profile_string("project","ScriptTrasEspV",ComandoTrasEspV) //Comando a Ejecutar con el rclient
+	
+			if (ComandoTrasEspV.numchars == 0) then
+   				errmsg common:errmsg_list,"FALTA PARAMETRIA PARA EL PROCESO DE RECLASIFICACION DE ESPECIES VALORIZADAS\n( ITEM ScriptTrasEspV DEL ARCHIVO DDPROJ.INI )\n"
+				return (-1)
+			end if
+		    call csr:trimfield(Proyecto)
+			if (Dominio == "") then
+				fprint FLD:DominioID "%s %s" FLD:Account, FLD:Password
+			else
+				fprint FLD:DominioID "%s\\%s %s" FLD:Dominio, FLD:Account, FLD:Password
+			end if
+
+			;Linea de comando a Ejecutar
+			FPRINT LineaComando,"rclient %s /logon:%s /r \"%s %s\"", \
+			FLD:ServerIP,FLD:DominioID,FLD:ComandoTrasEspV,FLD:Proyecto
+    		*/
+			//Imprimo el Listado Consolidado de Especies Valorizadas
+			FYIMSG LST:common:fyimsg_list,"IMPRIMIENDO LISTADO CONSOLIDADO DE ESPECIES VALORIZADAS ..."
+			let siaf:fecha_proceso = common:system_date
+			let siaf:modo = "SUCURSAL"
+			siaf:pantalla_impreso = "I"
+			LET siaf:nro_copias = 1
+			tes:cons_opc_espv = "TODAS LAS ESPECIES"
+			CALL tes:TRANlistado_espv
+			clearfield siaf:fecha_proceso
+			clearfield siaf:modo
+			clearfield siaf:pantalla_impreso
+			clearfield siaf:nro_copias
+			clearfield tes:cons_opc_espv
+			
+		    FYIMSG LST:common:fyimsg_list,"LANZANDO PROCESO DE RECLASIFICACION DE ESPECIES VALORIZADAS ..."
+			; Los scripts se ejecután ahora en forma remota a traves de un segundo host (host2)
+    		; y será encargado este servidor de ejecutar los mismos. *** MDG
+			CLEARFIELD common:csr_string_4096
+			CALL post:MISCmsgProcessHost2 ("TRASESPV", Proyecto, common:csr_string_4096)
+			CALL post:MISCmsgScriptHost2 ("true", common:csr_string_4096)
+			hcomm:INDhost_sndrt = OFB:post:MISCputMsgBufferhst2
+    		hcomm:INDhost_rcvrt = OFB:post:MISCgetresponseHost2
+    		call hcomm:COMM_send_HOST2
+    		IF (RETVAL != 0) THEN
+    			call post:MISCresponseMsgHost2("true")
+			END IF
+    		;Falta agregar el proceso de espera
+    		
+			;CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+			//Controlo si proceso terminó bien para dejar que continúe la Apertura de Sucursal
+			//Extraigo el campo de flag de ejecución
+			CDS SELECT FROM DSC:siaf:adt_sucur_table BECOMES DSC:siaf:adt_sucur_table WHERE \
+			siaf:adt_sucur_codigo == common:sucursal_activa
+			CDS FINDFIRST DSC:siaf:adt_sucur_table NOLOCK
+			IF (CDSRETVAL < 0)
+				msgbox "No se encuentra la Sucursal Activa",OFB_OK,"ERROR"
+				CDS ENDSELECT DSC:siaf:adt_sucur_table
+				RETURN (-1)
+			END IF
+			CDS EXTRACT DSC:siaf:adt_sucur_table status_proceso
+			CDS ENDSELECT DSC:siaf:adt_sucur_table
+    		//El proceso se terminó de ejecutar correctamente!!!
+    		if (status_proceso == "T")
+				//Imprimo el Listado Consolidado de Especies Valorizadas
+				FYIMSG LST:common:fyimsg_list,"IMPRIMIENDO LISTADO CONSOLIDADO DE ESPECIES VALORIZADAS ..."
+				let siaf:fecha_proceso = common:system_date
+				let siaf:modo = "SUCURSAL"
+				siaf:pantalla_impreso = "I"
+				LET siaf:nro_copias = 1
+				tes:cons_opc_espv = "TODAS LAS ESPECIES"
+				CALL tes:TRANlistado_espv
+				clearfield siaf:fecha_proceso
+				clearfield siaf:modo
+				clearfield siaf:pantalla_impreso
+				clearfield siaf:nro_copias
+				clearfield tes:cons_opc_espv
+			else
+				msgbox "FALLO LA EJECUCION DEL PROCESO DE RECLASIFICACION DE ESPECIES VALORIZADAS.",OFB_OK,"ERROR"
+	   			RETURN (-1)
+    		end if
+    	end if
+	end if			
+
+	//PROCESO DE RECODIFICACION DE BIENES DE CAMBIO
+	//Verifico la fecha de activación del proceso
+	if (sucur_fecha_proceso2 <= common:system_date && sucur_fecha_proceso2.numchars != 0) then 
+		//Verifico si flag de ejecución, si es distinto de "T", tengo que lanzar el script
+		if (status_proceso2 != "T") then
+		    ;CALL csr:get_profile_string("project","description",Proyecto) //Nombre del Proyecto
+		    CALL csr:moacurproj(Proyecto)
+		    /*
+		    ;Obtengo informacion del archivo DDPROJ.INI
+    		
+    		CALL csr:get_profile_string("cdsmain","CDS_PRIMARY_NP",MosaicServer) //Nombre del SERVIDOR
+    		CALL CSR:get_profile_string("cdsmain","SERVER_IP",ServerIP) //Direccion IP del Servidor
+    		CALL csr:get_profile_string("project","Dominio",Dominio) //Nombre del Dominio para la conexión rclient
+    		CALL csr:get_profile_string("project","Account",Account) //Cuenta para la conexión rclient
+    		CALL csr:get_profile_string("project","Password",Password) //Password para la conexión rclient
+    		CALL csr:get_profile_string("project","ScriptCodBcam",ComandoCodBcam) //Comando a Ejecutar con el rclient
+	
+			if (ComandoCodBcam.numchars == 0) then
+   				errmsg common:errmsg_list,"FALTA PARAMETRIA PARA EL PROCESO DE RECODIFICACION DE BIENES DE CAMBIO\n( ITEM ScriptCodBcam DEL ARCHIVO DDPROJ.INI )\n"
+				return (-2)
+			end if
+		    call csr:trimfield(Proyecto)
+			if (Dominio == "") then
+				fprint FLD:DominioID "%s %s" FLD:Account, FLD:Password
+			else
+				fprint FLD:DominioID "%s\\%s %s" FLD:Dominio, FLD:Account, FLD:Password
+			end if
+
+			;Linea de comando a Ejecutar
+			FPRINT LineaComando,"rclient %s /logon:%s /r \"%s %s\"", \
+			FLD:ServerIP,FLD:DominioID,FLD:ComandoCodBcam,FLD:Proyecto
+    		*/
+			//Imprimo el Listado de Consulta de Stock de Merchandising
+			FYIMSG LST:common:fyimsg_list,"IMPRIMIENDO LISTADO DE CONSULTA DE STOCK DE PRODUCTOS ..."
+			let siaf:fecha_proceso = common:system_date
+			siaf:pantalla_impreso = "I"
+			LET siaf:nro_copias = 1
+			CALL post:TOTSlista_prod_stock
+			clearfield siaf:fecha_proceso
+			clearfield siaf:pantalla_impreso
+			clearfield siaf:nro_copias
+			
+		    FYIMSG LST:common:fyimsg_list,"LANZANDO PROCESO DE RECODIFICACION DE BIENES DE CAMBIO ..."
+			; Los scripts se ejecután ahora en forma remota a traves de un segundo host (host2)
+    		; y será encargado este servidor de ejecutar los mismos. *** MDG
+			CLEARFIELD common:csr_string_4096
+			CALL post:MISCmsgProcessHost2 ("CODBCAM", Proyecto, common:csr_string_4096)
+			CALL post:MISCmsgScriptHost2 ("true", common:csr_string_4096)
+			hcomm:INDhost_sndrt = OFB:post:MISCputMsgBufferhst2
+    		hcomm:INDhost_rcvrt = OFB:post:MISCgetresponseHost2
+    		call hcomm:COMM_send_HOST2
+    		IF (RETVAL != 0) THEN
+    			call post:MISCresponseMsgHost2("true")
+			END IF
+    		
+			
+			;CALL csr:create_process LineaComando,SW_HIDE ,CSR_WAIT
+			
+			
+			//Controlo si proceso terminó bien para dejar que continúe la Apertura de Sucursal
+			//Extraigo el campo de flag de ejecución
+			CDS SELECT FROM DSC:siaf:adt_sucur_table BECOMES DSC:siaf:adt_sucur_table WHERE \
+			siaf:adt_sucur_codigo == common:sucursal_activa
+			CDS FINDFIRST DSC:siaf:adt_sucur_table NOLOCK
+			IF (CDSRETVAL < 0)
+				msgbox "No se encuentra la Sucursal Activa",OFB_OK,"ERROR"
+				CDS ENDSELECT DSC:siaf:adt_sucur_table
+				RETURN (-2)
+			END IF
+			CDS EXTRACT DSC:siaf:adt_sucur_table status_proceso2
+			CDS ENDSELECT DSC:siaf:adt_sucur_table
+    		//El proceso se terminó de ejecutar correctamente!!!
+    		if (status_proceso2 == "T")
+				//Imprimo el Listado de Consulta de Stock de Meerchandising
+				FYIMSG LST:common:fyimsg_list,"IMPRIMIENDO LISTADO DE CONSULTA DE STOCK DE PRODUCTOS ..."
+				let siaf:fecha_proceso = common:system_date
+				siaf:pantalla_impreso = "I"
+				LET siaf:nro_copias = 1
+				CALL post:TOTSlista_prod_stock
+				clearfield siaf:fecha_proceso
+				clearfield siaf:pantalla_impreso
+				clearfield siaf:nro_copias
+				RETURN (0)
+			else
+				msgbox "FALLO LA EJECUCION DEL PROCESO DE RECODIFICACION DE BIENES DE CAMBIO.",OFB_OK,"ERROR"
+	   			RETURN (-2)
+    		end if
+    	end if
+	end if	
+
+END SUB
+
+/*******/

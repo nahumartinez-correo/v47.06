@@ -1,0 +1,281 @@
+/****o* Franqueadoras/OFB:post:MISClst_cons_franq
+* NOMBRE
+*   OFB:post:MISClst_cons_franq
+* DESCRIPCION
+*   Reporte de Detalle de Franqueo Por Franqueadora Rapida. Recorre control_franq para realizar reporte.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   RETURN (-2) = No hay de detalle de Franqueadoras para listar.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:SVALcons_franq_rap
+*   post:TRANconsulta_franq 
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISClst_cons_franq(pr_operador, pr_fechad, pr_fechah)
+
+    LOCAL loc_cantreg        LIKE post:franq_cont_inic
+    LOCAL loc_imp            LIKE post:franq_cont_inic
+    LOCAL loc_totimp         LIKE post:franq_cont_inic
+    LOCAL loc_totprod        LIKE post:franq_cant_prod
+    LOCAL loc_observ         LIKE siaf:observaciones
+    LOCAL loc_operador       LIKE post:franq_operador
+    LOCAL loc_pr_operador    LIKE op:op_operator_id
+    LOCAL loc_primero        LIKE post:franq_marca_fallo
+    LOCAL loc_oper           LIKE op:op_operator_id
+    LOCAL loc_franq_operador LIKE post:franq_operador
+
+    siaf:listado_totmot = 1 //cgw:SC50276 - Estandariza el tipo de letra comprimida.
+    siaf:indica_calcu = 0 //cgw:SC50276 - Inicializa pagina.
+    
+    loc_pr_operador = pr_operador
+    CALL csr:trimfield(loc_pr_operador)
+    
+    clearfield loc_operador
+    loc_totimp = 0
+    loc_totprod = 0
+    loc_primero = "S"
+        
+    IF (loc_pr_operador.numchars > 0) THEN
+        CDS SELECT FROM DSC:control_franq_tbl BECOMES DSC:control_franq_ctx WHERE \
+        (post:franq_operador == pr_operador && \
+         post:franq_fecha >= pr_fechad && \
+         post:franq_fecha <= pr_fechah) \
+         ASCENDING SORT "op_franq"
+    ELSE
+    	CDS SELECT FROM DSC:control_franq_tbl BECOMES DSC:control_franq_ctx WHERE \
+        (post:franq_fecha >= pr_fechad && \
+         post:franq_fecha <= pr_fechah) \
+         ASCENDING SORT "op_franq"
+    END IF    
+        
+    CDS FINDFIRST DSC:control_franq_ctx LOCK 
+    lib:err_retval = CDSRETVAL
+    IF (lib:err_retval == -801) THEN
+    	/* Imprimo la inexistencia de datos */
+        CALL post:MISCconsfranq_encab
+        CALL post:MISClst_nohay_franq
+    	CDS UNLOCK DSC:control_franq_ctx
+    	CDS ENDSELECT DSC:control_franq_ctx
+    	RETURN (-2)
+    END IF	
+                
+    loc_cantreg = 0
+    WHILE (lib:err_retval == 0)   
+      clearfield post:franq_marca_fallo
+      clearfield post:franq_cant_prod
+      clearfield post:franq_fecha_recep
+      clearfield post:franq_factura_anul
+      
+      CDS EXTRACT DSC:control_franq_ctx ALL
+      IF (loc_primero == "S") THEN
+      	  CALL post:MISCconsfranq_encab
+      	  loc_operador = post:franq_operador
+      	  clearfield loc_primero
+      END IF	      
+      IF (loc_operador != post:franq_operador) THEN
+
+          IF (loc_cantreg > 0) THEN
+
+              /*cgw: SC50276 -
+               Reservo operador franqueadora de corte, por si hay que imprimir encabezado por corte de
+               pagina antes de imprimir el total del operador anterior (loc_operador). El encabezado toma en
+               opcion de reporte "SUCURSAL" (Menu Jefe de Oficina o Tesorero), el campo post:franq_operador 
+               para busqueda de la descripcion del operador. Para los otros casos (Cierre de Caja o opcion 
+               de reporte "OPERADOR" desde Menu Jefe de Oficina o Tesorero) el encabezado, toma los campos
+               ya prefijados en la rutina de impresion de encabezado correspondiente.
+              */ 
+    		  loc_franq_operador = post:franq_operador
+              post:franq_operador = loc_operador
+              /* imprimo totales de franqueadoras por operador */
+              move "  " to common:csr_string
+              call tes:MISCwrite_file2(1,fld:common:csr_string)
+              IF (siaf:modo == "OPERADOR") THEN
+                  //cgw: SC50276: Totales en Negrita (solo por impresion).
+		          IF (siaf:pantalla_impreso == "P") THEN
+		              FPRINT common:csr_string, "TOTAL                 %5.5s    %13.13e", loc_totprod,loc_totimp
+		          ELSE
+		              FPRINT common:csr_string, "<st>1</st>TOTAL               %5.5s   %13.13e", loc_totprod,loc_totimp
+		          END IF
+              ELSE
+                  //cgw: SC50276: Totales en Negrita (solo por impresion).
+		          IF (siaf:pantalla_impreso == "P") THEN
+    	              FPRINT common:csr_string, "TOTAL                             %5.5s    %13.13e", loc_totprod,loc_totimp
+    	          ELSE
+    	              FPRINT common:csr_string, "<st>1</st>TOTAL                          %5.5s   %13.13e", loc_totprod,loc_totimp
+    	          END IF    
+              END IF                    
+              call tes:MISCwrite_file2(1,fld:common:csr_string)
+              //cgw: SC50276 - Luego de imprimir totales, repongo operador franqueadora de corte reservado.
+              post:franq_operador = loc_franq_operador
+
+              //cgw: SC50276 - No se realiza salto de pagina por operador, por lo que no se imprimira
+              //     lineas en blanco hasta completar pagina.
+      	      //CALL post:MISClst_blanco_franq  //completo hoja con lineas en blanco
+      	  ELSE
+      	  	  /* Imprimo la inexistencia de datos para el operador */
+
+              /*cgw: SC50276 -
+               Reservo operador franqueadora de corte, por si hay que imprimir encabezado por corte de pagina
+               antes de imprimir que no existen datos para listar del operador anterior (loc_operador). El 
+               encabezado toma en opcion de reporte "SUCURSAL" (Menu Jefe de Oficina o Tesorero), el campo
+               post:franq_operador para busqueda de la descripcion del operador. Para los otros casos (Cierre
+               de Caja o opcion de reporte "OPERADOR" desde Menu Jefe de Oficina o Tesorero) el encabezado,
+               toma los campos ya prefijados en la rutina de impresion de encabezado correspondiente.
+              */ 
+    		  loc_franq_operador = post:franq_operador
+              post:franq_operador = loc_operador
+              CALL post:MISClst_nohay_franq
+              //cgw: SC50276 - Luego de imprimir totales, repongo operador franqueadora de corte reservado.
+              post:franq_operador = loc_franq_operador
+      	  END IF
+
+      	  //cgw: SC50276 - No se realiza salto de pagina por operador      	  
+      	  //siaf:lineas_cl = 61 //corte hoja por operador
+          IF (siaf:modo == "SUCURSAL") THEN
+    	      clearfield siaf:aux_login_id    	
+    	      IF (post:opcion_franq == "OPERADOR") THEN
+    		      loc_oper = post:adt_umev_op
+    	      ELSE
+    		      loc_oper = post:franq_operador
+    		      IF (siaf:lineas_cl < 55) THEN
+    		      	  /*cgw: SC50276 - Hay suficiente lineas en la pagina (hasta 62 lineas) para poder
+    		      	    imprimir 2 lineas de separacion, el corte de operador subtitulos, y un detalle.*/
+    		          common:csr_string = "         "
+                      call tes:MISCwrite_file2(1,fld:common:csr_string)
+                      common:csr_string = "         "
+                      call tes:MISCwrite_file2(1,fld:common:csr_string)
+                      CALL op:CDSop_login_id_load(loc_oper)
+    	              FPRINT common:csr_string,"Operador: %s - %s", loc_oper,siaf:aux_login_id
+    	              call tes:MISCwrite_file2(1,fld:common:csr_string)    
+                      CALL post:MISCsubenc_consfranq //titulos subencabezados
+                  ELSE
+                      IF (siaf:lineas_cl < 61) THEN
+                          /*cgw: SC50276 - Provoco salto de pagina debido a que luego del corte por operador,
+                            no hay la suficiente cantidad de lineas como para imprimir la separacion de 2 lineas
+                            en blancos, el titulo del corte de operador, el subtitulo y una linea de detalle. */
+                          siaf:lineas_cl = 60
+                          CALL tes:MISCwrite_file2(1,"<FORMFEED>")
+                          //la proxima linea que se quiera imprimir, sera la 62, por lo que realizara
+                          //el corte de pagina e imprimira el encabezado.
+                      END IF    
+                  END IF
+    	      END IF              
+          END IF
+         
+          loc_operador = post:franq_operador
+          /* limpio totales */
+          loc_totimp = 0
+          loc_totprod = 0
+          loc_cantreg = 0 //cantidad de registros franqueadoras listados
+      END IF
+      
+      IF (post:franq_cont_inic.numchars == 0) THEN
+      	  post:franq_cont_inic = 0
+      END IF
+      IF (post:franq_cont_inic > 0 || \
+          (post:franq_cont_inic == 0 && post:franq_PresNro > 0) || \
+           post:franq_cont_inic == 0 && post:franq_marca_fallo.numchars > 0) THEN
+      	
+          IF (post:franq_cant_prod.numchars == 0) THEN
+          	  post:franq_cant_prod = 0
+          END IF
+
+          clearfield loc_observ
+          IF (post:franq_marca_fallo.numchars == 0) THEN
+          	  // sin fallos
+          	  clearfield loc_observ
+              CALL post:CDSnrofact_franq_jnl //busco el nro.de factura
+              IF (RETVAL < 0) THEN
+              	  loc_observ = "SIN FACTURA"
+              	  clearfield post:NroFact_Inic
+              ELSE
+	              // Si la Factura fue anulada, hay que poner el mensaje
+        	      if (post:franq_factura_anul == "S") then
+              			loc_observ = "ANULADA"
+              	  end if	 
+              END IF
+          ELSE          	  
+          	  clearfield loc_observ
+          	  SELECT (post:franq_marca_fallo)
+             	CASE "X"
+          	      loc_observ = "FALLO        "
+          	      BREAK
+          	    CASE "C"
+          	      loc_observ = "FALLO CONTING."
+          	      BREAK  
+          	    CASE "A"
+          	      /* asignacion de fallo */
+              	       loc_observ = "AJUSTE S/RECEP."
+		       BREAK
+                    CASE "R"
+                       /* recepcion de ajuste */
+                	  loc_observ = "AJUSTE RECEP."
+          	    	  BREAK
+                END SELECT 
+                clearfield post:NroFact_Inic //no tiene nro.de factura              
+          END IF
+                    
+      	  loc_imp = post:franq_cont_fin - post:franq_cont_inic
+          loc_totimp = loc_totimp + loc_imp
+          loc_totprod = loc_totprod + post:franq_cant_prod
+
+          IF (siaf:modo == "OPERADOR") THEN                    
+              FPRINT common:csr_string, \
+              "%-8.8s  %8.8s    %5.5s    %13.13e  %14.14s  %s  %8e", \
+              franq_codigo,franq_PresNro,franq_cant_prod,loc_imp,NroFact_Inic,loc_observ,franq_fecha_recep
+          ELSE
+          	  FPRINT common:csr_string, \
+              "%8e  %-8.8s  %8.8s    %5.5s    %13.13e  %14.14s  %s  %8e", \
+              franq_fecha,franq_codigo,franq_PresNro,franq_cant_prod,loc_imp, \
+              NroFact_Inic,loc_observ,franq_fecha_recep
+          END IF    
+          call tes:MISCwrite_file2(1,fld:common:csr_string)
+
+          loc_cantreg = loc_cantreg + 1  //cantidad de registros franqueadoras listados
+      END IF
+      
+      CDS FINDNEXT DSC:control_franq_ctx LOCK
+      lib:err_retval = CDSRETVAL
+   END WHILE
+   
+   /* imprimo totales franqueadoras */
+   IF (loc_cantreg > 0) THEN
+        move "  " to common:csr_string
+        call tes:MISCwrite_file2(1,fld:common:csr_string)
+        IF (siaf:modo == "OPERADOR") THEN
+        	//cgw: SC50276: Totales en Negrita (solo por impresion).
+		    IF (siaf:pantalla_impreso == "P") THEN
+                FPRINT common:csr_string, "TOTAL                 %5.5s    %13.13e", loc_totprod,loc_totimp
+            ELSE                                                        
+                FPRINT common:csr_string, "<st>1</st>TOTAL               %5.5s   %13.13e", loc_totprod,loc_totimp
+            END IF    
+        ELSE
+            //cgw: SC50276: Totales en Negrita (solo por impresion).
+		    IF (siaf:pantalla_impreso == "P") THEN
+    	        FPRINT common:csr_string, "TOTAL                             %5.5s    %13.13e", loc_totprod,loc_totimp
+    	    ELSE
+    	        FPRINT common:csr_string, "<st>1</st>TOTAL                          %5.5s   %13.13e", loc_totprod,loc_totimp
+    	    END IF    
+        END IF
+        call tes:MISCwrite_file2(1,fld:common:csr_string)
+        //cgw: SC50276 - No se realiza salto de pagina por operador, por lo que no se imprimira
+        //         lineas en blanco hasta completar pagina.
+        //CALL post:MISClst_blanco_franq  //completo hoja con lineas en blanco
+    ELSE
+      	/* Imprimo la inexistencia de datos para el operador */
+        CALL post:MISClst_nohay_franq
+    END IF        
+   
+    CDS UNLOCK DSC:control_franq_ctx
+    CDS ENDSELECT DSC:control_franq_ctx
+      
+END SUB
+
+/*******/

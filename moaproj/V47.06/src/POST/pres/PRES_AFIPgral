@@ -1,0 +1,185 @@
+/****o* Pendientes de agrupación/OFB:post:PRES_AFIPgral
+* NOMBRE
+*   OFB:post:PRES_AFIPgral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRES_AFIPgral
+	LOCAL MuestraMensaje LIKE siaf:i
+	LOCAL esSesion LIKE siaf:i
+	LOCAL esTeclasR LIKE siaf:i
+	LOCAL capturaMP LIKE siaf:i
+	LOCAL l_descPagoFacil LIKE common:csr_string
+	
+	
+	IF (cli_tipo == 5) THEN
+		MSGBOX "TRANSACCION NO DISPONIBLE PARA CLIENTES MEDIOS",0x00,"ERROR"
+		RETURN -1
+	END IF
+
+	CLEARFIELD PreDForFis
+	MuestraMensaje = 2
+	
+	/*Se le asigna, por dafault, que este reg del journal es el que va a ser procesado
+	por la Interfaz del correo*/
+	LET ProcesaInterfaz = "S"    
+	
+	CLEARFIELD post:sf1_comprobante
+	CLEARFIELD siaf:afip_ticket
+	
+	CLEARFIELD post:sf1_serv_desc //cgw:limpia la descr.del servicio para que no sea arrastrado
+	
+	sf1_tipo_ingreso = "A"
+	sf1_id_banco = "000"
+	sf1_nro_asociado = 0
+	sf1_nro_autoriza = 0
+	sf1_clearing = 0
+	post:sf1_secuencia = 0
+	post:sf1_nro_secuencia = 0
+	IF ( post:sf1_id_terminal.numchars == 0 ) THEN
+		MSGBOX "Su Sucursal no tiene asociada ninguna Id-Terminal",OFB_OK,"Error"
+		RETURN -1
+	END IF
+	
+	IF (post:estado_presu == 4 || plataf:current_state == CONFIRMATION || plataf:current_state == RECOVERY) then
+		//FGB:
+		//NO HAGO ESTAS VALIDACIONES YA QUE SE SUPONE QUE LOS DATOS FUERON VERIFICADOS
+		//AL MOMENTO DE CARGAR LA TRANSACCION.
+	ELSE
+		//30-07-1998 PJM  tomo la fecha de la ultima actualizacion de los bobs
+		CALL post:MISCget_version_bob(MuestraMensaje)
+		IF ( RETVAL < 0 ) THEN
+			RETURN -1
+		END IF
+		//Me fijo la version de Bob
+		CALL csr:date_compare(common:system_date,post:fecha)
+		IF ( RETVAL != 0 ) THEN
+			//gbp:NI50455 CORREO PAGOS
+			//MSGBOX "La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de Pago Facil",OFB_OK,"Error"
+			FPRINT l_descPagoFacil,"La Version de BOB`S es incorrecta \nDeberia Actualizar la Version de %s",DSC:post:descPagoFacil
+			MSGBOX l_descPagoFacil,OFB_OK,"Error"
+			
+			/* cgw: Adecuacion para RTJAVA. Se saca actualizacion pago facil.
+			drv:stack_cnt = drv:stack_cnt + 1
+			;LET drv:INDrun_funct = LST:post:TRANsf1_version
+			CALL csr:listexec(LST:post:TRANsf1_version)
+			*/
+			RETURN -1
+		END IF
+	END IF
+	
+	/*26.3.2004 la prohibicion de la dupla deja de tener efecto, debido a que la jerarquizacion 
+	de combos implica la confirmacion de estos ultimos en primer lugar dentro de un presupuesto; */   
+	/*Me fijo que en la sesion actual no haya alguna una tx monetaria en un combo.- Busca en la Presudet
+	CALL giros:CDShay_giros2("N","S","Esta prohibida la dupla Combos Monetarios - Pago facil/AFIP en un presupuesto") 
+	CALL giros:CDShay_giros2("S","N","Esta prohibida la dupla Giros - Pago facil/AFIP en un presupuesto") 
+	IF ( RETVAL != 0  ) THEN
+		RETURN (-1)
+	END IF  */
+	
+	siaf:nombre_transac.HIGHLITE = 0
+	siaf:codigo_siaf = 06840
+	siaf:restr_otra_casa = "S"
+	siaf:linea_validacion = "S"
+	siaf:exhibe_pantalla = "S"
+	
+	CALL siaf:PRESfecha_hora
+	IF ( RETVAL < 0 ) THEN
+		RETURN -1
+	END IF
+	
+	/*si estoy en teclas rápidas y tiene curso legal protejo el
+	campo y si no tiene le muestro un mensaje de error y no le permito
+	hacer la transacción - Hernán 14/11/2000*/
+	;[PAW] - pidieron que si no captura MP en sesion tambien tome el MP de curso legal. 08-01-2001
+	esSesion = (post:estado_presu == 2 || post:estado_presu == 3)
+	esTeclasR = (post:estado_presu == 1)
+	capturaMP = (siaf:adt_tran_med_pago == "S")
+	
+	IF ((esSesion && !capturaMP) || esTeclasR) THEN
+		CALL post:CDSMPago_Clegal_load
+		IF (RETVAL == 0) THEN
+			siaf:moneda = post:adt_mp_cod
+			PROTFIELD siaf:moneda
+			DISABLECONTROL drv:PBcb0
+		ELSE
+			ERRMSG lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+			RETURN (-2)
+		END IF
+	END IF
+	
+	CALL post:PRESsf1_cuentacorr
+	IF (RETVAL < 0) THEN
+		RETURN (-1)
+	END IF
+	
+	//Se Cambia el seteo de la multi-line
+	INIT 66,0 //cgw:se unifica criterio con sepsa
+	;INIT 67,"ml"
+	
+	post:INDPresuD_Dat = ofb:post:CDSTRAN6840_append
+	CALL post:MISCLeo_PresDet
+	IF ( RETVAL < 0 ) THEN
+		RETURN -1
+	END IF
+	
+	CALL post:MISCprotege(LST:post:fld6840protege,LST:post:fld6840desprotege)
+	SELECT (post:estado_presu )
+		CASE 1
+		CASE 3
+		CASE 4
+			siaf:imprime_comprobante = "D"
+		BREAK
+		CASE ELSE
+			siaf:imprime_comprobante = ""
+		BREAK
+	END SELECT
+	
+	PROTFIELD siaf:cuit_empresa
+	PROTFIELD siaf:per_fis_afipmmaaaa
+	PROTFIELD siaf:nro_comprobante
+	PROTFIELD siaf:importe
+	
+	IF (post:estado_presu == 4) THEN
+		PROTFIELD siaf:moneda
+		PROTFIELD siaf:adt_formulario
+	ELSE
+		//Default de Mondea
+		siaf:moneda = "00"
+		UNPROTFIELD siaf:moneda
+		UNPROTFIELD siaf:adt_formulario
+	END IF
+	
+	// Numero de Impresion
+	post:sf1_reimpresion = 1
+	
+	;SMC 16/08/1999 Se agrega la variable es_tesoro
+	;para que calcule bien en reversas
+	LET tes:es_tesoro = "S"
+	IF (!(testflag(tlr:tran_flags,correction))) THEN
+		IF (estado_presu < 4) THEN  //cgw:no se setea funcion en confirmacion
+			;SMC Seteo el Boton de Supervision
+			tlr:f08button = "F8 EMPRESAS PFACIL"
+			LET drv:button = TFB7
+			CALL drv:but_redraw
+			CALL drv:but_enable
+			KEYDEF F8,post:PB_SF1_empresa
+		END IF    
+	END IF
+
+END SUB
+
+/*******/

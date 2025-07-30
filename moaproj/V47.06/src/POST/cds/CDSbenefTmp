@@ -1,0 +1,520 @@
+/****o* Pendientes de agrupación/OFB:post:CDSbenefTmp
+* NOMBRE
+*   OFB:post:CDSbenefTmp
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSbenefTmp(p_eleccion,p_estado,p_estado2,p_estado3)
+LOCAL l_retval like lib:err_retval
+LOCAL l_cdsretval like lib:err_retval
+LOCAL l_cadena like common:csr_string
+LOCAL l_cadena2 like common:csr_string
+LOCAL l_rango  like common:csr_string 
+LOCAL l_operativo like adt_benTmp_operativo
+LOCAL l_beneficio like adt_benTmp_benef
+LOCAL l_fecha_pago like adt_benTmp_fecha_pag
+LOCAL l_importe like adt_benTmp_importe
+LOCAL l_benTmp_pag_tipoD like adt_benTmp_pag_tipoD
+LOCAL l_benTmp_pag_NroD like adt_benTmp_pag_NroD
+LOCAL l_benTmp_pag_nombr like adt_benTmp_pag_nombr
+LOCAL l_benTmp_pag_apell like adt_benTmp_pag_apell
+LOCAL l_benTmp_estado like adt_benTmp_estado
+LOCAL ESTADO like common:csr_string
+LOCAL l_nombre like adt_benef_nombre
+LOCAL l_benTmp_sucCliSel LIKE adt_benTmp_sucCliSel
+    CDS ENDSELECT "BenefTmp_ctx"
+    l_retval = 0
+    select (p_eleccion)
+        case "S" //Selección
+        
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+            adt_benTmp_pag_NroD == adt_benTmp_pag_NroD && \
+            (adt_benTmp_estado == p_estado || \
+            adt_benTmp_estado == p_estado2 || \
+            adt_benTmp_estado == p_estado3)
+            
+            CDS FINDFIRST "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            IF (l_retval == -801) THEN
+                select (p_estado)
+                    case "S"
+                    case "X"
+                    case "Y"
+                        msgbox "No hay beneficios cargados pendientes", OFB_OK ,"Aviso"
+                        break
+                    case else
+                        msgbox "No hay beneficios cargados enviados", OFB_OK ,"Aviso"
+                        break
+                end select
+                break
+            END IF
+            fprint l_rango "0,42"
+            call csr:f_sadroppl "BenefSel"
+            call csr:f_sanewpl "BenefSel" pic:PICbeneficios
+            WHILE (l_retval == 0)
+                CDS EXTRACT "BenefTmp_ctx" \
+                adt_benTmp_operativo into l_operativo \
+                adt_benTmp_benef into l_beneficio \
+                adt_benTmp_fecha_pag into l_fecha_pago \
+                adt_benTmp_importe into l_importe \
+                adt_benTmp_estado into l_benTmp_estado \
+                adt_benTmp_sucCliSel into l_benTmp_sucCliSel
+                
+                select (l_benTmp_estado)
+                    case "S"
+                        ESTADO = "PENDIENTE"
+                        BREAK
+                    case "RS"
+                        ESTADO = "RECHAZADO"
+                        BREAK
+                    case "AS"
+                        ESTADO = "ANULADO"
+                        BREAK
+                    case "JS"
+                        ESTADO = "ENVIADO"
+                        BREAK
+                    case "X"
+                        ESTADO = "PENDIENTE"
+                        BREAK
+                    case "RX"
+                        ESTADO = "RECHAZADO"
+                        BREAK
+                    case "AX"
+                        ESTADO = "ANULADO"
+                        BREAK
+                    case "JX"
+                        ESTADO = "ENVIADO"
+                        BREAK
+                    case "Y"
+                        ESTADO = "PENDIENTE"
+                        BREAK
+                    case "RY"
+                        ESTADO = "RECHAZADO"
+                        BREAK
+                    case "AY"
+                        ESTADO = "ANULADO"
+                        BREAK
+                    case "JY"
+                        ESTADO = "ENVIADO"
+                        BREAK 
+                END SELECT
+                if (!l_fecha_pago.numchars)
+                    l_fecha_pago = 0
+                end if
+                fprint l_cadena "%-20.20s %-20.20s %13.13s %10.10e %5.5s %-s",l_operativo, l_beneficio, l_importe, \
+                l_fecha_pago, l_benTmp_sucCliSel, ESTADO
+                
+                call csr:f_saaddpl "BenefSel" l_cadena
+                call csr:PickOp 4  "BenefSel" l_rango 
+                
+                CDS FINDNEXT "BenefTmp_ctx" NOLOCK
+                l_retval = CDSRETVAL
+            END WHILE
+            
+            cds endselect "BenefTmp_ctx"
+            init 71 1
+            l_retval = 0
+            CALL drv:MISCf_sacombopl ("BenefSel", common:csr_string,drv:button)
+            if (retval >= 0 ) then
+                if (tipo_pm != "E")
+                    l_operativo = substr (common:csr_string,0,20)
+                    call  CSR:trimfield (l_operativo,adt_benTmp_operativo)
+                    l_beneficio = substr (common:csr_string,21,20)
+                    call  CSR:trimfield (l_beneficio,adt_benTmp_benef)
+                    adt_benTmp_importe = substr (common:csr_string,42,13)
+                    l_cadena = substr (common:csr_string,62,4)
+                    l_cadena2 = substr (common:csr_string,59,2)
+                    fprint l_cadena "%s%s",l_cadena,l_cadena2
+                    l_cadena2 = substr (common:csr_string,56,2)
+                    fprint l_cadena "%s%s",l_cadena,l_cadena2
+                    adt_benTmp_fecha_pag = l_cadena
+                    adt_benTmp_sucCliSel = substr (common:csr_string,67,5)
+                    call  CSR:trimfield (adt_benTmp_sucCliSel)
+                    l_retval = 0
+                else
+                    l_retval = -2
+                end if
+            else
+                l_retval = retval
+            end if
+            init 71 0
+            call csr:f_sadroppl "BenefSel"
+            break
+        case "E" //Existe ?
+            if (p_estado != "") then
+                CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+                adt_benTmp_PresNro == post:PresNro && \
+                adt_benTmp_operativo == adt_benTmp_operativo && \
+                adt_benTmp_benef == adt_benTmp_benef && \
+              adt_benTmp_estado == p_estado
+            else
+                CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+                adt_benTmp_PresNro == post:PresNro && \
+                adt_benTmp_operativo == adt_benTmp_operativo && \
+                adt_benTmp_benef == adt_benTmp_benef
+            end if
+            
+            CDS FINDFIRST "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            break
+        case "A" //alta
+        case "M" //Modificación   
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_operativo == adt_benTmp_operativo && \
+            adt_benTmp_benef == adt_benTmp_benef && \
+            adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+            adt_benTmp_pag_NroD == adt_benTmp_pag_NroD
+            
+            CDS FINDFIRST "BenefTmp_ctx" LOCK
+            l_cdsretval = CDSRETVAL
+            adt_benTmp_estado = p_estado
+            adt_benTmp_operator = op:op_operator_id
+            adt_benTmp_PresNro = post:PresNro
+            adt_benTmp_cod_siaf = siaf:codigo_siaf
+            
+            call csr:trimfield (adt_benTmp_suc_cli)
+            
+            CDS CLEARBUFFER "BenefTmp_ctx"
+
+            CDS APPEND "BenefTmp_ctx" \
+            adt_benTmp_PresNro \
+            adt_benTmp_operativo \
+            adt_benTmp_benef \
+            adt_benTmp_nombre \
+            adt_benTmp_estado \
+            adt_benTmp_operator \
+            adt_benTmp_pag_tipoD \
+            adt_benTmp_pag_NroD \
+            adt_benTmp_pag_nombr \
+            adt_benTmp_pag_apell \
+            adt_benTmp_fecha_pag \
+            adt_benTmp_importe \
+            adt_benTmp_cod_reimp \
+            adt_benTmp_cli \
+            adt_benTmp_cli_desc \
+            adt_benTmp_suc_cli \
+            adt_benTmp_cod_siaf \
+            adt_benTmp_cab_est \
+            adt_benTmp_sucCliSel
+            
+            
+            CDS APPEND "BenefTmp_ctx" \
+            adt_benTmp_desde \
+            adt_benTmp_hasta \
+            giros:hora_viaje \
+            giros:dia_viaje \
+            post:adt_codseq_nro \
+            giros:codigo_procesamiento
+            
+            IF (l_cdsretval == -801) THEN
+               CDS INSERT "BenefTmp_ctx" LOCK
+            ELSE
+               CDS REPLACE "BenefTmp_ctx" LOCK
+            END IF
+            IF (cdsretval != 0) THEN
+                l_retval = -2
+            END IF
+            CDS UNLOCK "BenefTmp_ctx"
+            break
+        case "B" //Baja
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_operativo == adt_benTmp_operativo && \
+            adt_benTmp_benef == adt_benTmp_benef && \
+            adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+            adt_benTmp_pag_NroD == adt_benTmp_pag_NroD
+            CDS FINDFIRST "BenefTmp_ctx" LOCK
+            l_cdsretval = CDSRETVAL
+            IF (l_cdsretval == 0) THEN
+               CDS DELETE "BenefTmp_ctx"
+            else
+                l_retval = -2
+            END IF
+            BREAK
+        case "O" //Selección de operativo
+            CDS SELECT unique post:adt_benTmp_PresNro adt_benTmp_operativo FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+            adt_benTmp_pag_NroD == adt_benTmp_pag_NroD
+            CDS FINDFIRST "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            IF (l_retval == -801) THEN
+                msgbox "No hay operativos ingresados", OFB_OK ,"Aviso"
+                CDS ENDSELECT "BenefTmp_ctx"
+                l_retval = -2
+                break 
+            END IF
+            fprint l_rango "0,20"
+            call csr:f_sadroppl "BenefSel"
+            call csr:f_sanewpl "BenefSel" pic:PICbeneficios
+            WHILE (l_retval == 0)
+                CDS EXTRACT "BenefTmp_ctx" \
+                adt_benTmp_operativo into l_operativo
+                fprint l_cadena "%-20.20s",l_operativo
+                call csr:f_saaddpl "BenefSel" l_cadena
+                call csr:PickOp 4  "BenefSel" l_rango 
+                CDS FINDNEXT "BenefTmp_ctx" NOLOCK
+                l_retval = CDSRETVAL
+            END WHILE
+            
+            cds endselect dsc:clioca_ctx
+            init 71 1
+            CALL drv:MISCf_sacombopl ("BenefSel", common:csr_string,drv:button)
+            if (retval >= 0)
+                adt_benTmp_operativo = substr (common:csr_string,0,20)
+                call  CSR:trimfield (adt_benTmp_operativo,adt_benTmp_operativo)
+                clearfield adt_benTmp_benef
+                clearfield adt_benTmp_nombre
+                ;clearfield adt_benTmp_fecha_pag
+                clearfield adt_benTmp_importe
+                clearfield adt_benTmp_cli
+                clearfield adt_benTmp_cli_desc
+                clearfield adt_benTmp_suc_cli
+                l_retval = 0
+            else
+                l_retval = -2
+            end if
+            init 71 0
+            call csr:f_sadroppl "BenefSel"
+            BREAK
+        case "F" //Selección de beneficios
+            if (adt_benTmp_operativo.numchars == 0) then
+                msgbox "No se encontraron beneficios para el operativo ingresado", OFB_OK ,"Aviso"
+             l_retval = -2
+              break
+            end if
+            
+            RELEER:
+            if (adt_benTmp_sucCliSel.numchars && adt_benTmp_sucCliSel.NUMCHARS && \
+            adt_benTmp_sucCliSel != "TODAS") then
+              CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+                adt_benTmp_PresNro == post:PresNro && \
+                adt_benTmp_operativo == adt_benTmp_operativo && \
+                adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+                adt_benTmp_pag_NroD == adt_benTmp_pag_NroD && \
+                adt_benTmp_suc_cli == adt_benTmp_sucCliSel && \
+                adt_benTmp_estado == p_estado
+            else
+             CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+                adt_benTmp_PresNro == post:PresNro && \
+                adt_benTmp_operativo == adt_benTmp_operativo && \
+                adt_benTmp_pag_tipoD == adt_benTmp_pag_tipoD && \
+                adt_benTmp_pag_NroD == adt_benTmp_pag_NroD && \
+                adt_benTmp_estado == p_estado
+            end if
+            CDS FINDFIRST "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            IF (CDSRETVAL == -801) THEN
+                call post:CDSbenefTmp("EO","","","")
+                if (p_estado == "I" && retval == -801) then
+                    call post:CDSbenef_ing
+                    if (retval == 0) then
+                        CDS ENDSELECT "BenefTmp_ctx"
+                        goto RELEER
+                    END IF
+                end if
+                ;El host hace que se despliegue el mensaje "[H] No Hay Datos"
+                ;msgbox "No se encontraron beneficios para el operativo ingresado", OFB_OK ,"Aviso"
+                CDS ENDSELECT "BenefTmp_ctx"
+                l_retval = -2
+                break 
+            END IF
+            fprint l_rango "0,20"
+            call csr:f_sadroppl "BenefSel"
+            call csr:f_sanewpl "BenefSel" pic:PICbeneficios
+            WHILE (l_retval == 0)
+                CDS EXTRACT "BenefTmp_ctx" \
+                adt_benTmp_benef into l_beneficio \
+                adt_benTmp_nombre into l_nombre
+                fprint l_cadena "%-20.20s %-40.40s",l_beneficio, l_nombre
+                call csr:f_saaddpl "BenefSel" l_cadena
+                call csr:PickOp 4  "BenefSel" l_rango 
+                CDS FINDNEXT "BenefTmp_ctx" NOLOCK
+                l_retval = CDSRETVAL
+            END WHILE
+            
+            cds endselect dsc:clioca_ctx
+            init 71 1
+            CALL drv:MISCf_sacombopl ("BenefSel", common:csr_string,drv:button)
+            if (retval >= 0)
+                l_beneficio = substr (common:csr_string,0,20)
+                call  CSR:trimfield (l_beneficio,adt_benTmp_benef)
+                ;clearfield adt_benTmp_fecha_pag
+                clearfield adt_benTmp_nombre
+                clearfield adt_benTmp_importe
+                clearfield adt_benTmp_cod_reimp
+                clearfield adt_benTmp_cli
+                clearfield adt_benTmp_cli_desc
+                clearfield adt_benTmp_suc_cli
+                l_retval = 0
+            else
+                l_retval = -2
+            end if
+            init 71 0
+            call csr:f_sadroppl "BenefSel"
+            BREAK
+        case "C" //Acumulador de totales
+            CLEARFIELD pagoMsvImpPagCarg
+            CLEARFIELD pagoMsvImpRendPag
+            CLEARFIELD pagoMsvImpNoPagCarg
+            CLEARFIELD pagoMsvImpRendNoPag
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro
+            cds findfirst "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            
+            while (cdsretval == 0)
+                cds extract "BenefTmp_ctx" adt_benTmp_pag_tipoD into l_benTmp_pag_tipoD \
+                                           adt_benTmp_pag_NroD  into l_benTmp_pag_NroD \
+                                           adt_benTmp_importe   into l_importe \
+                                           adt_benTmp_estado    into l_benTmp_estado \
+                                           adt_benTmp_pag_nombr into l_benTmp_pag_nombr \
+                                           adt_benTmp_pag_apell into l_benTmp_pag_apell
+                if (adt_benTmp_pag_tipoD.numchars == 0 && \
+                    adt_benTmp_pag_NroD.numchars == 0) then
+                    adt_benTmp_pag_tipoD = l_benTmp_pag_tipoD
+                    adt_benTmp_pag_NroD  = l_benTmp_pag_NroD
+                    adt_benTmp_pag_nombr = l_benTmp_pag_nombr
+                    adt_benTmp_pag_apell = l_benTmp_pag_apell
+                end if
+                if (adt_benTmp_pag_tipoD == l_benTmp_pag_tipoD && \
+                    adt_benTmp_pag_NroD == l_benTmp_pag_NroD) then
+            
+                    select (siaf:codigo_siaf)
+                        case 6640
+                            select (l_benTmp_estado)
+                                case "S"
+                                case "RS"
+                                CASE "AS"
+                                    pagoMsvImpPagCarg = pagoMsvImpPagCarg + l_importe
+                                    break
+                                case "JS"
+                                    pagoMsvImpRendPag = pagoMsvImpRendPag + l_importe
+                            end select    
+                            break
+                        case 6650
+                            select (l_benTmp_estado)
+                                case "X"
+                                case "RX"
+                                CASE "AX"
+                                    pagoMsvImpPagCarg = pagoMsvImpPagCarg + l_importe
+                                    break
+                                case "JX"
+                                    pagoMsvImpRendPag = pagoMsvImpRendPag + l_importe
+                                    break
+                                case "Y"
+                                case "RY"
+                                CASE "AY"
+                                    pagoMsvImpNoPagCarg = pagoMsvImpNoPagCarg + l_importe
+                                    break
+                                case "JY"
+                                    pagoMsvImpRendNoPag = pagoMsvImpRendNoPag + l_importe
+                                    break
+                            end select 
+                            break
+                    end select
+                end if
+                cds findnext "BenefTmp_ctx" NOLOCK
+            end while    
+            break
+        case "EPoR" //Devuelve el estado de un registro para saber si es tx 6640 o 6650
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_estado != "I"
+            cds findfirst "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            if (cdsretval == 0) then
+                cds extract "BenefTmp_ctx" adt_benTmp_estado
+            end if
+            break
+        case "D" //Delete all != presupuesto actual para el operador
+        
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro != post:PresNro && \
+            adt_benTmp_operator == op:op_operator_id
+           
+           cds delete "BenefTmp_ctx" all
+          BREAK
+      case "H" //Hay beneficios enviados?
+        
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            (adt_benTmp_estado == p_estado || \
+            adt_benTmp_estado == p_estado2 || \
+            adt_benTmp_estado == p_estado3)
+            cds findfirst "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+           
+           BREAK
+      case "J" //update estado de cabecera journalizada
+          CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            (adt_benTmp_estado == "JS" || \
+            adt_benTmp_estado == "JX" || \
+            adt_benTmp_estado == "JY")
+
+            adt_benTmp_cab_est = "J"
+           CDS CLEARBUFFER "BenefTmp_ctx"
+
+            CDS APPEND "BenefTmp_ctx" \
+            adt_benTmp_cab_est
+            cds update "BenefTmp_ctx" ALL
+            break
+        case "EJ" //Lee estado de cabecera
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            (adt_benTmp_estado == "JS" || \
+            adt_benTmp_estado == "JX" || \
+            adt_benTmp_estado == "JY")
+         
+            cds findfirst "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            IF (l_retval == 0)
+                cds extract "BenefTmp_ctx" adt_benTmp_cab_est
+            end if
+            break
+        case "EO" //Existe operativo
+        
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_operativo == adt_benTmp_operativo && \
+            (adt_benTmp_estado == "S" || \
+            adt_benTmp_estado == "RS" || \
+            adt_benTmp_estado == "JS" || \
+            adt_benTmp_estado == "AS")
+            cds findfirst "BenefTmp_ctx" NOLOCK
+            l_retval = CDSRETVAL
+            break
+        case "DT" //Borra todos
+            CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+            adt_benTmp_PresNro == post:PresNro && \
+            adt_benTmp_operativo == adt_benTmp_operativo && \
+            adt_benTmp_estado == "I"
+            l_cdsretval = CDSRETVAL
+            IF (l_cdsretval == 0) THEN
+               CDS DELETE "BenefTmp_ctx" all
+            else
+                l_retval = -2
+            END IF
+    end select
+    CDS ENDSELECT "BenefTmp_ctx"
+    return l_retval
+END SUB
+
+/*******/

@@ -1,0 +1,199 @@
+/****o* Pendientes de agrupación/OFB:post:SENDasigna_destino
+* NOMBRE
+*   OFB:post:SENDasigna_destino
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*	crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+*	crq32349-NI50606 - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+* SOURCE
+*/
+#include "postSEND.h"
+
+SUB post:SENDasigna_destino
+
+if (!testflag(tlr:tran_flags,correction))
+  	
+  	/*Guardo registros de la tabla temporal stockp_temp en la tabla stockp o stockp_recep
+  	segun corresponda*/
+  	If (AsignaDestino == "X" ) then
+  		//verificar que se haya ingresado al menos una caratula de saca en el picklist
+  		call post:CDShay_simples
+  		if (retval < 0) then
+  			msgbox "Ingrese al menos una Carátula de Saca.",0x00,"AVISO"
+   			return -2
+   		else
+  			RETVAL = 0
+  		end if
+  	else
+  		//verificar que se haya ingresado al menos una caratula (MISMA SUCURSAL NO COLECTA CARATULA)
+  		if (AsignaDestino == "M") then
+  			RETVAL = 0
+  		else
+		  		if (post:caratula_saca.numchars == 0 && post:caratula_transf.numchars == 0) then
+		  			msgbox "Ingrese una Carátula.",0x00,"AVISO"
+		  			return -2
+		 			else
+		  			RETVAL = 0
+		  		end if
+		  endif
+  	Endif
+  	
+  	If (RETVAL == 0) Then/*Si hay registros para registrar*/
+    	
+    	//tengo que verificar si el checksum guia coincide con el checksum calculado
+    	IF (AsignaDestino != "X" && AsignaDestino != "M") THEN
+    	   //Calculo el checksum de las piezas ingresadas
+    		CALL post:MISCCheckSum
+    		CALL post:FVALChecksum_Guia
+    		IF (RETVAL < 0) THEN
+    			return -2
+    		ENDIF
+    	ENDIF
+    	
+ 		//luego pregunto si desea continuar con la confirmacion de la tx
+ 		move "S"  to siaf:continua_transaccion
+
+    	popup siaf:SCRNcontinua
+    	if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+        	/* 0x0190 = ESC */
+        	return -2
+      	endif
+      	    	
+    	if (AsignaDestino == "X") then
+    		/*recorro el picklist y por cada saca ingresada journalizo una 99000
+    		y genero los scaneos correspondientes*/
+    		idx = PL_GETITEM
+			do
+				call csr:myPickcontrol("Sacas Simples",common:csr_string,idx)
+				if (retval == 0) then
+					post:caratula_saca = common:csr_string
+	    			CALL post:CDSobtiene_secuen ("CABEC")
+	    			cod_agrupacion = adt_codseq_nro
+    	
+			    	/*Journalizo la pantalla de Recepcion de Piezas*/
+				    UNGETKEY RT_SEND
+    				siaf:adt_tran_codigo = 99000
+	      			siaf:codigo_siaf = 99000
+    	   			tlr:tran_mnemonic = "SVTTRP"
+	       			siaf:nombre_transac = "RECEP.PZAS.- ASIGNAC.DESTINOS"
+		       		drv:INDscr = SCR:SCRNpiezas
+    		   		drv:INDjnl_rtn = OFB:post:JNLrecep_piezas_hdr
+	    			CALL tlr:JNLtran
+	    			UNGETKEY RT_SEND
+    
+			    	/*Grabo los Scaneos correspondientes a la transaccion 99000*/
+    				CALL MISCGrabo_Scan_K1_C    
+    			else
+					break
+				end if
+				idx = idx + 1
+			loop
+   		
+    	else
+    			
+    		//Grabo en las tablas correspondientes
+    		if (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") then
+					CALL CDSstockp_save
+				else
+ 					CALL CDSstockp_recep_save
+				endif
+    		if (retval < 0) then
+    			RETURN -2
+    		endif
+    		
+    		/*crq32349-NI50606 Consultar si la Sucursal esta habilitada para Capturar Imagen 
+				CALL siaf:MISCSuc_CapImagen  
+    		//crq32349-NI50606  - Se consulta si hay piezas en la stockp con el campo captura imagen en F y se envía la consulta a T&T
+    		//siempre y cuando la sucursal esta habilitada para capturar imagen
+   			//Aunque no este asignando DESTINO se realiza igual esta consulta para que no se acumulen piezas con estado F.
+			 if (RETVAL != -2) THEN // SI no se pudo realizar la consulta anteriormente o dio un error nuevo no se continua con el proceso.
+ 		 			CALL post:CDSConsulta_Imagen("T")
+  		ENDIF*/
+   		
+    		CALL post:CDSobtiene_secuen ("CABEC")
+    		cod_agrupacion = adt_codseq_nro
+    	
+	    	/*Journalizo la pantalla de Recepcion de Piezas*/
+		    UNGETKEY RT_SEND
+    		siaf:adt_tran_codigo = 99000
+	      	siaf:codigo_siaf = 99000
+    	   	tlr:tran_mnemonic = "SVTTRP"
+       		siaf:nombre_transac = "RECEP.PZAS.- ASIGNAC.DESTINOS"
+	       	drv:INDscr = SCR:SCRNpiezas
+    	   	drv:INDjnl_rtn = OFB:post:JNLrecep_piezas_hdr
+	    	CALL tlr:JNLtran
+	    	UNGETKEY RT_SEND
+    
+		    /*Grabo los Scaneos correspondientes a la transaccion 99000*/
+    		CALL MISCGrabo_Scan_K1_C    
+    	
+	    	/*Journalizo las piezas ingresadas*/
+    		If (AsignaDestino != "X") then
+    			CALL MISCjnl_AsigDest
+    		endif
+
+    		if (AsignaDestino == "S" || AsignaDestino == "E" || AsignaDestino == "M") then
+    			/*Chequeo si hay que imprimir avisos de visita*/
+	    		CALL MISCVerif_Visitas
+    			IF (RETVAL == 0) THEN
+	    			//Imprimo los Avisos de Visita
+		   			PRINTDOC OFB:PRTaviso_visita,laser,"Imprimiendo Aviso de Visita"  
+    			END IF
+    		endif
+   		endif
+   		/*Borro los registros de la tabla temporal correspondientes al operador*/
+    	CALL CDSstockp_temp_del
+    	//elimino el picklist
+   		call  csr:f_sadroppl ("Sacas Simples")
+  	Else
+    	RETURN -2
+  	End If
+   	
+  Else
+   	/* MFM - Septiembre 2000 - Verifico si tengo que reversar el encabezado*/
+	CALL CDSreverso_cabecera("1")
+   	post:err_retval = 0
+	IF (RETVAL == 0 || RETVAL == -3) THEN
+		IF (RETVAL == -3) THEN
+	    	post:err_retval = -1
+		ELSE
+	    	post:err_retval = -5
+		ENDIF
+		CALL CDSBorro_Scaneos("R")
+		tlr:INDdcol_scrn[0] = SCR:post:SCRNpiezas
+		tlr:INDtran_name = "RECEP.PZAS.- ASIGNAC.DESTINOS"
+		tlr:INDjnl_append = OFB:post:JNLrecep_piezas_hdr
+  		CALL MISCreversa_transac
+  	END IF
+  	if (AsignaDestino != "X") then
+  		/* MFM - Septiembre 2000 - Reverso las piezas que están en condiciones*/
+  		IF (post:err_retval  == -1) THEN
+	    	//LAS PIEZAS YA ESTAN REVERSADAS
+  		ELSE
+  	   		CALL CDSSelect_Piezas("1")
+       		IF (post:err_retval != -5) THEN
+	        	MSGBOX "Ninguna pieza está en condiciones de reversarse",0x00,"AVISO"
+        	END IF
+    	END IF
+    endif
+   
+  
+  End If 
+  
+   ;Para que no journalice de más....
+  	CALL post:MISCclear_campos_jou
+  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  	Resetflag tlr:tran_flags,correction
+  
+END SUB
+
+/*******/

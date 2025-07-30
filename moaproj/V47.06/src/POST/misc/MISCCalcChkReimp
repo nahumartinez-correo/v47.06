@@ -1,0 +1,139 @@
+/****o* Novedades T&T/OFB:post:MISCCalcChkReimp
+* NOMBRE
+*   OFB:post:MISCCalcChkReimp
+* DESCRIPCION
+*   Esta rutina actualiza las novedades de T&T segun corresponda.
+* ENTRADAS
+*   tipo = "C" Actualizo la guia de contenedor de los scaneos O, P y 99
+*   tipo = "S"Si esoy cargando un contenedor, selecciono por guia de contenedor,y tipo de scaneo
+*	Si estoy cargando una pieza, selecciono por sequence, op, pieza y tipo de scaneo
+*   tipo = "L"	Actualizo el campo adt_novtt_linea del Scaneo X
+*   tipo = "F" Grabo la linea en los scaneos 15, 16 y 99 
+*   tipo = "P" Transferencia de Piezas
+*	tipo = "E"	Marca de Excepción
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:CDSextCont_max,OFB:post:CDSmodifJNLCCont,OFB:post:CDSmodifJNLlinea,OFB:post:CDSmodifJNLsaca
+*	OFB:post:MISCRegistro_Excep,OFB:post:MISCjnl_DetTCont,OFB:post:MISCTrato_Pieza
+*	OFB:post:MISCTrato_Saca,OFB:post:SVALMarca_Excepcion; post:PRTsacaContenedor
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCCalcChkReimp (tipo)
+
+    LOCAL caratula LIKE post:CaratulaSaca
+    LOCAL fecha LIKE post:adt_novtt_fecha
+    LOCAL l_itemcheck LIKE post:itemcheck
+    LOCAL l_Pieza_id LIKE post:Pieza_id
+    LOCAL l_cdsretval1 LIKE lib:err_retval
+    LOCAL l_cdsretval2 LIKE lib:err_retval
+   
+    SELECT (tipo)
+    	CASE "NoReenc"
+    		CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+		 	(op:op_operator_id == op:op_operator_id && \
+		     post:MarcaBorrado != "*" && jnl_simp_esp != "S" && \
+    		(jnl_stockp_reenc != "S" || \
+     		 jnl_stockp_reenc == "S" && jnl_stockp_reenc_cul != "S"))
+    		BREAK
+    	CASE "Reenc"
+    		CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+		 	(op:op_operator_id == op:op_operator_id && \
+		     post:MarcaBorrado != "*" && \
+	    	 jnl_stockp_reenc == "S" && jnl_stockp_reenc_cul == "S")
+    		BREAK
+    	CASE ELSE //valores posibles "Todas" o "Sacas" 
+    		CDS SELECT FROM DSC:DetTmp BECOMES DSC:DetTmp_ctx WHERE \
+		 	(op:op_operator_id == op:op_operator_id && \
+		     post:MarcaBorrado != "*" )
+    		BREAK
+    END SELECT
+    
+    CDS FINDFIRST DSC:DetTmp_ctx LOCK
+    LET l_cdsretval1 = CDSRETVAL
+    
+    DO
+		IF (l_cdsretval1 < 0) THEN
+			BREAK
+		ENDIF
+		
+		CLEARFIELD post:track_trace
+		CLEARFIELD post:Pieza_id 
+
+		CDS EXTRACT DSC:DetTmp_ctx ALL
+
+        LET l_Pieza_id = post:Pieza_id
+        CALL post:MISCFtrim(l_Pieza_id)
+        
+        //Si es una pieza
+        IF (post:TipoContenido == "A") THEN
+            /*Si estoy cargando una pieza, selecciono por sequence, op, pieza y 
+            tipo de scaneo*/
+            CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx \
+            WHERE ((adt_novtt_sequence == post:jnl_sequence_ori) && \
+            (adt_novtt_op == post:jnl_operator_ori) && \
+            (adt_novtt_pieza == post:track_trace || \
+             adt_novtt_pieza == post:Pieza_id ) && \
+            (adt_novtt_tipo == 15 || adt_novtt_tipo == 16 || adt_novtt_tipo == 99))
+            
+            CDS FINDFIRST DSC:NovTT_ctx LOCK
+            LET l_cdsretval2 = CDSRETVAL
+    				
+        ELSE 
+            CDS SELECT FROM DSC:NovTT_table BECOMES DSC:NovTT_ctx \
+            WHERE ((adt_novtt_guia_cont == l_Pieza_id) && \
+            (adt_novtt_tipo == 15 || adt_novtt_tipo == 16 || \
+            adt_novtt_tipo == 99))
+            /*(adt_novtt_op == op:op_operator_id) && \*/
+            
+            CDS FINDFIRST DSC:NovTT_ctx LOCK
+            LET l_cdsretval2 = CDSRETVAL
+        END IF
+
+        DO
+            IF (l_cdsretval2 < 0)
+                CDS UNLOCK DSC:NovTT_ctx
+                CDS ENDSELECT DSC:NovTT_ctx
+                BREAK
+            END IF
+            
+            CLEARFIELD adt_novtt_tipo
+            CLEARFIELD adt_novtt_pieza
+            
+            /*Para mayor seguridad*/
+            CDS EXTRACT DSC:NovTT_ctx adt_novtt_tipo \
+                                      adt_novtt_pieza //nuevo          
+            IF (adt_novtt_tipo == 15 || adt_novtt_tipo == 16 || adt_novtt_tipo == 99) THEN
+                adt_novtt_guia_saca = post:adt_codseq_nro
+        	    /*MFM - Se calcula el checksum de las piezas*/
+        	    IF (adt_novtt_tipo != 99) THEN
+        	    	//solicitud Cartas Rapidas
+    				IF (substr(post:adt_novtt_pieza,0,2) != "SR" && substr(post:adt_novtt_pieza,0,2) != "SU" && \
+    					substr(post:adt_novtt_pieza,0,2) != "GR" && substr(post:adt_novtt_pieza,0,2) != "GS") THEN
+        	    		CantTotPza_label = CantTotPza_label + 1
+        	    		CALL MISCCalcChkSum (adt_novtt_pieza, 13, l_itemcheck)
+	        	    	FPRINT checksum_piezas "%04.4x" l_itemcheck
+	        	    ENDIF
+        	    END IF
+    
+	        END IF
+            CDS FINDNEXT DSC:NovTT_ctx LOCK
+            LET l_cdsretval2 = CDSRETVAL
+        LOOP
+
+        CDS FINDNEXT DSC:DetTmp_ctx LOCK
+		LET l_cdsretval1 = CDSRETVAL
+    LOOP
+    
+    CDS UNLOCK DSC:post:DetTmp_ctx
+    CDS ENDSELECT DSC:post:DetTmp_ctx
+    
+END SUB
+
+/*******/

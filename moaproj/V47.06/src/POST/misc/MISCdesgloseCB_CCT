@@ -1,0 +1,205 @@
+/****o* Cobro por Cuenta de Terceros/OFB:post:MISCdesgloseCB_CCT
+* NOMBRE
+*   OFB:post:MISCdesgloseCB_CCT
+* DESCRIPCION
+*   Desglosa el código de barras estándar de CCT
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   post:MISCval_cb_CCT
+* DOCUMENTACION
+*   50361 - https://jirats.siemens.com.ar/jira/browse/AUT-1684
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCdesgloseCB_CCT(CodBarra)
+local pos_ini like post:adt_cct_PI_id_cup
+local largo like post:adt_cct_longcupon
+local year like post:err_retval
+local days like post:err_retval
+local month like post:err_retval
+local fecha_ini like post:jnl_fecha_llencont
+local decimales like post:checkeo
+local fecha_tmp like common:csr_string
+	
+	// Identificación del cupón
+	if (post:adt_cct_PI_id_cup > 0 && post:adt_cct_PF_id_cup > 0) then
+		pos_ini = post:adt_cct_PI_id_cup - 1
+		largo = (post:adt_cct_PF_id_cup  - post:adt_cct_PI_id_cup) + 1
+		//PS 10341
+		if (largo < 0) then
+			MSGBOX "ERROR EN LA PARAMETRIA. NO SE PUEDE REALIZAR EL DESGLOSE.",0x00,"ERROR"
+			RETURN -2
+		endif
+		post:id_cupon_CCT = substr(CodBarra,pos_ini,largo)
+		call csr:trimfield(post:id_cupon_CCT)
+		protfield post:id_cupon_CCT
+        SELECT (siaf:codigo_siaf)
+			CASE 99003 //  TX MODIFICACION DE PIEZAS
+        	protfield post:adt_climay_razon
+        	BREAK
+        END SELECT
+        drv:button = 0
+        //no se utiliza la deshabilitacion comentada, porque dibuja presionado
+        //el boton, trayendo problemas en su redibujo al habilitarse nuevamente cuando corresponda.
+        //CALL drv:but_down_disable
+        DISABLECONTROL drv:PBcb0 //deshabilita boton redibujandolo correctamente
+	else
+		clearfield  post:id_cupon_CCT
+		unprotfield post:id_cupon_CCT
+		SELECT (siaf:codigo_siaf)
+			CASE 99003 //  TX MODIFICACION DE PIEZAS
+				//clearfield  post:adt_climay_razon
+				protfield post:adt_climay_razon
+			BREAK
+		END SELECT
+        //drv:button = 0
+        //CALL drv:but_up_enable
+        DISABLECONTROL drv:PBcb0
+	end if
+	refresh post:id_cupon_CCT
+
+	// Fecha de vencimiento
+  if (post:adt_cct_ctrl_venc == "S") then
+	if (post:adt_cct_PI_venc > 0 && post:adt_cct_PF_venc > 0) then
+		pos_ini = post:adt_cct_PI_venc - 1
+		largo = (post:adt_cct_PF_venc  - post:adt_cct_PI_venc) + 1
+		//PS 10341
+		if (largo < 0) then
+			MSGBOX "ERROR EN LA PARAMETRIA. NO SE PUEDE REALIZAR EL DESGLOSE.",0x00,"ERROR"
+			RETURN -2
+		endif
+		fecha_tmp = substr(CodBarra,pos_ini,largo)
+		select (post:adt_cct_formvenc)
+		case "DDMMAA"
+			fprint year "%d" substr(fecha_tmp,4,2)
+			year = year + 2000
+			fprint fecha_vto_CCT "%s%s%s", year, \
+			substr(fecha_tmp,2,2), substr(fecha_tmp,0,2)
+			break
+		case "DDMMAAAA"
+			fprint fecha_vto_CCT "%s%s%s", substr(fecha_tmp,4,4), \
+			substr(fecha_tmp,2,2), substr(fecha_tmp,0,2)
+			break
+		case "AAMMDD"
+			year = 20
+			fprint fecha_vto_CCT "%s%s" "20", fecha_tmp
+			break
+		case "AADDD"
+			fprint year "%02.02d" substr(fecha_tmp,0,2)
+			fprint days "%d" substr(fecha_tmp,2,3)
+			fprint fecha_ini "%s%02.02d%s%s" "20", year, "01", "01"
+			if (days > 1) then
+				days = days - 1 
+				call csr:date_add(fecha_ini, days, "d",  fecha_vto_CCT)
+			else
+				fecha_vto_CCT = fecha_ini
+			end if
+			break
+		case "DDD"
+			fprint year "%04.04d" substr(common:system_date,0,4)
+			fprint days "%s" fecha_tmp
+			if (substr(common:system_date,4,2) >= "11") && \
+			(days <= 60) then
+				year = year + 1
+			end if
+			fprint fecha_ini "%s%s%s" year, "01", "01"
+			if (days > 1) then
+				days = days - 1
+				call csr:date_add(fecha_ini, days, "d",  fecha_vto_CCT)
+			else
+				fecha_vto_CCT = fecha_ini
+			end if
+			break
+		case "MMDD"
+			fprint year "%04.04d" substr(common:system_date,0,4)
+			if (substr(common:system_date,4,2) >= "11") && \
+			(substr(fecha_tmp,0,2) == "01" || substr(fecha_tmp,0,2) == "02") then
+				year = year + 1
+			end if
+			fprint fecha_vto_CCT "%04.04d%s", year, fecha_tmp
+			break
+		case "AAAAMM"
+			fprint year "%04.04d" substr(fecha_tmp,0,4)
+			fprint month "%02.02d" substr(fecha_tmp,4,2)
+			CALL CSR:last_day(month,year,fecha_vto_CCT)
+			break			
+		case "AAMM"
+			fprint month "%02.02d" substr(fecha_tmp,2,2)
+			fprint year "%s%02.02d" "20", substr(fecha_tmp,0,2)
+			CALL CSR:last_day(month,year,fecha_vto_CCT)
+			break			
+		case "MMAA"
+			fprint month "%02.02d" substr(fecha_tmp,0,2)
+			fprint year "%s%02.02d" "20", substr(fecha_tmp,2,2)
+			CALL CSR:last_day(month,year,fecha_vto_CCT)
+			break			
+		case "AAAAMMDD"
+			fprint fecha_vto_CCT "%s", fecha_tmp
+			break
+		end select
+		call csr:trimfield(fecha_vto_CCT)
+		protfield fecha_vto_CCT
+		/*Valido si es una fecha válida*/
+		//gpb:OJO!!!! no usar el formato "DDDDDDDDD MMMMMMMMM dd, yyyy"
+		//que el interprete Java no le gusta nada!!!
+		CALL csr:date_convert(fecha_vto_CCT,  "ddmmyyyy", fecha_tmp)
+		if (retval < 0) then
+			MSGBOX "FECHA DE VENCIMIENTO INVALIDA.", OFB_OK, "Error"
+			//clearfield fecha_vto_CCT
+			//unprotfield fecha_vto_CCT
+		else
+			if (fecha_vto_CCT < common:system_date) then
+				MSGBOX "EL CUPON SE ENCUENTRA VENCIDO.", OFB_OK, "Alerta"
+			end if
+		end if
+	else
+	//si esta bien cargada la parametria nunca deberia llegar aca
+		msgbox "Inconsistencia de Parametría. Por favor, Ingrese la fecha de vencimiento.",0x00,"Atención"
+		clearfield fecha_vto_CCT
+		unprotfield fecha_vto_CCT
+	end if
+ else
+	clearfield fecha_vto_CCT
+	protfield fecha_vto_CCT
+ endif
+	refresh fecha_vto_CCT
+	
+	// Importe
+	if (adt_cct_PI_imp > 0 && adt_cct_PF_imp > 0) then
+		pos_ini = adt_cct_PI_imp - 1
+		//PS 10341
+		largo = (adt_cct_PF_imp  - adt_cct_PI_imp) + 1
+		if (largo < 0) then
+			MSGBOX "ERROR EN LA PARAMETRIA. NO SE PUEDE REALIZAR EL DESGLOSE.",0x00,"ERROR"
+			RETURN -2
+		endif
+		fprint post:importe_CCT "%012.12e" substr(CodBarra,pos_ini,largo)
+		/*Por como recibo el dato, no me importa si viene el punto o no
+		lo desgloso siempre igual
+		;if (post:adt_cct_PD_imp != "S") then*/
+			// Tengo que ver la cantidad de decimales
+			fprint decimales "1%*.*d" adt_cct_CD_imp, adt_cct_CD_imp, 0
+			post:importe_CCT = post:importe_CCT / decimales
+		;end if
+		//Será editable el importe desglosado del código de barra, si es cero o si es mayor a cero y esta vencido
+		if (post:importe_CCT == 0 || (post:importe_CCT > 0 && (fecha_vto_CCT < common:system_date && fecha_vto_CCT != ""))) then
+			unprotfield post:importe_CCT
+		else
+			//clearfield post:importe_CCT
+			protfield post:importe_CCT
+		end if
+	else 
+		clearfield post:importe_CCT
+		unprotfield post:importe_CCT
+	end if
+	refresh post:importe_CCT
+	
+END SUB
+
+/*******/

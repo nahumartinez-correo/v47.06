@@ -1,0 +1,184 @@
+/****o* Clientes Medios/OFB:post:CDSabmAdelCM
+* NOMBRE
+*   OFB:post:CDSabmAdelCM
+* DESCRIPCION
+*  MDG
+* Esta rutina hace el abm de la tabla AdelCM
+* ENTRADAS
+*  pAccion:
+* A --> AGREGA UN REGISTRO Y ACUMULA EL SALDO DEL ADELANTO
+* X --> DA DE BAJA TODOS LOS REGISTROS QUE TIENEN REMITO PAGADOS CON ADELANTO POR OPERADOR
+* B --> DA DE BAJA TODOS LOS REGISTROS POR OPERADOR
+* M --> ACTUALIZA EL CONSUMO DESGLOZANDOLO EN LOS DIFERENTES ADELANTOS
+* pImporte: saldo de adelanto 
+* pNroRecibo : nro de recibo de adelanto utilizado
+* pTipo:
+* CM_CREM  "REMITO"
+* CM_ADEL  "ADELANTO"
+* CM_CSIM   "VENTA"
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:plataf:estado_presu_accion, OFB:post:ESC99460, OFB:post:ESC99490, OFB:post:ESC99510, OFB:post:MISCadelantos_climed, OFB:post:MISCagregTrnAntCM,
+*   OFB:post:MISCagregTrnAntUP, OFB:post:MISCcancelPresuNCped,OFB:post:MISCProd_Incumplido, OFB:post:MISCRemito_Item, OFB:post:OFBclimed_ped_simple,
+*   OFB:post:OFBclimedio_simple,OFB:post:PBcancela_sesion,OFB:post:PCOLcm_cons_gest_cob,OFB:post:PRECidentifica_cli,OFB:post:SVAL99430,OFB:post:SVALclimed_nc_pend
+*   OFB:post:SVALcm_cons_gest_cob
+* DOCUMENTACION
+*   CRQ26108 (GC50550) Por un error en la mensajeria viene un remito vacio cuando son 10 o mas y sale un Error Fatal al querer insterlo en AdelCM.
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSabmAdelCM(pAccion, pImporte, pNroRecibo, pTipo)
+
+LOCAL l_err_retval LIKE lib:err_retval
+LOCAL l_saldo LIKE post:adt_adelcm_saldo
+LOCAL l_nro_recibo LIKE post:adt_adelcm_id
+	l_saldo = pImporte
+	l_nro_recibo = pNroRecibo
+
+	SELECT (pAccion)
+		CASE "A"
+			CALL post:CDSnro_orden_AdelCM()
+			LET post:adt_adelcm_orden = RETVAL
+    		post:adt_adelcm_consumo = 0
+    		CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+				post:adt_adelcm_orden == post:adt_adelcm_orden && \
+				post:adt_adelcm_op == op:op_operator_id && \
+				post:adt_adelcm_cliente == post:climed_numero /*&& \
+			 	post:adt_adelcm_id == l_nro_recibo*/
+    		CDS FINDFIRST DSC:AdelCM_ctx LOCK
+    		LET l_err_retval = CDSRETVAL
+    		CDS CLEARBUFFER DSC:AdelCM_ctx
+    		IF (pTipo == CM_CREM || pTipo == CM_ADEL) THEN
+    			post:adt_adelcm_consumo = l_saldo
+    		ENDIF
+    		IF (pTipo == CM_ADEL) THEN
+    			post:adt_adelcm_marca = "*"
+    		ENDIF
+    		CDS APPEND DSC:AdelCM_ctx \
+    			FLD:post:adt_adelcm_orden \
+    			FLD:op:op_operator_id as post:adt_adelcm_op \
+    			FLD:post:climed_numero as post:adt_adelcm_cliente \
+    			l_nro_recibo as post:adt_adelcm_id \
+    			l_saldo as post:adt_adelcm_saldo \
+    			FLD:post:adt_adelcm_consumo \
+    			FLD:post:adt_adelcm_remito \
+    			FLD:post:adt_adelcm_marca
+    		    		
+    		IF (l_err_retval == -801) THEN
+    			// MFM - CRQ26108 (GC50550)  Por un error en la mensajeria viene un remito de menos cuando son 10 o mas.
+    			//Se pregunta entonces por el campo clave (post:adt_adelcm_id, que se inserta con el valor de la variable l_nro_recibo) distinto de vacio para que no lo inserte y salga un fatal error.
+    			if (l_nro_recibo == "")
+    			   ERRMSG lst:common:errmsg_list, "Faltan datos de Remito."
+    			else
+    				CDS INSERT DSC:AdelCM_ctx LOCK
+    				; Acumulo el importe de los adelantos solo si se esta instanciando la rutina desde la consulta simple de cliente
+    				;si se instancia desde la consulta de deuda no debo acumularlo.
+    				if (pTipo == CM_CSIM) then
+    					post:saldoAnticipo_CM = post:saldoAnticipo_CM + l_saldo
+    				endif
+    		
+    			endif	
+    		ELSE
+    			ERRMSG lst:common:errmsg_list, "No se puede insertar en la tabla AdelCM, \nel registro ya existe."
+    		END IF
+    		BREAK
+    	CASE "B"
+    		CDS ENDSELECT DSC:AdelCM_ctx
+			CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+				post:adt_adelcm_op == op:op_operator_id
+			CDS FINDFIRST DSC:AdelCM_ctx LOCK
+    		LET l_err_retval = CDSRETVAL
+    		WHILE (l_err_retval == 0)
+    			CDS DELETE DSC:AdelCM_ctx
+    			CDS FINDNEXT DSC:AdelCM_ctx LOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		BREAK
+    	CASE "X"
+    		CDS ENDSELECT DSC:AdelCM_ctx
+			CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+				post:adt_adelcm_op == op:op_operator_id && \
+				post:adt_adelcm_remito != ""
+			CDS FINDFIRST DSC:AdelCM_ctx LOCK
+    		LET l_err_retval = CDSRETVAL
+    		WHILE (l_err_retval == 0)
+    			CDS DELETE DSC:AdelCM_ctx
+    			CDS FINDNEXT DSC:AdelCM_ctx LOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		BREAK
+    	CASE "M"
+    		CDS ENDSELECT DSC:AdelCM_ctx
+    		; Atomizo la actualizacion.
+			CDS BEGINWORK
+    		if (pTipo != CM_CREM) then
+    			CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+    			post:adt_adelcm_op == op:op_operator_id && \
+			post:adt_adelcm_cliente == post:climed_numero && \
+			post:adt_adelcm_remito == "" ascending //habria que hacer un order by el nro de orden
+		else
+			CDS SELECT FROM DSC:AdelCM_tbl BECOMES DSC:AdelCM_ctx WHERE \
+    			post:adt_adelcm_op == op:op_operator_id && \
+			post:adt_adelcm_cliente == post:climed_numero && \
+			post:adt_adelcm_remito == post:remito_nro
+		endif
+
+    		CDS FINDFIRST DSC:AdelCM_ctx NOLOCK
+    		LET l_err_retval = CDSRETVAL
+    		
+    		WHILE (l_err_retval == 0)
+    			CDS EXTRACT DSC:AdelCM_ctx post:adt_adelcm_saldo
+    			if (pTipo != CM_CREM) then
+	    			IF (post:adt_adelcm_saldo > l_saldo) THEN
+    					post:adt_adelcm_consumo = l_saldo
+    					l_saldo = 0
+    				ELSE
+    					post:adt_adelcm_consumo = post:adt_adelcm_saldo
+	    				l_saldo = l_saldo - post:adt_adelcm_saldo
+    				END IF
+    			else
+    				//acumulo el valor de los remitos pagados con adelantos previamente
+    				post:anticipo_rem_CM = post:anticipo_rem_CM + post:adt_adelcm_saldo
+    			endif
+    			
+    			CDS FINDAGAIN DSC:AdelCM_ctx LOCK
+
+    			CDS CLEARBUFFER DSC:AdelCM_ctx
+    			
+    			post:adt_adelcm_marca = "*"
+    			if (pTipo != CM_CREM) then
+    				CDS APPEND DSC:AdelCM_ctx \
+    				FLD:post:adt_adelcm_consumo
+    			endif
+    			CDS APPEND DSC:AdelCM_ctx \
+    			FLD:post:adt_adelcm_marca 
+    			CDS UPDATE DSC:AdelCM_ctx LOCK
+    			
+    			IF (CDSRETVAL < 0) THEN
+    				CDS ROLLBACKWORK
+    				ERRMSG lst:common:errmsg_list, "No se puede actualizar el consumo en la tabla AdelCM"
+    				RETURN (-2)
+    			END IF
+    			
+    			IF (pTipo != CM_CREM && l_saldo == 0) THEN
+    				BREAK
+    			END IF
+    			
+    			CDS UNLOCK DSC:AdelCM_ctx
+    			CDS FINDNEXT DSC:AdelCM_ctx NOLOCK
+    			LET l_err_retval = CDSRETVAL
+    		END WHILE
+    		
+    		CDS COMMITWORK
+    		BREAK
+    END SELECT
+    CDS UNLOCK DSC:AdelCM_ctx
+   	CDS ENDSELECT DSC:AdelCM_ctx
+
+END SUB
+
+/*******/

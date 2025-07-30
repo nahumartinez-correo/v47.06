@@ -1,0 +1,77 @@
+/****o* Pendientes de agrupación/OFB:siaf:CDSchk_trxs_caidas
+* NOMBRE
+*   OFB:siaf:CDSchk_trxs_caidas
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "siafCDS.h"
+
+SUB siaf:CDSchk_trxs_caidas
+
+	local varl_cdsretval	like lib:err_retval
+
+	call siaf:CDSchk_cm_facturas
+
+        /*Esta rutina se encarga de verificar si hay alguna caída en vuelo del operador
+        que este siendo recuperada por el rt batch. Si es así no le permitirá seguir
+        hasta que el rt_batch libere el registro*/
+		CALL giros:MISCesp_desb_99
+		SELECT (RETVAL)
+		    CASE -2
+		        /*Pasó el tiempo estipulado de espera y el rt batch no libero el registro por lo que se
+		        sale de esta rutina y el operador no recupera la caída*/
+		        hcomm:tran_status = SEND_ERROR
+		        RETURN (-5)
+		    CASE 0
+		    CASE 1
+		        //No encontro ningun registro del operador lockeado por el rt batch...sigue la ejecución normal
+		        BREAK
+		END SELECT
+
+		// Verificar si existe alguna transaccion Host Down.
+	    if (siaf:adt_tran_fliatran == "PF ") then
+			CDS SELECT FROM DSC:giros:jnl_caidas BECOMES DSC:giros:jnl_caidas_ctx \
+				WHERE	tlr:jnl_branch == op:op_branch_id  		&& \
+						tlr:jnl_operator == op:op_operator_id	&& \
+						tlr:jnl_status > HOST_REJECTED  		&& \
+						tlr:jnl_status < RECH_REV_AUTO  		&& \
+						tlr:jnl_date == common:system_date		&& \
+						siaf:adt_tran_fliatran == "PF "
+		else
+			CDS SELECT FROM DSC:giros:jnl_caidas BECOMES DSC:giros:jnl_caidas_ctx \
+				WHERE	tlr:jnl_branch == op:op_branch_id  		&& \
+						tlr:jnl_operator == op:op_operator_id	&& \
+						tlr:jnl_status > HOST_REJECTED  		&& \
+						tlr:jnl_status < RECH_REV_AUTO  		&& \
+						tlr:jnl_date == common:system_date		&& \
+						siaf:adt_tran_fliatran != "PF "
+		endif
+   		CDS FINDFIRST DSC:giros:jnl_caidas_ctx NOLOCK
+   		let varl_cdsretval = cdsretval
+
+
+		CDS ENDSELECT DSC:giros:jnl_caidas_ctx
+
+   		if (varl_cdsretval == 0) // existe al menos un registro!
+				// Seteo flag de TRAN Caidas en Vuelo.
+				setflag tlr:controla_marca,mayor_cien
+				return (0)
+		else
+				// Reseteo flag de TRAN  Caidas en Vuelo.
+				resetflag tlr:controla_marca,mayor_cien
+				return (-2)
+		end if
+END SUB
+
+/*******/

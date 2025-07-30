@@ -1,0 +1,7 @@
+#include "impresio.h"
+#include "ofbdefs.h"
+#include "csr.h"
+#include "descuento.h"
+#include "tesoro.h"
+#include "commdef.h"
+#include "hcommstd.h"

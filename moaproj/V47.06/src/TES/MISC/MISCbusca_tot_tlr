@@ -1,0 +1,205 @@
+/****o* Reportes/OFB:tes:MISCbusca_tot_tlr
+* NOMBRE
+*   OFB:tes:MISCbusca_tot_tlr
+* DESCRIPCION
+* 	Este OFB busca en la tabla de totales registro por registro de la
+* 	sucursal, verifica que el operador sea cajero o retaguardia en la
+* 	tabla de profiles y si lo es escribe en el archivo los saldos
+* 	pedidos
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:tes:MISCimpri_inf_suc
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCbusca_tot_tlr
+    local operador        like op:op_login_id
+    local nro_oper        like op:op_operator_id
+    local saldo_inic      like siaf:aux_suma_monto
+    local saldo_efec      like siaf:aux_suma_monto
+    local total_fis       like siaf:aux_suma_monto
+    local loc_tot_fis     like siaf:aux_suma_monto
+    local loc_total_rech  like siaf:aux_suma_monto
+    local loc_total_venta like siaf:aux_suma_monto
+    local loc_imp_pases   like siaf:importe
+    local loc_abrio       like tes:es_tesoro
+
+    op:adt_branch_id = op:op_branch_id
+    loc_tot_fis = 0
+
+    /*
+    cds select tlr:tots_operator siaf:tefectivo_vec \
+    siaf:tefec_inic_vec from "totals" becomes "totals_ctx2"  \
+    */
+
+    cds select from "totals" becomes "totals_ctx2" where \
+    tlr:tots_branch == fld:op:adt_branch_id
+
+ /*   move "  " to common:csr_string
+    call MISCwrite_file1(5,common:csr_string)*/
+    common:csr_string = "  INFORMACION DE CAJAS: "
+    call MISCwrite_file1(5,common:csr_string)
+    move "  " to common:csr_string
+    call MISCwrite_file1(5,common:csr_string)
+    move "  " to common:csr_string
+    call MISCwrite_file1(5,common:csr_string)
+    common:csr_string =  \
+    "-DATOS CAJERO-------------------------------------------------------------------- "
+    call MISCwrite_file1(5,common:csr_string)
+    common:csr_string =  \
+    " NOMBRE       No.OP   ABRIO    SALDO        TOTAL        TOTAL        TOTAL"
+    call MISCwrite_file1(5,common:csr_string)
+    common:csr_string =  \
+    "                               INICIAL      DISP.        EN PASES     FISICO"
+    call MISCwrite_file1(5,common:csr_string)
+    
+    move  \
+    "--------------------------------------------------------------------------------- " \
+    to common:csr_string
+    call MISCwrite_file1(5,common:csr_string)
+    move "  " to common:csr_string
+    call MISCwrite_file1(5,common:csr_string)
+
+    do
+        clearfield operador
+        clearfield nro_oper
+        call csr:cleararray(siaf:monto_efec_vec)
+        call csr:cleararray(siaf:monto_inic_vec)
+        clearfield saldo_inic
+        clearfield saldo_efec
+
+        cds findnext "totals_ctx2" nolock
+        lib:err_retval = cdsretval
+        if (lib:err_retval == -801) then
+            break
+        end if
+
+        cds extract "totals_ctx2" fld:tlr:tots_operator into fld:nro_oper  \
+        array siaf:tefectivo_vec into array siaf:monto_efec_vec  \
+        array siaf:tefec_inic_vec into array siaf:monto_inic_vec
+
+        saldo_inic = siaf:monto_inic_vec[tes:tes_moneda]
+        saldo_efec = siaf:monto_efec_vec[tes:tes_moneda] + siaf:monto_inic_vec[tes:tes_moneda]
+        /* si es cheque, calculo la cantidad de rechazados */
+        if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S") then
+        	call tes:CDSSum_cheques(nro_oper,"O",tes:tes_moneda,"S",loc_total_rech)
+        	call tes:CDSSum_cheques(nro_oper,"O",tes:tes_moneda,"N",loc_total_venta)
+        	;saldo_efec = loc_total_rech + loc_total_venta + siaf:monto_inic_vec[tes:tes_moneda]
+        end if                	
+
+        loc_abrio = "S"
+
+        /* Busco en la tabla de rendicion para ver si abrio el dia, si no lo abrio
+        le copio el efectivo final al inical. A pedido de la gente del correo */
+        cds select tes:rend_fecha from dsc:tes:rend_caj_table becomes dsc:tes:rend_caj_context where \
+        tes:rend_suc_id == op:op_branch_id && \
+        tes:rend_op_id  == fld:nro_oper
+        cds findfirst dsc:rend_caj_context nolock
+
+        lib:err_retval = cdsretval
+
+        if (lib:err_retval == 0) then
+	       cds extract dsc:rend_caj_context all
+	        /* La recibo como parámetro
+      	    if (tes:rend_fecha != common:system_date) then */
+
+      	    if (tes:rend_fecha != siaf:fecha_proceso) then
+               /* No abrió el dia, por lo tanto le copio el importe final
+	           al saldo inicial */
+		       saldo_inic = saldo_efec
+		       loc_abrio = "N"
+      	    end if
+        end if
+
+        cds endselect dsc:rend_caj_context
+
+        cds select op:op_tlr_auth op:op_ret_auth op:op_login_id from "profiles" BECOMES "prof_ctx2" where \
+        op:op_operator_id == fld:nro_oper   && \
+        op:op_branch_id   == fld:op:adt_branch_id
+        cds findfirst "prof_ctx2" nolock
+
+        lib:err_retval = cdsretval
+
+        if (lib:err_retval == -801) then
+            operador = "DESCON."
+        else
+            cds extract "prof_ctx2"                     \
+            fld:op:op_login_id into fld:operador        \
+            fld:op:op_tlr_auth into fld:op:adt_tlr_auth \
+            fld:op:op_ret_auth into fld:op:adt_ret_auth           
+
+            /* No listar desconocidos */
+            if ((op:adt_tlr_auth == "X") || (op:adt_ret_auth == "X")) then
+
+                /* Obtener tipo de moneda  CALL post:CDSobtener_mon_tipo(tes:tes_moneda)*/
+
+    	        /* Calcular el importe total de los pases pendientes con op origen*/
+	            if (post:adt_mp_adm == "I") /*Itemizado (Cheque, Tarjeta)*/
+                   call tes:CDSpases_pend_cheq(op:adt_branch_id, nro_oper, tes:tes_moneda, "N")
+                else
+                   call tes:CDSpases_pend(op:adt_branch_id, nro_oper, tes:tes_moneda, "N")
+                end if
+                
+
+                loc_imp_pases = siaf:importe
+                siaf:importe  = siaf:importe + saldo_efec
+                total_fis     = siaf:importe
+                loc_tot_fis   = loc_tot_fis + total_fis
+		
+		// NI 50183
+		if (loc_abrio == "S" || (loc_abrio == "N" && (saldo_inic > 0 || saldo_efec > 0 ||loc_imp_pases > 0 || total_fis > 0)))
+                	fprint common:csr_string, \
+	            	"%-14.14s %5.5e    %1.1e  %12.12e %12.12e %12.12e %12.12e",operador,nro_oper,loc_abrio \
+	            	saldo_inic,saldo_efec,loc_imp_pases,total_fis
+
+
+	                /*******************************************************************/
+        	        /* Se carga en la matriz la información del dinero de la sucursal. */
+                	/* Esta matriz funciona de la siguiente manera:                    */
+	                /* Cada fila es la moneda y cada columna significa:                */
+        	        /* - col 0 : Efectivo Tesoro                                       */
+	                /* - col 1 : Cheques  Tesoro                                       */
+        	        /* - col 2 : Efectivo Cajas                                        */
+                	/* - col 3 : Cheques  Cajas                                        */
+	                /* - col 4 : Efectivo Buzon                - Andrea -              */
+        	        /* - col 5 : Cheques  Buzon                                        */
+                	/*******************************************************************/
+
+                	/* Efectivo */
+                	if (post:adt_mp_adm == "G")
+                   		matriz_dinero[post:adt_mon_cod][2] = matriz_dinero[post:adt_mon_cod][2] + total_fis
+                	endif
+
+	                /* Itemizado (cheque)*/
+        	        if (post:adt_mp_adm == "I" && post:adt_mp_admban == "S")
+                	   ;matriz_dinero[post:adt_mon_cod][3] = matriz_dinero[post:adt_mon_cod][3] + total_fis
+	                   matriz_dinero[post:adt_mon_cod][3] = matriz_dinero[post:adt_mon_cod][3] + loc_total_venta
+        	           matriz_dinero[post:adt_mon_cod][9] = matriz_dinero[post:adt_mon_cod][9] + loc_total_rech                   
+                	end if
+                	/* Fin de carga de la matriz */
+
+                	call MISCwrite_file1(5,common:csr_string)
+                	let siaf:importe_total = siaf:importe_total + saldo_efec
+           	endif
+           
+            end if
+        end if
+
+    loop   
+    cds endselect "totals_ctx2"
+    let common:csr_string = "--------------------------------------------------------------------------------- "
+    call MISCwrite_file1(5,fld:common:csr_string)
+    fprint common:csr_string \
+    "TOTAL                                                            %13.13e",loc_tot_fis
+    call MISCwrite_file1(5,common:csr_string)
+END SUB
+
+/*******/

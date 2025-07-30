@@ -1,0 +1,106 @@
+/****o* Pendientes de agrupación/OFB:post:CDScargaDevolPza4
+* NOMBRE
+*   OFB:post:CDScargaDevolPza4
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDScargaDevolPza4
+	/* Nov. 1999 - B. Petrella -                    */
+LOCAL FechaEnt LIKE post:adt_stockp_entrega_f
+CLEARFIELD FechaEnt
+
+	col = 0
+    LET FLD:post:adt_table = DSC:post:DevPza4
+	LET FLD:post:adt_ctx = DSC:post:DevPza4_ctx
+
+	CALL CDSborro_DP_1 /* Borra registros de la tabla segun op */
+
+	LET orden = 1
+
+	CDS SELECT FROM DSC:post:Stockp BECOMES DSC:post:Stockp_ctx WHERE \
+		(post:adt_stockp_vtofecha <= common:system_date && \
+		 post:adt_stockp_destino != "INTERDICTA" && \
+		 post:adt_stockp_en_devol != "S" && \
+		 post:adt_stockp_es_grancl == "S" && \
+		 post:adt_stockp_Baja == "N" && \
+		 post:adt_stockp_rendicion == "C" && \
+		 post:adt_stockp_entrega_f == FechaEnt)
+
+	CDS FINDFIRST DSC:post:Stockp_ctx NOLOCK
+
+	LET MarcaIncluye = "--"
+
+	DO
+		IF (CDSRETVAL != 0) THEN
+	    		BREAK
+		END IF
+		col = col + 1
+
+		CLEARFIELD post:adt_stockp_pieza 
+		CLEARFIELD post:adt_stockp_lote
+		CLEARFIELD post:adt_stockp_pie_obs
+		CLEARFIELD post:adt_stockp_reenc
+		CLEARFIELD post:adt_stockp_reenc_cul
+		CLEARFIELD post:adt_stockp_coment
+		CLEARFIELD post:adt_stockp_est_ent
+		CLEARFIELD post:adt_stockp_destino	
+		CLEARFIELD post:adt_stockp_fecha_obs 
+		CLEARFIELD post:adt_stockp_hora_obs
+			
+		CDS EXTRACT DSC:post:Stockp_ctx \
+	    		post:adt_stockp_pieza \
+				post:adt_stockp_lote \
+				post:adt_stockp_pie_obs \
+				post:adt_stockp_reenc \
+				post:adt_stockp_reenc_cul \
+				post:adt_stockp_coment \
+				post:adt_stockp_est_ent \
+				post:adt_stockp_destino \
+				post:adt_stockp_fecha_obs \
+				post:adt_stockp_hora_obs
+
+        /*Si es centralizada sin lote rescato el campo adt_serv_simp_esp de
+        la tabla de servicios correspondientes a los 2 primeros caracteres 
+        de la pieza*/
+        IF (siaf:codigo_siaf == "99067" || siaf:codigo_siaf == "99068")
+            /*Verifico que sea un TT valido*/
+            CALL MISCes_TT(adt_stockp_pieza)
+            IF (RETVAL == 0)
+                /*tt valido*/
+                LET Reencaminamiento = adt_stockp_pieza
+                CALL MISCobt_simp_esp
+                //adt_serv_simp_esp = jnl_simp_esp
+            ELSE
+                /*tt no valido*/
+                CLEARFIELD jnl_simp_esp
+            END IF
+        END IF        
+	call CDSgraba_DP_4	
+	LET orden = orden + 1		
+	CDS FINDNEXT DSC:post:Stockp_ctx NOLOCK
+    LOOP
+
+    CDS UNLOCK DSC:post:Stockp_ctx
+    CDS ENDSELECT DSC:post:Stockp_ctx
+
+    IF (col <= 0)
+	return (-2)
+    END IF
+
+    LET orden = 1
+END SUB
+
+/*******/

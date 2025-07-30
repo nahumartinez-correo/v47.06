@@ -1,0 +1,252 @@
+/****o* Giros Masivos/OFB:giros:CDSIngresar_gm
+* NOMBRE
+*   OFB:giros:CDSIngresar_gm
+* DESCRIPCION
+*   Esta rutina graba en la tabla sesion_gm los giros ingresados.
+*   Para el caso de CEC graba n registros iguales segun la cantidad ingresada.
+* ENTRADAS
+*   TipoGM: tipo de giro, "P" = Postal; "T" = Telegrafico; "H" = CEC
+* SALIDAS
+*   RETVAL: -2, si hubo un error al graba en la tabla sesion_gm.
+*   RETVAL:  0, si la grabacion en la tabla sesion_gm fue exitosa.
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "giroscds.h"
+
+
+SUB giros:CDSIngresar_gm(TipoGM)
+   local l_cant_total LIKE siaf:i
+   local varl_codigo like siaf:codigo_siaf
+
+   //EL NRO SESION GM YA DEBERIA ESTAR GENERADO (secuenciador anual)....ACA SE TIENE QUE GENERAR EL NRO DE TRX 
+   //Y EL NRO DE AGRUPACION PARA TODOS LOS TIPOS DE GIRO (EL COD AGRUPACION SERVIRA SOLO PARA H)
+   
+   //se fuerza estado Ingresado
+   giros:estado_gm = "I"
+   giros:tipo_giro_fld = TipoGM
+   clearfield giros:nro_trx_gm
+   clearfield giros:codagrupacion_gm
+
+   clearfield hcomm:INDhost_sndrt
+   clearfield hcomm:INDhost_rcvrt
+   call hcomm:COMM_stat_init
+   clearfield giros:CodRespuesta_comm
+   
+  	SELECT (TipoGM)
+  	CASE "H"
+		CDS SELECT FROM DSC:TBLSesion_GM BECOMES DSC:CTXSesion_GM \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		giros:nro_sesion_gm == giros:nro_sesion_gm && \
+		giros:tipo_giro_fld == TipoGM && \
+		giros:nro_trx_gm == giros:nro_trx_gm && \
+		giros:codagrupacion_gm == giros:codagrupacion_gm
+	        l_cant_total = 1
+	        break
+  	CASE ELSE	
+  
+  		CDS SELECT FROM DSC:TBLSesion_GM BECOMES DSC:CTXSesion_GM \
+		WHERE post:op_operator_id == op:op_operator_id && \
+		giros:nro_sesion_gm == giros:nro_sesion_gm && \
+		giros:nro_trx_gm == giros:nro_trx_gm && \
+		giros:tipo_giro_fld == TipoGM
+		break
+  	END SELECT
+
+        CDS FINDFIRST DSC:CTXSesion_GM LOCK
+	let lib:err_retval = cdsretval
+    	IF (lib:err_retval < 0 && lib:err_retval != -801 )
+    		msgbox "ERROR AL GRABAR EN TABLA SESION GIROS MASIVOS.",OFB_OK,"Atencion"
+    		CDS ENDSELECT DSC:CTXSesion_GM 
+		return -2
+    	END IF
+    	
+    	IF (TESTFLAG(pjurid_benef_flag,persona_juridica)) then
+        	move RazonSocBenef_fld to ApellidoBenef_fld
+        	NombreBenef_fld = "."
+        ENDIF
+        IF (TESTFLAG(pers_jur_flag,persona_juridica)) then
+    		move "." to NombreEmi_fld
+    		move post:CliRaz to ApellidoEmis_fld
+    	END IF
+    	
+	IF (lib:err_retval == -801)
+		//GENERAR EL CODIGO DE AGRUPACION
+		call post:CDSobtiene_secuen("CABEC")
+        	giros:codagrupacion_gm = post:adt_codseq_nro
+	
+		DO
+		
+		//GENERAR EL NRO DE TRX
+		call post:CDSobtiene_secuen("TRXGM")
+        	giros:nro_trx_gm = post:adt_codseq_nro
+
+		call MISCBusca_flia(siaf:codigo_siaf)
+		varl_codigo = 70610
+		
+		CDS CLEARBUFFER DSC:CTXSesion_GM
+		CDS APPEND DSC:CTXSesion_GM \
+		op:op_operator_id AS post:op_operator_id \
+		giros:nro_sesion_gm \
+		giros:tipo_giro_fld \
+		giros:flia_giro_fld \
+		giros:nro_trx_gm \
+		giros:codagrupacion_gm \
+		common:system_date AS giros:fecha_gm \
+		siaf:codigo_siaf AS siaf:codigo_siaf_tmp \
+		varl_codigo AS siaf:codigo_siaf \
+		giros:estado_gm \
+		giros:clave_hdr_giros \
+		giros:firma_enviada \
+		giros:Firma_comm \
+		post:adt_codseq_nro \
+		giros:hora_viaje \
+		giros:dia_viaje \
+		giros:codigo_procesamiento \
+		giros:FechaEmision_fld
+
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:Serie_fld \
+		giros:digito_fld \
+		giros:NroGiro_fld \
+		giros:cons_nro_ctrol \
+		giros:SucSel2_fld \
+		giros:ProvBenef_fld \
+		giros:CodSucBenef_fld \
+		giros:Comision_fld \
+		giros:ComisionSinIva_fld \
+		giros:IvaComision_fld \
+		giros:ImporteSelloEmis \
+		giros:ImporteSelloPag \
+		giros:ImporteTotal_fld \
+		giros:ImporteNeto \
+		giros:TasaSinIva_fld \
+		giros:IvaTasa_fld \
+		post:AliServUP
+
+		CDS APPEND DSC:CTXSesion_GM \
+		post:adt_tarif_fijo \
+		post:adt_tarif_fijo_des \
+		post:adt_tarif_fj_aliciva \
+		post:adt_serv_aliciva \
+		post:adt_tarif_desde \
+		post:adt_tarif_hasta \
+		post:adt_tarif_dest \
+		giros:pjurid_benef_flag \
+		giros:NombreBenef_fld \
+		giros:ApellidoBenef_fld \
+		giros:RazonSocBenef_fld \
+		giros:TipoDocBenef_fld \
+		giros:NroDocBenef_fld \
+		giros:CalleBenef_fld \
+		giros:NroCalleBenef_fld \
+		giros:PisoBenef_fld \
+		giros:DptoBenef_fld
+		
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:TelBenef_fld \
+		giros:CodPostBenef_fld \
+		giros:ProvSucBenef_fld \
+		giros:CiudadBenef_fld \
+		giros:CodProvBenef_fld \
+		giros:LocBenef_WU \
+		giros:CodPaisResidBenef \
+		giros:PaisResidBenef \
+		giros:pers_jur_flag \
+		giros:NombreEmi_fld \
+		giros:ApellidoEmis_fld \
+		giros:RazonSocEmis_fld \
+		giros:TipoDocEmisGm_fld AS giros:TipoDocEmis_fld \
+		giros:NroDocEmisGm_fld AS giros:NroDocEmis_fld \
+		giros:CalleEmisGm_fld AS giros:CalleEmis_fld \
+		giros:NroCalleEmisGm_fld AS giros:NroCalleEmis_fld \
+		giros:PisoEmis_fld
+				
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:DptoEmis_fld \
+		giros:TelEmisGm_fld AS giros:TelEmis_fld \
+		giros:CodPostEmisGm_fld AS giros:CodPostEmis_fld \
+		giros:CiudadEmisGm_fld AS giros:CiudadEmis_fld \
+		giros:CodProvEmisGm_fld AS giros:CodProvEmis_fld \
+		giros:ProvSucEmisGm_fld AS giros:ProvSucEmis_fld \
+		giros:LocEmisGm_WU AS giros:LocEmis_WU \
+		giros:CodPaisResidEmisGm AS giros:CodPaisResidEmis \
+		giros:PaisResidEmisGm AS giros:PaisResidEmis \
+		post:adt_tarif_um \
+		post:adt_tarif_modo \
+		post:adt_serv_formfiscal \
+		post:adt_tarif_uneg \
+		post:adt_serv_serv \
+		post:orden
+		
+		CDS APPEND DSC:CTXSesion_GM \
+		post:cant_opc \
+		NroCuitBenef_fld \
+		CatIvaBenef_fld \
+		NroInscRegBenef_fld \
+		OcupacionBenef_fld \
+		OtrosOcupBenef_fld \
+		giros:NInscRegEmisGm_fld AS NroInscRegEmis_fld \
+		giros:OcupacionEmisGm_fld AS OcupacionEmis_fld \
+		giros:OtrosOcupEmisGm_fld AS OtrosOcupEmis_fld \
+		CatIvaEmis_fld \
+		NroCuitEmis_fld \
+		Importegm_cec \
+		Cantgm_cec
+		
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:Impuesto \
+		giros:Impuesto_abonado
+
+
+
+		CDS APPEND DSC:CTXSesion_GM \
+		FLD:post:costo_opc \
+		array FLD:post:cod_opc \
+		array FLD:post:cos_opc \
+		array FLD:post:vec_opc \
+		array FLD:post:vec_opc2 \
+		array FLD:post:ali_opc \
+		array FLD:post:inf_opc \
+		array FLD:post:comb_opc \
+		array FLD:post:siniva_opc \
+		array FLD:post:flia_opc \
+		array FLD:post:fliatran_vec \
+		array FLD:post:impciva_vec \
+		array FLD:post:impsiva_vec \
+		FLD:TrackTrace_giros \
+		env_post_flag \
+		camara_flags \
+		CatIvaEmis_fld AS post:IvaCod \
+		hcomm:tran_status AS giros:gm_status \
+		giros:CodRespuesta_comm \
+		post:cant_bloq \
+		post:imp_bloques
+		//SC 50170-FACTURACION
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:ComisionSinIva4_fld \
+		giros:TasaSinIva4_fld \
+		array FLD:post:siniva_opc4
+		//Pago Abierto
+		CDS APPEND DSC:CTXSesion_GM \
+		giros:genera_teleg
+		CDS INSERT DSC:CTXSesion_GM LOCK
+		
+		IF (TipoGM == "H" && Cantgm_cec > l_cant_total)
+			l_cant_total = l_cant_total + 1
+		ELSE
+			BREAK
+		END IF	
+		LOOP
+	ENDIF
+	
+	CDS ENDSELECT DSC:CTXSesion_GM
+
+END SUB
+	
+/*******/ 

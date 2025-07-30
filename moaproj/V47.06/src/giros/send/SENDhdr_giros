@@ -1,0 +1,136 @@
+/****o* Pendientes de agrupación/OFB:giros:SENDhdr_giros
+* NOMBRE
+*   OFB:giros:SENDhdr_giros
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossend.h"
+
+SUB giros:SENDhdr_giros(TieneNeto,TieneMonReco,TieneMonPago,TienePaisEmis,TienePaisBenef)
+
+	// Codigo del Mensaje
+	IF (TESTFLAG(tlr:controla_firma,cancelacion)) THEN
+		common:csr_string = 0x400
+	ELSE
+		common:csr_string = 0x200
+	END IF
+	// BITMAP para Abajo
+	COMM PUT  common:csr_string MSG TYPE BINARY LENGTH 2 
+	
+	// Primer Byte 
+	// Bit 1 - Siempre 1, Siempre (Prendido)
+	// Bit 2 - Codigo del Correo
+	// Bit 3 - Codigo de Procesamiento 
+	// Bit 4 - Si lleva monto o no
+	// Bit 7 - Siempre  va es la Fecha y Hora de Transaccion
+	IF ( TieneNeto == "S" || TieneNeto == "s" || TESTFLAG(tlr:tran_flags,correction) || TESTFLAG(giros:tran_send_mode,cancelacion)) THEN
+		common:csr_string = 0x72
+		//common:csr_string = 0xF2
+	ELSE
+		common:csr_string = 0x62
+		//common:csr_string = 0xE2
+	END IF
+	COMM PUT  common:csr_string MSG TYPE BINARY LENGTH 1
+	
+	// Segundo Byte 
+	// Bit 11 Stan
+	// Bit 12 Hora Local
+	// Bit 13 Fecha Local de Transaccion
+	common:csr_string = 0x38
+	COMM PUT  common:csr_string MSG TYPE BINARY LENGTH 1
+	
+	// Tercer Byte
+	// Bit 20 Pais Emisor del Giro 
+	// Bit 21 Pais Beneficiaro    
+	// Bit 24 Siempre 003, Siempre (Prendido)
+	tes:idx = 0x1
+	If ( TienePaisEmis == "S" || TienePaisEmis == "s") THEN
+	  tes:idx = tes:idx ^ 0x10
+	END IF 
+	IF ( TienePaisBenef == "S" || TienePaisBenef == "s") THEN
+	  tes:idx = tes:idx ^ 0x8    
+	END IF  
+	COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+	
+	// Cuarto Byte en 0
+	tes:idx = 0x0   
+	COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+	
+	// Quinto Byte
+	IF (giros:flia_giro_fld == "I" || (TESTFLAG(tlr:tran_flags,correction) || TESTFLAG(giros:tran_send_mode,cancelacion))) THEN
+		tes:idx = 0x8
+	END IF
+	COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+	
+	// Sexto Byte 
+	// Bit 41 Codigo de Identificacion de Terminal
+	tes:idx = 0x80
+	COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+	
+	// Septimo Byte 
+	// Bit 49 Codigo de Moneda de emision del Giro segun Codificacion Internacional
+	// Bit 50 Codigo de Moneda de reconcilacion del Giro segun Codificacion Internacional
+	// Bit 51 Codigo de Moneda de pago del Giro segun Codificacion Internacional
+	tes:idx =  0x80
+	IF (TieneMonReco == "S" || TieneMonReco == "s") THEN
+	 tes:idx = tes:idx  ^ 0x40        
+	END IF
+	IF (TieneMonPago == "S" || TieneMonPago  == "s") THEN
+	 tes:idx  = tes:idx ^ 0x20        
+	END IF
+	// Si todos estan prendidos tendria que dar 0xE0
+	COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+   
+	// Octavo Byte
+	// Bit 60
+	// Bit 61
+	// Bit 62
+	// Bit 63
+	/* Ya que se obtiene STAN desde SVAL 
+	// Stan falta definir( Hay que Reemplazarlo por un codigo generado por el secuenciador
+	IF (!TESTFLAG(tlr:controla_firma,cancelacion)) THEN
+		CALL post:CDSobtiene_secuen("STAN")
+	END IF
+	Fin que se obtiene STAN desde SVAL*/
+
+  IF (giros:flia_giro_fld != "I") THEN
+		IF (siaf:codigo_siaf != "72380") THEN //Tran Act.Semilla.
+			// Se Arma la Firma
+			CALL giros:MISCarma_firma
+			// Se encrypta
+			CALL giros:MISCfirma
+			giros:firma_enviada = common:csr_string_171 /* se agrego el 06072000 */
+		END IF
+		CALL SENDput_fld("32",common:csr_string_171)
+	END IF
+
+	 tes:idx = 0x10
+	 IF ( BulkFld_61.NUMCHARS > 0 ) THEN
+	  	tes:idx  = tes:idx ^ 0x8
+	 END IF
+	 IF ( BulkFld_62.NUMCHARS > 0 ) THEN
+	   	tes:idx  = tes:idx ^ 0x4
+	 END IF
+	 IF ( BulkFld_63.NUMCHARS > 0 ) THEN
+	   		tes:idx  = tes:idx ^ 0x2
+	 END IF
+	 COMM PUT tes:idx MSG TYPE BINARY LENGTH 1
+
+	CALL giros:SENDhdr_datos(TieneNeto,TieneMonReco,TieneMonPago,TienePaisEmis,TienePaisBenef)
+
+	CALL SENDput_end
+	
+END SUB
+
+/*******/

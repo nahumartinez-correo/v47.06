@@ -1,0 +1,122 @@
+/****o* Pendientes de agrupación/OFB:post:MISCvalidoBenefRend
+* NOMBRE
+*   OFB:post:MISCvalidoBenefRend
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+SUB post:MISCvalidoBenefRend
+local l_operativo like adt_benTmp_operativo
+local l_beneficio like adt_benTmp_benef
+local l_suc_cli like adt_benTmp_sucCliSel
+local l_estado like adt_benef_estado
+local idx like siaf:idx
+local mensaje like common:csr_string
+	call csr:f_sadroppl("pic_oper_suc_cli")
+	call csr:f_sanewpl("pic_oper_suc_cli",PIC:climedio_multiple)
+	
+	call csr:f_sadroppl("pic_oper_benef")
+	call csr:f_sanewpl("pic_oper_benef",PIC:climedio_multiple)
+	
+	CDS ENDSELECT "BenefTmp_ctx"
+    ;No hace falta preguntar por los estados porque todo lo que se encuentra en la BenefTmp
+    ;deben ser rendiciones
+    
+    CDS SELECT FROM "BenefTmp" BECOMES "BenefTmp_ctx" WHERE  \
+    adt_benTmp_PresNro == post:PresNro
+    
+    CDS FINDFIRST "BenefTmp_ctx" NOLOCK
+    WHILE (CDSRETVAL == 0)
+    	CDS EXTRACT "BenefTmp_ctx" \
+    	adt_benTmp_operativo into l_operativo \
+    	adt_benTmp_benef into l_beneficio \
+    	adt_benTmp_sucCliSel into l_suc_cli
+    	if (l_suc_cli == "TODAS" || l_suc_cli.NUMCHARS == 0) THEN
+    		CLEARFIELD l_suc_cli
+    		call csr:PickOp PICKOP_SEARCH "pic_oper_suc_cli" l_operativo
+			idx = RETVAL
+			WHILE (idx >= 0)
+				CALL CSR:myPickdelete("pic_oper_suc_cli" ,l_operativo,idx)
+    			call csr:PickOp PICKOP_SEARCH "pic_oper_suc_cli" l_operativo
+    			idx = RETVAL
+    		END WHILE
+    	END IF
+    	fprint common:csr_string "%-20.20s %-8.8s" l_operativo, l_suc_cli
+		call csr:PickOp PICKOP_SEARCH "pic_oper_suc_cli" common:csr_string
+		if (retval < 0) then
+    		CALL CSR:f_saaddpl("pic_oper_suc_cli",common:csr_string)
+    	end if
+		
+		fprint common:csr_string "%-20.20s %-20.20s" l_operativo, l_beneficio
+		CALL CSR:f_saaddpl("pic_oper_benef",common:csr_string)
+    	CDS FINDNEXT "BenefTmp_ctx" NOLOCK
+    END WHILE
+	cds endselect "BenefTmp_ctx"
+	
+	clearfield l_operativo
+	clearfield l_beneficio
+	clearfield l_suc_cli
+	let idx = PL_GETITEM
+	call csr:myPickcontrol "pic_oper_suc_cli" common:csr_string idx
+	while (retval == 0)
+		
+		l_operativo = substr(common:csr_string,0,20)
+		l_suc_cli = substr(common:csr_string,21,8)
+		call csr:trimfield (l_operativo)
+		call csr:trimfield (l_suc_cli)
+		if (l_suc_cli.numchars)
+			CDS SELECT FROM "Beneficios" BECOMES "Beneficios_ctx" WHERE  \
+        	adt_benef_pag_tipoD == adt_benTmp_pag_tipoD && \
+    		adt_benef_pag_NroD == adt_benTmp_pag_NroD && \
+        	adt_benef_operativo == l_operativo && \
+            adt_benef_suc_cli == l_suc_cli
+		else
+			CDS SELECT FROM "Beneficios" BECOMES "Beneficios_ctx" WHERE  \
+        	adt_benef_pag_tipoD == adt_benTmp_pag_tipoD && \
+    		adt_benef_pag_NroD == adt_benTmp_pag_NroD && \
+        	adt_benef_operativo == l_operativo
+		end if
+		cds findfirst "Beneficios_ctx" NOLOCK
+		while (cdsretval == 0)
+			cds extract "Beneficios_ctx" adt_benef_benef into l_beneficio, \
+			adt_benef_estado into l_estado
+			
+			if (l_estado != "P") then
+			    fprint common:csr_string "%-20.20s %-20.20s" l_operativo, l_beneficio
+			    call csr:PickOp PICKOP_SEARCH "pic_oper_benef" common:csr_string
+			    if (retval < 0) then
+			    	if (l_suc_cli.numchars)
+			    	    fprint mensaje "Hay beneficios pendientes de rendición para el operativo %-s y sucursal cliente %5.5s." l_operativo, l_suc_cli
+    		    	ELSE
+    		    	    fprint mensaje "Hay beneficios pendientes de rendición para el operativo %-s." l_operativo
+    		    	END IF
+    		    	MSGBOX mensaje,OFB_OK,"Atención"
+    		    	cds endselect "Beneficios_ctx"
+    		    	call csr:f_sadroppl("pic_oper_suc_cli")
+			    	call csr:f_sadroppl("pic_oper_benef")
+			    	return -2
+    		    end if
+			end if
+			clearfield l_beneficio
+			clearfield l_estado
+			cds findnext "Beneficios_ctx" NOLOCK
+		end while
+		cds endselect "Beneficios_ctx"
+		let idx = idx + 1
+		call csr:myPickcontrol "pic_oper_suc_cli" common:csr_string idx
+	end while
+	call csr:f_sadroppl("pic_oper_suc_cli")
+	call csr:f_sadroppl("pic_oper_benef")
+END SUB
+/*******/

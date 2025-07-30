@@ -1,0 +1,137 @@
+/****o* Pendientes de agrupación/OFB:post:CDSordenCM_saldo
+* NOMBRE
+*   OFB:post:CDSordenCM_saldo
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSordenCM_saldo
+
+LOCAL l_importe   LIKE siaf:importe
+LOCAL l_cantidad  LIKE post:cantidad
+LOCAL l_imp_total LIKE siaf:importe
+LOCAL l_total_oc  LIKE siaf:importe
+LOCAL l_flia 	  LIKE siaf:adt_tran_fliatran
+LOCAL l_cant_opc  LIKE post:cant_opc
+LOCAL l_imp_opc   LIKE siaf:importe
+LOCAL l_aux		  LIKE post:cantidad
+local l_cant_aux  LIKE post:cantidad
+local l_tipo_prod LIKE post:tipo_produc
+local l_cod_opc   LIKE post:tmp_opc_opci
+local l_bloq_imp  LIKE siaf:importe
+local l_cant_bloque LIKE post:cant_bloq
+	
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta WHERE \
+	post:fecha == common:system_date && \
+	post:op_operator_id == op:op_operator_id && \
+	post:PresNro == post:PresNro && \
+	siaf:codigo_siaf != 99099 && \
+	siaf:codigo_siaf != 99023 && \
+	siaf:codigo_siaf != 99160 && \
+	siaf:codigo_siaf != 99350
+		
+	CDS FINDFIRST DSC:CONPresuDeta NOLOCK
+	
+	l_imp_total = 0
+	
+	DO
+		IF (CDSRETVAL == 0) THEN
+			
+			l_tipo_prod = post:tipo_produc
+	
+			CDS EXTRACT DSC:CONPresuDeta \
+			post:adt_itemoc_puni INTO l_importe \
+			post:cantidad INTO l_cantidad \
+			siaf:adt_tran_fliatran INTO l_flia \
+			post:cant_opc INTO l_cant_opc \
+			post:tipo_produc
+			
+			if (l_flia == "CME") then
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:cantidad2 INTO l_cantidad
+			else
+				//PS 9683
+				//clearfield post:cant_bloq
+				CDS EXTRACT DSC:CONPresuDeta \
+				post:adt_bloqoc_precio into l_bloq_imp \
+				post:cant_bloq into l_cant_bloque
+				
+				//PS 9683 - Se multiplica los bloques por la cantidad de telegramas vendidos
+				//l_imp_total = l_imp_total + (l_bloq_imp * post:cant_bloq)
+				l_imp_total = l_imp_total + ((l_bloq_imp * l_cant_bloque) * l_cantidad)
+				
+			endif
+			
+			l_imp_total = l_imp_total + (l_importe * l_cantidad)
+			
+			//TAMBIEN TENGO QUE ACUMULAR EN EL CONSUMO LOS OPCIONALES!!
+			SELECT (l_flia)
+				CASE "CSP"
+				CASE "CSE"
+				CASE "CST"
+					
+					l_aux = 0
+					
+					WHILE (l_cant_opc > l_aux) then
+						
+						CDS EXTRACT DSC:CONPresuDeta \
+						post:opc_puni_oc[l_aux] INTO l_imp_opc \
+						post:cod_opc[l_aux] INTO l_cod_opc 
+
+						l_cant_aux = post:cantidad
+						;PS9490
+                        CALL post:MISCopcCantPart(l_cod_opc, post:tipo_produc, l_cant_aux)
+
+						IF (RETVAL == 1) THEN
+							l_imp_total = l_imp_total + l_imp_opc
+						ELSE
+							l_imp_total = l_imp_total + (l_imp_opc * l_cantidad)
+						ENDIF
+						
+						l_aux = l_aux + 1	
+						
+						//CON EL TRATAMIENTO DEL PS9490 SE PIERDE EL CONTEXTO
+						CDS FINDAGAIN DSC:CONPresuDeta 	NOLOCK				
+						
+					END WHILE
+					
+				break
+			END SELECT
+			
+		ELSE
+			CDS ENDSELECT DSC:CONPresuDeta
+			BREAK
+		ENDIF
+		
+		CDS FINDNEXT DSC:CONPresuDeta NOLOCK
+		
+	LOOP
+	
+	l_total_oc = post:ordenCM_saldo //+ post:ordenCM_tol
+	
+	post:tipo_produc = l_tipo_prod 
+	
+	IF (l_imp_total > l_total_oc && post:ordenCM_tipo == "T") THEN
+		MSGBOX "El monto de la compra supera el límite disponible de su Orden de Compra.",0x00,"AVISO"
+		RETURN -2
+	ELSE 
+		consumo_OC = l_imp_total
+		//grabarlo en la Presu
+		call CDSpresu_upd_saldoOC
+	ENDIF
+	
+END SUB
+
+/*******/

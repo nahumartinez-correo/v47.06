@@ -1,0 +1,243 @@
+/****o* Pendientes de agrupación/OFB:tes:TRANcall_efvo_ini
+* NOMBRE
+*   OFB:tes:TRANcall_efvo_ini
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesTRAN.h"
+
+Sub tes:TRANcall_efvo_ini
+    local imp_rend_aux LIKE imp_aux
+    local provincia LIKE admin:adt_br_siaf
+    provincia = SUBSTR(common:sucursal_activa,0,1)
+
+    
+#ifdef SUCU_VIRTUAL
+    if (post:sucu_virtual != "S")
+
+	    ///////////////COMIENZO DEL PROCESO/////////////
+		  drv:INDtemp_list = OFB:TRANcall_efvo_ini
+	    CALL CSR:dt_tran(DT_TRAN_START,drv:INDtemp_list)
+	    ////////////////////////////////////////////////
+
+        PDM ENABLEITEM drv:menubar, ALL, 2  // --> desactivar menúes.
+    end if
+#else
+
+    ///////////////COMIENZO DEL PROCESO/////////////
+	  drv:INDtemp_list = OFB:TRANcall_efvo_ini
+    CALL CSR:dt_tran(DT_TRAN_START,drv:INDtemp_list)
+    ////////////////////////////////////////////////
+
+    PDM ENABLEITEM drv:menubar, ALL, 2  // --> desactivar menúes.
+#endif
+        
+    if (drv:descrip == "OPENDAY") THEN
+      cutscreen tlr:SCRNopen_day,NOCURSOR
+    else
+      cutscreen tlr:SCRNopen_day_adm,NOCURSOR
+    end if         
+    
+#ifdef SUCU_VIRTUAL    
+    if (post:sucu_virtual == "S")
+	   	UNGETKEY 0x191
+    end if
+#else
+    UNGETKEY 0x191
+#endif
+
+    resetflag tlr:tran_flags,supovr_request
+    resetflag tlr:tran_flags,supovr_granted
+    clearfield ovr:ovr_sup_id
+    clearfield tlr:jnl_supervisor
+    call CDSren_caj_load
+    rend_marca = "L"
+    
+
+	if (tes:rend_tipo_cierre == "F") then
+
+		;UNGETKEY RT_SEND
+    	CALL CSR:listexec(LST:siaf:TRAN8805)
+    	drv:funct_rest = 0        /* le hago hacer la carga inicial con arqueo */
+    	/*
+        let drv:INDtran_arqueo = ofb:tes:MISCev_inicial
+        call tes:MISCarqueo_especie(op:op_operator_id,"N")
+        */
+		CALL CSR:listexec(LST:tes:TRAN8807)
+    	drv:funct_rest = 0        /* le hago hacer la carga inicial con arqueo */
+
+	else
+	    //Antes de empezar muestro una pantalla para que el operador espero y no
+	    //piense que el sistema esta colgado...
+	    if (post:sucu_virtual != "S") then
+	    	display SCRNopen_msg
+	    end if
+	    
+	    // Tengo que ver las restricciones, para que declare unicamente
+	    // los medios de pago que debe.
+	    post:tipo_rest = TODOS
+	    ;call post:MISCarmo_pick_tes("pic:PICmedios")
+	    call post:MISCrest_saldo(common:sucursal_activa,"pic:PICmedios","N","operador")	
+
+	    //Call post:MISCrest_teso(common:sucursal_activa,8510,"pic:PICmedios","N","N",0)
+	    // Recorro el picklist con los medios de pago habilitados
+	    
+	    let idx = 0
+		let i_idx = PL_GETITEM + 0
+	    
+		call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx
+	
+	    do
+	    	if (retval < 0) THEN
+				break
+	      	end if
+	
+	      	post:adt_mp_cod = substr(common:csr_string,0,2)
+	      	call post:CDSadt_MedPago_load
+	
+	      	//siaf:importe = rend_importe_vec[post:MedPMon]
+	      	post:importe_origen = rend_importe_vec[post:adt_mp_cod]
+	      	siaf:moneda = post:adt_mp_cod
+	      	siaf:desc_moneda = post:adt_mp_desc
+	      	post:medio_pago_desc = post:adt_mp_desc
+	      	resetflag tlr:tran_flags,supovr_request
+	      	resetflag tlr:tran_flags,supovr_granted
+	      	clearfield ovr:ovr_sup_id
+	      	clearfield tlr:jnl_supervisor
+	      	rend_marca = "L"
+	      	call post:MISCconvierto_coti(post:importe_origen)
+	      
+	      	if (rend_importe_vec[post:adt_mp_cod] >= 0) THEN
+            	init 33,0
+            
+            ;if (post:sucu_virtual == "S")
+  	            let tlr:INDtots_append = LST:siaf:TOTS8800
+                let drv:INDspc_rtn[0]  = LST:siaf:TOTS8800
+		        siaf:codigo_siaf = 8800
+                siaf:nombre_transac = "CARGA EFEC.INICIAL POSITIVO"
+                tlr:tran_mnemonic = "TECEIP"
+		        ;let drv:INDscr = SCR:tlr:SCRNopen_day
+		        if (post:sucu_virtual != "S") then	    
+		        	let drv:INDscr = SCR:siaf:SCRNefec_inic_pos
+		        	clearfield drv:INDspc_rtn[4]
+		        end if
+	
+				fyimsg common:fyimsg_list, \
+				"Grabando Datos Iniciales"
+
+                let drv:INDjnl_rtn = OFB:siaf:JNLefec_inic_pos
+        		UNGETKEY RT_SEND
+                call tlr:JNLtran    	            
+                /*
+		    else
+			    	UNGETKEY RT_SEND      
+	                CALL CSR:listexec(LST:siaf:TRAN8800)          
+	                drv:funct_rest = 0
+	            end if
+	            */
+			else
+				INIT 33,0
+				siaf:importe = siaf:importe * -1
+				post:importe_origen = post:importe_origen * -1
+			
+				;if (post:sucu_virtual == "S")
+			    	let tlr:INDtots_append = LST:siaf:TOTS8600
+			    	let drv:INDspc_rtn[0]  = LST:siaf:TOTS8600
+			    	siaf:codigo_siaf = 8600
+			    	siaf:nombre_transac = "CARGA EFEC.INICIAL NEGATIVO"
+			    	tlr:tran_mnemonic = "TECEIN"
+		        	if (post:sucu_virtual != "S") then	    
+		        		let drv:INDscr = SCR:siaf:SCRNefec_inic_pos
+		        		clearfield drv:INDspc_rtn[4]
+		        	end if			    	
+					;let drv:INDscr = SCR:tlr:SCRNopen_day	    
+					fyimsg common:fyimsg_list, \
+					"Grabando Datos Iniciales"
+					
+			    	let drv:INDjnl_rtn = OFB:siaf:JNLefec_inic_pos			    	
+					UNGETKEY RT_SEND
+			    	call tlr:JNLtran
+			    /*    	            
+				else
+					UNGETKEY RT_SEND
+			    	CALL CSR:listexec(LST:siaf:TRAN8600)
+			    	drv:funct_rest = 0
+			    */
+				;end if
+	           
+	    	end if
+	             
+	    	let idx = idx + 1
+	    	let i_idx = PL_GETITEM + idx
+	    	call csr:myPickcontrol dsc:post:pic_medios common:csr_string i_idx
+		loop
+		
+		//Cuando termino saco la pantalla que estaba mostrando
+		if (post:sucu_virtual != "S") then
+			undisplay SCRNopen_msg
+		end if
+		
+    end if
+    clearfield siaf:desc_moneda
+
+     
+    CALL CDSinit_rend_cajero
+    call CDSinit_rend_espv
+    // Especies valorizadas
+
+#ifdef SUCU_VIRTUAL    
+if (post:sucu_virtual != "S")
+    call CDSstatus_TesEspV(" ", op:op_branch_id, "N", op:op_operator_id)
+    call post:MISCactivar_buts
+    call tes:MISCsave_mov_pend    
+    clearfield siaf:importe
+    clearfield tes:espv_cod
+    clearfield siaf:moneda
+    clearfield post:medio_pago_desc
+    unprotfield espv_cod
+    unprotfield siaf:importe
+    unprotfield post:importe_origen
+    unprotfield siaf:moneda
+end if
+#else
+    call CDSstatus_TesEspV(" ", op:op_branch_id, "N", op:op_operator_id)
+    call post:MISCactivar_buts
+    call tes:MISCsave_mov_pend    
+    clearfield siaf:importe
+    clearfield tes:espv_cod
+    clearfield siaf:moneda
+    clearfield post:medio_pago_desc
+    unprotfield espv_cod
+    unprotfield siaf:importe
+    unprotfield post:importe_origen
+    unprotfield siaf:moneda
+#endif
+    drv:funct_rest = 0
+
+#ifdef SUCU_VIRTUAL
+    if (post:sucu_virtual != "S")    
+	    ///////////////FIN DEL PROCESO////////////////
+	   	drv:INDtemp_list = OFB:TRANcall_efvo_ini
+	    CALL CSR:dt_tran(DT_TRAN_END,drv:INDtemp_list)
+	    //////////////////////////////////////////////
+	endif
+#else
+	///////////////FIN DEL PROCESO////////////////
+   	drv:INDtemp_list = OFB:TRANcall_efvo_ini
+    CALL CSR:dt_tran(DT_TRAN_END,drv:INDtemp_list)
+    //////////////////////////////////////////////
+#endif
+END SUB
+
+/*******/

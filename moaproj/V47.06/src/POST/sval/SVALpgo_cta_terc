@@ -1,0 +1,96 @@
+/****o* Pendientes de agrupación/OFB:post:SVALpgo_cta_terc
+* NOMBRE
+*   OFB:post:SVALpgo_cta_terc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALpgo_cta_terc
+local imp_tran like siaf:importe
+local flia like siaf:adt_tran_fliatran
+
+  if (post:ctas_terceros == "")
+        ERRMSG LST:common:errmsg_list,siaf:ERRcampo_requerido
+        RETURN (-2)                   
+  end if     
+    
+	IF (post:estado_presu < 4)
+		//verifico si la tx admite consulta al switch consultando en la DGralSuc
+		CALL giros:CDSdatgralsuc_load           
+		IF (giros:adt_dgralsuc_consPCT == "S")
+			CALL MISCbenef_pct
+			IF (cod_barr_valido == "S")
+				beneficio = benef_on_site
+				beneficio_estado = "T"
+				operativo = operativo_on_site					
+				CALL post:OFBconsulta_simon(970110)
+				IF (retval == 0 || hcomm:tran_status > HOST_REJECTED)
+					//TX ACEPTADA
+						MSGBOX "Este Comprobante deberá ser pagado mediante la transacción de Pago On Site",0x00,"Error"
+					return -2
+				ELSE
+					SELECT (giros:CodRespuesta_comm)
+						CASE "03"
+						CASE "21"
+						CASE "22"
+						CASE "24"
+						CASE "57"
+							BREAK
+						CASE ELSE
+							MSGBOX "NO SE PUEDE REALIZAR EL PAGO",0x00,"Error"
+							return -2				
+					END SELECT
+				END IF
+			END IF
+		END IF
+	END IF
+	
+  IF (post:estado_presu != 4) then		
+    call siaf:SVALnivel_sup
+	  if (retval < 0) THEN
+      	return (-2)
+    end if	   
+  END IF
+                       
+	//ACP-Grabo en la tabla PresuDet
+  call post:MISCGrabaDetalleTrn		
+	UNGETKEY RT_SEND
+	
+	/* por si se presiona ESCAPE */
+	IF (LASTKEY == RT_ESC) THEN
+		RETURN (-2)
+	END IF
+	
+	call post:MISCActMedPago
+	
+	IF (post:estado_presu == 1 || post:estado_presu == 4)
+		//Verificar Codigo de Barras y de ser valido grabar el beneficio correspondiente
+		//en la tabla de Beneficios
+		CALL MISCbenef_pct
+		IF (cod_barr_valido == "S")
+			CALL MISCsave_benef
+		END IF
+	END IF
+	
+	if (post:estado_presu == 1)
+	     UNGETKEY RT_SEND
+	     call tlr:JNLtran
+       imp_tran = siaf:importe * -1
+       Call post:MISCcap_teclas_rap(imp_tran)
+  end if 
+   
+END SUB
+
+/*******/

@@ -1,0 +1,123 @@
+/****o* Pendientes de agrupación/OFB:post:CDSgenTrn6890
+* NOMBRE
+*   OFB:post:CDSgenTrn6890
+* DESCRIPCION
+*   Genera la transacción de descuento de contrareembolso
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   giros:MISCdestoContrareemb
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+SUB post:CDSgenTrn6890(total_importe_bon, pTrnOrigen)
+	;Esta rutina genera la tx de Fallo positivo 6890 ** MDG
+	local afec_aux like siaf:afecta_efectivo
+	local l_prodvs_aliciva like post:adt_prodvs_aliciva
+	local l_ImporteSinIva like post:ImporteSinIva 
+	local l_ImporteIva like post:ImporteIva
+	local l_imp like siaf:importe
+	local l_afec_efvo like siaf:adt_tran_afec_efvo
+	siaf:adt_tran_fliatran = "PCL"
+	siaf:codigo_siaf = 6890
+	afec_aux = siaf:afecta_efectivo
+
+	CDS SELECT FROM DSC:post:TABPresuDeta BECOMES DSC:post:CONPresuDeta2 \
+			WHERE post:fecha == FLD:post:fecha && \
+			post:op_operator_id == FLD:post:op_operator_id && \
+			post:PresNro == post:PresNro && siaf:codigo_siaf == 6890 && \
+			post:trnOrigen == pTrnOrigen
+
+	CDS FINDFIRST DSC:post:CONPresuDeta2 LOCK
+	if (cdsretval == 0)
+		
+		l_ImporteSinIva = post:ImporteSinIva      
+		l_ImporteIva = post:ImporteIva            
+		
+		CDS EXTRACT DSC:post:CONPresuDeta2 siaf:importe into l_imp
+	    CDS EXTRACT DSC:post:CONPresuDeta2 post:ImporteSinIva post:ImporteIva \
+	    	post:adt_prodvs_aliciva
+	    CDS DELETE DSC:post:CONPresuDeta2
+	    l_afec_efvo = siaf:adt_tran_afec_efvo
+	    siaf:adt_tran_afec_efvo = "+"
+	    ;call post:MISCborrarIva
+		call post:CDSadt_PresuPag_save(99,99,0,l_imp)
+		siaf:adt_tran_afec_efvo = l_afec_efvo
+		post:ImporteSinIva = l_ImporteSinIva      
+		post:ImporteIva = l_ImporteIva
+		
+		siaf:adt_tran_afec_efvo = l_afec_efvo
+	end if
+
+	/*Si estoy en Nota de Crédito fuerzo el medio de pago a efectivo*/
+	siaf:moneda = 99
+	clearfield post:medio_pago_desc
+	clearfield post:MedPTipMon
+	call post:CDSIncSecSesion(post:PresNro,"TRN",1, post:enAnulacion)
+    post:PreDNroTrn = retval
+    siaf:importe = total_importe_bon
+    post:importe_origen = siaf:importe
+	post:trnOrigen = pTrnOrigen
+    LET tlr:INDtran_name     = LST:post:TRAN6890
+    post:PrePEst             = 1
+    post:PreDEst             = 1
+    post:NroCompPago         = 0
+    post:modif_operator      = 0
+
+    let siaf:adt_tran_codigo = siaf:codigo_siaf
+    call siaf:CDSadt_tran_load
+	call post:CDSpagadorEsCajero(adt_benTmp_pag_tipoD, adt_benTmp_pag_NroD)
+	if (retval) then
+		adt_rest_clave4 = "FCAJP"
+		adt_rest_clave5 = "01"
+		adt_rest_clave6 = "6890"
+	else
+		adt_rest_clave4 = "FPCTP"
+		adt_rest_clave5 = "01"
+		adt_rest_clave6 = "6890"
+	end if
+	call post:CDSmotRest_load(0)
+	siaf:motivo = siaf:adt_mot_codigo
+    CDS CLEARBUFFER DSC:post:CONPresuDeta2
+
+    post:captura_mp = "N"
+
+    CDS APPEND DSC:post:CONPresuDeta2 post:fecha post:op_operator_id \
+             post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn \
+             post:MedPAdmIte tlr:INDtran_name post:PreDEst \
+             post:PrePNroPag siaf:codigo_siaf post:MedPMon post:MedPTipMon \
+             post:PreDForFis siaf:importe post:trnOrigen post:importe_origen
+
+	CDS APPEND DSC:post:CONPresuDeta2 siaf:adt_tran_afec_efvo \
+             siaf:adt_tran_desc siaf:adt_tran_fliatran post:PrePEst siaf:moneda \
+             post:medio_pago_desc post:NroCompPago \
+             post:modif_operator post:cantidad \
+             array post:docfis_tasa_por \
+             array post:docfis_importe array post:docfis_imp_siva \
+             post:AdmiteMP post:captura_mp \
+             post:ImporteSinIva post:ImporteIva \
+             post:cod_agrupacion  siaf:motivo \
+        	 siaf:adt_mot_modulo \
+        	 siaf:adt_mot_submodulo \
+        	 siaf:adt_mot_desc \
+        	 siaf:adt_mot_tipo_rep \
+        	 adt_benTmp_pag_tipoD \
+        	 adt_benTmp_pag_NroD \
+        	 adt_benTmp_pag_nombr \
+             adt_benTmp_pag_apell \
+             adt_TipoDoc_desc
+    
+   	
+    CDS INSERT DSC:post:CONPresuDeta2 LOCK
+    CDS UNLOCK DSC:post:CONPresuDeta2
+	siaf:afecta_efectivo = siaf:adt_tran_afec_efvo
+	call post:CDSadt_PresuPag_save(99,99,siaf:importe,0)
+END SUB
+
+/*******/

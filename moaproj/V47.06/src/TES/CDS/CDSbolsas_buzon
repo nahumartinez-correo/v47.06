@@ -1,0 +1,132 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSbolsas_buzon
+* NOMBRE
+*   OFB:tes:CDSbolsas_buzon
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSbolsas_buzon
+
+	local varl_nro_bolsa  like tes:adt_depbuzon_bolsa
+	local varl_moneda     like tes:adt_depbuzon_moneda
+	//local varl_imp_bolsa  like tes:adt_depbuzon_importe
+	local varl_tipo_bolsa like tes:adt_depbuzon_tipo
+	local varl_esp_cod    like tes:adt_depbuzon_cod
+	local varl_esp_subcod like tes:adt_depbuzon_subcod
+	local varl_nro_orden  like post:cantidad
+	
+	varl_nro_orden = 0
+	call csr:f_sadroppl dsc:tes:bolsas_caja
+	call csr:f_sanewpl  dsc:tes:bolsas_caja PIC:tes:PICbolsas_caja
+	if ( retval < 0 )
+	   msgbox \
+	   "ERROR AL GENERAR EL PICKLIST DE BOLSAS.",\
+	   OFB_OK,"Error"
+	   return -2
+	end if
+	
+	CDS SELECT FROM dsc:DepBuzon_tbl becomes dsc:DepBuzon_ctx WHERE \
+    	tes:adt_depbuzon_suc == common:sucursal_activa && \
+    	tes:adt_depbuzon_caja == buzon /*&& \
+    	(tes:adt_depbuzon_status != " ")*/
+    	
+	CDS FINDFIRST dsc:DepBuzon_ctx NOLOCK
+	
+	if ( CDSRETVAL == -801 )
+		msgbox "NO EXISTEN BOLSAS ASOCIADAS A LA CAJA.",\
+		OFB_OK,"Error"
+    		CDS ENDSELECT DSC:DepBuzon_ctx
+		return -2
+	else
+		if ( cdsretval != 0 )
+			msgbox \
+			"ERROR AL OBTENER LAS BOLSAS.",\
+			OFB_OK,"Error"
+    			CDS ENDSELECT DSC:DepBuzon_ctx
+			return -2
+		end if
+	end if
+	
+	DO
+		clearfield varl_nro_bolsa
+		clearfield varl_moneda
+		//clearfield varl_imp_bolsa
+		clearfield varl_tipo_bolsa
+		clearfield varl_esp_cod
+		clearfield varl_esp_subcod
+		
+		CDS EXTRACT DSC:DepBuzon_ctx \
+		tes:adt_depbuzon_bolsa   into varl_nro_bolsa \
+		tes:adt_depbuzon_moneda  into varl_moneda \
+		tes:adt_depbuzon_tipo    into varl_tipo_bolsa \
+		tes:adt_depbuzon_cod     into varl_esp_cod \
+		tes:adt_depbuzon_subcod  into varl_esp_subcod
+		/*tes:adt_depbuzon_importe into varl_imp_bolsa \ */
+                if (varl_tipo_bolsa != "E") then
+                	//recupero la descripcion de la moneda
+                	post:adt_mp_cod = varl_moneda 
+                	call post:CDSadt_MedPago_load
+
+
+                	fprint common:csr_string,\
+			"%1.1s%-8.8s%-30.30s                       %06.6d",\
+			varl_tipo_bolsa,varl_nro_bolsa,post:adt_mp_desc,varl_nro_orden                	
+			
+                	/*fprint common:csr_string,\
+			"%1.1s%-8.8s%-2.2e%-30.30s                     %06.6d",\
+			varl_tipo_bolsa,varl_nro_bolsa,varl_moneda,post:adt_mp_desc,varl_nro_orden*/
+                	
+                	/*fprint common:csr_string,\
+			"%1.1s%-8.8s%-2.2e%-30.30s%-12.12e",\
+			varl_tipo_bolsa,varl_nro_bolsa,varl_moneda,post:adt_mp_desc,varl_imp_bolsa*/
+		else              	
+                	fprint common:csr_string,\
+			"%1.1s%-8.8s%-20.20s%-20.20s             %06.6d",\
+			varl_tipo_bolsa,varl_nro_bolsa,varl_esp_cod,varl_esp_subcod,varl_nro_orden
+			
+			/*fprint common:csr_string,\
+			"%1.1s%-8.8s%-20.20s%-20.20s%-12.12e",\
+			varl_tipo_bolsa,varl_nro_bolsa,varl_esp_cod,varl_esp_subcod,varl_imp_bolsa*/
+		endif
+
+		call csr:f_saaddpl dsc:bolsas_caja common:csr_string
+		if ( retval < 0 )
+			msgbox \
+			"ERROR AL AGREGAR LAS BOLSAS AL PICKLIST.",\
+			OFB_OK,"Error"
+    			CDS ENDSELECT DSC:DepBuzon_ctx
+			return -2
+		end if
+		post:items_desc_cant = post:items_desc_cant + 1
+		
+		varl_nro_orden = varl_nro_orden + 1
+		
+    		CDS FINDNEXT DSC:DepBuzon_ctx NOLOCK
+		if ( cdsretval == -801 )
+			break
+		else
+			if ( cdsretval != 0 )
+			 msgbox \
+			 "ERROR AL OBTENER LAS BOLSAS.",\
+			 OFB_OK,"Error"
+    			 CDS ENDSELECT DSC:DepBuzon_ctx
+			 return -2
+			end if
+		end if
+	LOOP
+	CDS ENDSELECT DSC:DepBuzon_ctx
+END SUB
+
+/*******/

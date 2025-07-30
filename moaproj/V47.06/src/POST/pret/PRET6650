@@ -1,0 +1,118 @@
+/****o* Pendientes de agrupación/OFB:post:PRET6650
+* NOMBRE
+*   OFB:post:PRET6650
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+
+#include "postpret.h"
+
+SUB post:PRET6650
+local tiene_perfil like op:op_tesoro
+    tiene_perfil = "N"
+    
+    ;Perfil Jefe de sucursal
+    IF (op:op_sup_auth == DSC:op:x_mark) then
+        tiene_perfil = "S"
+    end if
+    ;Perfil Tesoro
+    if (op:op_tesoro == "S") then
+        tiene_perfil = "S"
+    end if
+    ;Perfil Supervisor con manejo de fondo de habilitacion	
+	IF ((op:op_subtesoro == "S") && (op:op_tes_auth == DSC:op:x_mark) && \
+		(op:op_tlr_auth == DSC:op:x_mark)) THEN
+		tiene_perfil = "S"    
+	end if	    
+	
+	IF (tiene_perfil == "N") THEN
+	    ERRMSG LST:common:errmsg_list,"NO TIENE PERMISO PARA ESTA TRANSACCION"
+        RETURN (-2)
+    end if    
+
+    IF (!TESTFLAG(hcomm:state_flags,on_line)) then
+        select (post:estado_presu)
+            case 1
+                ERRMSG LST:common:errmsg_list,"(L) OPERACION NO PERMITIDA FUERA DE LINEA"
+                RETURN (-2)
+            case 3
+                ;En el caso de modificación se debe dejar ingresar a la transacción aunque 
+                ;no posea comunicaciones.
+                drv:header = "YYNYY    Pago Masivo de Operativos"
+        end select
+    end if
+    
+    ; Genero registro de caida en vuelo de ser necesario
+    call post:OFBgenero_caida_pm
+    
+    if (post:estado_presu == 2) then
+        call post:CDSleeEsSesPagRenMas
+        if (esSesionRenPagoMasOp != "S") then
+            ERRMSG LST:common:errmsg_list,"LA SESION DEBE SER PARA PAGO O RENDICION MASIVA DE OPERATIVOS"
+            RETURN (-2)
+        END IF
+    ELSE
+        esSesionRenPagoMasOp = "S"
+    end if
+    
+    ; Para que cuando se accede por buscador no haga un init 33, 
+    ; por el que se frena en el inicio de sesión
+    clearfield plataf:chosen_codtrn
+    clearfield plataf:chosen_lsttrn
+    
+    siaf:nombre_transac.HIGHLITE = 0
+    siaf:codigo_siaf = 6650
+    
+    if (post:PresNro.numchars == 0) then
+        ungetkey RT_SEND
+    END IF
+    CALL siaf:PRESfecha_hora 
+    IF (RETVAL < 0) THEN
+        RETURN (-2)
+    END IF
+    CALL post:CDSbenefTmp("D","","","")
+    post:INDPresuD_Dat = OFB:CDSpagos_msvAppend
+    call post:CDSbenefTmp("EPoR","","","")
+    if (retval == 0) then
+        select (adt_benTmp_estado)
+            case "X"
+            case "Y"
+            case "JX"
+            case "RX"
+            case "AX"
+            case "JY"
+            case "RY"
+            case "AY"
+                break
+            case else
+                msgbox "DEBE INGRESAR EN PAGOS MASIVOS DE OPERATIVOS", OFB_OK ,"Aviso"
+
+                RETURN (-2)
+        end select
+        call post:CDSbenefTmp("C","","","")
+        ; Genero registro de caida en vuelo de ser necesario
+        call post:OFBgenero_caida_pm
+    else
+        nuevo = 1
+    end if   
+    if (post:estado_presu == 2 || post:estado_presu == 3) then
+        post:captura_mp = "N"
+        siaf:moneda = 99
+    end if
+    call csr:f_sadroppl("pic_suc_cli")
+	call csr:f_sanewpl("pic_suc_cli",pic:PICrestElemento)
+    setflag post:pagos_masivos,proc_pagos_masivos
+END SUB
+
+/*******/

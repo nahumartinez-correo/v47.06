@@ -1,0 +1,89 @@
+/****o* Sesion Correo/OFB:post:MISCgenero_ImpreTmp
+* NOMBRE
+*   OFB:post:MISCgenero_ImpreTmp
+* DESCRIPCION
+*   Setea los valores del campo importe sin iva e importe de la tabla ImpreTmp
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:MISC_ImpreTmp_CSM ,OFB:post:CDSarmo_impre_EP,OFB:post:CDSarmo_impre_ie
+*	OFB:post:CDSarmo_templ_impre,OFB:post:MISCActua_BlocAdic,OFB:post:MISCActua_Descuento
+*	OFB:post:MISCActua_Opcional,OFB:post:MISCarmo_Impre_ev,OFB:post:MISCarmo_Impre_NC
+*	OFB:post:MISCarmo_Impre_pm ,OFB:post:MISCarmo_ImpreTmp,OFB:post:MISCarmoImpre_EncInt
+*	OFB:post:MISCReimpresionNC
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCgenero_ImpreTmp(Codigo,Tipo_Impresion,Porcentaje , Importe,Cantidad_Item,Diferencia)
+	LOCAL ali LIKE post:adt_serv_aliciva
+	
+	ali = Porcentaje
+	codigo_impre = Codigo
+	IF (Codigo == 99019) THEN
+		ImporteIva = siaf:importe - ImporteVenUPDes
+	ELSE
+		IF (Codigo != 99300 && Codigo != 99450 && Codigo != 99480 && Codigo != 99007 && Codigo != 99510) THEN
+			IF (post:adt_oc_nro.NUMCHARS != 0 && Codigo != 99160) THEN
+				//Si es Orden de Compra 
+				//SC 50170 - Hay que restar tambien la diferencia calculada
+				post:ImporteIva = (post:ImporteConIvaOC - post:ImporteSinIvaOC) + Diferencia
+				post:ImporteSinIva = post:ImporteSinIvaOC - Diferencia
+			ELSE
+				//SC 50170  Se pasa la diferencia como parametro para actualizar el desglose
+				CALL post:MISCdesglosaIva(Importe,Porcentaje,Cantidad_Item,Diferencia)
+			END IF
+		ELSE
+			IF (!ConvenioSesionV && Codigo == 99300) THEN
+				CALL post:MISCdesglosaIva(Importe,Porcentaje,Cantidad_Item,0)
+			ELSE
+				IF (Codigo == 99300) THEN
+					//seleccionar las transacciones a las que se les aplico el dctoCM y caculo el iva
+					CALL post:CDSRecuperoTxCM
+				END IF
+				IF (Codigo == 99450) THEN
+					//seleccionar las transacciones a las que se les aplico el consumo y caculo el iva
+					CALL post:CDSRecuperoTxConsumo
+				END IF
+				IF (Codigo == 99480) THEN
+					//seleccionar las facturas y cacular el iva
+					CALL post:CDSRecuperoFactInt
+					//tengo que grabar en la impretmp las facturas para mostrar el nro de comprobante en la factura de interes
+				END IF
+				IF (Codigo == 99510) THEN
+					//Recupero los vectores de la tx 99511 (indem serv por iva)y le resto los imp de los vectores de la 99513 (descuento NC)
+					CALL post:CDSRecuperoTXNC(Tipo_Impresion)
+					RETURN 0
+				END IF
+			END IF
+		END IF
+	END IF
+	    
+	// Fue Agregado por la SobreTasaIva era Pisada en el Extrac
+	sobretasa_prod = SobreTasaIva
+	
+	// PJM 21/12/98 de ahora en mas el importe siempre es Importe con el Iva incluido
+	//MFM - Si no es orden de compra se hace esta asignacion, sino el post:tarifa se carga en 
+	//la MISCdesglosaDctoOC
+	//IF (post:adt_oc_nro.numchars == 0 || Codigo == 99160) THEN
+	tarifa = Importe
+	//END IF
+	
+	importeIva_impre = ImporteIva
+	//SC 50170
+	IF (Codigo == 99019) THEN
+		importeSinIva_impre = ImporteVenUPDes
+	ELSE
+		importeSinIva_impre = ImporteSinIva
+	END IF
+	CALL CDSUpdate_ImpreTmp(Tipo_Impresion,ali)
+    
+END SUB
+
+/*******/

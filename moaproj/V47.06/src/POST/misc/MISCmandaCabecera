@@ -1,0 +1,129 @@
+/****o* Pendientes de agrupación/OFB:post:MISCmandaCabecera
+* NOMBRE
+*   OFB:post:MISCmandaCabecera
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCmandaCabecera
+	local l_byte like common:csr_string
+	local l_retval like lib:err_retval
+	local l_pos like siaf:i
+	local l_posAnt like siaf:i
+	local l_largo like siaf:i
+	local l_cadena like common:csr_string
+	local version          like common:csr_string
+	local i                like siaf:importe_aux
+	local xx	       like common:csr_string
+	local num_version      like giros:adt_chk_op
+
+	; Longitud de Codigo Correo
+	common:csr_string = 0x12
+	COMM PUT  common:csr_string msg type BINARY length 1
+	; Voy verificando los bits del flag.
+	l_pos = 0
+	if (TESTFLAG(post:secuenFlags, b002PAN))
+		l_byte = substr(strCabecera, l_pos, 3)
+		l_pos = l_pos + 3
+		COMM PUT l_byte msg type BINARY length 2
+		l_byte = 0x0
+		COMM PUT l_byte msg type BINARY length 4
+	endif
+	if (TESTFLAG(post:secuenFlags, b003CodProc))
+		l_byte = substr(strCabecera, l_pos, 6)
+		l_pos = l_pos + 6
+		COMM PUT l_byte msg type BCD length 3
+	endif
+	if (TESTFLAG(post:secuenFlags, b007FechaHora))
+	    l_pos = l_pos + 5
+		l_byte = substr(strCabecera, l_pos, 10)
+		l_pos = l_pos - 5
+		COMM PUT l_byte msg type BCD length 5
+	endif
+	if (TESTFLAG(post:secuenFlags, b011STAN))
+		Call post:CDSobtiene_secuen("STAN")
+		COMM PUT post:adt_codseq_nro msg type BCD length 3
+	endif
+	if (TESTFLAG(post:secuenFlags, b012LocalTime))
+		fprint l_byte "%6.6s",\
+		tlr:jnl_time
+		COMM PUT l_byte msg type BCD length 3
+	endif
+	if (TESTFLAG(post:secuenFlags, b013LocalDate))
+		fprint l_byte "%02.2s%02.2s",\
+		substr(tlr:jnl_date,4,2) \
+		substr(tlr:jnl_date,6,2)
+		COMM PUT l_byte msg type BCD length 2
+	endif
+	if (TESTFLAG(post:secuenFlags, b030NIS))
+		COMM PUT common:sucursal_activa msg type ASCII length 5 justleft fill ' '
+	endif
+	if (TESTFLAG(post:secuenFlags, b041Terminal))
+		COMM PUT common:window_node msg type ASCII length 8 justleft fill ' '
+	endif
+	if (TESTFLAG(post:secuenFlags, b060NombreTerm))
+		; agregar la version 4 byte ver pie en giros.
+		fprint  version,"%s",DSC:lib:VersionCorreo
+		while (i < version.NUMCHARS)
+			xx = SUBSTR(version,i,1)
+			if (xx >= "0" && xx <= "9") then
+				fprint num_version,"%s%s",num_version,SUBSTR(version,i,1)
+			endif
+			i = i + 1
+		end while
+		COMM PUT "24" TO msg type BCD LENGTH 2
+		fprint common:csr_string "%20.20s%4.4s", common:window_node, num_version
+		COMM PUT common:window_node msg type ASCII length 20 justleft fill ' '
+		COMM PUT num_version msg type ASCII length 4 justright fill '0'
+	endif
+	; la forma de mandar el 105, 106 y 107 es la siguiente:
+	; antes de mandar cada uno de los campos hay que mandar en BCD
+	; 2 bytes de longitud.
+	; ademas solamente en el 105 hay que mandar COMO PARTE DEL DATO
+	; 3 bytes en ascii de la CANTIDAD de registros que envio en los
+	; tres campos.
+    giros:Longitud = BulkFld_105.NUMCHARS + 3           //obtengo longitud total
+    COMM PUT giros:Longitud TO MSG TYPE BCD LENGTH 2
+    COMM PUT cantRegBulk TO msg type ASCII LENGTH 3 justright fill '0'
+	if (TESTFLAG(post:secuenFlags, b001Secondary))
+		if (TESTFLAG(post:secuenFlags, b105DatosRepet))
+			CALL SENDmandaBulk(BulkFld_105)
+			CLEARFIELD BulkFld_105
+		endif
+		if (TESTFLAG(post:secuenFlags, b106DatosRepet))
+            giros:Longitud = BulkFld_106.NUMCHARS           //obtengo longitud total
+            COMM PUT giros:Longitud TO MSG TYPE BCD LENGTH 2
+			CALL SENDmandaBulk(BulkFld_106)
+			CLEARFIELD BulkFld_106
+		endif
+		if (TESTFLAG(post:secuenFlags, b107DatosRepet))
+            giros:Longitud = BulkFld_107.NUMCHARS           //obtengo longitud total
+            COMM PUT giros:Longitud TO MSG TYPE BCD LENGTH 2
+			CALL SENDmandaBulk(BulkFld_107)
+			CLEARFIELD BulkFld_107
+		endif
+		if (TESTFLAG(post:secuenFlags, b108Firma))
+			giros:firma = substr(strCabecera, l_pos, 51)
+			l_pos = l_pos + 51
+			call giros:MISCfirma
+			fprint common:csr_string_171 "%32.32s%-14.14s%32.32s" " ", op:op_login_id, common:csr_string_171
+            giros:Longitud = common:csr_string_171.NUMCHARS           //obtengo longitud total
+            COMM PUT giros:Longitud TO MSG TYPE BCD LENGTH 2
+			COMM PUT common:csr_string_171 msg type ASCII length 78
+		endif
+	endif
+END SUB
+
+/*******/

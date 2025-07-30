@@ -1,0 +1,100 @@
+/****o* Pendientes de agrupación/OFB:tele:CDScatteleg_cativa
+* NOMBRE
+*   OFB:tele:CDScatteleg_cativa
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telecds.h"
+
+SUB tele:CDScatteleg_cativa
+LOCAL CodAnt LIKE tele:adt_cattel_cod
+LOCAL ServAnt LIKE tele:adt_cattel_serv
+LOCAL CatIvaAnt LIKE tele:adt_cattel_cativa
+	
+	call csr:f_sadroppl "CatServ"
+	CALL CSR:f_sanewpl "CatServ" PIC:PICCatServ2
+	//Cargo el Picklist
+    IF (tele:adt_cattel_cod.numchars == 0 && tele:adt_cattel_serv.numchars == 0) THEN
+		//Si no hay nada cargado selecciono todo
+    	CDS SELECT FROM DSC:adt_catteleg_table BECOMES DSC:adt_catteleg_context
+    ELSE
+    	IF (tele:adt_cattel_serv.numchars == 0) THEN
+    		//Si solo esta cargada la categoria selecciono segun dato
+	    	CDS SELECT FROM DSC:adt_catteleg_table BECOMES DSC:adt_catteleg_context \
+	    	WHERE tele:adt_cattel_cod == tele:adt_cattel_cod
+    	ELSE
+    		IF (tele:adt_cattel_cod.numchars == 0) THEN
+    			//Si solo esta cargado el servicio selecciono segun dato
+		    	CDS SELECT FROM DSC:adt_catteleg_table BECOMES DSC:adt_catteleg_context \
+		    	WHERE tele:adt_cattel_serv == tele:adt_cattel_serv    		    			
+    		ELSE
+				//Si esta cargada la categoria y el servicio, selecciono segun datos
+		    	CDS SELECT FROM DSC:adt_catteleg_table BECOMES DSC:adt_catteleg_context \
+		    	WHERE tele:adt_cattel_cod == tele:adt_cattel_cod && \
+		    	tele:adt_cattel_serv == tele:adt_cattel_serv    		
+    		END IF
+    	END IF
+    END IF
+    CDS FINDFIRST DSC:adt_catteleg_context LOCK
+    LET lib:err_retval = CDSRETVAL	
+	clearfield CodAnt
+	clearfield ServAnt
+	clearfield CatIvaAnt
+    DO
+    	IF (lib:err_retval == -801) THEN
+        	BREAK
+    	END IF
+    	CDS EXTRACT DSC:adt_catteleg_context ALL
+		IF (CodAnt != adt_cattel_cod || ServAnt != adt_cattel_serv || CatIvaAnt != adt_cattel_cativa)
+			FPRINT common:csr_string "%-30.30s %-10.10s %-3.3s %1.1s %1.1s %-5.5s" adt_cattel_cod,adt_cattel_serv,adt_cattel_cativa,adt_cattel_alcance,adt_cattel_serv_sm,adt_cattel_nemonico
+			CALL csr:f_saaddpl "CatServ" common:csr_string
+			CodAnt = adt_cattel_cod
+			ServAnt = adt_cattel_serv
+			CatIvaAnt = adt_cattel_cativa
+		END IF
+	    CDS FINDNEXT DSC:adt_catteleg_context LOCK
+	    LET lib:err_retval = CDSRETVAL    	
+    LOOP
+    CDS UNLOCK DSC:adt_catteleg_context
+    CDS ENDSELECT DSC:adt_catteleg_context
+    
+    //Muestro el Picklist
+    SETFLAG drv:mode_flags,picklist_mode
+    CALL csr:f_sadopl "CatServ" common:csr_string
+    IF (retval < 0) THEN
+    	//Salio con ESC
+	    RESETFLAG drv:mode_flags,picklist_mode
+      	INIT 33,0
+		//Muestro todos las categorias de iva
+		Call tele:CDScativa_select
+
+        CALL tele:ABMcatteleg_clear2
+        CALL CSR:proc_list(190,LST:LISTcatteleg_flds)        
+      	RETURN (-2)
+    ELSE
+    	//Selecciono uno...
+    	CALL tele:ABMcatteleg_clear
+        MOVE SUBSTR(common:csr_string,0,30) to adt_cattel_cod
+        MOVE SUBSTR(common:csr_string,31,10) to adt_cattel_serv
+        MOVE SUBSTR(common:csr_string,42,3) to adt_cattel_cativa
+        MOVE SUBSTR(common:csr_string,47,1) to adt_cattel_alcance
+        MOVE SUBSTR(common:csr_string,48,1) to adt_cattel_serv_sm
+        MOVE SUBSTR(common:csr_string,50,5) to adt_cattel_nemonico
+        CALL tele:CDScatteleg_load
+	    RESETFLAG drv:mode_flags,picklist_mode
+	    INIT 33,0
+    END IF
+END SUB
+
+/*******/

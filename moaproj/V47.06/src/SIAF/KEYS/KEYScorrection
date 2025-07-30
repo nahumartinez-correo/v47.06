@@ -1,0 +1,103 @@
+/****o* Reversa por journal/OFB:siaf:KEYScorrection
+* NOMBRE
+*   OFB:siaf:KEYScorrection
+* DESCRIPCION
+*  Esta rutina controla si el operador tiene pases pendientes.En este caso no puede reversar cualquier transaccion hasta ingresar los pases pendientes.
+*  Llama a la rutina post:MISCverifReversar que chequea que se puedan reversar ciertas transacciones.
+*  Asegura que solo se reversen las transacciones posteriores a la ultima rendicion si son operaciones de caja, o posteriores a la ultima apertura del tesoro.
+*  Para Cliente Medio realiza validaciones antes de mandar el viaje de cancelacion al host.
+*  Si no permite la reversa se restea el flag de correccion.
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:giros:MISCenv_cancel_gir,OFB:giros:MISCmsgCancelGiro,OFB:post:MISCenv_canc_NC_CM,OFB:giros:MISCmsgCancelGiro,OFB:tlr:JNLtran,OFB:tlr:tlr_fb8
+* DOCUMENTACION
+*   https://jirats.siemens.com.ar/jira/browse/AUT-2165
+* SOURCE
+*/
+#include "siafKEYS.h"
+
+SUB siaf:KEYScorrection
+
+    /*cgw: controla si el operador tiene pases pendientes.En este caso no puede reversar
+	  cualquier transaccion hasta ingresar los pases pendientes. */
+    CALL post:MISCctrol_ingr_pases
+	IF (RETVAL < 0) THEN
+		//cgw:el operador debe ingresar los pases pendientes.
+		RETURN
+	END IF	
+	
+    IF (!TESTFLAG(lib:state_flags,scan_mode)) THEN
+      RETURN
+    END IF
+    IF (tiene_reverso != "S") THEN
+      siaf_flags = admin:sav_siaf_flags
+      /* MGI 10-08-11 AUT-2165 Contempla el caso particular de reversión por journal de CCT*/
+      IF (siaf:codigo_siaf == 6670 ) THEN
+          ERRMSG LST:common:errmsg_list,\
+          "DEBE SER REVERSADO POR LA TRANSACCION DE CANCELACION DE COBRO POR CUENTA DE TERCEROS"
+      ELSE
+          ERRMSG LST:common:errmsg_list,ERRsin_reverso
+      END IF
+/* Comentada por martin a ver que hace */
+/*      RESET */
+      RETURN (0)
+    END IF
+
+    /* Verifica que se puedan reversar ciertas transacciones */
+    /* Jul´98 - Bettina Petrella */
+    call post:MISCverifReversar
+    IF (RETVAL < 0) THEN
+	    RETURN (0)
+    END IF
+
+/*  Asegura que solo se reversen las transacciones posteriores a la ultima
+    rendicion si son operaciones de caja, o posteriores a la ultima apertura
+    del tesoro . 12/98 M.Andrea Pregatti */
+    call post:MISCverif_hora_rend
+    IF (RETVAL < 0) THEN
+	    RETURN (0)
+    END IF
+
+//AUT-333 Se hacen estas validaciones antes de mandar el viaje de cancelacion al HOST ya que sino queda hecha
+//la cancelacion en el host pero en MOSAIC la sesion puede llegar a quedar viva!
+    if (post:jnl_cli_tipo == CLIMED) then
+		/*MFM - Verifica que la sesion a reversar no tenga imposiciones marcadas como excepcion*/
+		CALL post:MISCPiezaExcep
+		IF (RETVAL == 0)
+			ERRMSG common:errmsg_list,"La sesion no se puede reversar - Existen piezas que ya han sido marcadas como excepción"
+			RETURN 0
+		END IF
+		/*MFM - Verifica que la sesion a reversar no tenga imposiciones contenerizadas*/
+		CALL post:MISCpieza_en_cont
+		IF (RETVAL == 0)
+			ERRMSG common:errmsg_list,"La sesion no se puede reversar - Existen piezas que ya han sido expedidas o transferidas"
+			RETURN 0
+		END IF
+    end if
+
+;    CALL KEYSespecial
+;    IF (RETVAL < 0) THEN
+;      siaf_flags = admin:sav_siaf_flags
+/* Comentada por martin a ver que hace */
+/*      RESET */
+;      RETURN (0)
+;    END IF
+   
+	post:estAnul = "T__"
+			
+    SETFLAG tlr:tran_flags,correction
+    CALL tlr:KEYScorrection                
+    //cgw: si no permite la reversa se restea el flag de correccion
+    IF (RETVAL < 0)
+        RESETFLAG tlr:tran_flags,correction
+    END IF
+
+    siaf_flags = admin:sav_siaf_flags        
+END SUB
+
+/*******/

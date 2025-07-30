@@ -1,0 +1,188 @@
+/****o* Pendientes de agrupación/OFB:tes:PRETArqTes
+* NOMBRE
+*   OFB:tes:PRETArqTes
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesPRET.h"
+
+SUB tes:PRETArqTes
+    local locidx    like post:Tarif_idx
+    local locidx2   like post:Tarif_idx
+    local locindice like post:Tarif_idx
+    local locdenmon like siaf:i
+    local loctexto  like tes:motivo
+    local loctexto2 like tes:motivo
+
+    local txt7 like tes:espv_cod
+
+
+
+    siaf:codigo_siaf = 9600
+
+    CALL siaf:PRESfecha_hora
+    if ( Retval < 0 )
+        return (-2)
+    end if
+    
+    call csr:trimfield(siaf:nombre_transac)
+    tes:nom_trx_corto = siaf:nombre_transac 	
+    
+    if (testflag(tlr:tran_flags,correction)) then
+        // si estoy en reversa, entonces cambio la pantalla por la que 
+        // se journaliza
+        let drv:INDscreen[0] = SCR:tes:SCRNArqTes_jnl
+        clearfield drv:INDscreen[1]
+        clearfield drv:INDscreen[2]        
+        // para que no intente dibujar las solapitas...
+        resetflag drv:mode_flags,notecards_mode
+
+        return
+    else                
+        call csr:cleararray at_deno
+        call csr:cleararray at_des_mon
+        call csr:cleararray at_imp_tot
+        call csr:cleararray at_mp_cod
+        CALL CSR:proc_list(F_CLEAR,LST:tes:LISTArqTes_impcant)
+        CALL CSR:proc_list(F_PROTECT,LST:tes:LISTArqTes_impcant)
+    end if
+
+    let tes:es_tesoro = "S"
+
+    ;Obtener las denominaciones generales (moneda = 99)
+    CDS SELECT FROM DSC:tes:den_mon_table BECOMES DSC:tes:den_mon_context \
+    WHERE tes:den_moneda == 99
+    CDS FINDFIRST DSC:tes:den_mon_context LOCK
+    lib:err_retval = CDSRETVAL        
+    IF (lib:err_retval >= 0)
+        CDS EXTRACT DSC:tes:den_mon_context ALL
+        siaf:i = 0
+        While (siaf:i < MAX_DEN)
+            ;at_deno[siaf:i] = substr(tes:den_texto[siaf:i],0,5)
+            fprint txt7, "%7s", tes:den_texto[siaf:i]            
+			;at_deno[siaf:i] = tes:den_texto[siaf:i]          
+			at_deno[siaf:i] = txt7
+            at_denoval[siaf:i] = tes:den_valor[siaf:i]
+            siaf:i = siaf:i + 1
+            
+        End While
+    END IF
+    CDS ENDSELECT DSC:tes:den_mon_context
+    
+
+    
+    
+    ;Obtener los medios de pagos habilitados
+    IF (!testflag(tlr:tran_flags,correction)) THEN
+       post:tipo_rest = GLOBAL_MONETARIO       
+       call tes:PREStes_gral       
+    end if       
+    
+    locidx  = PL_GETITEM
+    locidx2 = 0
+    locindice = 0
+    clearfield common:csr_string
+
+    //Recorro el picklist y proceso la informacion de cada item
+    call csr:myPickcontrol(dsc:post:pic_medios,common:csr_string,locidx)
+    lib:err_retval = retval
+    WHILE (lib:err_retval >= 0)
+        
+        tes:den_moneda = substr(common:csr_string,0,2)
+        call csr:trimfield(tes:den_moneda)
+        
+        tes_moneda = den_moneda
+        call tes:CDScons_tes_tesor2
+        if (retval == 0) then
+	        IF (tes:tes_marca_arqueo != "S")
+	            
+	            if (tes:den_moneda != 99)
+	            	at_mp_cod[locindice] = substr(common:csr_string,0,2)
+	                common:csr_string = substr(common:csr_string,3,12)
+	                call csr:trimfield(common:csr_string)
+	                at_des_mon[locindice] = common:csr_string	            
+ 
+	            end if
+	        
+	        
+	            ;Para cada moneda habilitar las denominaciones correspondientes.        
+	            siaf:i = 0
+	            CDS SELECT FROM DSC:tes:den_mon_table BECOMES DSC:tes:den_mon_context \
+	            WHERE tes:den_moneda == FLD:tes:den_moneda && tes:den_moneda != 99
+	            CDS FINDFIRST DSC:tes:den_mon_context LOCK
+	            lib:err_retval = CDSRETVAL        
+	            IF (lib:err_retval >= 0)
+	                CDS EXTRACT DSC:tes:den_mon_context ALL
+	            
+	                siaf:i = 0       
+	                /*Como el texto en la pantalla de arqueo de tesoro es de 7 posiciones, 
+	                paso la descripcion de la tabla de denominacion a un campo de 7 para 
+	                poder comparar por igualdad el caso de DETERIORADO*/
+	                loctexto = tes:den_texto[siaf:i] 
+					fprint loctexto "%-5s" substr(tes:den_texto[siaf:i],0,5)
+	                  
+	                While (siaf:i < MAX_DEN && den_texto[siaf:i].numchars != 0)
+	                    locdenmon = 0                                              
+	                    DO
+	                        if (locdenmon >= MAX_DEN)
+	                            break
+	                        else    
+								;fprint loctexto2 "%-5s" substr(tes:at_deno[locdenmon],0,5)
+								fprint tes:at_deno[locdenmon] "%-7.7e" tes:at_deno[locdenmon]
+								call csr:trimfield(tes:at_deno[locdenmon])
+								fprint loctexto2 "%5s" substr(tes:at_deno[locdenmon],0,5)
+								fprint tes:at_deno[locdenmon] "%7.7e" tes:at_deno[locdenmon]
+								
+								/* Pregunto por las primeras 5 posiciones porque puede estar
+								escrito como DETER, DETERIO, DETERIOR, etc  */
+	                            ;if ((locdenmon < MAX_DEN && den_valor[siaf:i] == at_denoval[locdenmon] && loctexto != "DETER" && at_deno[locdenmon] != "DETER") || \
+	                                ;(locdenmon < MAX_DEN && den_valor[siaf:i] == at_denoval[locdenmon] && loctexto == "DETER" && at_deno[locdenmon] == "DETER"))
+	                            if ((locdenmon < MAX_DEN && den_valor[siaf:i] == at_denoval[locdenmon] && loctexto != "DETER" && loctexto2 != "DETER") || \
+	                                (locdenmon < MAX_DEN && den_valor[siaf:i] == at_denoval[locdenmon] && loctexto == "DETER" && loctexto2 == "DETER"))
+	                                break
+	                            end if
+	                        end if
+	                        locdenmon = locdenmon + 1                
+	                    LOOP
+	                    If (locdenmon < MAX_DEN)
+	                        unprotfield at_importes[locdenmon][locindice]
+	                        unprotfield at_cant[locdenmon][locindice]
+	                    End If                
+	                    siaf:i = siaf:i + 1
+						fprint loctexto "%-5s" substr(tes:den_texto[siaf:i],0,5)
+	                    
+	                End While
+	
+	            END IF                
+	            CDS ENDSELECT DSC:tes:den_mon_context
+	            
+	            locindice = locindice + 1
+	
+	    	END IF
+	    end if
+
+        locidx2 = locidx2 + 1
+        locidx  = locidx2 + PL_GETITEM
+        call csr:myPickcontrol(dsc:post:pic_medios,common:csr_string,locidx)
+        lib:err_retval = retval
+    END WHILE
+    
+    if (at_des_mon[0].NUMCHARS == 0)
+        fprint drv:error_msg "(L) No hay Medios de Pagos para Arquear"
+        call  OFB:drv:error_msg
+        return (-2)
+    end if
+END SUB
+
+/*******/

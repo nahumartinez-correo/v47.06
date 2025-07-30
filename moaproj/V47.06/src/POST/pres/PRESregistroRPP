@@ -1,0 +1,98 @@
+/****o* Registro RPP/OFB:post:PRESregistroRPP
+* NOMBRE
+*   OFB:post:PRESregistroRPP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   LST:post:TRANregistroRPP
+* DOCUMENTACION
+* NI 50569-RPP
+*/
+#include "postpres.h"
+
+SUB post:PRESregistroRPP
+	
+    siaf:codigo_siaf = 99093
+    unprotfield post:Pieza
+    CLEARFIELD post:Pieza
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTregRPP_All)
+    CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All)
+
+	//Verifico que la tx se esté haciendo dentro de un presupuesto previamente iniciado porque sino trae problemas con CM Fact Dif
+	IF (estado_presu == 1)
+		MSGBOX "DEBERA INICIAR UNA SESION PARA CLIENTE MEDIO O MINORISTA ANTES DE INGRESAR A REGISTRO RPP.",0x00,"ERROR"
+		return -2
+	END IF
+	
+	IF (post:cli_tipo != CLIMED && post:cli_tipo != OCASIONAL)
+		MSGBOX "TRANSACCION HABILITADA SOLO PARA CLIENTES MEDIOS O MINORISTAS.",0x00,"ERROR"
+		RETURN -2
+	END IF	
+	
+	//Verifico si la nis dependiente del cliente medio es = a la suc activa 
+	IF (cli_tipo == CLIMED)
+		CALL post:CDSbuscoNisDep_cm
+		IF (retval < 0)
+			return -2
+		ELSE
+			IF (post:nisDep_CM != common:sucursal_activa) THEN
+				MSGBOX "La Nis Dependiente del cliente no se corresponde con la Sucursal Activa.\n No podr\xE1 realizar el Registrode RPP.",0x00, "Error"	
+				return -2
+			END IF
+		END IF
+	END IF
+	
+	post:cantidad = 1	
+    CALL siaf:PRESfecha_hora
+    IF (retval < 0) then
+        RETURN (-1)
+    END IF
+    
+   /* IF (post:cli_tipo == CLIMED && post:ConvenioSesion)
+    	MSGBOX "EL CLIENTE IDENTIFICADO DEBE TENER CONVENIO POR PRODUCTO PARA REGISTRAR RPP.\n COMUNIQUESE CON SU JEFE ZONAL.",0x00,"ERROR"
+    	RETURN -1
+    END IF*/
+    
+    PROTFIELD siaf:moneda
+    IF (estado_presu == 2)
+    	drv:INDscreen[0] = scr:post:SCRNregistroRPP
+	    CALL CSR:proc_list(F_CLEAR,LST:post:LISTregRPP_All)
+	    CALL CSR:proc_list(F_REFRESH,LST:post:LISTregRPP_All)    	
+    END IF
+
+
+    PresNro_RPP = PresNro
+    INDPresuD_Dat = OFB:CDS99093_append
+    CALL post:MISCLeo_PresDet
+	IF (estado_presu == 4) THEN
+        PROTFIELD Pieza
+    END IF
+
+  ;Borro tabla temporal por si existe algun registro
+  CALL CDSverRegRPP_tmp
+	WHILE (lib:err_retval == 0)
+		CDS EXTRACT "RegRPP_tmp_ctx" post:Pieza
+   	/*Saco la marca de la stockp que me indica que la pieza esta siendo registrada*/
+		CALL post:CDSlimpRPPStockp
+		CDS FINDNEXT "RegRPP_tmp_ctx" NOLOCK
+		lib:err_retval = CDSRETVAL
+		CLEARFIELD post:Pieza
+	END WHILE
+	
+	IF (estado_presu == 2) THEN
+		;Busco en la stokp que no hayan quedado registros tamados con fecha anterior al system_date
+		CALL CDSverifStockpRegRPP
+	END IF
+
+	CALL post:CDSRegRPP_tmp_delALL
+END SUB
+
+/*******/

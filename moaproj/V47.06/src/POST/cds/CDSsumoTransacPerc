@@ -1,0 +1,110 @@
+/****o* Pendientes de agrupación/OFB:post:CDSsumoTransacPerc
+* NOMBRE
+*   OFB:post:CDSsumoTransacPerc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSsumoTransacPerc(ImpPerc, leyend, ImpNet, PorPerc,TasaAlicAcre)
+	local tran_aux like siaf:codigo_siaf
+	  tran_aux = siaf:codigo_siaf
+      siaf:codigo_siaf         = 99028
+      CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:CONPresuDeta \
+                 WHERE post:fecha == FLD:post:fecha && \
+                       post:op_operator_id == FLD:post:op_operator_id && \
+                       post:PresNro == post:PresNro && siaf:codigo_siaf == 99028 && \
+                       post:TasaPerc == PorPerc && post:Percepcion_desc == leyend
+      CDS FINDFIRST DSC:CONPresuDeta LOCK
+      if (cdsretval == 0)
+          	 CDS CLEARBUFFER DSC:CONPresuDeta
+ 	     	 CDS EXTRACT DSC:CONPresuDeta post:modif_operator,siaf:moneda,post:medio_pago_desc post:MedPTipMon PreDEst \
+ 	     	 siaf:importe post:MedPAdmIte siaf:adt_tran_afec_efvo PrePNroPag
+ 	     	 If ( PreDEst == 1 )
+         	 	If ( post:modif_operator == 0  )
+					post:imp_d = siaf:importe
+					monedaNC = siaf:moneda
+					siaf:moneda = 99
+					clearfield post:medio_pago_desc
+					clearfield post:MedPTipMon
+		         else
+					CDS EXTRACT DSC:CONPresuDeta post:imp_d monedaNC
+    	  		 Endif
+    	  		 siaf:importe = ImpPerc
+    	  		 /*Actualizo en la PresuPag Grabriel Falciola*/
+    	  		 CALL post:CDSadt_PresuPag_save(siaf:moneda,monedaNC,siaf:importe,post:imp_d)
+    	  		 if (post:modif_operator == 1)
+    	  		 	CDS APPEND DSC:CONPresuDeta siaf:importe as post:imp_d \
+    	  		 	siaf:moneda as post:monedaNC
+    	  		 end if
+          		 CDS APPEND DSC:CONPresuDeta siaf:moneda post:medio_pago_desc siaf:importe \
+          		 post:MedPTipMon PrePNroPag
+          	 	 CDS UPDATE DSC:CONPresuDeta LOCK
+          	 	 clearfield post:imp_d
+          	 	 clearfield monedaNC
+          	Endif
+      else
+
+			siaf:moneda = 99
+			clearfield post:medio_pago_desc
+			clearfield post:MedPTipMon
+             post:ImporteNeto = ImpNet
+             post:TasaPerc = PorPerc
+             post:tasaAlicAcrePerc = TasaAlicAcre
+	  	     post:Percepcion_desc = leyend
+	  	     call CDSIncSecSesion(post:PresNro,"TRN",1, enAnulacion)
+	  	     PreDNroTrn = retval
+          	 siaf:importe = ImpPerc
+          	 LET tlr:INDtran_name     = LST:post:TRANimpPerc
+          	 PrePEst                  = 1
+          	 PreDEst                  = 1
+          	 post:NroCompPago         = 0
+          	 post:modif_operator      = 0
+          	 let siaf:adt_tran_codigo = siaf:codigo_siaf
+          	 call siaf:CDSadt_tran_load
+
+		     /* MLD Busco las restricciones para Vta UP diferida */
+			 call post:MISCRestFlia
+
+          	 call post:CDSmedio_pago(siaf:moneda,siaf:codigo_siaf)
+          	 /*Actualizo la PresuPag*/
+          	 CALL post:CDSadt_PresuPag_save(siaf:moneda,siaf:moneda,siaf:importe,0)
+          	 post:captura_mp = "N"
+          	 CDS CLEARBUFFER DSC:CONPresuDeta
+          	 CDS APPEND DSC:CONPresuDeta post:fecha post:op_operator_id                \
+                      post:PresNro siaf:adt_tran_jer_pres post:PreDNroTrn 		   \
+                      post:MedPAdmIte tlr:INDtran_name post:PreDEst                        \
+                      post:PrePNroPag siaf:codigo_siaf post:MedPMon post:MedPTipMon        \
+                      post:PreDForFis siaf:importe siaf:adt_tran_afec_efvo                 \
+                      siaf:adt_tran_fliatran post:PrePEst siaf:moneda                      \
+                      post:medio_pago_desc post:Percepcion_desc post:NroCompPago           \
+                      post:modif_operator  \
+                      post:ImporteNeto post:TasaPerc  post:tasaAlicAcrePerc post:percep_r212 \
+                      post:AdmiteMP post:captura_mp
+
+			if (NotaCredito == "S" && siaf:moneda != 0)
+				post:monedaNC = siaf:moneda
+				clearfield post:NroCompPagoNC
+				jnl_nuevo_medpag = "S"
+				CDS APPEND DSC:CONPresuDeta monedaNC NroCompPagoNC jnl_nuevo_medpag
+			end if
+
+          	 CDS INSERT DSC:CONPresuDeta LOCK
+      endif
+    CDS UNLOCK DSC:CONPresuDeta
+    CDS ENDSELECT DSC:CONPresuDeta
+	siaf:codigo_siaf = tran_aux
+END SUB
+
+/*******/

@@ -1,0 +1,127 @@
+/****o* Pendientes de agrupación/OFB:post:SVALprod_mayorista
+* NOMBRE
+*   OFB:post:SVALprod_mayorista
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVALprod_mayorista   //tes:SVALventa_ev
+    local i like tes:cont1
+    local importe like tes:adt_espv_importe
+
+    if (post:NroCompPago == "")
+    	post:NroCompPago = 0
+    end if
+
+    post:PreDForFis = "TICKE"
+    post:adt_serv_formfiscal = "TICKE"
+    /* Si el cliente es Cuentacorrentista se controla que si no se ingresó
+    la subespecie y la cantidad, y da <enter>, no aparezca en el Fin de
+    Sesión una transaccion con un material y cantidad en blanco .
+    */
+    if (post:estado_presu == 2 || post:estado_presu == 3) && (flag_pm == 1)
+        flag_pm = 0
+        return (-2)
+    end if
+
+    if (post:cli_tipo == 1 && post:estado_presu != 4) then
+        adt_pmaux_suc = op:op_branch_id
+	    adt_pmaux_op = op:op_operator_id
+
+	    cds select FROM DSC:auxProdMay_tbl Becomes DSC:auxProdMay_ctx where\
+	    adt_pmaux_fecha == common:system_date && \
+	    adt_pmaux_suc   == op:op_branch_id    && \
+		adt_pmaux_op    == op:op_operator_id  && \
+		adt_pmaux_presu == 0
+
+	    cds findfirst DSC:auxProdMay_ctx LOCK
+	    let lib:err_retval = CDSRETVAL
+	    if (lib:err_retval == -801) then
+	        move "(L) MOVIMIENTO NO INGRESADO" to drv:error_msg
+       	    call OFB:drv:error_msg
+            cds unlock DSC:auxProdMay_ctx
+            cds endselect DSC:auxProdMay_ctx
+	        return (-2)
+	    end if
+    end if
+
+
+    IF (post:estado_presu != 1) THEN
+	    tlr:INDdocs_list = 0
+    END IF
+
+    /* cgw: Modifico para Reingenieria */
+    ;IF (post:estado_presu == 1 || post:estado_presu == 4) THEN    	
+    IF (post:estado_presu != 4) THEN
+   	    call siaf:SVALnivel_sup
+   	    if (retval == -3)
+            call post:MISCrechazo_transac
+            return -3
+      	else
+      	    if (retval < 0)
+      		    return (retval)
+      	    end if
+      	end if
+		if (post:estado_presu == 1) then
+		    if (!(testflag(tlr:tran_flags,correction))) THEN
+	       	    popup tes:SCRNconfirma
+	       	    if (siaf:continua_transaccion == "N" || lastkey == RT_ESC) then
+	         	    return (-2)
+	       	    end if
+	    	end if
+		end if
+
+        if (retval < 0)
+    	    return (-2)
+    	end if
+    END IF
+
+    IF (post:estado_presu != 4)
+        ;post:PreDForFis = tes:adt_espv_formfiscal
+        call post:MISCGrabaDetalleTrn
+        if (post:estado_presu ==  2) then  //cargar tran
+            call post:MISCact_auxProdMay //tes:MISCactuali_AuxEspV
+        end if
+    end if
+
+    IF (post:estado_presu == 1 || post:estado_presu == 4) THEN
+     /* Journaliza cada subespecie vendida */
+		call post:MISCjnl_prodmay //MISCjnl_venta_ev
+        if (retval <0) then
+            return (-2)
+        end if
+
+    	unprotfield siaf:moneda
+    	unprotfield siaf:importe
+    END IF
+
+    /* Si es la confirmacion, actualizo el estado al final*/
+    IF (post:estado_presu == 4)
+
+        /* Se acumula el importe total según la Especie - HERNAN - 26/10/2000 */
+	    ;call post:MISCTotalTransac(tes:adt_evaux_codigo)
+        call post:MISCGrabaDetalleTrn
+    end if
+
+    ;drv:header = "YYNYYT    prodmay"
+    if (post:estado_presu == 3) then //modificacion
+    	call CDSauxProdMayActRec     //CDSevauxActRecords
+    end if
+    if (post:estado_presu == 1 || post:estado_presu == 2) then
+        call post:MISCactivar_buts
+    end if
+END SUB
+
+/*******/

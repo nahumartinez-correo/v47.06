@@ -1,0 +1,196 @@
+/****o* Pendientes de agrupación/OFB:drv:end_tran
+* NOMBRE
+*   OFB:drv:end_tran
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "MainDrv.h"
+
+SUB drv:end_tran
+#if CORREO_DEBUG == CORREO_ON
+	local l_appl	like plataf:tran_appl
+	local l_item	like plataf:tran_name
+	local l_str	like common:csr_string
+	local l_header like drv:header
+	local l_longitud like siaf:i
+	
+	;if (plataf:current_state == CONFIRMATION) then
+	call csr:getname (drv:INDcur_list,l_appl,l_item)
+	fprint l_str "Entrando a drv:end_tran (Current %s:%s) - dt_app:%s stack_cnt:%s" l_appl,l_item,drv:dt_app,drv:stack_cnt
+	call post:MISClogMenues(l_str)
+	;endif
+#endif
+
+	IF (TESTFLAG(mode_flags,exit_app))
+		// -----------------------------------------------------------------
+		// If we want to get out of the current desktop application and
+		// clear everything then
+		// Do the ENDTRAN equivalent if we had done the STARTTRAN equivalent
+		// Clear all the stack* fields
+		// -----------------------------------------------------------------
+		DO
+			IF (stack_start_tran[dt_app][stack_cnt] == "Y" && stack_cnt > 0)
+				LET drv:INDcur_list = drv:INDstack_funct[dt_app][stack_cnt]
+				call csr:getname (drv:INDcur_list,l_appl,l_item)
+				fprint l_str "drv:end_tran por exit_app (CSR:dt_tran DT_TRAN_END %s:%s)" l_appl,l_item
+				call post:MISClogMenues(l_str)
+				call  post:MISCdumpCampos
+				CALL  CSR:dt_tran DT_TRAN_END drv:INDcur_list
+				call post:MISClogCampos
+				LET cnt_tmp = stack_cnt
+				CALL  OFB:clear_stack
+				LET drv:INDfld = drv:INDstack_side_scr[dt_app][stack_cnt]
+				IF (drv:INDfld != 0)
+				    CUTSCREEN FLD:drv:INDfld,CURRENTFIELD
+				END IF
+			END IF
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:end_tran (2) - dt_app:%s stack_cnt:%s" drv:dt_app,drv:stack_cnt
+	call post:MISClogMenues(l_str)
+#endif
+
+			IF (stack_cnt > 0)
+				LET stack_cnt = stack_cnt - 1
+			ELSE
+				LET drv:INDcur_list = drv:INDstack_funct[dt_app][stack_cnt]
+				BREAK
+			END IF
+		LOOP
+		IF (!TESTFLAG(drv:mode_flags,no_cut)) THEN
+			IF (drv:INDscreen[screen_active] != 0)
+				LET FLD:drv:INDscr = FLD:drv:INDscreen[screen_active]
+      			CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+      			
+      			//gpb:PS10699 habilito los botones de la pantalla de herramientas 
+						l_longitud = drv:header.numchars
+						l_header = substr(drv:header,0,l_longitud)
+						IF (SUBSTR(l_header,29,1) == "R") THEN
+							//JOINSCREEN drv:desktop_toolbar,NOCURSOR
+							CALL drv:enable_tool_screen
+						END IF					
+			END IF
+		ELSE
+			RESETFLAG drv:mode_flags,no_cut
+		END IF
+		LET drv:INDfld = drv:INDstack_side_scr[dt_app][stack_cnt]
+		IF (drv:INDfld != 0)
+		    CUTSCREEN FLD:drv:INDfld,CURRENTFIELD
+		END IF
+		clearfield menu_select_code[dt_app]
+		clearfield menu_rebuild_reqd[dt_app]
+		clearfield menu_level[dt_app]
+	END IF
+	// ---------------------------------------------------------------------
+	// If we do not wish to clear everything about the current desktop appl.
+	// ---------------------------------------------------------------------
+
+#if CORREO_DEBUG == CORREO_ON
+	fprint l_str "drv:end_tran (3) - dt_app:%s stack_cnt:%s" drv:dt_app,drv:stack_cnt
+	call post:MISClogMenues(l_str)
+#endif
+
+	IF (stack_start_tran[dt_app][stack_cnt] == "Y")
+		LET drv:INDcur_tran = 0
+		LET drv:INDcur_menu = 0
+		LET drv:INDcur_scr = 0
+#if BASE_CFIG_HIST == 1
+		CALL  OFB:reset_hist
+#endif
+		call csr:getname (drv:INDcur_list,l_appl,l_item)
+		fprint l_str "drv:end_tran (%s:%s)" l_appl,l_item
+		call post:MISClogMenues(l_str)
+		call post:MISCdumpCampos
+		CALL  CSR:dt_tran DT_TRAN_END drv:INDcur_list
+		call post:MISClogCampos
+		LET cnt_tmp = stack_cnt
+		CALL  OFB:clear_stack
+	END IF
+	// -------------------------------------------------------
+	// Cut the BaseScreen and tab if in notecards mode because
+	// we are ending the transaction
+	// -------------------------------------------------------
+	IF (!TESTFLAG(drv:mode_flags,no_cut)) THEN
+		IF (drv:INDscreen[screen_active] != 0)
+		    LET FLD:drv:INDscr = FLD:drv:INDscreen[screen_active]
+	    	CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+
+				l_longitud = drv:header.numchars
+				l_header = substr(drv:header,0,l_longitud)
+				//DPRINT "***********************************\n"
+				//DPRINT "********  end_tran  ***************\n"
+				//DPRINT "l_header =%s\n",l_header
+				//DPRINT "***********************************\n"   
+
+  			//gpb:PS10699 habilito los botones la pantalla de herramientas 
+				l_longitud = drv:header.numchars
+				l_header = substr(drv:header,0,l_longitud)
+				IF (SUBSTR(l_header,29,1) == "R") THEN
+					//JOINSCREEN drv:desktop_toolbar,NOCURSOR
+					CALL drv:enable_tool_screen
+				END IF
+				
+		END IF
+	ELSE
+		RESETFLAG drv:mode_flags,no_cut
+	END IF
+	IF (TESTFLAG(drv:mode_flags,notecards_mode)) THEN
+	   IF (drv:subscreen[drv:dt_app]  != "Y")
+		  IF (drv:tab_active >= 0) THEN
+		      LET drv:INDscr = FLD:drv:tab_screen[drv:tab_active]
+		      IF (drv:INDscr != 0) THEN
+				  CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+              	  CALL drv:enable_tab
+			  END IF
+	      END IF
+	      LET drv:INDscr = FLD:drv:INDscreen[0]
+	      IF (drv:INDscr != 0) THEN
+		 CUTSCREEN FLD:drv:INDscr,CURRENTFIELD
+	      END IF
+	   ELSE
+	      RESETFLAG drv:mode_flags,notecards_mode
+	   END IF
+	END IF
+
+/*************************************************************************
+	Borra los mensajes referentes al efectivo del operador.
+	Existen transacciones que dejan el campo siaf:linea2 displayado en
+	la pantalla, por lo cual se legio este lugar para borrarlo. Ya que
+	toda transaccion pasa por aqui.
+															F.B.11/4/97
+*************************************************************************/
+	cutscreen scr:siaf:SCRNinformacion,NOCURSOR
+	clearfield siaf:linea1
+	clearfield siaf:linea2
+	refresh siaf:linea1
+	refresh siaf:linea2
+	if (siaf:importe.numchars != 0)
+		swapdup siaf:importe
+		clearfield siaf:importe
+	end if
+	if (siaf:importe2.numchars != 0)
+		swapdup siaf:importe2
+		clearfield siaf:importe2
+	end if
+	if (siaf:moneda.numchars != 0)
+		swapdup siaf:moneda
+		clearfield siaf:moneda
+	end if
+    unprotfield siaf:moneda
+    // FGB 21.8.2001: Este campo queda con basura entre una trx y otra... aun siendo autoclear.
+   	clearfield giros:checkpoint_emision
+	// FGB fin
+END SUB
+
+/*******/

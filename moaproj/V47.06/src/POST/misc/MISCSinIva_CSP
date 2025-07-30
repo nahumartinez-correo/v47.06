@@ -1,0 +1,105 @@
+/****o* Pendientes de agrupación/OFB:post:MISCSinIva_CSP
+* NOMBRE
+*   OFB:post:MISCSinIva_CSP
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCSinIva_CSP
+    LOCAL sinIva_serv LIKE siaf:importe
+/*Esta rutina calcula el Importe sin IVA de las transacciones Postales para acumularlo
+  luego en la tabla AuxIngBr - Gabriel Falciola*/
+
+	local bloq_adic like post:tarifa
+
+	siaf:ImporteSinIva = 0
+	siaf:ImporteSinIva_bis = 0
+	
+	//para orden de compra:necesito saber el importe con y sin iva de la tarifa sola, sin bloque adicional
+	//SC 50170
+	CALL MISCdesglosaIva(tarifa, adt_serv_aliciva, cantidad,0)
+	post:ImporteSinIvaOC = post:ImporteSinIva
+	
+	/*Desgloso el iva de la Tarifa*/
+	bloq_adic = tarifa + imp_bloques
+	//SC 50170
+	CALL MISCdesglosaIva(bloq_adic, adt_serv_aliciva, cantidad,0)
+	//SC 50170 - FACTURACION
+	siaf:ImporteSinIva_bis = ImporteSinIva_bis
+	siaf:ImporteSinIva = ImporteSinIva
+	ImporteFinalSinIva = ImporteSinIva
+	/*Desgloso el iva del Bloque*/
+	if (imp_bloques != 0)
+		//SC 50170
+		CALL MISCdesglosaIva(imp_bloques, adt_serv_aliciva, cantidad,0)
+		imp_bloques_siva = ImporteSinIva
+		//SC 50170 - FACTURACION
+		imp_bloques_siva4 = ImporteSinIva_bis
+	else
+		//PS 9474
+		clearfield imp_bloques_siva
+		//SC 50170 - FACTURACION
+		clearfield imp_bloques_siva4
+	end if
+
+	/*Desgloso el iva del Descuento*/
+	//SC 50170
+	CALL MISCdesglosaIva(descuento, adt_serv_aliciva, 1,0)
+	siaf:ImporteSinIva = siaf:ImporteSinIva - ImporteSinIva
+	ImporteFinalSinIva = ImporteFinalSinIva - ImporteSinIva
+
+	/*Desgloso el iva de la bonificacion del servicio*/
+	//SC 50170
+	CALL MISCdesglosaIva(post:promo_imp_srv_tot, adt_serv_aliciva, cantidad,0)
+	siaf:ImporteSinIva = siaf:ImporteSinIva - ImporteSinIva
+
+	/*Desgloso el iva de la bonificacion de los bloques*/
+	//SC 50170
+	CALL MISCdesglosaIva(post:promo_imp_blq_tot, adt_serv_aliciva, cantidad,0)
+	siaf:ImporteSinIva = siaf:ImporteSinIva - ImporteSinIva
+
+	/*Desgloso el iva de los Opcionales*/
+	idx = 0
+	do
+		if (idx > 5)
+			break
+		end if
+		 /*Desgloso el iva de la bonificacion total de los opcionales*/
+		//SC 50170
+		CALL MISCdesglosaIva(promo_imp_opc_tot[idx],ali_opc[idx], cantidad,0)
+		sinIva_serv = ImporteSinIva
+		ImporteSinIva = siniva_opc[idx] - sinIva_serv
+		siaf:ImporteSinIva = siaf:ImporteSinIva + ImporteSinIva
+		ImporteFinalSinIva = ImporteFinalSinIva + siniva_opc[idx]
+		idx = idx + 1
+	loop
+
+	/*Guardo en ete campo el importe con IVA*/
+	siaf:ImporteConIva = siaf:importe - fld_promo_imp
+
+	/*Seteo en estos campos los valores por transacción (ya que en una tran. pueden realizarse
+	varias) para que queden journalizados en forma individual y así poder recuperarlo en caso
+	de una Anulación. Para eso chequeo por el campo que me indica esta modalidad - Gabriel Falciola*/
+	if ((adt_serv_piezacont == "T" || siaf:adt_tran_fliatran == "CST") && cantidad > 1 )
+		ImporteConIva = siaf:ImporteConIva / cantidad
+		ImporteSinIva = siaf:ImporteSinIva / cantidad
+	else
+		ImporteConIva = siaf:ImporteConIva
+		ImporteSinIva = ImporteFinalSinIva
+	end if
+	
+END SUB
+
+/*******/

@@ -1,0 +1,205 @@
+/****o* Pendientes de agrupación/OFB:giros:SVAL70140
+* NOMBRE
+*   OFB:giros:SVAL70140
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "girossval.h"
+
+SUB giros:SVAL70140
+
+	local enSesion_aux like post:enSesion
+	//
+	if (!testflag(flags_back,ya_pasado)) then
+	 /* NI REEMPLAZO DE CHEQUE GP
+		if (Serie_fld.numchars == 0 && NroGiro_fld.numchars == 0) then
+			CALL giros:lee_cheque_solo
+			if (retval < 0) then
+				return (-2)
+			end if
+		end if*/
+
+		//call giros:MISCvalida_giros
+		//if (retval < 0) then
+			if (post:enCombo == "S" && retval == -5) then
+				//cgw:Si venta de combo, permite salir si un giro postal sin cheques, o sin chequera para el operador.
+	            //    No afecta si no es venta de combo.
+				return (-5)
+			end if
+			//call giros:MISClimpio_nro
+		  // ungetkey RT_SEND
+			// return (-2)
+	//	end if
+	    SETFLAG flags_back,ya_pasado
+/* NI REEMPLAZO DE CHEQUE GP
+		// advertencia de los cheques disponibles. PS6653 
+		if (post:estado_presu < 4) then
+			call MISCctr_cant_chq
+		endif*/
+
+	end if
+
+	if (post:estado_presu == 1 || post:estado_presu == 2 || post:estado_presu == 3) then
+		popup giros:SCRNemis2,PRESemis2,PCOLemis2
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+
+		popup giros:SCRNemis1,PRESemis1,PCOLemis1
+		if (lastkey == RT_ESC) then
+			return (-2)
+		end if
+
+		call MISCenvio_post_tel
+ 		if (retval < 0) then
+			return -2
+		else
+			IF (testflag(flags_back,vencido)) then
+				//Si el giro esta vencido no se puede hacer la tx
+				MSGBOX "DEBE REALIZAR LA REVALIDA PRIMERO",0x00,"Error"
+				ungetkey RT_ESC
+				return (-2)
+			ELSE
+				msgbox "¿Desea confirmar la transacción?",OFB_YESNO,"Atención"
+				if (retval == 7) then
+					ungetkey RT_ESC
+					return (-2)
+				end if
+			END IF			
+		end if
+		
+		/* Si la transaccion se cobra por porcentaje, esta SVAL deja la formula en el 
+		campo formuCalc para ser impreso en la factura*/
+		call SVALgralFormCalGiro
+    end if
+	//
+    consulta = 0
+	siaf:siaf_status = HOST_ACCEPTED
+	
+    if (post:estado_presu == 4 || post:estado_presu == 1) then
+    //para que se journalicen y la interfaz los tome
+    	LET Serie_fld = vieja_serie_fld
+			LET NroGiro_fld = viejo_num_giro_fld
+			LET digito_fld = viejo_dig_fld
+			
+/*
+		if (testflag(flags_back,vencido)) then
+    		setflag flags_back,es_revalida
+			siaf:codigo_siaf_aux = siaf:codigo_siaf
+			siaf:codigo_siaf = siaf:codigo_rev
+     		call giros:PRESgral_giro
+			//
+			SWAPDUP Serie_fld
+			SWAPDUP NroGiro_fld
+			SWAPDUP digito_fld
+			LET Serie_fld = vieja_serie_fld
+			LET NroGiro_fld = viejo_num_giro_fld
+			LET digito_fld = viejo_dig_fld
+			call giros:MISCrevalida_autom(siaf:codigo_siaf_aux,siaf:codigo_siaf)
+			DUPFIELD Serie_fld
+			DUPFIELD NroGiro_fld
+			DUPFIELD digito_fld
+		end if
+*/		
+		if (siaf:siaf_status == HOST_ACCEPTED) then
+	    	//
+			clave_hdr_giros  = 0
+			codigo_procesamiento = siaf:codigo_proc
+			giros:hora_viaje = common:time_of_day
+			giros:dia_viaje  = common:system_date
+			Call post:CDSobtiene_secuen("STAN")
+			//
+			post:ImporteConIva = imp_servicio_fld
+			post:ImporteSinIva = imp_serv_siniva
+			//
+			siaf:importe = post:ImporteConIva
+
+
+
+			// parece que hay veces que el campo post:enSesion queda sucio
+			// y esto hace que la tx quede journalizado con tlr:jnl_status = 002 (MEMO)
+			enSesion_aux = post:enSesion
+			clearfield post:enSesion
+
+			//
+			post:ctrol_ult_tt = "S"
+	    	call tlr:JNLtran
+			post:ctrol_ult_tt = ""
+			
+			post:enSesion = enSesion_aux
+			//
+			IF (hcomm:tran_status == HOST_ACCEPTED) then
+				//reingenieria
+        //CALL giros:rutina_cheque_nue 
+        //Se imprime la orden de pago
+        post:reimpresion = "S"
+        CALL giros:rutina_orden_pago
+        post:reimpresion = "N"
+        //IMPRIMIR FORMULARIO EMISION
+       			CALL giros:rutina_form_emision
+				/*lib:err_retval = RETVAL
+				while (lib:err_retval < 0)
+					popup giros:SCRNingreso_giro,PRESnuevo_giro,PCOLnuevo_giro,SVALnuevo_giro
+					lib:err_retval = RETVAL
+					WHILE (lastkey == RT_ESC)
+						MSGBOX "No puede cancelar la transaccion",0x00,"Error"
+						popup giros:SCRNingreso_giro,PRESnuevo_giro,PCOLnuevo_giro,SVALnuevo_giro
+						lib:err_retval = RETVAL
+					END WHILE	
+				END WHILE*/
+				
+
+				/*Agrega Hernán*/
+				 /* Llamo a la MISCTotalTransac solo si la transacción fue ACEPTADA. Hernán 21/12/2000*/
+				  CALL post:MISCTotalTransac(siaf:codigo_siaf)
+				
+			ELSE
+				call MISCanulo_transac("NONE")
+			END IF
+		
+		else
+			call MISCanulo_transac("NONE")
+	   	end if
+	  	/*limpio campos para que la JNLtran no ejecute nada dos veces*/
+	   	CLEARFIELD drv:INDhcomm_rtn
+	   	CLEARFIELD drv:INDspc_rtn[1]
+	   	CLEARFIELD drv:INDcur_tran
+	   	CLEARFIELD drv:INDjnl_rtn
+	   	CLEARFIELD drv:INDspc_rtn[0]
+    end if
+	//
+	post:ImporteConIva = imp_servicio_fld + imp_revalida_fld
+    post:ImporteSinIva = imp_serv_siniva  + imp_sin_iva_rev
+	//
+	siaf:importe = post:ImporteConIva
+	//
+	siaf:ImporteConIva = post:ImporteConIva
+	siaf:ImporteSinIva = post:ImporteSinIva
+	//
+	if (post:estado_presu == 2 || post:estado_presu == 3) then
+		post:PreDForFis = post:adt_serv_formfiscal
+		call post:MISCAcumTotalesSes /* llamo rutina de calculo de Ingresos Brutos */
+	end if
+	//
+	CALL post:MISCGrabaDetalleTrn
+    CALL post:MISCgrabo_sinsesion
+
+	//robo de linea
+	IF (post:estado_presu < 4 && TESTFLAG(env_post_flag,envia_postal))
+		CALL giros:CDSgrabo_tt_Presu		
+	END IF
+   
+END SUB
+
+/*******/

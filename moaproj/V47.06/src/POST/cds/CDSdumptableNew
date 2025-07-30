@@ -1,0 +1,132 @@
+/****o* Pendientes de agrupación/OFB:post:CDSdumptableNew
+* NOMBRE
+*   OFB:post:CDSdumptableNew
+* DESCRIPCION
+*   Realiza un dump de la lista de campos a grabar del abm
+*   post:INDCamposTablas, campo indirecto que contiene el nombre de la lista de campos
+*	  admin:tabla, campo que contiene el nombre de la tabla 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   admin:SENDcen_emi_ter,admin:SENDdata,admin:SENDsuc_CeEmi,admin:SENDsuc_ter,gali:SVALrelac_suc,gali:SVALsuc_gali_data   
+*   giros:SENDabm_impuprov,giros:SENDabm_monpas,giros:SENDabm_pais,giros:SENDadt_semilla,giros:SENDemis_giroelec  
+*   giros:SENDestados_giro,giros:SENDImpuTramos,giros:SENDMensaje,giros:SENDrel_tran_giro,giros:SENDtipo_giros
+*   giros:SENDTipoSuc,giros:SENDVersion,post:SEND_AcrePerc,post:SEND_PercRG3337,post:SENDabm_browser,post:SENDaper            
+*   post:SENDaperco,post:SENDbloques,post:SENDCajaProd,post:SENDCatIngBr,post:SENDcativa_data,post:SENDclimay          
+*   post:SENDCodInt,post:SENDcodpost,post:SENDcodseq,post:SENDCombos,post:SENDContCombo,post:SENDcordest,post:SENDcoropap         
+*   post:SENDcorsucctp,post:SENDcorteop,post:SENDCotizaciones,post:SENDctascont,post:SENDctp,post:SENDcuit2dig        
+*   post:SENDdepstock,post:SENDdescuento,post:SENDdespacho,post:SENDdesptipos,post:SENDdestinos,post:SENDdestinosP       
+*   post:SENDdimens,post:SENDempresa,post:SENDFliaRep,post:SENDformu,post:SENDFproceso,post:SENDgrucativa,post:SENDgrucorte        
+*   post:SENDGruFlia,post:SENDGrupoRep,post:SENDipsPaisDest,post:SENDivaTipoDoc,post:SENDlistados,post:SENDMedPago         
+*   post:SENDMedPagoFacil,post:SENDmodelos,post:SENDmoneda,post:SENDmotpv,post:SENDmsj_label,post:SENDopcional
+*   post:SENDopcserv,post:SENDpagador,post:SENDpagador,post:SENDpagador,post:SENDplazo,post:SENDproc,post:SENDprodmay         
+*   post:SENDprodvs,post:SENDpromoLocal,post:SENDProvCatTas,post:SENDprovincias,post:SENDProvUnNe,post:SENDreembal         
+*   post:SENDrelMod,post:SENDrestProductos,post:SENDRMedPago,post:SENDRModalidad,post:SENDRMotivos,post:SENDRProduc         
+*   post:SENDRProvin,post:SENDsacagrupo,post:SENDsacatipo,post:SENDServCaja,post:SENDservicio,post:SENDtarifas         
+*   post:SENDtarifas_mult,post:SENDTasCatIB,post:SENDTerPagoFa,post:SENDtipmed,post:SENDTipoCaja,post:SENDTipoDocu       
+*   post:SENDtmpl_mot,post:SENDuen,post:SENDUniCod,post:SENDunimed,post:SENDunineg,post:SVALCodTrackTx,siaf:SENDadt_feriado     
+*   siaf:SENDmensajes,siaf:SENDmot_varios,siaf:SENDmotivos_data,siaf:SENDproduc_data,siaf:SENDtransac_data,tele:MISCabm_cattelg     
+*   tes:SENDcaja_buzon,tes:SENDclearing,tes:SENDctasbanco,tes:SENDespecie,tes:SENDlimi_habi,tes:SENDtcta,tes:SENDtipo  
+* DOCUMENTACION
+*   https://jirats.atos.net.ar/jira/browse/AUT-2415
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSdumptableNew
+	LOCAL loc_vfl_member LIKE siaf:idx
+	LOCAL loc_vfl_amount LIKE siaf:idx
+	LOCAL loc_vfl_obj LIKE plataf:tran_obj
+	LOCAL loc_vfl_appl LIKE plataf:tran_appl
+	LOCAL loc_vfl_name LIKE plataf:tran_name
+	LOCAL l_field_pointer LIKE post:INDuno
+	LOCAL l_field_value LIKE common:csr_string_aux
+	LOCAL l_cadena LIKE common:csr_string_4096
+	LOCAL l_longitud LIKE siaf:idx
+	LOCAL l_cdsretval  LIKE lib:err_retval
+	LOCAL l_cdsretval2  LIKE lib:err_retval
+	LOCAL l_mensaje LIKE common:csr_string_aux
+	LOCAL cant_reg LIKE giros:NroGiro_fld //NUMERIC 6, raro si aparece una tabla con mas de 999999 registros!!!
+
+	cant_reg = 0
+	CDS SELECT FROM FLD:admin:tabla BECOMES "tabla_ctx"
+	CDS FINDFIRST "tabla_ctx" LOCK
+	l_cdsretval = CDSRETVAL
+	
+	//si existen registros creo el archivo
+	IF (l_cdsretval == 0) THEN
+		CALL CSR:file_open(7,post:adt_directorio,"w")
+	ELSE
+		FPRINT l_mensaje,"%s%s","No existen registros en la tabla ",FLD:admin:tabla
+		MSGBOX l_mensaje,,0x00,"Aviso"
+	END IF
+
+	//recorro una vez para saber la cantidad de registros
+	l_cdsretval2 = l_cdsretval
+	WHILE (l_cdsretval2 == 0)
+		cant_reg = cant_reg + 1
+		CDS FINDNEXT "tabla_ctx" LOCK
+		l_cdsretval2 = CDSRETVAL
+	END WHILE
+	
+	IF ( cant_reg > 0 ) THEN
+		CALL post:MISCinicProgressBar("REALIZANDO DUMP - ", cant_reg)
+	END IF
+	
+	//recorro por segunda vez para capturar la data por cada registro, es inevitable hacer dos recorridas
+	CDS FINDFIRST "tabla_ctx" LOCK
+	l_cdsretval2 = CDSRETVAL
+	WHILE (l_cdsretval2 == 0)
+		CDS EXTRACT "tabla_ctx" ALL
+		//obtengo la cantidad de miembros de la lista
+		CALL csr:listcsr(GETLIST, post:INDCamposTablas)
+		LET loc_vfl_amount = RETVAL
+		//el siguiente ciclo revisa el contenido de cada elemento de la lista...
+		LET loc_vfl_member = 0
+		WHILE (loc_vfl_member < loc_vfl_amount) 
+			CALL csr:listcsr(GETMEMBER,loc_vfl_member)
+			IF (RETVAL > 0) THEN
+				//obtengo los datos del campo de la lista...
+				CALL csr:listcsr(GETELEMENT,0,loc_vfl_obj,loc_vfl_appl,loc_vfl_name,common:csr_string)
+				IF (RETVAL >= 0) THEN
+					IF (loc_vfl_obj == "FLD") THEN
+						CALL csr:getofbindx(loc_vfl_appl,loc_vfl_name,l_field_pointer,"FLD")
+						//DPRINT "Valor de l_fiel_pointer = %s\n",l_field_pointer
+						CALL csr:ind_assign(l_field_value,l_field_pointer)
+						//DPRINT "Valor de l_field_value = %s\n",l_field_value
+						CALL post:MISCFtrim(l_field_value)
+						FPRINT l_cadena,"%s%s:%s|%s|",l_cadena,loc_vfl_appl,loc_vfl_name,l_field_value
+						//DPRINT "Valor de l_cadena = %s\n",l_cadena
+					END IF
+				END IF
+			END IF
+			loc_vfl_member = loc_vfl_member + 1
+		END WHILE
+		
+		//le quito el ultimo caracter que es |
+		l_longitud = l_cadena.NUMCHARS - 1
+		l_cadena = SUBSTR(l_cadena,0,l_longitud)
+		//DPRINT "Valor de l_cadena = %s\n",l_cadena
+		FPRINT l_cadena,"%s%s",l_cadena,"\n"
+
+		CALL CSR:file_write (7,l_cadena)
+		CLEARFIELD l_cadena
+		CALL post:MISCactProgressBar("REALIZANDO DUMP - ", 1, BARRAPORCENT, 1)
+		CDS FINDNEXT "tabla_ctx" LOCK
+		l_cdsretval2 = CDSRETVAL
+	END WHILE
+	CDS ENDSELECT "tabla_ctx"
+	
+	//si existen registros cierro el archivo
+	IF (l_cdsretval == 0) THEN
+		CALL post:MISCfinProgressBar
+		CALL CSR:file_close(7)
+	END IF	
+	
+END SUB
+
+/*******/

@@ -1,0 +1,276 @@
+/****o* Clientes Mayoristas/OFB:post:FVALclocuit
+* NOMBRE
+*   OFB:post:FVALclocuit
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+* http://livelink.intranet.siemens-itron.com.ar/livelink/livelink.exe?func=doc.ViewDoc&nodeId=640583&
+* SOURCE
+*/
+#include "postfval.h"
+
+SUB post:FVALclocuit
+
+    LOCAL loc_CloCuit LIKE CloCuit
+    LOCAL loc_CliCod  LIKE CliCod
+    LOCAL loc_cliraz  LIKE CliRaz
+    LOCAL loc_tipodoc_tipo LIKE post:adt_TipoDoc_tipo
+    LOCAL loc_tipodoc_desc LIKE post:adt_TipoDoc_desc
+
+    LOCAL loc_popup   LIKE post:ingr_datos
+    clearfield loc_popup  //inicializa señal de levantar popup para minoristas y corporativos
+    
+    loc_CloCuit = CloCuit
+    loc_CliCod  = CliCod
+    loc_cliraz  = CliRaz
+
+#ifndef COMPILA_SAP
+    // FGB: No se porque habran hecho esta desvalidacion... pero no va para SAP.
+    /*Si el cliente es CuentaCorrentista entonces
+    este campo puede dejarlo vacio*/
+    if (cli_tipo == 1 && CloCuit.NUMCHARS == 0) then
+        return (0)
+    end if
+#endif
+
+    /* No puede combinarse pago con tarjeta para estos clientes minoristas */
+    /* cgw: No puede combinarse pago con cheque,cheque dif. para estos clientes minoristas */
+    if ((TESTFLAG (MPtarjeta, MPpago_tarjeta) || TESTFLAG (MPcheque, MPpago_cheque) || \
+        TESTFLAG (cheque_dif, UPpago_dif)) && post:cli_tipo == 2 && \
+        (post:CloCuit == 99999999999 || post:CloCuit == 99999999995)) then
+        MSGBOX "No puede pagarse con tarjeta o cheque para este cliente generico",OFB_OK,"AVISO"
+        clearfield post:CliRaz
+        clearfield post:CliRazon
+        clearfield CliNombre
+        clearfield CliApellido
+        clearfield post:IvaCod
+        clearfield post:adt_TipoDoc_tipo
+        clearfield post:adt_TipoDoc_desc
+        clearfield post:CloCuit
+        refresh post:CliRazon
+        refresh CliNombre
+        refresh CliApellido
+        refresh post:IvaCod
+        refresh post:adt_TipoDoc_tipo
+        refresh post:adt_TipoDoc_desc
+        refresh post:CloCuit
+        unprotfield post:IvaCod
+        enablecontrol drv:PBcb4
+        unprotfield post:adt_TipoDoc_tipo
+        enablecontrol drv:PBcb13        
+        return (-2)
+    end if
+    
+    CALL FVALTipoDoc_i
+    CALL siaf:FVALcampo_no_cero
+    IF (RETVAL < 0) THEN
+        RETURN (-2)
+    END IF
+
+    call post:CDSTipoDocu_load
+    if (post:adt_TipoDoc_digver == "S")
+        CALL post:FVALcuit_digi_veri
+        IF (RETVAL < 0) THEN
+           clearfield post:CloCuit
+           refresh post:CloCuit
+           RETURN (-1)
+        END IF
+    end if
+
+
+    /*los 2 primeros digitos se chequean cuando corresponde y solo a un cliente nuevo*/    
+    if (post:adt_TipoDoc_ver2dig == "S")
+        if (post:cli_tipo == 2) /*Cliente Minorista, se chequea que no exista en la CliOca para hacer el control de los 2 primeros digitos del nro de documento en caso que corresponda*/
+            post:CloTipDoc = post:adt_TipoDoc_tipo    
+            CALL post:CDSTipoDocu_existe    
+            lib:err_retval = retval
+        else 
+            /*para los demas tipos de clientes se los consideran ya existentes*/
+            lib:err_retval = 0
+        end if
+        if (lib:err_retval != 0)    
+            CALL post:FVALcuit2dig(post:CloCuit)
+            IF (RETVAL < 0) THEN
+                clearfield post:CloCuit
+                refresh post:CloCuit
+                RETURN (-1)
+            END IF
+        end if        
+    end if
+
+    IF (cli_tipo == 1)
+        CliCod = loc_CliCod
+        if (post:cli_tipo != post:bck_cli_tipo || \
+            post:adt_TipoDoc_tipo != post:bck_TipoDoc || \
+            post:CloCuit != post:bck_CloCuit) then
+            post:bck_cli_tipo = post:cli_tipo
+            post:bck_TipoDoc = post:adt_TipoDoc_tipo 
+            post:bck_CloCuit = post:CloCuit
+            loc_popup = "S" //desplegar popup datos clientes minoristas       
+        end if                      
+    ELSE
+         if (post:cli_tipo != CLIMED) then
+            CALL post:ABMCliOca_scr2_clear
+            ;PS9882
+            ;post:CloProvin = SUBSTR(common:sucursal_activa,0,1)
+        endif
+        CALL CDSadt_clocuit_load
+        IF (retval == 0) THEN
+            if (siaf:codigo_siaf == 95010) then
+                return 0
+            end if
+            call MISCCliOca_existe
+            enablecontrol drv:PBcb0
+            if (CloInscripto != "N")
+                call CDSCheq_CoefPart_IB
+                if (retval != 0)
+                    return (-2)
+                end if
+           end if
+           SETVALDONE CliCod
+        else
+             if (siaf:codigo_siaf == 95010) then
+	            MSGBOX "El cliente no existe",0x00000000,"ERROR"
+	            clearfield CloCuit
+	            REFRESH CloCuit
+	            return -2
+	    end if
+            call MISCCliOca_noexiste
+            CloInscripto = "N"
+            refresh CloInscripto
+            if (adt_cativa_exeingbr == "N")
+                protfield CloInscripto
+            else            
+                unprotfield CloInscripto
+            end if
+            if (post:cli_tipo == 2 && (post:cli_tipo != post:bck_cli_tipo || \
+                post:adt_TipoDoc_tipo != post:bck_TipoDoc || \
+                post:CloCuit != post:bck_CloCuit)) then
+                post:bck_cli_tipo = post:cli_tipo
+                post:bck_TipoDoc = post:adt_TipoDoc_tipo 
+                post:bck_CloCuit = post:CloCuit
+                loc_popup = "S" // desplegar popup datos clientes minoristas          
+            end if          
+        END IF
+    END IF
+
+    protfield  CloSSFranq
+    if (cli_tipo == 1)
+        CloSSFranq = "N"
+    else
+        protfield  CliFranqueo
+        if (IvaCod != "CF")
+            CloSSFranq = "N"
+            unprotfield CloSSFranq
+            CliFranqueo = "N"
+        else
+            clearfield loc_popup
+            clearfield post:bck_cli_tipo
+            clearfield post:bck_TipoDoc
+            clearfield post:bck_CloCuit
+        end iF
+    end if
+
+    CALL post:MISCidentif_cli_refr
+    setvaldone CloCuit
+    if (post:CliRazon.numchars > 0) then
+        setvaldone CliRazon
+    end if
+                
+    //verifica si carga datos clientes minoristas
+    if (cli_tipo == 2 && loc_popup == "S") then
+        CALL CSR:trimfield(IvaCod)
+        if (CliRaz.numchars == 0 || IvaCod.numchars == 0 || \
+            adt_TipoDoc_tipo.numchars == 0 || CloCuit.numchars == 0) then           
+            clearfield post:bck_cli_tipo
+            clearfield post:bck_TipoDoc
+            clearfield post:bck_CloCuit
+            resetvaldone CloCuit           
+        else
+            post:CloInscripto = "N"  //por default
+            //despliega datos clientes minoristas
+            POPUP scr:post:SCRNcli_minorista
+            if (LASTKEY == 0x0190) then
+                clearfield post:bck_cli_tipo           
+                clearfield post:bck_TipoDoc
+                clearfield post:bck_CloCuit               
+                //datos popup clientes minoristas
+                call post:ABMCliMedio_clear
+                //datos SCRNidentifica_cli2
+                call post:ABMCliMedio2_clear
+                post:CloInscripto = "N"  //por default
+                clearfield loc_popup
+                resetvaldone CloCuit
+                return (-2)
+            end if
+        end if    
+    end if
+
+    clearfield post:pcia_desc //para que no arrastre descripcion
+    
+    //verifica si carga datos clientes corporativos
+    if (cli_tipo == 1 && loc_popup == "S") then
+        CALL CSR:trimfield(IvaCod)
+        if (loc_popup == "S") then          
+            //despliega datos clientes corporativos            
+            //datos popup clientes corporativos
+            call post:ABMCliCorp_clear
+            //datos SCRNidentifica_cli3
+            call post:ABMCliCorp2_clear
+            CliClasPed = "ZPN" //por default
+            CloInscripto = "N"
+            refresh CliClasPed
+            
+            //SC 50225
+            CALL CDSVerif_Ingreso_BUI
+            if (retval == 0)
+            	unprotfield CliBUICorreo
+            else
+            	protfield CliBUICorreo
+            endif
+            
+            ; En sesión de reemplazo de cheques solo se necesita el ingreso de la cuenta *** MDG
+            if (post:esSesionReempChq == "S") then
+                protfield CliClasPed
+                protfield ClsuCod
+                protfield ClssCod
+                protfield CliBolImp
+                protfield CliFranqueo
+                protfield CliBUICorreo
+            end if     
+            
+            POPUP scr:post:SCRNcli_corporativo
+            
+            if (LASTKEY == 0x0190) then
+                clearfield post:bck_cli_tipo            
+                clearfield post:bck_TipoDoc
+                clearfield post:bck_CloCuit
+                //datos popup clientes corporativos
+                call post:ABMCliCorp_clear
+                //datos SCRNidentifica_cli3
+                call post:ABMCliCorp2_clear
+                resetvaldone CloCuit
+                return (-2)
+            else 
+                refresh post:CloCuit
+                if (estado_conexion_sap == SAP_ON) then                 
+                    clearfield post:bck_cli_tipo
+                    clearfield post:bck_TipoDoc
+                    clearfield post:bck_CloCuit
+                end if    
+            end if
+        end if     
+   end if
+   clearfield loc_popup
+   
+END SUB
+
+/*******/

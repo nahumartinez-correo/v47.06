@@ -1,0 +1,166 @@
+/****o* Pendientes de agrupación/OFB:tes:CDSjnl_clave_mov
+* NOMBRE
+*   OFB:tes:CDSjnl_clave_mov
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesCDS.h"
+
+SUB tes:CDSjnl_clave_mov(fvalor,tmov,tipo_dep,mov_facred)
+    if (!testflag(tlr:tran_flags,correction))
+        mov_bus_date = fvalor
+        mov_date = common:system_date
+        mov_operator = op:op_operator_id
+        mov_sequence = tlr:jnl_sequence
+        mov_time = tlr:jnl_time
+        mov_tipo_mov = tmov
+    else
+        // Si es una reversa tengo que fijarme si el
+        // cheque fue acreditado
+        if (tipo_dep == "CHEQ")
+
+            cds select from dsc:TesoCheq_tbl becomes dsc:TesoCheq_ctx where \
+                teso_cheq_suc     == common:sucursal_activa && \
+                teso_cheq_estado  == "P"                    && \
+                teso_cheq_id      == tes:banco_codigo       && \
+                teso_cheq_tipocta == tipo_cuenta            && \
+                teso_cheq_nrocta  == nro_cuenta             && \
+                teso_cheq_banco   == siaf:cod_banco         && \
+                teso_cheq_cuenta  == siaf:cheqcuenta        && \
+                teso_cheq_nro     == siaf:nro_cheque
+
+            cds findfirst dsc:TesoCheq_ctx nolock
+            if (cdsretval == 0) then
+                cds extract dsc:TesoCheq_ctx all
+            end if
+            cds endselect dsc:TesoCheq_ctx
+        end if
+    end if
+    select (tipo_dep)
+        case "CHEQ"
+            select (tmov)
+                case CREDITO
+ 							/* Si el cheque tiene acreditación automática,
+                     lo pongo en saldo efectivo, sino (caso giros)
+                     se debe acreditar por transaccion idpte */
+                    if (mov_facred <= common:system_date) && (teso_cheq_auto == "S")
+                        sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                    else
+                        sdo_cta_cheq = sdo_cta_cheq + post:importe_origen
+                    end if
+                    break
+                case DEBITO
+                    if (teso_cheq_acred == "S")
+                        sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                    else
+                        sdo_cta_cheq = sdo_cta_cheq - post:importe_origen
+                    end if
+                    break
+            end select
+            break
+        case "EFEC"
+            select (tmov)
+                case CREDITO
+                    sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                    break
+                case DEBITO
+                    sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                    break
+            end select
+            break
+        case "CRED"
+            select (tmov)
+                case CREDITO
+                    sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+							/* Si requiere control y no es un cheque rechazado. 
+                     Caso Rechazado->Acreditado de Giros. No debo restar de cheques 
+                     por acreditar*/
+                     if (siaf:adt_motvarios_ctrl == "S" && tes:estado_cheque != "R")
+                        	sdo_cta_cheq = sdo_cta_cheq - post:importe_origen
+                     end if
+                    break
+                case DEBITO
+                    sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+						  if (siaf:adt_motvarios_ctrl == "S" && tes:estado_cheque != "R")
+                        	sdo_cta_cheq = sdo_cta_cheq + post:importe_origen
+                    end if
+                    break
+            end select
+            break
+        case "DEB"
+            select (tmov)
+                case CREDITO
+                    if (siaf:adt_motvarios_ctrl == "S")
+                        if (estado_cheque == "S")
+                            sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                        else
+				            sdo_cta_cheq = sdo_cta_cheq + post:importe_origen
+                        end if
+                    else
+                        sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                    end if
+                    break
+                case DEBITO
+                    if (siaf:adt_motvarios_ctrl == "S")
+                        if (estado_cheque == "S")
+                           	sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                        else
+				            sdo_cta_cheq = sdo_cta_cheq - post:importe_origen
+                        end if
+                    else
+                        sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                    end if
+                    break
+            end select
+            break
+        case "ONP"
+            select (tmov)
+                case CREDITO
+                    if (estado_cheque == EMITIDO)
+                        sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                    end if
+                    sdo_cant_nopagar = sdo_cant_nopagar + 1
+                    break
+                case DEBITO
+                    if (estado_cheque == EMITIDO)
+	                    sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                    end if
+                    sdo_cant_nopagar = sdo_cant_nopagar - 1
+                    break
+            end select
+            break
+        case "ANUL"
+            select (tmov)
+                case CREDITO
+                    if (estado_cheque == EMITIDO)
+                        sdo_cta_efvo = sdo_cta_efvo + post:importe_origen
+                    end if
+                    break
+                case DEBITO
+                    if (estado_cheque == EMITIDO)
+	                    sdo_cta_efvo = sdo_cta_efvo - post:importe_origen
+                    end if
+                    break
+            end select
+            break
+    end select
+
+    let SaldoEfvoCta = sdo_cta_efvo
+    let SaldoCheqCta = sdo_cta_cheq
+    let CantOrdenCta = sdo_cant_nopagar
+    CALL csr:proc_list(F_APPEND,dsc:tlr:CONjnl_write,LST:tes:LISTjournal_Movim,0)
+
+END SUB
+
+/*******/

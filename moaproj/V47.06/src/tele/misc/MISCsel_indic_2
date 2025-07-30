@@ -1,0 +1,109 @@
+/****o* Pendientes de agrupación/OFB:tele:MISCsel_indic_2
+* NOMBRE
+*   OFB:tele:MISCsel_indic_2
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "telemisc.h"
+
+SUB tele:MISCsel_indic_2
+LOCAL x like post:cant_opc
+LOCAL j like post:cant_opc
+LOCAL l_opcional_aux like post:adt_opcserv_opci
+LOCAL l_preCantidad LIKE post:cantidad
+LOCAL l_debeAcumular LIKE lib:err_retval
+	indice = 2
+    IF (((OpcInd_vec[2][0].NUMCHARS != 0) && (post:estado_presu != 4)) && !TESTFLAG(lib:state_flags,scan_mode)) THEN
+    	common:csr_string = SUBSTR(OpcInd_vec[2][0],0,4)
+    	;PS 9490
+    	l_preCantidad = post:cantidad
+    	CALL post:MISCopcCantPart(common:csr_string, post:tipo_produc, post:cantidad)
+
+    	l_debeAcumular = RETVAL
+      	IF (TESTFLAG(OpcInd_check,item_2)) THEN
+        	if (post:cant_opc > 5)
+        		RESETFLAG OpcInd_check,item_2
+        		ALTERCONTROLSET check_indic_2
+        		MSGBOX "NO SE PUEDEN SELECCIONAR MAS DE 6 OPCIONALES",0x00,"ERROR"
+        		RETURN
+        	end if
+        	post:cant_opc = post:cant_opc + 1
+        	FPRINT tele_string,"%-4.4s",SUBSTR(OpcInd_vec[2][0],0,4)
+        	CALL CSR:f_saaddpl(DSC:OpcInd_sel,tele_string)
+        	if (post:cli_tipo != 1)
+        		post:costo_opc = post:costo_opc + (OpcInd_vec[2][1] * post:cantidad)
+        		if (l_debeAcumular) then
+        			post:costo_opc_uni = post:costo_opc_uni + (OpcInd_vec[indice][1] * post:cantidad)
+        		end if
+        		CALL post:MISCaplicaBonif(TIPO_OPCIONAL)
+				IF (post:aplica_bonif_opc ==	"S") THEN
+					CALL post:CDScalcBonifGral(TIPO_DETALLE_BONIF_OPCIONAL, "")
+					if (l_debeAcumular) then
+						x = post:cant_opc_bonif - 1
+						post:promo_opc_uni = post:promo_opc_uni + post:promo_imp_opc_ind[x]
+					end if
+				END IF
+        	end if
+    	ELSE
+        	common:csr_string = OpcInd_vec[2][0]
+        	CALL MISCborra_indic_sel
+        	if (post:cli_tipo != 1)
+        		post:costo_opc = post:costo_opc - (OpcInd_vec[2][1] * post:cantidad)
+        		if (l_debeAcumular) then
+        			post:costo_opc_uni = post:costo_opc_uni - (OpcInd_vec[indice][1] * post:cantidad)
+        		end if
+        		x = 0
+        		while (x < post:cant_opc_bonif)
+        			l_opcional_aux = (SUBSTR(tele:OpcInd_vec[indice][0],0,4))
+        			if (l_opcional_aux == post:cod_opc_tele[x])
+        				call post:MISCRestaBonifOpc(x)
+        				while (x < post:cant_opc_bonif)
+        					j = x + 1
+        					if (l_debeAcumular) then
+								post:promo_opc_uni = post:promo_opc_uni - post:promo_imp_opc_ind[x]
+							end if
+        					post:promo_imp_opc_tot[x] = post:promo_imp_opc_tot[j]
+        					post:promo_imp_opc_ind[x] = post:promo_imp_opc_ind[j]
+        					post:promoOpcTipoBon[x] = post:promoOpcTipoBon[j]
+        					post:promo_opc_bon[x] = post:promo_opc_bon[j]
+        					post:cod_opc_tele[x] = post:cod_opc_tele[j]
+        					clearfield post:promo_imp_opc_tot[j]
+        					clearfield post:promo_imp_opc_ind[j]
+        					clearfield post:promoOpcTipoBon[j]
+        					clearfield post:promo_opc_bon[j]
+        					clearfield post:cod_opc_tele[j]
+        					x = x + 1
+        				end while
+        				post:cant_opc_bonif = post:cant_opc_bonif - 1
+        			end if
+        			x = x + 1
+        		end while
+        	end if
+       		post:cant_opc = post:cant_opc - 1
+    	END IF
+    	post:cantidad = l_preCantidad
+    	refresh post:costo_opc
+      	Call post:MISCactualizo_1opc
+		CALL MISCrecalc_importe
+    ELSE
+    	IF (TESTFLAG(OpcInd_check,item_2)) THEN
+	        RESETFLAG OpcInd_check,item_2
+    	ELSE
+        	SETFLAG OpcInd_check,item_2
+		END IF
+      	ALTERCONTROLSET check_indic_2
+    END IF
+END SUB
+
+/*******/

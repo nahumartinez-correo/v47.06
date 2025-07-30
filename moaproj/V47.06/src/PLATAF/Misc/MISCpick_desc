@@ -1,0 +1,135 @@
+/****o* Pendientes de agrupación/OFB:plataf:MISCpick_desc
+* NOMBRE
+*   OFB:plataf:MISCpick_desc
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "platafMisc.h"
+
+SUB plataf:MISCpick_desc
+local	L_str_length	like siaf:cant
+local	L_char			like plataf:tipo_doc_sesion
+local	L_descrip		like siaf:adt_tran_desc
+local	L_aux			like siaf:cant
+local	L_item			like siaf:idx
+local	Lbrowser_cod	like plataf:adt_browser_codtrn
+local	Lbrowser_lst	like plataf:adt_browser_lsttrn
+local	Lbrowser_cb 	like plataf:adt_browser_code
+local	Lsucceded		like siaf:i
+
+//Se limpia la lista que contiene los campos que se cargan cuando se busca por codigo de barra
+//SIEMPRE QUE SE AGREGUE UN CAMPO QUE ALMACENE EL CODIGO DE BARRA, DEBE AGREGARSE EN ESTA LISTA !
+//Ver rutinas plataf:MISCpick_barcode y drv:driver_menu
+CALL CSR:proc_list(170,LST:LISTbarcode_flds)
+CALL CSR:proc_list(190,LST:LISTbarcode_flds)
+
+// solo realizo la busqueda por descripcion, cuando corresponde...
+if (testflag(plataf:menu_mode_flags,descrip)) then // --------------------- (A)
+	// solo realizo la busqueda cuando tengo por donde empezar...
+	call csr:trimfield plataf:descrip_search
+	if (descrip_search.NUMCHARS < 3 && descrip_search.NUMCHARS > 0) then // (B)
+		msgbox "Utilice al menos un fragmento de 3 (tres) letras para la busqueda", \
+				OFB_ICONINFORMATION,BROWSER_CAPTION
+		return (-2)
+	else // --------------------------------------------------------------- (B)
+		if (descrip_search.NUMCHARS == 0) then
+			return (-2)
+		endif
+	endif // --------------------------------------------------------------- (B)
+
+	// busco si hay algun elemento del picklist que tenga el substring ingresado...
+	clearfield Lsucceded
+	let L_descrip = plataf:descrip_search
+	call csr:fld_to_upper L_descrip
+	let common:csr_string = L_descrip
+	call csr:PickOp(3,DSC:plataf:TranDscLst,common:csr_string,1)
+	if (retval >= 0) then // ----------------------------------------------- (C)
+		// al menos encontre uno... veo si hay mas.
+		let L_item = PL_GETITEM + retval 
+		let L_aux = retval
+		call csr:f_sanewpl "matched_items" PIC:plataf:transac_list
+		if (retval == 0) then // ------------------------------------------- (D)
+			do 
+				call csr:myPickcontrol DSC:plataf:TranDscLst common:csr_string L_item
+				// los que voy encontrando los agrego en un picklist resultado 
+				call csr:f_saaddpl "matched_items" common:csr_string
+				let L_aux = L_aux + 1
+				// busco a partir del siguiente item...
+				let common:csr_string = L_descrip
+				call csr:PickOp(3,DSC:plataf:TranDscLst,common:csr_string,L_aux)
+				if (retval < 0) then
+					break
+				endif
+				L_item = PL_GETITEM + retval
+				L_aux = retval 
+			loop
+			// el operador debe seleccionar una opcion de las encontradas
+			clearfield common:csr_string
+			call csr:f_sadopl "matched_items" common:csr_string
+			if (retval >= 0) then
+				let Lsucceded = 1
+			endif
+			call csr:f_sadroppl "matched_items"
+		end if // ---------------------------------------------------------- (D)
+
+		// si la seleccion fue exitosa, entonces busco los datos de la trx.
+		if (Lsucceded) then // --------------------------------------------- (E)
+			CDS SELECT FROM DSC:TABbrowser BECOMES DSC:CONbrowser \
+				WHERE plataf:adt_browser_desc == common:csr_string
+			if (cdsretval == 0) then // ------------------------------------ (F)
+				CDS FINDFIRST DSC:CONbrowser NOLOCK
+				if (cdsretval == 0) then // -------------------------------- (G)
+					CDS EXTRACT DSC:CONbrowser \
+						plataf:adt_browser_codtrn INTO Lbrowser_cod \
+						plataf:adt_browser_lsttrn INTO Lbrowser_lst \
+						plataf:adt_browser_code	  INTO Lbrowser_cb
+					if (cdsretval == 0) then
+						call set_chosen_flds(Lbrowser_cod,Lbrowser_lst)
+
+						// FGB:
+						if (Lbrowser_lst == "post:TRANventa_prodvs") then
+							//Si tiene una "-" es un Codigo de Barra, sino es un ProdVs
+							if (substr(Lbrowser_cb,4,1) == "-") then
+								post:adt_prodvs_codbarra = Lbrowser_cb // Cod. de Barra
+							else
+								post:adt_prodvs_cod = Lbrowser_cb // Cod. de Producto
+							end if
+						endif
+
+						//cgw:refesca la descripcion de la tx seleccionada
+						plataf:descrip_search = common:csr_string
+						call csr:trimfield plataf:descrip_search
+						refresh plataf:descrip_search
+						ungetkey RT_SEND //va directamente a la tx seleccionada
+						setvaldone plataf:descrip_search						
+						return (0)
+					endif
+				endif // --------------------------------------------------- (G)
+			endif // ------------------------------------------------------- (F)
+		else // ----------------------------------------------------------- (E)
+			msgbox "No se encontraron coincidencias",OFB_OK,BROWSER_CAPTION
+		endif // ----------------------------------------------------------- (E)
+
+	else  // --------------------------------------------------------------- (C)
+		msgbox "No se encontraron coincidencias",OFB_OK,BROWSER_CAPTION
+	endif // --------------------------------------------------------------- (C)
+
+	return (-2)
+	;setvaldone plataf:descrip_search
+
+endif // ------------------------------------------------------------------- (A)
+
+END SUB
+
+/*******/

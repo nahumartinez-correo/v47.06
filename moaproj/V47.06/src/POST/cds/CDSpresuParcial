@@ -1,0 +1,179 @@
+/****o* Anulación de Documentos/OFB:post:CDSpresuParcial
+* NOMBRE
+*   OFB:post:CDSpresuParcial
+* DESCRIPCION
+*   Esta rutina se encarga de generar la PresuDet para las directas de la transacción de anulación parcial
+* ENTRADAS
+*   cont: nuevo post:PreDNroTrn para la tx de la nueva PresuDet
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCgenDirect
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSpresuParcial(cont)
+	local err like lib:err_retval
+
+   /********************************************************************************************************/
+   /*                                                                                                      */
+   /* [PAW - 13/05/99]      Esta rutina se encarga de generar la PresuDet para las directas de la          */
+   /*                       transacción de anulación parcial.                                              */
+   /*                                                                                                      */
+   /********************************************************************************************************/
+
+	/*Lo necesito para saber que tipo de transaccion es - Gabriel Falciola*/
+	clearfield jnl_flia_tran
+	clearfield adt_serv_piezacont
+	clearfield post:PreDNroTrnAsoc
+
+	resetflag journal_flags,no_incr_nro_trn
+	if (enSesion != "S" && estAnul != "D2_")
+		cds findagain dsc:NC_CON lock
+		CDS EXTRACT dsc:NC_CON jnl_flia_tran adt_serv_piezacont post:PreDNroTrnAsoc
+	else
+		cds findagain dsc:post:Jounarl_anul_Ctx lock
+		CDS EXTRACT dsc:post:Jounarl_anul_Ctx jnl_flia_tran adt_serv_piezacont
+	end if
+
+	CDS FINDAGAIN dsc:PRESU_ORI_CON NOLOCK
+	err = cdsretval
+	while (adt_PreDNroTrn != PreDNroTrn)
+   		CDS FINDNEXT dsc:PRESU_ORI_CON NOLOCK
+   		err = cdsretval
+   		if (err == 0)
+			CDS EXTRACT dsc:PRESU_ORI_CON PreDNroTrn
+		else
+			CDS FINDFIRST dsc:PRESU_ORI_CON NOLOCK
+			err = cdsretval
+   			if (err == 0)
+				CDS EXTRACT dsc:PRESU_ORI_CON PreDNroTrn
+			endif
+		endif
+	end while
+	CDS CLEARBUFFER dsc:PRESU_DES_CON
+	CDS FINDAGAIN dsc:PRESU_ORI_CON LOCK
+
+	/*Antes de copiar el registro de la PresuDet, chequeo que si es una Venta de Especies
+	valorizadas, ya no se haya copiado el registro - Gabriel Falciola*/
+	if (siaf:codigo_siaf == 8500)
+		clearfield EspValMarca
+		CDS EXTRACT dsc:PRESU_ORI_CON EspValMarca
+		if (EspValMarca == "S")
+			/*Actualizo los datos de la PresuDet - Gabriel Falciola*/
+			call CDSact_presu_EspNC
+			setflag journal_flags,no_incr_nro_trn
+			return (0)
+		end if
+	end if
+
+	/*Antes de copiar el registro de la PresuDet, chequeo que si es una transaccion que graba
+	track_trace, ya no se haya copiado el registro - Gabriel Falciola*/
+	if (((jnl_flia_tran == "CSP" || jnl_flia_tran == "CSE") && adt_serv_piezacont == "T") || (jnl_flia_tran == "CST"))
+		clearfield Track_TraceMarca
+		CDS EXTRACT dsc:PRESU_ORI_CON Track_TraceMarca PresNro_tt NroTrn_tt
+		if (Track_TraceMarca == "S")
+			/*Actualizo los datos de la PresuDet - Gabriel Falciola*/
+			call CDSact_presu_tt_NC
+			setflag journal_flags,no_incr_nro_trn
+			return (0)
+		end if
+	end if
+
+	clearfield promo_aplica
+	CDS EXTRACT dsc:PRESU_ORI_CON promo_aplica
+	; Se limpian los vectores antes de copiar de la presudet orig a la destino porque
+	; puede generarse en algunos casos una nueva presudet destino con algunas campos
+	; de los vectores sucios. *** MDG
+	call csr:cleararray(promo_imp_opc_tot)
+	call csr:cleararray(cos_opc)
+    call csr:cleararray(siniva_opc)
+    //SC 50170
+    call csr:cleararray(siniva_opc4)
+
+	; Habia dos problemas con el incremento del numero de transaccion: uno era que originalmente
+	; el incremento se hacia en esta parte y se grababa el numero incrementado en la PresuAct,
+	; pero esto traia problemas ya que habian varios procesos entre esta instancia y la grabacion
+	; del registro en la presuact, y si el sistema se caia en ese momento, perdia la relacion
+	; con el journal.
+	; El otro se origino a partir de mover el incremento del numero de transaccion inmediatamente
+	; antes de insertar el registro, para minimizar las posibles caidas entre ambos, pero esto
+	; hacia que fallara el append en la MISCpri_presu_tt_NC.
+	; finalmente se soluciono de la siguiente forma: en este lugar se incrementa el numeri
+	; de transaccion, pero no se lo graba en la PresuAct para persistir, se continua con el
+	; resto de los procesos (si se cae el sistema, no se pierde el numerito porque esta como
+	; estaba antes) e inmediatamente despues del insert se lo incrementa para que no existan
+	; duplicados.
+
+	call CDSIncSecSesion(post:presNroNew,"TRN",0, enAnulacion)
+	cont = retval + 1
+
+	CDS FINDAGAIN dsc:PRESU_ORI_CON LOCK
+  	Call csr:copy_record(dsc:PRESU_ORI_CON, dsc:PRESU_DES_CON)
+  	Call csr:update_record(dsc:PRESU_DES_CON, "post", "PresNro", post:presNroNew, 1)
+  	
+  	Call csr:update_record(dsc:PRESU_DES_CON, "post", "PreDNroTrn", cont, 1)
+  	
+  	//SC 50170
+  	if (post:jnl_flia_tran == "TES" ) then
+		CALL post:CDSRestauro_dif_EspV(cont)
+  	endif
+  	
+	if (promo_aplica == "S")
+	  	BonifLocalOk = "N"
+	  	Call csr:update_record(dsc:PRESU_DES_CON, "post", "BonifLocalOk", post:BonifLocalOk, 1)
+	endif
+	/*Actualizo datos de la PresuDet por 1ra vez para una tran. con TT - Gabriel Falciola*/
+	if (((jnl_flia_tran == "CSP" || jnl_flia_tran == "CSE") && adt_serv_piezacont == "T") || (jnl_flia_tran == "CST"))
+		call MISCpri_presu_tt_NC
+	end if
+
+	/*Actualizo datos de la PresuDet por 1ra vez para una Venta de Especies - Gabriel Falciola*/
+	if (siaf:codigo_siaf == 8500)
+		call MISCpri_presu_EspNC
+	end if
+
+	/*Se agrega tratamiendo para Cliente Medio. Actualizo el importe del descuento - Gabriel Falciola*/
+	if (enSesion != "S" && estAnul != "D2_")
+		if (siaf:codigo_siaf == 99300)
+			clearfield post:prod_DescuentoCM
+			CDS EXTRACT dsc:PRESU_ORI_CON post:prod_DescuentoCM
+			call post:MISCTrnAsocDctoCM("JOURNAL")
+		end if
+	end if
+	;call csr:cleararray(cos_opc)
+    ;call csr:cleararray(siniva_opc)
+    ;call csr:cleararray(promo_imp_opc_tot)
+    
+	CDS INSERT dsc:PRESU_DES_CON LOCK
+	
+	call CDSIncSecSesion(post:presNroNew,"TRN",1, enAnulacion)
+
+	/*Si es una Venta de Especies Valorizadas grabo en el registro original de la PresuDet para
+	que no vuelva a grabarlo - Gabriel Falciola*/
+	if (siaf:codigo_siaf == 8500)
+		EspValMarca = "S"
+		CDS APPEND dsc:PRESU_ORI_CON EspValMarca
+		CDS UPDATE dsc:PRESU_ORI_CON LOCK
+		setflag journal_flags,no_incr_nro_trn
+	end if
+
+	/*Si es una transaccion con Track_Trace, grabo en el registro original de la PresuDet para
+	que no vuelva a grabarlo - Gabriel Falciola*/
+	if (((jnl_flia_tran == "CSP" || jnl_flia_tran == "CSE") && adt_serv_piezacont == "T") || (jnl_flia_tran == "CST"))
+		Track_TraceMarca = "S"
+		CDS APPEND dsc:PRESU_ORI_CON Track_TraceMarca
+		CDS UPDATE dsc:PRESU_ORI_CON LOCK
+		setflag journal_flags,no_incr_nro_trn
+	end if
+
+	CDS UNLOCK dsc:PRESU_ORI_CON
+	CDS UNLOCK dsc:PRESU_DES_CON
+END SUB
+
+/*******/

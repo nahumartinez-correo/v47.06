@@ -1,0 +1,68 @@
+/****o* Contra Reembolso/OFB:post:CDSclimay_load_crem
+* NOMBRE
+*   OFB:post:CDSclimay_load_crem
+* DESCRIPCION
+*   Carga los campos de la CliMay_crem para la pantalla de Remitentes CREM 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*	post:FVALcli_may_crem
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSclimay_load_crem
+  local Longitud like lib:err_retval
+    /*CDS SELECT FROM DSC:CliMay_crem_tbl BECOMES DSC:CliMay_crem_ctx WHERE \
+        adt_climay_razon == FLD:adt_climay_razon && \
+        adt_climay_codbarras == ""*/
+    //SC 50361 - REQ 006 CARGA MANUAL DEL MAYORISTA
+	IF (post:cod_barra_CREM.numchars == 0) THEN
+		/* Se comenta query reemplazado por el query de abajo (problema con la fecha de vigencia inicial y final)
+		CDS SELECT FROM DSC:CliMay_crem_tbl BECOMES DSC:CliMay_crem_ctx WHERE \
+		adt_climay_razon == FLD:adt_climay_razon && \
+		post:adt_cct_cod_barra == "N" && post:adt_cct_vig_inic >= common:system_date && \
+		((post:adt_climay_rendcen == "S" && post:adt_climay_cuenterc == "N") || \
+		(post:adt_climay_rendcen == "S" && post:adt_climay_cuenterc == "S"))
+		*/
+	
+		//cgw:AUT-1922 Se arreglo query, la fecha de vigencia debe ser menor o igual a la fecha del día.
+		//Tampoco estaba considerando la fecha de vigencia final.
+		//cgw:AUT-1946 Se agrega Sort "Comiten" para que este ordenado por razon Social- Comitente
+		CDS SELECT FROM DSC:CliMay_crem_tbl BECOMES DSC:CliMay_crem_ctx WHERE \
+		adt_climay_razon == FLD:adt_climay_razon && \
+		post:adt_cct_cod_barra == "N" && post:adt_cct_vig_inic <= common:system_date && \
+		(adt_cct_vig_fin >=  fld:common:system_date || adt_cct_vig_fin == "        ") && \
+		((post:adt_climay_rendcen == "S" && post:adt_climay_cuenterc == "N") || \
+		(post:adt_climay_rendcen == "S" && post:adt_climay_cuenterc == "S")) SORT "Comiten"
+	ELSE
+		Longitud = post:cod_barra_CREM.numchars
+		//SC 50361 - REQ 005
+		CDS SELECT UNIQUE post:adt_climay_razon,post:adt_cct_comitente FROM DSC:CliMay_crem_tbl BECOMES DSC:CliMay_crem_ctx WHERE \
+		adt_climay_razon == FLD:adt_climay_razon && \
+		post:adt_cct_cod_barra == "S" && \
+		post:adt_cct_valid_std == "N" && \
+		post:adt_cct_vig_inic <= fld:common:system_date && \
+		(adt_cct_vig_fin >=  fld:common:system_date || adt_cct_vig_fin == "        ") && \
+		post:adt_cct_long_cb == Longitud SORT "Comiten"
+	ENDIF
+        
+    CDS FINDFIRST DSC:CliMay_crem_ctx NOLOCK
+    LET lib:err_retval = CDSRETVAL
+    IF (lib:err_retval == -801) THEN
+    	CDS ENDSELECT DSC:CliMay_crem_ctx
+		RETURN (-2)
+    END IF
+    //SC50361
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTclimay_flds) 
+    CDS EXTRACT DSC:CliMay_crem_ctx ALL
+    CDS ENDSELECT DSC:CliMay_crem_ctx
+END SUB
+
+/*******/

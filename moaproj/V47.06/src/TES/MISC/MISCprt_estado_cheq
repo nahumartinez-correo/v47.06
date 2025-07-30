@@ -1,0 +1,166 @@
+/****o* Pendientes de agrupación/OFB:tes:MISCprt_estado_cheq
+* NOMBRE
+*   OFB:tes:MISCprt_estado_cheq
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "tesMISC.h"
+
+SUB tes:MISCprt_estado_cheq
+    LOCAL nro_ini      LIKE tes:adt_chequera_ini
+    LOCAL idx_cheq     LIKE siaf:i
+    LOCAL idx_comienzo LIKE siaf:i  /* primera columna a partir del nro inicial de cheque*/
+    LOCAL idx_digito   LIKE siaf:i  /* primera fila con los digitos 0 al 9*/
+
+
+    FYIMSG LST:common:fyimsg_list,"GENERANDO LISTADO DE ESTADO DE CHEQUERAS..."
+
+
+    /* Veo si tengo que crear el picklist */
+    let siaf:pick_titulo = "est_cheq"
+    if (siaf:pantalla_impreso ==  "P") then
+       call csr:f_sanewpl(siaf:pick_titulo,PIC:siaf:totales)
+    else
+       ;LMB - PS 9780 - 12.06.2008
+       ;call MISCopen_file("\\te mp\\est_cheq.lis",5)
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCopen_file(common:tmpDirTemporal,5)
+       
+    end if
+
+    let siaf:lineas_cl = 0
+    /* pongo encabezado */
+    let siaf:indica_calcu = 0 // inicializa cant. de hojas
+    let fld:tes:INDsheet_header = OFB:tes:MISCstat_chqra_encab
+
+    common:trap_reset = OFB:lib:KEYSreset_esc
+    IF (cheques_ingresados.numchars == 0)   /*Todas las Chequeras de la Cta*/
+       CDS select from dsc:CheqCta_tbl becomes dsc:CheqCta_ctx where \
+       adt_chequera_suc  == common:sucursal_activa && \
+       adt_chequera_bco  == adt_chequera_bco       && \
+       adt_chequera_tipo == adt_chequera_tipo      && \
+       adt_chequera_cta  == adt_chequera_cta
+
+    else
+       CDS select from dsc:CheqCta_tbl becomes dsc:CheqCta_ctx where \
+       adt_chequera_suc  == common:sucursal_activa && \
+       adt_chequera_bco  == adt_chequera_bco       && \
+       adt_chequera_tipo == adt_chequera_tipo      && \
+       adt_chequera_cta  == adt_chequera_cta       && \
+       adt_chequera_ini  == adt_chequera_ini       && \
+       adt_chequera_cant == adt_chequera_cant
+    end if
+    IF (CDSRETVAL != 0) THEN
+       ERRMSG LST:common:errmsg_list,tlr:ERRjnl_select
+       RESET TRAN
+       RETURN (-2)
+    END IF
+
+    CALL tes:MISCstat_chqra_encab
+
+    cds findfirst dsc:CheqCta_ctx lock
+    lib:err_retval = CDSRETVAL
+    if (cdsretval == -801) then
+	MSGBOX "No hay Registros que Coincidan",0,"AVISO"
+        return (-2)
+    end if
+
+
+    While (lib:err_retval == 0)
+          cds extract dsc:CheqCta_ctx ALL
+          common:csr_string = "   "
+          nro_ini           = adt_chequera_ini
+          nro_ini = nro_ini - (adt_chequera_ini % 10)
+          idx_comienzo       = 0
+          call MISCwrite_file1(5,fld:common:csr_string)
+          call MISCwrite_file1(5,fld:common:csr_string)
+
+          call MISCstat_chqra_suben
+
+          idx_cheq = 0
+          clearfield common:csr_string
+          While (idx_cheq < adt_chequera_cant)
+
+                if (tes:adt_chequera_cheques[idx_cheq] == " ")
+                   tes:adt_chequera_cheques[idx_cheq] = "X"
+                end if
+
+                if (((adt_chequera_ini+idx_cheq) % 10) == 0 || idx_cheq == 0)
+                   fprint common:csr_string,"%8.8e   ",nro_ini
+                   idx_digito = 0
+                   while (idx_cheq == 0 && idx_digito < (adt_chequera_ini % 10))
+                         fprint common:csr_string,"%s      ",common:csr_string
+                         idx_digito = idx_digito + 1
+                   end while
+
+                   nro_ini = nro_ini + 10
+
+                end if
+                fprint common:csr_string,"%s     %1s",common:csr_string,tes:adt_chequera_cheques[idx_cheq]
+
+
+                idx_cheq = idx_cheq + 1
+
+                if (idx_cheq == adt_chequera_cant || ((adt_chequera_ini+idx_cheq)%10)==0)
+                   call MISCwrite_file1(5,fld:common:csr_string)
+                   clearfield common:csr_string
+
+                   //Corte
+                   if (siaf:pantalla_impreso ==  "I") then
+                      While (siaf:lineas_cl == 60)
+                            call MISCwrite_file1(5,fld:common:csr_string)
+                      end while
+                      if (siaf:lineas_cl >= 60)
+                         call MISCstat_chqra_suben
+                      end if
+                   end if
+
+                endif
+          end while
+
+          cds findnext dsc:CheqCta_ctx lock
+          lib:err_retval = CDSRETVAL
+    end while
+
+
+
+    //Total de hojas
+    if (siaf:pantalla_impreso ==  "I") then
+       clearfield common:csr_string
+       While (siaf:lineas_cl < 59)
+             call MISCwrite_file1(5,fld:common:csr_string)
+       end while
+       fprint common:csr_string "                                                     Cantidad de Hojas : %s" siaf:indica_calcu
+       call MISCwrite_file1(5,fld:common:csr_string)
+    End if
+
+    CLEARFIELD common:csr_string
+    call MISCwrite_file1(5," ")
+
+    /* Salida segun opcion del usuario */
+    if (siaf:pantalla_impreso == "P") then
+       call csr:f_sadopl(siaf:pick_titulo, common:csr_string)
+    else
+       ;LMB - PS 9780 - 12.06.2008
+       ;call MISCclose_file("\\te mp\\est_cheq.lis",5)
+       ;call siaf:MISCfile_print("\\te mp\\est_cheq.lis","predeterminada")
+       fprint common:tmpDirTemporal "%s%s" common:dirTemporal,"est_cheq.lis"
+       call MISCclose_file(common:tmpDirTemporal,5)
+       call siaf:MISCfile_print(common:tmpDirTemporal,"predeterminada")
+   
+   end if
+
+END SUB
+
+/*******/

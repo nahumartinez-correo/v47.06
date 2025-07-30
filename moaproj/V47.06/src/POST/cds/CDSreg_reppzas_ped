@@ -1,0 +1,78 @@
+/****o* Pago en Destino/OFB:post:CDSreg_reppzas_ped
+* NOMBRE
+*   OFB:post:CDSreg_reppzas_ped
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+* 	post:SVALRepPzasPed
+* DOCUMENTACION  
+*   NI50479
+* SOURCE
+*/
+#include "postcds.h"
+
+SUB post:CDSreg_reppzas_ped
+	CDS SELECT FROM DSC:post:pzasPed_tbl BECOMES DSC:post:pzasPed_ctx where \
+		post:adt_reppzaped_op == op:op_operator_id
+	CDS FINDFIRST DSC:post:pzasPed_ctx NOLOCK
+	lib:err_retval = CDSRETVAL
+	IF (lib:err_retval == -801) THEN
+		MSGBOX "No existen registros",OFB_OK,"ERROR"
+		CDS UNLOCK DSC:post:pzasPed_ctx
+		CDS ENDSELECT DSC:post:pzasPed_ctx
+		RETURN (-1)
+	END IF
+	CALL csr:f_sanewpl "pzasPED" PIC:PICstockp_pieza 800 600	
+	WHILE (lib:err_retval == 0) THEN
+	    CDS EXTRACT DSC:post:pzasPed_ctx ALL
+    	    //genero picklist
+    	    FPRINT common:csr_string "T&T:%-13.13s   R.Soc.Impositor: %-50.50s",adt_reppzaped_pieza,adt_reppzaped_RSEmi
+        	CALL csr:f_saaddpl "pzasPED" common:csr_string
+        	clearfield common:csr_string
+        	FPRINT common:csr_string "Doc.Dest: %-2.2s %11.11s  R.Soc.Dest.: %-50.50s",adt_reppzaped_TDoc,adt_reppzaped_NDoc,adt_reppzaped_RSDest
+        	CALL csr:f_saaddpl "pzasPED" common:csr_string
+        	FPRINT common:csr_string "Suc.Entrega: %5.5s    Estado Pza.: %-3.3s    Importe: %12.12e",adt_reppzaped_SEnt,adt_reppzaped_EstPza,adt_reppzaped_ImpPza
+        	CALL csr:f_saaddpl "pzasPED" common:csr_string
+    	CDS FINDAGAIN DSC:post:pzasPed_ctx NOLOCK
+    	CDS FINDNEXT DSC:post:pzasPed_ctx NOLOCK
+    	LET lib:err_retval = CDSRETVAL
+  	END WHILE	
+	CDS ENDSELECT DSC:post:pzasPed_ctx
+
+	/*Seteo de flags a modo picklist, para que el foco este en el picklist*/
+	SETFLAG drv:mode_flags,picklist_mode
+	/*Mediante esta rutina csr se muestra el picklist*/
+	CALL csr:f_sadopl "pzasPED" common:csr_string
+	/*Reseteo de flags de modo picklist*/
+	RESETFLAG drv:mode_flags,picklist_mode
+	/*Si el usuario no selecciona ninguna opciòn del picklist entonces se llama */
+	/* a una rutina csr que borra de memoria los datos del picklist*/
+	IF (RETVAL < 0) THEN
+    	CALL csr:f_sadroppl "pzasPED"
+	    CALL CSR:proc_list(F_CLEAR,LST:LIST_pzasPED_flds)
+		CALL CSR:proc_list(F_REFRESH,LST:LIST_pzasPED_flds)
+		RETURN -2
+	ELSE	
+		/*Si el usuario selecciona una opción del picklist entonces se borran los datos
+		de memoria y luego se mueve la selección al campo correspondiente*/
+		CALL MISCmuestroPzaPED
+		IF (RETVAL < 0)
+			//ver que hacemos??
+			RETURN -2
+		END IF
+	END IF	
+	/*
+	CALL post:FVALtipo_doc_ped
+	CALL giros:FVALSucSel2
+*/
+	RETURN (0)
+
+END SUB
+
+/*******/

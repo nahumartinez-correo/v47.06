@@ -1,0 +1,196 @@
+/****o* Pendientes de agrupación/OFB:post:MISCAutorizoModif
+* NOMBRE
+*   OFB:post:MISCAutorizoModif
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCAutorizoModif(TablaAModif)  /*LISTO*/
+    LOCAL indice     LIKE post:Tarif_idx    
+    LOCAL modificada LIKE post:SiNo
+    LOCAL lcod       LIKE post:Tarif_idx
+    LOCAL loc_prec   LIKE post:adt_tarif_precio
+    LOCAL idx_tarm   LIKE post:Tarif_idx
+
+    let admin:tabla = TablaAModif
+    IF (TESTFLAG(admin:mode_flags,update)) || \
+       (TESTFLAG(admin:mode_flags,delete)) then
+
+        if (post:estado_presu != 1) then
+            ERRMSG LST:common:errmsg_list,"MODIFICACIONES DE TABLAS NO DISPONIBLES DENTRO DE UNA SESION."
+            return (-2)
+        end if
+
+        Call post:MISCSeteoTablasIND(TablaAModif)
+
+		IF (op:Flag_temp == 1) //viene de la transaccion modificaciones pendientes
+
+            ;SMC journalizo de acuerdo a si es ALTA , BAJA o Modificacion
+ 	        let siaf:codigo_siaf = post:codigo_siaf_aux
+
+	   	    IF (op:adt_temp_estado != "PENDIENTE")
+	 		    ERRMSG LST:common:errmsg_list,DSC:op:tabla_modif
+                RESETFLAG admin:mode_flags,update
+                RESETFLAG admin:mode_flags,delete
+			    return (-2)
+		    endif //la modificacion esta pendiente
+
+   	        call post:ChequearPermisos(TablaAModif,op:op_login_id)
+   	        ;call post:ChequearPermisos(admin:tabla,op:op_login_id)   	        
+	        IF (RETVAL < 0 )
+ 		        errmsg drv:errmsg_list,DSC:op:sin_permiso
+                RESETFLAG admin:mode_flags,update
+                RESETFLAG admin:mode_flags,delete
+			    return (-2)
+            endif
+
+            /*
+            select (siaf:codigo_siaf)
+                case 97000
+                case 97010
+                    IF (drv:last_button == 26) then
+                        ERRMSG LST:common:errmsg_list,"ESTA TABLA QUEDO PENDIENTE COMO ALTA o MODIFICACION. NO PUEDE DAR BAJA"
+                        return (-2)
+                    endif
+                    break
+                case 97020
+                    IF (drv:last_button == 25 || drv:last_button == 27) then
+                        ERRMSG LST:common:errmsg_list,"ESTA TABLA QUEDO PENDIENTE COMO BAJA. NO PUEDE MODIFICARLA"
+                        return (-2)
+                    endif
+                    break
+            end select
+            */
+ 		else
+        	if (TESTFLAG(admin:mode_flags,update)) then
+                ;SMC Segun sea Alta o Modificacion ...
+                if (drv:last_button == 27) then
+     	            CALL CSR:proc_list(F_CLEARALL,fld:post:INDBackupTablas)
+     	            let siaf:codigo_siaf = 97000
+                else
+     	            let siaf:codigo_siaf = 97010
+                endif
+            else
+                let siaf:codigo_siaf = 97020
+            endif
+
+            let post:codigo_siaf_aux = siaf:codigo_siaf
+            ;SMC si Esta directamente en el ABM, pido supervision para autorizar los cambios
+		    ; PAW --> si se trata de las tablas "OpcServ", "Tarifas" (comun, no multiple) o "bloques", no se debe pedir
+		    ; supervision, automaticamente debe quedar pendiente.
+		    if (TablaAModif == "OpcServ" || \
+		       (TablaAModif == "Tarifas" && es_tarifmult == "N") || \
+		        TablaAModif == "bloques")
+	    	    ovr:ovr_retval = -1
+		    else
+    	    	call siaf:OVRsupervision(TablaAModif)
+		    endif
+
+    	    IF (ovr:ovr_retval != 0)
+				/*Muestro el mendaje una sola vez, ACA, para todos los casos*/
+                errmsg drv:errmsg_list,"Las modificaciones seran guardadas en una tabla temporal"
+
+                IF (TablaAModif == "Tarifas" && es_tarifmult == "S")
+                    drv:INDcur_list = LST:post:TRANabm_tarifas              
+                    idx_tarm = 0                
+                    indice = idx_tarm + PL_GETITEM
+                    WHILE (idx_tarm < tarif_cant_tot)
+                        call csr:myPickcontrol(dsc:aux_pic_medios,common:csr_string,indice)        
+                        lcod = substr(common:csr_string,0,5)
+                        IF (lcod == 99999) /*Es un titulo*/
+                            adt_tarif_serv = substr(common:csr_string,6,10)
+                            CALL csr:trimfield post:adt_tarif_serv
+                        else
+                            modificada = substr(common:csr_string,65,1)
+                            IF (modificada == "M")     /*La tarifa fue modificada*/                
+                                adt_tarif_dest  = substr(common:csr_string,2,20)                
+                                adt_tarif_desde = substr(common:csr_string,23,13)                            
+                                CALL csr:trimfield post:adt_tarif_dest
+                                CALL csr:trimfield post:adt_tarif_desde                            
+                                CDS SELECT FROM DSC:adt_tarif_table BECOMES DSC:adt_tarif_context WHERE\
+                                adt_tarif_serv  == FLD:adt_tarif_serv && \
+                                adt_tarif_dest  == FLD:adt_tarif_dest && \
+                                adt_tarif_desde == FLD:adt_tarif_desde
+                                CDS FINDFIRST DSC:adt_tarif_context NOLOCK
+                                LET lib:err_retval = CDSRETVAL
+                                CDS EXTRACT DSC:adt_tarif_context ALL
+                                bck_tarif_serv       = adt_tarif_serv
+                                bck_tarif_dest       = adt_tarif_dest
+                                bck_tarif_desde      = adt_tarif_desde
+                                bck_tarif_hasta      = adt_tarif_hasta
+                                bck_tarif_um         = adt_tarif_um
+                                bck_tarif_precio     = adt_tarif_precio
+                                bck_tarif_modo       = adt_tarif_modo
+                                bck_tarif_fijo       = adt_tarif_fijo
+	                            bck_tarif_fijo_des   = adt_tarif_fijo_des
+                                bck_tarif_fj_aliciva = adt_tarif_fj_aliciva
+                                bck_tarif_cfenix     = adt_tarif_cfenix
+                                bck_tarif_hasta_eq   = adt_tarif_hasta_eq
+                                bck_tarif_um_eq      = adt_tarif_um_eq
+                                bck_tarif_tipo_caja  = adt_tarif_tipo_caja        
+                                bck_tarif_uneg       = adt_tarif_uneg
+                                adt_tarif_precio = substr(common:csr_string,51,13) //precio modificado
+                                bck_tarif_canal       = adt_tarif_canal
+                                CALL csr:trimfield post:adt_tarif_precio                            
+                                CDS ENDSELECT DSC:adt_tarif_context
+                                
+                                FYIMSG LST:common:fyimsg_list,"Grabando..."		                            
+                                Call post:MISCSeteoTablasIND(TablaAModif)
+                                let siaf:codigo_siaf = 97030
+                                call post:Save_Temporal(TablaAModif,"PENDIENTE")
+                                ;SMC journalizo Grabacion Temporal
+                                call post:MISCJournalTablas
+                                call post:MISCupdate_temporal(TablaAModif,"PENDIENTE")
+                                FYIMSG clear 
+                            
+                            end if
+                        end if
+                        idx_tarm = idx_tarm + 1
+                        indice = indice + 1
+                    END WHILE
+                    drv:INDcur_list = LST:post:TRANabm_tarifas_mult                
+                else                
+	                IF (TablaAModif == "catteleg")
+	                	//Tratamiento especial ya que pueden cargarse varios registros juntos
+	                	Call tele:MISCtmp_catteleg(TablaAModif)
+	                ELSE
+	                    let siaf:codigo_siaf = 97030
+	                    call post:Save_Temporal(TablaAModif,"PENDIENTE")
+	                    ;SMC journalizo Grabacion Temporal
+	                    call post:MISCJournalTablas
+	                    call post:MISCupdate_temporal(TablaAModif,"PENDIENTE")
+					END IF
+                end if
+
+                RESETFLAG admin:mode_flags,update
+                RESETFLAG admin:mode_flags,delete
+     	        CALL CSR:proc_list(F_CLEARALL,fld:post:INDCamposTablas)
+     	        CALL CSR:proc_list(F_REFRESHALL,fld:post:INDCamposTablas)
+
+                ;Deshabilito los botones del costado
+                CALL drv:side_bar_disable
+
+		    	return (-1)
+        ;   else
+        ;        let siaf:codigo_siaf = 97010
+    	    end if
+
+        endif ; Flag_temp == 1
+
+    endif ;testflag
+    return 0
+END SUB
+
+/*******/

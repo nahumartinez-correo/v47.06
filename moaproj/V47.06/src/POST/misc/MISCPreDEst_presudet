@@ -1,0 +1,109 @@
+/****o* Sesión Correo/OFB:post:MISCPreDEst_presudet
+* NOMBRE
+*   OFB:post:MISCPreDEst_presudet
+* DESCRIPCION
+*   Verifica si existe inconsistencia en la grabacion de la PresuDet del campo post:PreDEst
+*   marcada como journalizada no correspondiendose con la ultima secuencia journalizada. 
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   OFB:post:MISCultima_trx_jour
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-1684 
+* SOURCE
+*/
+#include "postmisc.h"
+
+SUB post:MISCPreDEst_presudet
+
+    /*cgw:Verifica si existe inconsistencia en la grabacion de la PresuDet del campo post:PreDEst
+          marcada como journalizada no correspondiendose con la ultima secuencia journalizada. */
+    CDS FINDAGAIN DSC:tlr:CONjnl_write LOCK
+    CDS EXTRACT DSC:tlr:CONjnl_write \
+                tlr:jnl_bus_date \
+                post:PresNro \
+                post:adt_PreDNroTrn \
+                siaf:codigo_siaf \
+                post:jnl_flia_tran \
+                tlr:jnl_status \
+                siaf:afecta_efectivo \
+                siaf:importe \
+                siaf:moneda \
+                siaf:cancelacion
+
+    IF (post:jnl_flia_tran == "CSM") THEN 
+    	//Es un giro.
+    	CDS EXTRACT DSC:tlr:CONjnl_write \
+    	    giros:es_emision_postal \
+    	    giros:es_emision_tele \
+    	    giros:es_envio_WU
+    END IF
+    select (siaf:codigo_siaf)
+        CASE 6640
+        case 6650
+            call post:CDSbenefTmp("J","","","")
+            break
+        case 6642
+        case 6652
+        case 6654
+            CDS EXTRACT DSC:tlr:CONjnl_write \
+            adt_benTmp_operativo \
+            adt_benTmp_benef \
+            adt_benTmp_pag_tipoD \
+            adt_benTmp_pag_NroD
+            call post:CDSbenefTmp("B","","","")
+            break
+        case 6670
+        case 18701
+        	call post:CDSCaida_RT_CCT(siaf:codigo_siaf)
+        	break
+  
+    end select
+    IF (siaf:cancelacion.numchars > 0) THEN
+    	//Esta ultima transaccion journalizada, fue reversada por una recuperacion de caida.
+    	//Se evita proceso de verificacion de marcas.
+    	RETURN (-2)
+    END IF
+    //Inicio de sesion, ultima secuencia journalizada y no se graba en la PresuDet.
+    CDS SELECT FROM DSC:post:TABPresuDeta BECOMES "trans_pend"  \
+	  WHERE (post:fecha == tlr:jnl_bus_date) && \
+                (post:op_operator_id == fld:op:op_operator_id ) && \
+                (post:PresNro == post:PresNro) && \
+                (siaf:codigo_siaf != 99023)
+
+    CDS FINDFIRST "trans_pend" NOLOCK
+    IF (CDSRETVAL == 0) THEN
+        IF (post:PresNro > 0 && post:adt_PreDNroTrn > 0) THEN
+            // Ultima tx journalizada esta dentro del presupuesto.
+            // (No es Inicio de Sesion ni tx sin nro de presupuesto).
+            // Busca ultima tx journalizada en la PresuDet y verifico marca de journalizacion.
+            CALL post:MISCJour_ConNroTrn
+            IF (RETVAL < 0) THEN
+            	CDS ENDSELECT "trans_pend"
+            	RETURN (-2)
+            END IF	
+        ELSE
+            //Ultima tx journalizada es Inicio de sesion o tx sin nro de preupuesto.
+            CDS EXTRACT "trans_pend" post:PreDEst
+        END IF
+
+        //Verifica estado de marca de journalizacion en PresuDet.
+    	IF (post:PreDEst == 2) THEN    	    
+    	    //cgw: Soluciona inconsistencia por caida de sesion.
+    	    //    Transaccion no journalizada, marcada como journalizado en PresuDet.
+    	    //    Se corrige actualizando registro de PresuDet con marca de no journalizada.
+    	    post:PreDEst = 1
+    	    CDS FINDAGAIN "trans_pend" LOCK
+    	    CDS APPEND "trans_pend" post:PreDEst
+	    CDS UPDATE "trans_pend" LOCK
+	    CDS UNLOCK "trans_pend"
+    	END IF
+    END IF
+    CDS ENDSELECT "trans_pend"
+END SUB
+
+/*******/

@@ -1,0 +1,94 @@
+/****o* Pendientes de agrupación/OFB:post:SVAL_DP5_Inter
+* NOMBRE
+*   OFB:post:SVAL_DP5_Inter
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postsval.h"
+
+SUB post:SVAL_DP5_Inter
+/* B. Petrella - Nov. 1999              */
+ if (!testflag(tlr:tran_flags,correction))
+	call CDSselect_DevPza2
+    if (retval < 0) then
+       	errmsg common:errmsg_list,"DEBE CONTENER AL MENOS UNA PIEZA"
+      	return -2
+	end if
+
+	call FVALreencam_DP5
+	IF (RETVAL < 0)
+       	return -2
+    END IF
+
+	IF (post:AperDesc.numchars == 0)
+	  CALL post:CDSbuscaDescAper
+	  IF (RETVAL < 0)
+		 call MISCprotUnprot_DP5
+         errmsg common:errmsg_list,"DEBE INGRESAR LA APERTURA"
+       	 return -2
+      END IF
+	END IF
+	call csr:save_currentfield
+    move "S"  to siaf:continua_transaccion
+    popup siaf:SCRNcontinua
+	if (siaf:continua_transaccion == "N"   || LASTKEY == 0x0190 )
+        call csr:restore_currentfield
+	    INIT 33,0
+     	return -2
+    endif
+	LET FLD:post:adt_table = DSC:post:DevPza2_tbl
+	LET FLD:post:adt_ctx = DSC:post:DevPza2_ctx
+    /* Marca para terminar de procesar */
+    call CDS_DevPza1_max
+    /*MFM - Se obtiene un numero de secuencia para journalizar la cabecera y
+    los detalles. Esto es util para la reversa*/
+    CLEARFIELD post:codseq_dev
+    CALL CDSobtiene_secuen("CABEC")
+    post:codseq_dev = post:adt_codseq_nro
+    /* Journaliza con otra pantalla */
+    drv:INDscr = SCR:post:SCRNpzasInter_Hdr
+    let orden = 0
+    /*MFM - Verifico si la pieza es prioritaria*/
+    CALL MISCverif_prior (post:Reencaminamiento)
+ else
+ 	/*MFM - Si el Reencaminamiento fue marcado como excepción no puedo reversarlo*/
+  	IF (post:jnl_marca_excep == "S") THEN
+  		MSGBOX "La pieza ha sido marcada como excepción. No puede reversarse.",0x00,"AVISO"
+  	ELSE
+	  	/* MFM - Septiembre 2000 - Verifico si puedo reversar el Reencaminamiento*/
+  		IF (((post:jnl_guia_cont > 0 && post:jnl_guia_cont != 99999999) || (post:jnl_guia_cont == 99999999 && post:jnl_op_transf != op:op_operator_id)) \
+  			|| (post:jnl_guia_saca > 0) || (post:jnl_guia_despacho > 0)) THEN
+	  		IF (post:jnl_guia_cont == 99999999) THEN
+  				MSGBOX "La pieza ha sido transferida a otro operador. No puede reversarse.",0x00,"AVISO"
+  			ELSE
+	  			MSGBOX "La pieza ha sido expedida. No puede reversarse.",0x00,"AVISO"
+  			END IF
+	  	ELSE
+  			/*Busco el registro en la TranCont y lo borro*/
+  			CALL CDSBorroRegTranCont(post:Reencaminamiento)
+	  		tlr:INDdcol_scrn[0] = SCR:post:SCRNpzasInter_Hdr
+  			tlr:INDjnl_append = OFB:post:JNL_DP5_Inter
+  			CALL MISCreversa_transac
+	  		/* MFM - Septiembre 2000 - Reverso los detalles*/
+  			CALL CDSSelect_Piezas("2")
+	  	END IF
+ 	END IF
+ 	;Para que no journalice de más....
+	 CALL post:MISCclear_campos_jou
+  	;Para que no llame a la MISCmarca_corregida y evitar así que pegue el tlr:jnl_sequence_corr
+  	Resetflag tlr:tran_flags,correction
+ end if
+END SUB
+
+/*******/

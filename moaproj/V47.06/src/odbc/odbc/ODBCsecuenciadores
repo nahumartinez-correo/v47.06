@@ -1,0 +1,90 @@
+/****o* Pendientes de agrupación/OFB:odbc:ODBCsecuenciadores
+* NOMBRE
+*   OFB:odbc:ODBCsecuenciadores
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "odbcodbc.h"
+
+SUB odbc:ODBCsecuenciadores
+    LOCAL retval_query LIKE lib:err_retval
+    LOCAL retval_fetch LIKE lib:err_retval
+    LOCAL retval_close LIKE lib:err_retval
+    LOCAL loc_nis LIKE post:adt_secuen_sucnro    
+    LOCAL loc_local_date LIKE common:system_date
+    LOCAL loc_local_time LIKE post:cantidad
+    LOCAL loc_cod_comprobante LIKE post:adt_secuen_cod
+    LOCAL loc_num_comprobante LIKE post:adt_secuen_nro
+    LOCAL loc_termi LIKE post:CTP_Guia
+    LOCAL loc_usuario LIKE op:op_login_id
+    LOCAL loc_tipo_operacion LIKE post:tip
+    LOCAL loc_firma LIKE post:adt_secuen_firma
+    LOCAL bck_local_date LIKE common:system_date
+    LOCAL bck_local_time LIKE post:cantidad
+    LOCAL bck_tipo_operacion LIKE post:tip
+    LOCAL fin_query LIKE siaf:i
+    LOCAL cuenta LIKE common:local_int
+        
+    // armo la linea de query
+	fprint odbc:ODBCwhere "%s" DSC:odbc:query_secuenciadores
+	
+	// ejecuta el query y arma el Dynaset
+	
+	DLL  DBdefineQuery(db_dynaset, db_handle_autosec, DSC:ODBCdynaset_name, 1, \
+	     ODBCwhere,post:adt_secuen_sucnro,0, \
+         loc_nis,loc_local_date,loc_local_time,loc_cod_comprobante,loc_num_comprobante,loc_termi,loc_usuario,loc_tipo_operacion,loc_firma,0)	
+	retval_query = retval		                
+    // si me devuelve retval = -1, quiere decir que es un error de odbc/sql, no de mosaic. 
+    //(los de mosaic tienen errores con valores de 5600 para arriba. hay que averiguar que es.
+    
+    IF (retval_query >= 0) THEN
+    	cuenta = 0    	
+	    DLL DBfetch(db_dynaset) // obtiene fila del dynaset	    
+       	retval_fetch = retval	    
+	    IF (retval_fetch == 0) THEN
+	       bck_local_date = loc_local_date
+               bck_local_time = loc_local_time
+	       bck_tipo_operacion = loc_tipo_operacion
+	       fin_query = (bck_local_date == loc_local_date && bck_local_time == loc_local_time && bck_tipo_operacion == loc_tipo_operacion)
+	       WHILE (retval != DB_NO_DATA && fin_query)
+			     CALL post:MISCAutoSec_mosaic(loc_nis,loc_cod_comprobante,loc_num_comprobante)
+			     CALL post:CDSsecuen_save            
+                             CALL post:MISCSeteoAutoSecIND            
+			     CALL post:MISCJournalTablas			
+  			
+  			     // CGW: chequeo campos query 
+	         //fprint common:csr_string "NIS:%5s   DATE:%8s   TIME:%6s   COD.COM:%5s   NUM.COM:%8s   TERMI:%20s   USUARIO:%14s   TIPO:%1s   FIRMA:%1" \
+                 //loc_nis,loc_local_date,loc_local_time,loc_cod_comprobante,loc_num_comprobante,loc_termi,loc_usuario,loc_tipo_operacion,loc_firma                 
+	         //msgbox common:csr_string,OFB_OK,"Aviso"
+				 				 
+		         cuenta = cuenta + 1
+		         DLL DBfetch(db_dynaset) // obtiene fila del dynaset
+		         IF (retval_fetch == 0) THEN
+		             fin_query = (bck_local_date == loc_local_date && bck_local_time == loc_local_time && bck_tipo_operacion == loc_tipo_operacion)
+		         END IF   
+	       END WHILE
+	    END IF
+        IF (cuenta > 0) THEN
+            msgbox "Se actualizo la tabla AutoSec",OFB_OK,"Aviso"                      
+        END IF    
+        DLL DBqclose(db_dynaset)
+        retval_close = retval
+        IF (retval_close != 0)	      
+      	    RETURN (-2)
+        END IF
+    END IF    
+    RETURN (0)
+END SUB
+
+/*******/

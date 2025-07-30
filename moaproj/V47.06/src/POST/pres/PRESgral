@@ -1,0 +1,593 @@
+/****o* Pendientes de agrupación/OFB:post:PRESgral
+* NOMBRE
+*   OFB:post:PRESgral
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postpres.h"
+
+SUB post:PRESgral
+    LOCAL Ltt_aux LIKE track_trace
+    LOCAL loc_importe LIKE post:tarifa
+    LOCAL x LIKE cantidad
+    LOCAL l_importe like post:adt_tarif_precio
+    siaf:nombre_transac.HIGHLITE = 0
+
+	IF (siaf:codigo_siaf == 21401 || siaf:codigo_siaf == 21501 || \
+		siaf:codigo_siaf == 21701 || siaf:codigo_siaf == 21801)
+		
+		IF (consulta_ordenCM == "S")
+			MSGBOX "Transaccion no habilitada para Ordenes de Compra",0x00,"Error"
+			return -2
+		END IF
+
+	END IF
+    /**********************************************************/
+    /* Limpio todos los campos que voy a utilizar, por si     */
+    /* falla algún AutoClear, más los que debo journalizar    */
+    /* vac¡os pues están relacionados con el Corte Operativo. */
+    /**********************************************************/
+
+	//reseteo el falg de giro robado
+	RESETFLAG giros:env_post_flag,verif_tt_usado
+
+	/*Carina - Reseteo el flag de Cliente Interno*/
+	RESETFLAG uso_int_flag,uso_interno
+	PROTFIELD cli_int_obs
+	/*MFM - Limpio un campo auxiliar que interviene en la grabacion del
+	Scaneo O*/
+	CLEARFIELD post:codtt_aux
+	/*MFM - REQ 3621
+	CLEARFIELD post:adt_novtt_cliente*/
+	CLEARFIELD post:adt_novtt_sap
+
+    clearfield cant_opc
+    caja_propia = FALSE
+
+	/*Reingenieria.MFM - borro el campo de descuento a cliente Medio por si quedò sucio*/
+    if (post:estado_presu == 2) then
+    	clearfield post:Dcto_CliMed
+    	clearfield post:Imp_DctoCliMed
+    	clearfield post:promo_cant_opc
+    	//NI 503254
+    	clearfield post:DctoCM_bc
+     endif
+	//NI 503254 - siempre protegido el campo de descuento cliente medio bienes de cambio productos varios
+    protfield  post:DctoCM_bc
+	//Reingenieria
+    //resguardo el tt por si ingreso a la tx por Codigo de tt
+    if (plataf:required_tt.NUMCHARS > 0) then
+    	Ltt_aux = plataf:required_tt
+    endif
+
+    CALL CSR:proc_list(F_CLEAR,LST:post:LISTgral_clear)
+    CALL CSR:proc_list(F_CLEARARRAY,LST:post:LISTgral_clear_vec)
+
+    //cgw:Se borra los registros que no son de venta en la tabla AuxEspV para la sucursal y operador.
+    CALL tes:CDSAuxEspV_clear(op:op_branch_id,"N",op:op_operator_id)
+
+	// sba 20030227 - Le asigno 0 al estado franqueadora (no fue utilizada)
+	post:estado_franq = 0
+    /* Agrego también que si estoy en teclas ráìdas y tiene curso legal protejo el
+                campo y si no tiene le muestro un mensaje de error y no le permito
+                hacer la transacción - Hernán 14/11/2000*/
+
+           if (post:estado_presu == 1) then
+            	;Busco el medio de pago que tenga captura de CL
+     	       call post:CDSMPago_Clegal_load
+     	       if (retval == 0) then
+     	    	  siaf:moneda = post:adt_mp_cod
+     	    	  medio_pago_desc = adt_mp_desc
+     	          protfield siaf:moneda
+     	          DISABLECONTROL drv:PBcb0
+     	       else
+     	          errmsg lst:common:errmsg_list,"NO HAY ASOCIADO UN MEDIO DE PAGO PARA ESTA OPERACION"
+                  UNGETKEY RT_ESC
+                  //return (-2)
+               end if
+           end if
+
+    /********************************************************/
+    /* Llamo a la PRESfecha_hora que luego llama a la OFB   */
+    /* CDSadt_tran_load, la cual lee la Tabla de Transacc.  */
+    /* De esta forma obtengo toda la informacion referente  */
+    /* a la transaccion y accedo con el Código de Producto  */
+    /* a la Tabla de Servicios para obtener la parametr¡a   */
+    /* del Producto. 					    */
+    /********************************************************/
+
+
+
+    CALL siaf:PRESfecha_hora
+    IF (RETVAL < 0) THEN
+		/* No puedo continuar */
+		IF (post:adt_Modo == "R" && post:Modo.NUMCHARS == 0)
+			RETURN (-2)
+		ELSE
+			;UNGETKEY RT_ESC
+			return (-1)
+		END IF
+    END IF
+
+	; Agrego restriccion por REG,PROV,SUC y CLI *** MDG
+	CALL post:MISCventasRestGen("CSP", siaf:codigo_siaf)
+	IF (RETVAL == -1)
+		UNGETKEY RT_ESC
+		RETURN (0)
+	END IF
+
+	IF (plataf:chosen_codtrn.NUMCHARS != 0 && post:cli_tipo != 1 && !OperacionCob && !OperacionAut)
+		//Si ingreso a la tx por Codigo de Barras recupero el valor del tt ingresado
+		track_trace = Ltt_aux
+	END IF
+
+  /*Comienzo de Control de cliente con el canal*/
+    /*Utilize una variable auxiliar para el codigo siaf, ya que no quería */
+    /*modificar su contenido, lo creí conveniente, Mariano Gecik.- */
+
+    /*Agrego modificacion para que cuando controle el canal de la transaccion, al
+    no dejar realizarla por distinto tipo de cliente, cierre la sesion. Diego Priore 16/5/2000*/
+
+    if (post:cli_tipo != 0)
+
+      cds select from dsc:adt_serv_table becomes dsc:adt_serv_context \
+      where adt_serv_serv == siaf:codigo_siaf
+      cds findfirst dsc:adt_serv_context NOLOCK
+      if (cdsretval == 0)
+        cds extract dsc:adt_serv_context ALL
+        if (cdsretval == 0)
+          let adt_serv_canal = adt_serv_canal
+          if (cli_tipo == 1)
+            /* cLIENTE MAYORISTA O CTA CTES*/
+            if (adt_serv_canal == "MINORISTA" )
+              msgbox "PRODUCTO NO DISPONIBLE PARA MAYORISTAS",0x00,"Error"
+              	UNGETKEY RT_ESC
+            endif
+          else
+             /* cLIENTE MINORISTA */
+            if (adt_serv_canal == "MAYORISTA") THEN
+              msgbox "PRODUCTO NO DISPONIBLE PARA MINORISTAS",0x00,"Error"
+              UNGETKEY RT_ESC
+            endif
+          endif
+        endif
+      endif
+    endif
+
+    /* MLD Agrego para que Me cargue los datos del producto asociado en Memoria */
+    if (post:estado_presu == 2 || post:estado_presu == 1) then
+		call post:MISCParam_Asoc
+		//MFM - Validaciones Clientes Medios. Si devuelve un valor menor a cero no debo continuar
+		IF (RETVAL < 0) THEN
+			UNGETKEY RT_ESC
+			RETURN (0)
+		END IF
+
+		if (post:cli_tipo == 4) then
+			/*Si vende alguna especie asociada al producto,
+			y el cliente es UP controlo que la familia TES lo admita*/
+			if (codesp_serv.numchars > 0) then
+				call post:CDSverificaFliaUP("TES")
+				if (retval == NOTOK)
+					msgbox "LA FAMILIA DE LA ESPECIE NO PERMITE VENTA UP",0x00,"Error"
+					UNGETKEY RT_ESC
+				endif
+
+			end if
+		end if
+		if ((post:cli_tipo == 1 || (post:cli_tipo == 5 && post:consulta_ordenCM == "S"))&& prodCC_serv.numchars > 0) then
+			/*Si es cliente CC y el servicio tiene un producto asociado, controlo que el producto admita el cliente*/
+			call post:MISCAdmiteCliente(prodCC_serv)
+			if (retval < 0) then
+				UNGETKEY RT_ESC
+			end if
+		end if
+		adt_prodvs_desc = bck_prodvs_desc
+	end if
+
+	/*Para Teclas Rapidas, valida que la especie asociada al servicio no tenga fomulario fiscal = factura*/
+	if (post:estado_presu == 1)
+		if (codesp_serv.numchars > 0)
+			tes:adt_espv_cod = codesp_serv
+	    	tes:adt_espv_subcod = subcod_serv
+	    	tes:adt_evaux_cantidad = post:cantidad
+	    	CALL tes:CDSadt_esp_load
+			if (tes:adt_espv_formfiscal == "FACTU")
+				MSGBOX "Especie asociada al servicio no admitida por modo rapido (Formulario Fiscal = Factura)",0x00,"Error"
+				UNGETKEY RT_ESC
+			end if
+		end if
+	end if
+
+    /*Fin de Control de cliente con el canal*/
+
+    /********************************************************/
+    /* Protejo el campo NroComprobante ya que se determina  */
+    /* en el Inicio de Sesi¢n y no se debe modificar dentro */
+    /* de la Transacci¢n.                    		    */
+    /********************************************************/
+    PROTFIELD post:NroCompPago2
+    IF (NroCompPago != "0") THEN
+		NroCompPago2 = NroCompPago
+    END IF
+
+    /********************************************************/
+    /* Protejo el campo Importe porque en las Transacciones */
+    /* Postales se calcula mediante una Funci¢n en vez de   */
+    /* ser digitado por el Cajero.			    */
+    /********************************************************/
+    PROTFIELD siaf:importe
+    PROTFIELD siaf:importe_tot_serv
+
+    /*********************************************************/
+    /* Por default asigno a Producto-CLiente el valor en 0.   */
+    /*********************************************************/
+    post:prod_cli = "0000000000"
+    /*********************************************************/
+    /* Protejo el campo hasta definir la fval que valide el picklist      */
+    /*********************************************************/
+    PROTFIELD post:prod_cli
+    DISABLECONTROL drv:PBcb1
+
+    /*********************************************************/
+    /* Por default asigno a cantidad de cartas el valor 1,   */
+    /* y peso 0.                                		     */
+    /*********************************************************/
+    post:cantidad = 1
+    post:peso_en_grs = 0
+    post:peso_en_kgs = 0
+    post:peso_ing = 0
+    post:tipo_produc2 = post:tipo_produc
+
+    /*********************************************************/
+    /* Accedo a la Tabla de Servicios Postales para obtener  */
+    /* la parametr¡a del producto.  		             */
+    /*********************************************************/
+    CALL post:PRESserv_gral
+    IF (RETVAL < 0) THEN
+		UNGETKEY RT_ESC
+    END IF
+
+    /***********************************************************/
+    /*  Se chequea que si el envio tiene como apertura */
+    /*  "E" que se encuentre por default en la pantalla  */
+    /***********************************************************/
+    CALL post:PRESapert_gral
+
+    /*********************************************************/
+    /* Verifico si el Servicio tiene definido Opcionales.    */
+    /* Lo necesito saber antes de dibujar la Pantalla de la  */
+    /* Transacci¢n para decidir si debo displayar el Combo   */
+    /* para seleccionar los Opcionales o no.		     */
+    /*********************************************************/
+    CALL post:PRESopc_gral
+    IF (RETVAL < 0) THEN
+		UNGETKEY RT_ESC
+    END IF
+
+    /********************************************************/
+    /* Si el Cliente no es Mayorista, le asigno al campo    */
+    /* tarifa la tarifa básica para ese Servicio, siempre   */
+    /* y cuando sea un Servicio Postal con alcance Nacional */
+    /* ya que en los Postales Internacionales y Encomiendas */
+    /* debo saber el destino para tarifar.		    */
+    /********************************************************/
+
+
+	CALL csr:f_sadroppl dsc:post:pic_promo_Detalle								//MDG
+	CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle 	//MDG
+
+    IF (!TESTFLAG(tlr:tran_flags,correction)) THEN
+	    IF ((post:adt_serv_tipo == "PO" && post:adt_serv_alcance == "N") || \
+	        tipo_produc == 11251 || tipo_produc == 12511) THEN
+	        IF (tipo_produc != 11203) THEN
+		        CDS SELECT FROM DESPOST_TAB BECOMES DESPOST_CTX WHERE \
+        		    post:adt_despost_serv == post:tipo_produc
+    		    CDS FINDFIRST DESPOST_CTX NOLOCK
+    		    IF (CDSRETVAL < 0) THEN
+    			    MSGBOX "LA TRANSACCION NO SE PUEDE EJECUTAR YA QUE EL SERVICIO NO TIENE UN DESTINO HABILITADO EN LA TABLA DE DESTINOS POSTALES",0x00,"ERROR"
+					UNGETKEY RT_ESC
+	    	    ELSE
+	    		    CDS EXTRACT DESPOST_CTX ALL
+	    		    post:adt_tarif_dest = post:adt_despost_dest
+	    		    post:destino = post:adt_despost_dest
+	    	    END IF
+	    	    CDS ENDSELECT DESPOST_CTX
+		        IF (post:adt_serv_umstd != "PAG") THEN
+			        post:adt_tarif_desde = 0.001
+		        ELSE
+			        post:adt_tarif_desde = 1
+		        END IF
+	            post:aforo = 0
+                CALL post:CDSbasico(post:tipo_produc2,post:adt_tarif_desde,post:adt_serv_umstd,post:adt_tarif_dest)
+
+	        END IF
+	        IF (post:cli_tipo != 1 && \
+	            post:enCombo != "S") THEN
+	            //cgw:si no es un producto de un combo, calcula importes.
+	    	    post:tarifa =  post:adt_tarif_precio
+
+               	/*MDG se agrego el descuento por promocion */
+               	IF (post:estado_presu == 2 || post:estado_presu == 1) THEN
+					CALL post:MISCaplicaBonif(TIPO_SERVICIO)
+					IF (aplica_bonif_serv ==	"S") THEN
+						CALL post:MISCBonifSrv()
+					END IF
+					loc_importe = post:tarifa - post:promo_tot_Serv
+				END IF
+				/*FIN MDG*/
+	    	    IF ((post:estado_presu == 2 || post:estado_presu == 3) && \
+	                post:IvaCod == "RNI") THEN
+			        //SC 50170
+			        CALL MISCdesglosaIva(loc_importe,post:adt_serv_aliciva,post:cantidad,0)
+			        post:sobretasa_prod = post:SobreTasaIva
+	    	    END IF
+	    	    post:sobretasa = post:sobretasa_prod + post:sobretasa_opc
+        	    siaf:importe = post:tarifa + post:sobretasa
+				/*FIN MDG*/
+            END IF
+	    END IF
+    END IF
+
+    /*********************************************************/
+    /* Si estoy haciendo la transacción sin sesión, coloco   */
+    /* un peso por default.				     */
+    /*********************************************************/
+	IF (post:estado_presu == 1 && post:adt_serv_pesable == "T") THEN
+    	CDS SELECT FROM dsc:Tarifas_tbl BECOMES dsc:Tarifas_ctx \
+   			WHERE (adt_tarif_serv == post:tipo_produc2) &&\
+   			(adt_tarif_dest == FLD:post:adt_tarif_dest) &&\
+   			(adt_tarif_um == adt_serv_umstd)
+    	CDS FINDFIRST dsc:Tarifas_ctx NOLOCK
+    	IF (CDSRETVAL == 0) THEN
+			CDS EXTRACT dsc:Tarifas_ctx post:adt_tarif_hasta
+			post:peso_en_grs = post:adt_tarif_hasta
+    	END IF
+    	CDS ENDSELECT dsc:Tarifas_ctx
+	END IF
+
+    /* Verifico si es una Directa o una Reversa */
+    IF (!TESTFLAG(tlr:tran_flags,correction))
+	/* Es una Directa */
+	CALL post:MISCprotege(LST:post:LISTgral_prot,LST:post:LISTgral_unprot)
+        /* Verifico en que modo estoy */
+    post:INDPresuD_Dat = OFB:CDSgral_append
+
+	SELECT (post:estado_presu)
+		    CASE 2
+	 	        /****************************************************************/
+                /* Si tiene captura de medio de pago protejo el campo Medio de  */
+                /* pago. Hernán.     17/10/2000                                 */
+                /****************************************************************/
+
+                if (siaf:adt_tran_med_pago != "S") then
+     	           post:captura_mp = siaf:adt_tran_med_pago
+     	           protfield siaf:moneda
+     	           siaf:moneda = 99
+     	           clearfield post:medio_pago_desc
+     	           DISABLECONTROL drv:PBcb0
+
+     	        else
+     	           ;Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+                end if
+
+	        /*Carina - Si cantidad de envios > 1 protejo el tt para que lo ingrese en el vector*/
+			//Por Reingenieria
+			IF (cantidad > 1 || cli_tipo == 1 || OperacionCob || OperacionAut)
+	      		PROTFIELD track_trace
+	      	END IF
+			/*Fin - Carina*/
+
+	        BREAK
+	    CASE 3
+		        /****************************************************************/
+                /* Si tiene captura de medio de pago protejo el campo Medio de  */
+                /* pago. Hernán.     17/10/2000                                 */
+                /****************************************************************/
+
+                if (siaf:adt_tran_med_pago != "S") then
+     	           post:captura_mp = siaf:adt_tran_med_pago
+     	           protfield siaf:moneda
+     	           siaf:moneda = 99
+     	           clearfield post:medio_pago_desc
+     	           DISABLECONTROL drv:PBcb0
+     	        else
+     	          // Call post:MISCrestricciones(post:cli_tipo,siaf:codigo_siaf,0)
+                end if
+		    /* Estoy en modo Confirmaci¢n */
+	        /* Leo datos de la Tabla Auxiliar */
+
+	        call post:MISCLeo_Adicional
+
+    		//Para que no quede sucio
+	        clearfield tes:adt_evaux_descCM
+
+    		CALL post:MISCLeo_PresDet
+    		
+    		if (caja_propia)
+    			protfield tipo_caja
+    		else
+    			unprotfield tipo_caja
+    		end if
+
+	        /*Carina - Si cantidad de envios > 1 protejo el tt para que lo ingrese en el vector*/
+			//Por Reingenieria
+			IF (cantidad > 1 || cli_tipo == 1 || OperacionCob || OperacionAut)
+	      		PROTFIELD track_trace
+	      	END IF
+			/*Fin - Carina*/
+			 //COMPLETA EL PICKIST DETALLE MDG
+			IF (promo_imp_srv_tot > 0) THEN
+				SELECT (siaf:codigo_siaf)
+					CASE 18301
+					CASE 18501
+						l_importe = post:tarifa * post:cantidad
+						BREAK
+					CASE ELSE
+						l_importe = post:tarifa
+						BREAK
+				END SELECT
+				IF (promoSrvTipoBon == TIPO_BONIF_VALOR)
+					CALL post:MISCdetalleBonifGral(promo_desc,l_importe,"----",promo_imp_srv_tot,TIPO_SERVICIO, "")
+				ELSE
+					CALL post:MISCdetalleBonifGral(promo_desc,l_importe,promo_srv_bon,promo_imp_srv_tot,TIPO_SERVICIO, "")
+				END IF
+			END IF
+			IF (promo_imp_blq_tot > 0) THEN
+				CALL post:MISCdetalleBonifGral(promo_desc,imp_bloques,promo_blq_bon,promo_imp_blq_tot,TIPO_BLOQUE, "")
+			END IF
+			x = 0
+			WHILE (x < post:cant_opc)
+				IF (post:promo_imp_opc_tot[x] > 0) THEN
+					l_importe = post:cos_opc[x]
+					CALL post:MISCdetalleBonifGral(promo_desc,l_importe,promo_opc_bon[x],post:promo_imp_opc_tot[x],TIPO_OPCIONAL,cod_opc[x])
+				END IF
+				x = x + 1
+			END WHILE
+
+	        BREAK
+	    CASE 4
+
+	        /* HERNAN - protejo la moneda*/
+	        protfield siaf:moneda
+	        DISABLECONTROL drv:PBcb0
+		    /* Estoy en modo Fin de Presupuesto */
+
+	      	/*Testeo que no pida T&T - Cargo datos de la transaccion sin T&T*/
+	      	IF (post:cli_tipo == 1 ) && (post:adt_serv_piezacont == "T")THEN
+	        		UNGETKEY RT_SEND
+			END IF
+	      	/*Fin*/
+
+	        /* Leo datos de la Tabla Auxiliar */
+		    CALL post:MISCLeo_PresDet
+
+	        BREAK
+	    CASE 1
+            IF (siaf:adt_tran_modpresu == "E") THEN
+	            MSGBOX "LA TRANSACCION NO SE PUEDE EJECUTAR FUERA DEL MODO PRESUPUESTO",0x00,"ERROR"
+	            UNGETKEY RT_ESC
+	        END IF
+            BREAK
+	END SELECT
+    ELSE
+	/* Es una Reversa */
+        IF (post:adt_corteop_guiacont == "S") THEN
+	        IF (post:jnl_guia_cont != "") THEN
+	            /* Ya no se puede Reversar */
+	            UNGETKEY RT_ESC
+	        END IF
+        ELSE
+            IF (post:jnl_guia_saca != "") THEN
+                /* Ya no se puede Reversar */
+                UNGETKEY RT_ESC
+            END IF
+        END IF
+    END IF
+
+    /*********************************************************/
+    /* Si el Cliente es Mayorista, protejo el Medio de Pago  */
+    /* ya que los Mayoristas no pueden elegir el mismo.	     */
+    /*********************************************************/
+    IF (post:cli_tipo == 1 || post:estado_presu == 1) THEN
+    	PROTFIELD siaf:moneda
+    	DISABLECONTROL drv:PBcb0
+    END IF
+	/*Seteo en el campo indirecto la rutina de impresión de ticket para Nota de Crédito
+	Gabriel Falciola*/
+	INDticket_laser = ofb:post:PRT_Ticket_Postal
+
+    /*Limpio los vectores que almacenan los importes con y sin iva de los opcionales
+    y del servicio*/
+    IF (estado_presu != 4 || estado_presu != 1 )
+        CALL CSR:cleararray(fliatran_vec)
+        CALL CSR:cleararray(impciva_vec)
+        CALL CSR:cleararray(impsiva_vec)
+    END IF
+
+	; Se necesitaba este campo lleno para armar el picklist de restricciones.
+	IF (estado_presu == 3)
+		post:adt_serv_formfiscal = post:PreDForFis
+	endif
+
+	/*MFM -  jnl_servicio_en_bh2 */
+	IF (jnl_servicio_en_bh2 == "") THEN
+		//CALL MISCEnBlock_Horario(adt_serv_corteop,adt_relMod_apertura)
+		apert_aux = post:apertura
+		CALL MISCEnBlock_Horario(adt_serv_corteop,post:apertura)
+    	IF (RETVAL == 0) THEN
+    		jnl_servicio_en_bh2 = "S"
+    	ELSE
+    		jnl_servicio_en_bh2 = "N"
+    	END IF
+    END IF
+
+	/*MFM - Tratamiento Cliente Medio
+    IF (cli_tipo == CLIMED && post:estado_presu != 4) THEN
+		//chequeo que el producto esté habilitado para la venta y bonificacion a CM
+		CALL MISCVerifCM
+		if (retval < 0)
+			return -2
+		end if
+	END IF*/
+
+	//PS Bienes de Cambio - Cliente Medio
+	if (post:estado_presu == 2 || post:estado_presu == 1) then
+		if (codesp_serv.numchars > 0)
+			if (post:cli_tipo == CLIMED && consulta_excepcionCM == "S") then
+				/*Me fijo si tiene bonificion. Si no tiene aviso !*/
+				tes:adt_espv_cod = codesp_serv
+				tes:adt_espv_subcod = subcod_serv
+				tes:adt_evaux_cantidad = post:cantidad
+				Call tes:CDSadt_esp_load
+				if (tes:adt_espv_bonifCM != "S") then
+					if (post:ExcepProducto) then
+						MSGBOX "La especie asociada al servicio no está habilitada para bonificar a Cliente Medio.\nPor lo tanto no será afectada por el descuento.",0x00,"AVISO"
+					endif
+					if (post:ExcepSesion) then
+						MSGBOX "La especie asociada al servicio no está habilitada para bonificar a Cliente Medio.\nPor lo tanto no podrá comprar el servicio.",0x00,"AVISO"
+						return -2
+					endif
+				end if
+			end if
+		end if
+	end if
+
+	IF (estado_presu == 4)
+		siaf:importe_tot_serv = siaf:importe - post:promo_tot_Serv
+	ELSE
+		/*Asigno siaf:importe al campo siaf:importe_tot_serv en el cual se va a mostrar el importe total
+		acumulado en la transaccion, con el valor del producto asociado, de la especie asociada, etc..*/
+		siaf:importe_tot_serv = siaf:importe
+		/*Si tiene una especie asociada, sumo el importe de la misma*/
+		if (codesp_serv.numchars > 0 && cli_tipo != 1 && \
+		    post:enCombo != "S") then
+		    //cgw:si no es un producto de un combo, calcula importes.
+			tes:adt_espv_cod = codesp_serv
+		    tes:adt_espv_subcod = subcod_serv
+		    tes:adt_evaux_cantidad = post:cantidad
+		    CALL tes:CDSadt_esp_load
+			siaf:importe_tot_serv = siaf:importe_tot_serv + (cantidad * tes:adt_espv_valor)
+		end if
+		/*Calcula la tarifa total del servicio*/
+	    CALL MISCact_tarif_serv
+	END IF
+	refresh siaf:importe_tot_serv
+	
+	
+	
+    RETURN (0)
+END SUB
+
+/*******/

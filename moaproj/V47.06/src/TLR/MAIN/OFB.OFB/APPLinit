@@ -1,0 +1,101 @@
+/****o* Pendientes de agrupación/OFB:tlr:APPLinit
+* NOMBRE
+*   OFB:tlr:APPLinit
+* DESCRIPCION
+* 	Teller Application Entry Routine							
+* 	This routine is invoked upon initial entry to the teller	
+* 	application.												
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "mainOFB.OFB.h"
+
+	SUB tlr:APPLinit
+/* check teller authority */
+	if (!testflag(common:menu_flags,AMtlr_auth) && \
+		!testflag(common:menu_flags,AMret_auth))
+		CALL  OFB:APPLterm /* no authority - exit */
+	END IF
+/* inform operator */
+	if (drv:dt_app == 2) then
+		fyimsg common:fyimsg_list,DSC:FYImain_tlr_init
+	else
+		fyimsg common:fyimsg_list,DSC:FYImain_ret_init
+	endif
+/* clean up reset logic */
+/*	call ofb:lib:MISCclear_env  */
+/* reset during initialization does tlr_cleanup */
+	let lib:INDhome_menu = ofb:APPLterm
+/* initialize menuing */
+/*	call ofb:MENUinitialize    don't need this anymore (rhs)*/
+/* disallow dups of transactions from outside teller application */
+	let drv:INDfld_tmp = ofb:tlr:APPLinit
+	CALL  csr:dt_tran DT_TRAN_START drv:INDfld_tmp
+	swapdup common:tran_appl_no
+	clearfield common:tran_appl_no
+	swapdup common:tran_appl_no
+	swapdup common:tran_item_no
+	clearfield common:tran_item_no
+	swapdup common:tran_item_no
+	let drv:INDfld_tmp = ofb:tlr:APPLinit
+	CALL  csr:dt_tran DT_TRAN_END drv:INDfld_tmp
+/* Set indirect object for reentry select and update operations */
+	let hcomm:INDreentry_select = ofb:JNLreentry_sel
+	let hcomm:INDreentry_update = ofb:JNLreentry_upd
+/* Set reentry required status field */
+/* The op:op_state_flags field is stored in the profiles table and  */
+/* extracted after login, thus the reentry_req flag is set as it */
+/* was at last logoff.                                           */
+	if (testflag(op:op_state_flags,tlr_reentry_req))
+		CALL  hcomm:RENmisc_set_req
+	else
+		CALL  hcomm:RENmisc_clear_req
+	END IF
+/* flag teller actv, set home product name, home menu routine */
+/*	settitle DSC:main_tlr_title    don't set the title (rhs) */
+	setflag lib:state_flags,teller
+	move "teller"  to lib:home_product
+/* show status overlay fields for teller */
+	CALL  OFB:lib:STATshow_tlr
+/* initialize journal/totals/cash control logic */
+	let siaf:fecha = common:system_date
+	let siaf:hora = common:time_of_day
+	CALL  OFB:JNLinitialize
+	if (retval != 0)
+		move "Error while intializing the journal" to drv:error_msg
+		CALL  drv:teller
+		CALL  OFB:APPLterm
+		return -1
+	END IF
+/* setup lib:INDhome_menu for reset processing */
+/*	let lib:INDhome_menu = ofb:APPLhome_menu  remove (rhs)*/
+/* clear info message */
+	fyimsg clear
+/* Averigua si necesita necesita ejecutar Cierre y/o Apertura del dia */
+	call siaf:MISCcheck_bus_date
+	if (retval < 0) then
+		return (-2)
+	end if
+/* call open day transaction if day not open */
+	if (!testflag(op:op_state_flags,open_day))
+		let drv:screen_active = TLR_OPEN_DAY
+/*		call ofb:TLR_OPEN_DAY_RTN   */
+	END IF
+	LET adt_branch_id = op:op_branch_id
+	/*No se usa más la Tabla BR_tlr - Gabriel Falciola
+	CALL  OFB:tlr:CDSadt_br_load*/
+
+/* force thru lib:INDhome_menu */
+/*	reset   */
+	END SUB
+
+/*******/

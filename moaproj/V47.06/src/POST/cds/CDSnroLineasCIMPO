@@ -1,0 +1,109 @@
+/****o* Pendientes de agrupación/OFB:post:CDSnroLineasCIMPO
+* NOMBRE
+*   OFB:post:CDSnroLineasCIMPO
+* DESCRIPCION
+*   Comportamiento del objeto (obligatorio)
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   Objetos que llaman al objeto documentado (obligatorio)
+* DOCUMENTACION
+*   Documentación relevante que deberá ser actualizada por la modificación de la rutina
+* SOURCE
+*/
+#include "postcds.h"
+
+Sub post:CDSnroLineasCIMPO
+   /*Esta rutina se encarga de calcular la cantidad de lineas de impresión para Comporbante de Imposicion.         */
+   
+    LOCAL CANTIDAD like cantidad
+ 
+    CANTIDAD = 0
+    //Busca solo las != PCL
+	CDS SELECT FROM DSC:TABPresuDeta BECOMES DSC:PresuDet_ctx2 WHERE \
+		post:fecha == common:system_date &&                 \
+    	post:op_operator_id == op:op_operator_id &&               \
+    	post:PresNro == post:PresNro && \
+    	siaf:adt_tran_fliatran != "PCL"
+    Cds FINDNEXT DSC:PresuDet_ctx2 NOLOCK
+    lib:err_retval = CDSRETVAL
+    While ( lib:err_retval != -801 )
+    	
+    	CDS EXTRACT DSC:PresuDet_ctx2 ALL
+    	
+    	SELECT (siaf:adt_tran_fliatran)
+    		CASE "CSE"
+    		CASE "CSP"
+    		CASE "CST"
+    			CANTIDAD = CANTIDAD + 1
+				IF (adt_serv_piezacont == "T" && TTcargado)
+					CANTIDAD = CANTIDAD + cantidad
+				ELSE
+					CANTIDAD = CANTIDAD + 1
+				END IF
+
+				IF (cant_opc > 0)
+					CANTIDAD = CANTIDAD + cant_opc
+				END IF    		
+				BREAK
+		
+			CASE "TES"
+				cds select FROM DSC:tes:AuxEspV_tbl becomes DSC:tes:AuxEspV_ctx where \
+      				tes:adt_evaux_suc      == op:op_branch_id   && \
+        			tes:adt_evaux_op       == op:op_operator_id && \
+        			tes:adt_evaux_tesoro   == "N"               && \
+        			tes:adt_evaux_prestran == tes:adt_evaux_prestran
+
+        			//V26-Correccion: Se elimina del select la pregunta del codigo de la especie por motivo de la nueva funcionalidad.
+        			/*tes:adt_evaux_codigo   == tes:espv_cod      && \*/
+
+        		cds findfirst DSC:tes:AuxEspV_ctx NOLOCK
+        		lib:err_retval = cdsretval
+        		while (lib:err_retval != -801)
+        			CANTIDAD = CANTIDAD + 1
+			       	cds findnext DSC:tes:AuxEspV_ctx NOLOCK
+        			lib:err_retval = CDSRETVAL
+				end while
+        		cds endselect DSC:tes:AuxEspV_ctx				
+				BREAK
+
+			CASE "CSV"
+				CANTIDAD = CANTIDAD + 1
+				IF (siaf:codigo_siaf == 6900) //Templates
+					CDS SELECT FROM DSC:MotAgrup_tbl BECOMES DSC:MotAgrup_ctx \
+						WHERE fecha_tmpl == FLD:common:system_date && \
+						operador_tmpl == FLD:op:op_operator_id && \
+						PresNro_tmpl == PresNro_tmpl && \
+						cod_agrupacion == cod_agrupacion
+					CDS FINDFIRST DSC:MotAgrup_ctx NOLOCK
+					LET lib:err_retval = CDSRETVAL
+					WHILE (lib:err_retval != -801)
+						CANTIDAD = CANTIDAD + 1
+						CDS FINDNEXT DSC:MotAgrup_ctx NOLOCK
+						LET lib:err_retval = CDSRETVAL		
+					END WHILE
+					CDS ENDSELECT DSC:MotAgrup_ctx
+				END IF			
+				BREAK
+			
+			CASE ELSE
+				CANTIDAD = CANTIDAD + 1
+				BREAK
+
+		END SELECT
+    	
+
+        Cds FINDNEXT DSC:PresuDet_ctx2 NOLOCK
+        lib:err_retval = CDSRETVAL
+    End While
+    Cds EndSelect DSC:PresuDet_ctx2
+
+    Return (CANTIDAD)
+END SUB
+/* Fin Rutinas para Facturacion */
+
+/*******/

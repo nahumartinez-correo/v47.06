@@ -1,0 +1,98 @@
+/****o* Clientes Medios/OFB:post:PCOL99460
+* NOMBRE
+*   OFB:post:PCOL99460
+* DESCRIPCION
+*   Rutina de PreCollect de la TX de Cobranza de CM
+* ENTRADAS
+*   Parámetros de entrada de la rutina, sean argumentos o campos que tiene en cuenta
+* SALIDAS
+*   Campos modificados como resultado o returns cuyos valores sean no triviales
+* IMPACTOS
+*   Otros objetos que deberán ser analizados al modificar el objeto actual
+* REFERENCIADO POR
+*   LST:post:TRAN99460
+* DOCUMENTACION
+*   http://jira.sibs.net/jira/browse/AUT-354 
+* SOURCE
+*/
+#include "postpcol.h"
+
+SUB post:PCOL99460
+    local idx like siaf:i
+    local i_idx like siaf:i
+	local l_tipo_comp       like giros:EstadoGiro_fld
+	
+	INIT 33,1
+	
+	clearfield siaf:importe_total
+	protfield PicDescrip2
+	protfield PicDescrip3
+	protfield importe_factpend
+	protfield importe_remipend
+	protfield importe_fpendsel
+	protfield importe_rpendsel
+	
+	//cgw:no puede elegir imposiciones hasta no seleccionar una orden de compra.
+	//protfield adt_oc_nro
+	protfield adt_oc_desc
+	disablecontrol drv:PBcb1
+	disablecontrol drv:PBcb5
+			
+	call post:MISCconsultoAbonado
+	post:ErrorPresu = FALSE
+
+  	if (post:estado_presu == 2) then
+		
+		//es necesario setear estos campos acá para que las bonificaciones locales no se apliquen
+		post:OperacionCob = TRUE
+		post:OperacionAut = FALSE
+		call post:CDSgrabo_CMCobranza
+
+		importe_fpendsel = 0
+		importe_rpendsel = 0
+
+  		;Este picklist se usa en bonificaciones locales y solo para mostrar
+  		;que bonificaciones existen, devido a que se utiliza en una rutina
+  		;que puede ser usada y no necesita mostrar nada se crea para que la
+  		;misma no produsca error ante una caida del rt *** MDG
+  		CALL csr:f_sadroppl dsc:post:pic_promo_Detalle
+		CALL csr:f_sanewpl  dsc:post:pic_promo_Detalle, PIC:post:PICpromo_Detalle
+  		call post:MISCRemito_Item(PROFORMA)
+	  	importe_remipend = siaf:importe_total
+	  	refresh importe_remipend
+         
+        //cgw:limpia campos orden de compra de la pantalla.
+        clearfield adt_selec_ocCM
+	    clearfield adt_oc_nro
+	    clearfield adt_oc_desc
+	    refresh adt_selec_ocCM
+	    //refresh adt_oc_nro
+	    refresh adt_oc_desc
+	     
+		//Recorro el picklist de facturas para calcular el importe total
+		if (siaf:codigo_siaf == 99460) then
+			importe_factpend = 0
+			let idx = 0
+			let i_idx = PL_GETITEM + idx
+			call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+			Do
+				if (retval < 0)
+			    	break
+			    end if
+				//50249
+				l_tipo_comp = substr(post:csr_string_250,0,1)
+				if (l_tipo_comp == "F") then
+					importe_factpend = importe_factpend + substr(post:csr_string_250,45,16)
+				else
+					importe_factpend = importe_factpend - substr(post:csr_string_250,45,16)
+				endif
+				let idx = idx + 1
+			    let i_idx = PL_GETITEM + idx
+			    call csr:myPickcontrol(dsc:facturas_cliente,post:csr_string_250,i_idx)
+			Loop
+			refresh importe_factpend
+		end if
+	end if
+END SUB
+
+/*******/
